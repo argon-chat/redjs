@@ -20,6 +20,7 @@ public sealed unsafe class JsContext
 {
     private readonly void* _ctx;
     private readonly Dictionary<string, JsAtom> _atoms = new();
+    private readonly Dictionary<string, JsAtom> _privateAtoms = new();
 
     public nint Handle => (nint)_ctx;
     public JsValue Global { get; }
@@ -152,6 +153,25 @@ public sealed unsafe class JsContext
         if (h == null) throw new RedJsEngineException($"atom(\"{name}\")", 2);
         var atom = new JsAtom((nint)h);
         _atoms[name] = atom;
+        return atom;
+    }
+
+    /// <summary>A PRIVATE-name atom: properties keyed by it are invisible to
+    /// all of JS (not even getOwnPropertySymbols) — internal slots for host
+    /// objects. Each native call mints a DISTINCT symbol even for the same
+    /// name, so this caches per context like <see cref="Atom"/>.</summary>
+    public JsAtom PrivateAtom(string name)
+    {
+        if (_privateAtoms.TryGetValue(name, out var cached)) return cached;
+        var bytes = Encoding.UTF8.GetBytes(name);
+        void* h;
+        fixed (byte* p = bytes)
+        {
+            h = NativeMethods.redjs_atom_private(_ctx, p, (nuint)bytes.Length);
+        }
+        if (h == null) throw new RedJsEngineException($"private_atom(\"{name}\")", 2);
+        var atom = new JsAtom((nint)h);
+        _privateAtoms[name] = atom;
         return atom;
     }
 

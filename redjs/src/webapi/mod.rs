@@ -60,6 +60,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let s_event = atom_priv(g, "redjs#event");
     let s_image = atom_priv(g, "redjs#imageBitmap");
     let s_usp = atom_priv(g, "redjs#searchParams");
+    let s_iter_target = atom_priv(g, "redjs#iterTarget");
     let a_type = atom(g, "type");
     let a_cb = atom(g, "callback");
     let a_once = atom(g, "once");
@@ -87,6 +88,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         s_event,
         s_image,
         s_usp,
+        s_iter_target,
         a_type,
         a_cb,
         a_once,
@@ -100,6 +102,8 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         url: Class { ctor: UNDEF, proto: UNDEF },
         usp_class: core::ptr::null_mut(),
         usp: Class { ctor: UNDEF, proto: UNDEF },
+        usp_iter_class: core::ptr::null_mut(),
+        usp_iter_proto: UNDEF,
         bitmap_class: core::ptr::null_mut(),
         bitmap: Class { ctor: UNDEF, proto: UNDEF },
         image: Class { ctor: UNDEF, proto: UNDEF },
@@ -123,11 +127,13 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     (*st_mut).blob_class = blob_cls;
     (*st_mut).blob = blob;
 
-    let (url_cls, url, usp_cls, usp) = url::install(g);
+    let (url_cls, url, usp_cls, usp, usp_iter_cls, usp_iter_proto) = url::install(g);
     (*st_mut).url_class = url_cls;
     (*st_mut).url = url;
     (*st_mut).usp_class = usp_cls;
     (*st_mut).usp = usp;
+    (*st_mut).usp_iter_class = usp_iter_cls;
+    (*st_mut).usp_iter_proto = usp_iter_proto;
 
     let (bitmap_cls, bitmap, image) = image::install(g, et_proto);
     (*st_mut).bitmap_class = bitmap_cls;

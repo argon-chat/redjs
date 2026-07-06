@@ -348,6 +348,15 @@ pub unsafe extern "C" fn redjs_atom8(ctx: *mut c_void, p: *const u8, len: usize)
     glue::rjs_atom8(ctx, p, len)
 }
 
+/// A PRIVATE-name atom: properties keyed by it are invisible to all of JS
+/// (not even getOwnPropertySymbols) — internal slots for host classes.
+/// Each call mints a DISTINCT symbol even for the same name: create once,
+/// cache on the host side, reuse.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_atom_private(ctx: *mut c_void, p: *const u8, len: usize) -> *mut c_void {
+    glue::rjs_atom_private(ctx, p, len)
+}
+
 /// Frees an atom of this context's VM. Must not outlive the VM (typically
 /// atoms just live forever). Requires the context: the atom-table removal
 /// must run under the VM's lock.

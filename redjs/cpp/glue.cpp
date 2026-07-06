@@ -928,6 +928,15 @@ extern "C" void* rjs_atom_private(void* g, const char* p, size_t len)
     return new Identifier(Identifier::fromUid(pn));
 }
 
+// The well-known Symbol.iterator as an atom, so native classes can implement
+// the iteration protocol (for..of, spread, Array.from) without evaluating JS.
+extern "C" void* rjs_atom_iterator(void* g)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    return new Identifier(vm.propertyNames->iteratorSymbol);
+}
+
 // Own enumerable string-keyed property names of an object, as a JS array of
 // strings (structuredClone / object walking).
 extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)

@@ -401,9 +401,88 @@ unsafe extern "sysv64" fn usp_get_size(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
+// ---- iteration protocol (entries/keys/values/[Symbol.iterator]) -------------
+//
+// Spec-shaped: the iterator walks the LIVE pair list by index (mutations during
+// iteration are observed, like in browsers), and keeps its URLSearchParams
+// alive through a private-symbol slot — GC-visible, no protect bookkeeping.
+
+pub struct UspIterData {
+    idx: usize,
+    kind: u8, // 0 = entries, 1 = keys, 2 = values
+}
+
+unsafe fn make_iter(g: *mut c_void, cf: *mut c_void, kind: u8) -> u64 {
+    let st = state(g);
+    let this_v = cf_this(cf);
+    if host_data::<UspData>(g, st.usp_class, this_v).is_none() {
+        return throw_type_error(g, "URLSearchParams iterator called on wrong this");
+    }
+    let it = host_create(g, st.usp_iter_class, st.usp_iter_proto, UspIterData { idx: 0, kind });
+    glue::rjs_define(g, it, st.s_iter_target, this_v, 0);
+    it
+}
+
+unsafe extern "sysv64" fn usp_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
+    make_iter(g, cf, 0)
+}
+
+unsafe extern "sysv64" fn usp_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
+    make_iter(g, cf, 1)
+}
+
+unsafe extern "sysv64" fn usp_values(g: *mut c_void, cf: *mut c_void) -> u64 {
+    make_iter(g, cf, 2)
+}
+
+unsafe extern "sysv64" fn usp_iter_next(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let st = state(g);
+    let this_v = cf_this(cf);
+    let Some(it) = host_data::<UspIterData>(g, st.usp_iter_class, this_v) else {
+        return throw_type_error(g, "next called on a non-URLSearchParams-iterator");
+    };
+    let target = get_a(g, this_v, st.s_iter_target);
+    let result = new_object(g, UNDEF);
+
+    let entry = host_data::<UspData>(g, st.usp_class, target).and_then(|d| {
+        let e = d.list.get(it.idx).cloned();
+        if e.is_some() {
+            it.idx += 1;
+        }
+        e
+    });
+    match entry {
+        Some((k, v)) => {
+            let value = match it.kind {
+                1 => js_string(g, &k),
+                2 => js_string(g, &v),
+                _ => {
+                    let pair = new_array(g);
+                    set_i(g, pair, 0, js_string(g, &k));
+                    set_i(g, pair, 1, js_string(g, &v));
+                    pair
+                }
+            };
+            define(g, result, "value", value, 0);
+            define(g, result, "done", enc_bool(false), 0);
+        }
+        None => {
+            define(g, result, "value", UNDEF, 0);
+            define(g, result, "done", enc_bool(true), 0);
+        }
+    }
+    result
+}
+
+unsafe extern "sysv64" fn iter_self(_g: *mut c_void, cf: *mut c_void) -> u64 {
+    cf_this(cf)
+}
+
 // ---------------------------------------------------------------------------
 
-pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class, crate::capi::JSClassRef, Class) {
+pub unsafe fn install(
+    g: *mut c_void,
+) -> (crate::capi::JSClassRef, Class, crate::capi::JSClassRef, Class, crate::capi::JSClassRef, u64) {
     let usp_cls = make_host_class::<UspData>("URLSearchParams");
     let usp = define_class(g, &ClassSpec {
         name: "URLSearchParams",
@@ -419,11 +498,25 @@ pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class, crate:
             ("delete", 1, usp_delete),
             ("sort", 0, usp_sort),
             ("forEach", 1, usp_for_each),
+            ("entries", 0, usp_entries),
+            ("keys", 0, usp_keys),
+            ("values", 0, usp_values),
             ("toString", 0, usp_to_string),
         ],
         getters: &[("size", usp_get_size)],
         accessors: &[],
     });
+
+    // %URLSearchParamsIteratorPrototype%: next() + self-returning
+    // [Symbol.iterator]; USP's own [Symbol.iterator] is `entries` (spec).
+    let usp_iter_cls = make_host_class::<UspIterData>("URLSearchParams Iterator");
+    let usp_iter_proto = new_object(g, UNDEF);
+    crate::ffi::redjs_protect(g, usp_iter_proto);
+    define(g, usp_iter_proto, "next", make_fn(g, "next", 0, usp_iter_next), 2);
+    let it_atom = glue::rjs_atom_iterator(g);
+    glue::rjs_define(g, usp_iter_proto, it_atom, make_fn(g, "[Symbol.iterator]", 0, iter_self), 2);
+    glue::rjs_define(g, usp.proto, it_atom, get(g, usp.proto, "entries"), 2);
+    glue::rjs_atom_free(g, it_atom);
 
     let url_cls = make_host_class::<UrlData>("URL");
     let url = define_class(g, &ClassSpec {
@@ -469,5 +562,5 @@ pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class, crate:
     define(g, url.ctor, "createObjectURL", n16("createObjectURL"), 2);
     define(g, url.ctor, "revokeObjectURL", n16("revokeObjectURL"), 2);
 
-    (url_cls, url, usp_cls, usp)
+    (url_cls, url, usp_cls, usp, usp_iter_cls, usp_iter_proto)
 }

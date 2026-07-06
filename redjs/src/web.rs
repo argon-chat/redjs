@@ -65,6 +65,8 @@ pub fn now_ms() -> f64 {
 
 struct Timer {
     cb: u64,
+    /// Extra `setTimeout(cb, ms, ...args)` arguments (each protected).
+    args: Vec<u64>,
     next_fire: f64,
     interval: f64,
     repeating: bool,
@@ -203,13 +205,20 @@ unsafe fn timer_set(g: *mut c_void, cf: *mut c_void, repeating: bool) -> u64 {
     }
     let delay = dec_number(cf_arg(cf, 1)).unwrap_or(0.0).max(0.0);
     let interval = if repeating { delay.max(1.0) } else { delay };
+    // Spec: arguments after the delay are passed to the callback on every fire.
+    let args: Vec<u64> = (2..cf_argc(cf)).map(|i| cf_arg(cf, i)).collect();
     capi::JSValueProtect(g, cb as usize as capi::JSValueRef);
+    for &a in &args {
+        if is_cell(a) {
+            capi::JSValueProtect(g, a as usize as capi::JSValueRef);
+        }
+    }
     let now = now_ms();
     let mut reg = registry().lock().unwrap();
     let s = reg.entry(g as usize).or_default();
     s.timer_next_id += 1;
     let id = s.timer_next_id;
-    s.timers.insert(id, Timer { cb, next_fire: now + delay, interval, repeating });
+    s.timers.insert(id, Timer { cb, args, next_fire: now + delay, interval, repeating });
     enc_int32(id as i32)
 }
 
@@ -272,10 +281,19 @@ unsafe extern "sysv64" fn timer_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
             s.timers.remove(&(id as u32))
         };
         if let Some(t) = removed {
-            capi::JSValueUnprotect(g, t.cb as usize as capi::JSValueRef);
+            unprotect_timer(g, &t);
         }
     }
     ENC_UNDEFINED
+}
+
+unsafe fn unprotect_timer(g: *mut c_void, t: &Timer) {
+    capi::JSValueUnprotect(g, t.cb as usize as capi::JSValueRef);
+    for &a in &t.args {
+        if is_cell(a) {
+            capi::JSValueUnprotect(g, a as usize as capi::JSValueRef);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,30 +408,30 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
 
         // Snapshot due timers (entries stay in the map so a mid-drain clear
         // by an earlier callback is honored), then fire without the lock.
-        let due: Vec<(u32, u64, f64, bool, f64)> = {
+        let due: Vec<(u32, u64, Vec<u64>, f64, bool, f64)> = {
             let mut reg = registry().lock().unwrap();
             let s = reg.entry(key).or_default();
             let mut due: Vec<_> = s
                 .timers
                 .iter()
                 .filter(|(_, t)| now >= t.next_fire)
-                .map(|(id, t)| (*id, t.cb, t.interval, t.repeating, t.next_fire))
+                .map(|(id, t)| (*id, t.cb, t.args.clone(), t.interval, t.repeating, t.next_fire))
                 .collect();
             // Browser ordering: earliest deadline first, registration order ties.
-            due.sort_by(|a, b| a.4.total_cmp(&b.4).then(a.0.cmp(&b.0)));
+            due.sort_by(|a, b| a.5.total_cmp(&b.5).then(a.0.cmp(&b.0)));
             due
         };
 
-        for (id, cb, interval, repeating, _deadline) in due {
+        for (id, cb, args, interval, repeating, _deadline) in due {
             // Skip if a callback earlier in this drain cleared it.
             let still_there = registry().lock().unwrap().entry(key).or_default().timers.contains_key(&id);
             if !still_there {
                 continue;
             }
-            fire(g, cb, &[]);
+            fire(g, cb, &args);
             timers_fired += 1;
 
-            let unprotect = {
+            let removed = {
                 let mut reg = registry().lock().unwrap();
                 let s = reg.entry(key).or_default();
                 if repeating {
@@ -421,13 +439,13 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
                     if let Some(t) = s.timers.get_mut(&id) {
                         t.next_fire = now + interval;
                     }
-                    false
+                    None
                 } else {
-                    s.timers.remove(&id).is_some()
+                    s.timers.remove(&id)
                 }
             };
-            if unprotect {
-                capi::JSValueUnprotect(g, cb as usize as capi::JSValueRef);
+            if let Some(t) = removed {
+                unprotect_timer(g, &t);
             }
         }
     }

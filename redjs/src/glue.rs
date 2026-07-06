@@ -45,6 +45,8 @@ extern "C" {
     /// Private-name atom: properties keyed by it are invisible to all JS —
     /// internal slots for native classes.
     pub fn rjs_atom_private(g: *mut c_void, p: *const u8, len: usize) -> *mut c_void;
+    /// The well-known `Symbol.iterator` as an atom (iteration protocol).
+    pub fn rjs_atom_iterator(g: *mut c_void) -> *mut c_void;
     pub fn rjs_atom_free(g: *mut c_void, atom: *mut c_void);
 
     pub fn rjs_get(g: *mut c_void, base: u64, atom: *mut c_void, out: *mut u64) -> i32;

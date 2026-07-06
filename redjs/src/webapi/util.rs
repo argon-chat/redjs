@@ -287,7 +287,7 @@ pub struct Class {
     pub proto: u64,
 }
 
-unsafe fn make_fn(g: *mut c_void, name: &str, arity: u32, f: HostFn) -> u64 {
+pub unsafe fn make_fn(g: *mut c_void, name: &str, arity: u32, f: HostFn) -> u64 {
     let n16: Vec<u16> = name.encode_utf16().collect();
     let mut out = UNDEF;
     glue::rjs_function_create(g, n16.as_ptr(), n16.len(), arity, f as *const c_void, &mut out);
@@ -410,6 +410,7 @@ pub struct WebState {
     pub s_event: *mut c_void,     // Event [[state]] → plain JS object
     pub s_image: *mut c_void,     // HTMLImageElement [[bitmap]] → ImageBitmap host obj
     pub s_usp: *mut c_void,       // URL [[searchParams]] cache
+    pub s_iter_target: *mut c_void, // iterator [[target]] → iterated host obj
 
     // Common public atoms (hot in dispatch).
     pub a_type: *mut c_void,
@@ -427,6 +428,8 @@ pub struct WebState {
     pub url: Class,
     pub usp_class: capi::JSClassRef,
     pub usp: Class,
+    pub usp_iter_class: capi::JSClassRef,
+    pub usp_iter_proto: u64,
     pub bitmap_class: capi::JSClassRef,
     pub bitmap: Class,
     pub image: Class,

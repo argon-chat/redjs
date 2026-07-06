@@ -166,6 +166,15 @@ namespace RedJs.Native
         internal static extern void* redjs_atom8(void* ctx, byte* p, nuint len);
 
         /// <summary>
+        ///  A PRIVATE-name atom: properties keyed by it are invisible to all of JS
+        ///  (not even getOwnPropertySymbols) — internal slots for host classes.
+        ///  Each call mints a DISTINCT symbol even for the same name: create once,
+        ///  cache on the host side, reuse.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_atom_private", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void* redjs_atom_private(void* ctx, byte* p, nuint len);
+
+        /// <summary>
         ///  Frees an atom of this context's VM. Must not outlive the VM (typically
         ///  atoms just live forever). Requires the context: the atom-table removal
         ///  must run under the VM's lock.

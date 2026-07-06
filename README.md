@@ -201,7 +201,7 @@ hacks, no JS megashim:
 | `Event` / `CustomEvent` / `EventTarget` | WHATWG dispatch: once, duplicate suppression, `handleEvent` objects, `stopImmediatePropagation`, cancelable/`preventDefault`, on-`type` handler props, listener snapshotting |
 | `TextEncoder` / `TextDecoder` | UTF-8; wrong labels throw RangeError per spec |
 | `Blob` | Arc-shared bytes — spec `slice()` is zero-copy; promise `arrayBuffer/bytes/text` |
-| `URL` / `URLSearchParams` | backed by the `url` crate (rust-url = the reference WHATWG implementation); searchParams↔href live sync |
+| `URL` / `URLSearchParams` | backed by the `url` crate (rust-url = the reference WHATWG implementation); searchParams↔href live sync; full iteration protocol (`entries/keys/values/forEach/[Symbol.iterator]`, live-list semantics) |
 | `fetch` / `Response` / `Headers` | local files (scripts→assets root resolution) + `data:` URIs; http(s) → network-error response |
 | `ImageBitmap` / `HTMLImageElement` / `Image` / `createImageBitmap` | decode via the `image` crate (png/jpeg/webp/bmp/gif); `img.src` loads async on the pump tick and fires `load`/`error`; region-crop overload for sprite atlases |
 | `document` / `window` | EventTarget-backed; `window === globalThis` (proxy-normalized) |
@@ -237,7 +237,7 @@ OffscreenCanvas-2D (over native pixels), silent Web Audio, BroadcastChannel.
 | `V8ScriptEngine(…flags…)` | `redjs_init(options)` + `redjs_context_create` |
 | `engine.Execute(name, code)` | `redjs_eval16(src, url)` — url shows in JS stacks |
 | `AddHostObject("navigator", obj)` (reflection binding) | `redjs_hostclass_create` + `redjs_hostobject_create` + prototype of `redjs_function_create` methods, `redjs_define` on global |
-| `setTimeout/setInterval` + `TimerScheduler` (C#, stopwatch clock) | native, built into redjs — `redjs_web_install` + `redjs_pump` |
+| `setTimeout/setInterval` + `TimerScheduler` (C#, stopwatch clock) | native, built into redjs — `redjs_web_install` + `redjs_pump`; spec extra args (`setTimeout(cb, ms, ...args)`) |
 | `requestAnimationFrame` + `AnimationFrameScheduler` (ScriptObject marshaling) | native rAF in redjs; registration ≈ 2 ns, fired by the pump |
 | `AddPerformanceObject` + `Execute("performance = Performance")` (own clock!) | native `performance.now()` on THE shared clock |
 | `GlobalFunctions.NowTime()` stopwatch (third clock) | `redjs_now()` / `JsContext.Now` — same clock as JS |

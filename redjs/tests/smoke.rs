@@ -284,6 +284,24 @@ fn webapi_encoding_url_blob(ctx: &Context) {
         "type"
     );
 
+    // URLSearchParams iteration protocol: for..of (= entries), keys/values,
+    // spread, live-list semantics (mutations during iteration are observed),
+    // and the iterator being its own [Symbol.iterator].
+    let v = ctx
+        .eval(
+            "(() => { const p = new URLSearchParams('a=1&b=2&c=3'); \
+             const forOf = [...p].map(kv => kv.join(':')).join(); \
+             const keys = [...p.keys()].join(); \
+             const values = [...p.values()].join(); \
+             const it = p.entries(); it.next(); p.delete('b'); \
+             const afterMutate = [...it].map(kv => kv.join(':')).join(); \
+             const it2 = p.entries(); \
+             const selfIter = it2[Symbol.iterator]() === it2 ? 'self' : 'x'; \
+             return [forOf, keys, values, afterMutate, selfIter].join('|'); })()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "a:1,b:2,c:3|a,b,c|1,2,3|c:3|self");
+
     // Blob: parts, size/type, slice (negative indices), text/arrayBuffer.
     ctx.eval(
         "globalThis.blobDone = null; \
@@ -460,6 +478,22 @@ fn web_scheduler(ctx: &Context) {
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
         assert_eq!(stats.timers_active, 0, "interval cleared itself");
         assert_eq!(stats.next_timer_deadline, -1.0);
+
+        // Extra setTimeout/setInterval arguments are passed to the callback on
+        // every fire (spec), including object values (kept alive by the timer).
+        ctx.eval(
+            "globalThis.targs = []; \
+             setTimeout((a, b, c) => targs.push(a, b.k, c), 0, 7, { k: 'obj' }, 'str'); \
+             globalThis.iv2 = setInterval(n => { targs.push(n); if (targs.length >= 5) clearInterval(iv2); }, 1, 'i');",
+        )
+        .unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        let targs = ctx.to_rust_string(ctx.eval("targs.join()").unwrap()).unwrap();
+        assert_eq!(targs, "7,obj,str,i,i", "timer extra args (got: {targs})");
 
         // Microtasks drain as part of the pump (async work driven per frame).
         ctx.eval("globalThis.mt = 0; requestAnimationFrame(async () => { await Promise.resolve(); mt = 42; });").unwrap();
