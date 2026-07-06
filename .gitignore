@@ -1,0 +1,9 @@
+# Bun WebKit prebuilt (fetched by setup.ps1, ~1.1 GB)
+prebuilt/
+
+# Built artifacts (produced by build.ps1; consumers link these)
+runtimes/
+lib/
+
+# Rust build output
+redjs/target/

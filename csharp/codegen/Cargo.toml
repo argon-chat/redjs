@@ -1,0 +1,11 @@
+[package]
+name = "redjs_csharp_codegen"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+description = "Generates C# DllImport bindings (NativeMethods.g.cs) from the redjs ffi.rs via csbindgen. Codegen-only crate: cargo build here never compiles redjs itself."
+
+[workspace]
+
+[build-dependencies]
+csbindgen = "1"

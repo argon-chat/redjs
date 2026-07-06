@@ -1,0 +1,21 @@
+[package]
+name = "redjs"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+description = "Full-control Rust embedding layer over Bun's JavaScriptCore prebuilt (Windows). C ABI designed for zero-alloc C# (NativeAOT) codegen bindings."
+
+# Standalone crate on purpose (own lockfile, no repo workspace): the webkit link
+# requirements must not leak into other Rust crates in the monorepo.
+[workspace]
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

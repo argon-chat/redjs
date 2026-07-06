@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>RedJs</AssemblyName>
+    <RootNamespace>RedJs</RootNamespace>
+    <Description>Zero-alloc JavaScriptCore (bun-webkit) bindings for the RedPew player. Generated NativeMethods (csbindgen) + hand-written JsValue/JsContext/JsCallFrame layer.</Description>
+  </PropertyGroup>
+
+  <!-- Native packaging — same contract as Miniaudio.csproj:
+       (1) no RedJsRid: ship the whole runtimes/ tree (local builds, packing);
+       (2) RedJsRid + JIT publish: only that RID's dll, flattened next to the exe;
+       (3) RedJsRid + PublishAot: nothing — the AOT root static-links
+           lib/win-x64/redjs.lib + the WebKit libs (see packages/jscore/README.md). -->
+  <ItemGroup Condition="'$(RedJsRid)' == ''">
+    <None Include="$(MSBuildThisFileDirectory)..\..\runtimes\**\*.*"
+          Pack="true" PackagePath="runtimes\"
+          CopyToOutputDirectory="PreserveNewest">
+      <Link>runtimes\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RedJsRid)' != '' and '$(PublishAot)' != 'true'">
+    <None Include="$(MSBuildThisFileDirectory)..\..\runtimes\$(RedJsRid)\native\*.*"
+          CopyToOutputDirectory="PreserveNewest">
+      <Link>%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RedJsRid)' != '' and '$(PublishAot)' == 'true'">
+    <!-- intentionally empty: the AOT root provides the static archives -->
+  </ItemGroup>
+
+</Project>
