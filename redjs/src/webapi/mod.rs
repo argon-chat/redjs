@@ -12,6 +12,7 @@
 //! Install order: `web::install` (timers/rAF/performance) must come first —
 //! image loading and bootstrap use the scheduler.
 
+pub mod audio;
 pub mod blob;
 pub mod clone;
 pub mod crypto;
@@ -150,6 +151,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
 
     crypto::install(g);
     clone::install(g);
+    audio::install(g);
 
     // The dumb-stub remainder.
     let mut out = 0u64;

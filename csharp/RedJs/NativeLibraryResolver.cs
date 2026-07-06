@@ -6,7 +6,7 @@ namespace RedJs.Native;
 
 // Maps the DllImport name "redjs" to runtimes/{rid}/native/redjs.dll next to
 // the app (JIT/debug path). Under NativeAOT the DirectPInvoke static link
-// bypasses this entirely. Mirrors Miniaudio's resolver.
+// bypasses this entirely.
 internal static class NativeLibraryResolver
 {
     private const string LibName = "redjs";

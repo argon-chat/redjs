@@ -498,6 +498,12 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         }
     }
 
+    if flags & PUMP_TIMERS != 0 {
+        // Web Audio upkeep: firewheel graph update, AudioParam timelines,
+        // scheduled starts/stops, `onended` dispatch.
+        crate::webapi::audio::pump(g);
+    }
+
     if flags & PUMP_MICROTASKS != 0 {
         glue::rjs_drain_microtasks(g);
     }

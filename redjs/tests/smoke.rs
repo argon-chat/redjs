@@ -57,8 +57,119 @@ fn conformance() {
     webapi_fetch_images_dom(&ctx);
     sec("webapi_platform");
     webapi_platform(&ctx);
+    sec("webapi_audio");
+    webapi_audio(&ctx);
 
     println!("redjs conformance: all sections passed");
+}
+
+/// Web Audio over Firewheel: graph construction, params + automation,
+/// buffers, decodeAudioData. Headless-safe: if no audio device exists the
+/// stream just doesn't run — the graph/param/buffer API still must work.
+fn webapi_audio(ctx: &Context) {
+    unsafe {
+        // Classes + graph + params (no device required).
+        let v = ctx
+            .eval(
+                "(() => { const ac = new AudioContext(); \
+                 const gain = ac.createGain(); const pan = ac.createStereoPanner(); \
+                 const src = ac.createBufferSource(); \
+                 src.connect(gain); gain.connect(pan); pan.connect(ac.destination); \
+                 gain.gain.value = 0.5; pan.pan.value = -1; \
+                 const sameParam = gain.gain === gain.gain; \
+                 globalThis.ac = ac; globalThis.gain = gain; globalThis.src = src; \
+                 return [ac instanceof AudioContext, gain instanceof GainNode, gain instanceof AudioNode, \
+                         typeof ac.currentTime, ac.state, sameParam, \
+                         Math.round(gain.gain.value * 100) / 100, pan.pan.value].join('|'); })()",
+            )
+            .unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "true|true|true|number|running|true|0.5|-1");
+
+        // createBuffer + copyToChannel/getChannelData round trip.
+        let v = ctx
+            .eval(
+                "(() => { const b = ac.createBuffer(2, 4, 48000); \
+                 b.copyToChannel(new Float32Array([1, 2, 3, 4]), 1); \
+                 const d = b.getChannelData(1); \
+                 return [b.numberOfChannels, b.length, b.sampleRate, b.duration > 0, Array.from(d).join()].join('|'); })()",
+            )
+            .unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "2|4|48000|true|1,2,3,4");
+
+        // Source start/stop + automation scheduling APIs accept spec shapes.
+        ctx.eval(
+            "src.buffer = ac.createBuffer(1, 480, 48000); src.loop = false; \
+             src.onended = () => { globalThis.endedFired = true; }; \
+             src.playbackRate.setValueAtTime(1.5, 0); \
+             gain.gain.setValueAtTime(0.5, 0); \
+             gain.gain.linearRampToValueAtTime(0, ac.currentTime + 0.01); \
+             gain.gain.setTargetAtTime(1, ac.currentTime + 0.02, 0.005); \
+             gain.gain.cancelScheduledValues(ac.currentTime + 0.02); \
+             src.start(); src.stop();",
+        )
+        .unwrap();
+        let mut stats = redjs::ffi::RjsPumpStats::default();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+
+        // decodeAudioData: 16-bit PCM WAV (8 frames stereo) → AudioBuffer.
+        let mut wav: Vec<u8> = Vec::new();
+        let (ch, rate, frames) = (2u16, 8000u32, 8u32);
+        let data_len = frames * ch as u32 * 2;
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&ch.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * ch as u32 * 2).to_le_bytes());
+        wav.extend_from_slice(&(ch * 2).to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for i in 0..(frames * ch as u32) {
+            wav.extend_from_slice(&((i as i16) * 1000).to_le_bytes());
+        }
+        let hex: String = wav.iter().map(|b| format!("{b:02x}")).collect();
+        ctx.eval(&format!(
+            "globalThis.decoded = null; globalThis.decodeErr = null; \
+             const bytes = new Uint8Array('{hex}'.match(/../g).map(h => parseInt(h, 16))); \
+             ac.decodeAudioData(bytes.buffer).then(b => decoded = b, e => decodeErr = String(e));"
+        ))
+        .unwrap();
+        // decode runs as a pump-native task; resolution lands via microtasks.
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        let v = ctx
+            .eval(
+                "decodeErr ? 'err:' + decodeErr : \
+                 [decoded instanceof AudioBuffer, decoded.numberOfChannels, decoded.length > 0, decoded.getChannelData(0).length === decoded.length].join('|')",
+            )
+            .unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "true|2|true|true");
+
+        // Spatial + listener + biquad + analyser surface.
+        let v = ctx
+            .eval(
+                "(() => { const p = ac.createPanner(); \
+                 p.positionX.setValueAtTime(3, 0); p.positionY.value = 4; \
+                 ac.listener.positionX.value = 1; \
+                 const f = ac.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 800; f.Q.value = 2; \
+                 const an = ac.createAnalyser(); const arr = new Uint8Array(an.frequencyBinCount); an.getByteFrequencyData(arr); \
+                 return [p instanceof PannerNode, f.type, Math.round(f.frequency.value), an.fftSize, arr.length].join('|'); })()",
+            )
+            .unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "true|highpass|800|2048|1024");
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+
+        // suspend/resume/close lifecycle.
+        ctx.eval("globalThis.stTrail = []; ac.suspend().then(() => stTrail.push(ac.state));").unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        ctx.eval("ac.resume().then(() => stTrail.push(ac.state));").unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        let v = ctx.eval("stTrail.join()").unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "suspended,running");
+    }
 }
 
 /// crypto / structuredClone / Element hierarchy / matchMedia /

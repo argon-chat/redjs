@@ -11,7 +11,7 @@
     <Description>Zero-alloc JavaScriptCore (bun-webkit) bindings for the RedPew player. Generated NativeMethods (csbindgen) + hand-written JsValue/JsContext/JsCallFrame layer.</Description>
   </PropertyGroup>
 
-  <!-- Native packaging — same contract as Miniaudio.csproj:
+  <!-- Native packaging — native-lib packaging contract:
        (1) no RedJsRid: ship the whole runtimes/ tree (local builds, packing);
        (2) RedJsRid + JIT publish: only that RID's dll, flattened next to the exe;
        (3) RedJsRid + PublishAot: nothing — the AOT root static-links

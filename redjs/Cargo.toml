@@ -19,7 +19,11 @@ url = "2"
 getrandom = "0.3"
 zstd-sys = { version = "2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
-firewheel = { version = "0.10", features = ["spatial_basic_node"] }
+# Audio: the native Web Audio implementation (webapi/audio.rs) maps the
+# WebAudio node graph onto Firewheel's; symphonium (the same decoder firewheel
+# uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the game formats.
+firewheel = { version = "0.10", features = ["spatial_basic_node", "svf_node"] }
+symphonium = { version = "0.7", default-features = false, features = ["resampler", "wav", "pcm", "flac", "mp3", "ogg", "vorbis"] }
 
 [build-dependencies]
 cc = "1"
