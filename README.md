@@ -21,11 +21,20 @@ packages/jscore/
 │  ├─ cpp/glue.cpp            #   JSC internal-API layer (extern "C" rjs_*)
 │  ├─ cpp/compat/wtf/…        #   header missing from the prebuilt archive
 │  ├─ src/ffi.rs              #   ★ the exported redjs_* C ABI (csbindgen input)
-│  ├─ src/glue.rs             #   raw externs + repr(C) structs (csbindgen input)
 │  ├─ src/api.rs              #   safe Rust API (Context/Value/HostArgs)
 │  ├─ src/trampoline.rs       #   SysV→MS host-fn trampoline pool (the C# entry)
 │  ├─ src/capi.rs             #   JSC C-API subset used internally
 │  └─ tests/smoke.rs          #   ★ conformance suite = the ABI contract, 14 sections
+├─ csharp/
+│  ├─ codegen/                # cargo build → regenerates NativeMethods.g.cs (csbindgen)
+│  ├─ RedJs/                  # ★ the C# binding library (net10.0)
+│  │  ├─ NativeMethods.g.cs   #   generated DllImports (61) + structs
+│  │  ├─ JsAbi.cs             #   NaN-box + CallFrame consts (verified vs native at init)
+│  │  ├─ JsValue.cs           #   zero-FFI value encode/decode (readonly struct ulong)
+│  │  ├─ JsCallFrame.cs       #   zero-FFI host-call args (ref struct over the frame)
+│  │  ├─ JsContext.cs         #   the ClearScript-replacement surface
+│  │  └─ NativeLibraryResolver.cs
+│  └─ RedJs.Smoke/            # ★ C# conformance smoke (50 checks) — JIT and AOT
 ├─ runtimes/win-x64/native/redjs.dll   # built: self-contained, for JIT/debug DllImport
 └─ lib/win-x64/redjs.lib               # built: THIN static lib for NativeAOT
 ```
@@ -35,10 +44,21 @@ packages/jscore/
 ```powershell
 ./setup.ps1          # once: fetch prebuilt (or -Tarball path\to\bun-webkit-windows-amd64.tar.gz)
 ./build.ps1 -Test    # build + run the 14-section conformance suite
+
+cd csharp/RedJs.Smoke
+dotnet run -c Release                                          # C# smoke, JIT via redjs.dll
+dotnet publish -r win-x64 -c Release -p:PublishAot=true -p:RedJsRid=win-x64
+./bin/Release/net10.0/win-x64/native/RedJs.Smoke.exe           # C# smoke, static-linked AOT
 ```
 
 Requires stable Rust and `clang-cl` (LLVM) on PATH. Everything is verified on
 this exact pinned prebuilt: `autobuild-c9ad5813fd23bd8b98b0738abc3d037ec716aa92`.
+
+**Measured js→C# host-call boundary** (2M-call hot loop, arg decode + result
+encode included): **8.9 ns/call NativeAOT**, 11.2 ns/call Release JIT. The
+~7 ns over the raw Rust trampoline (2.2 ns) is .NET's reverse-P/Invoke
+transition — already at parity with V8's raw C++ boundary, versus the ~µs-class
+ClearScript marshaling this replaces.
 
 ## Design
 
@@ -186,15 +206,25 @@ NativeAOT — in the AOT root csproj (RedPew.Player.csproj):
   <NativeLibrary Include="$(JscoreDir)prebuilt\bun-webkit\lib\sicudt.lib" />
   <NativeLibrary Include="$(JscoreDir)prebuilt\bun-webkit\lib\sicuin.lib" />
   <NativeLibrary Include="$(JscoreDir)prebuilt\bun-webkit\lib\sicuuc.lib" />
-  <!-- system libs beyond ILC defaults -->
-  <LinkerArg Include="shlwapi.lib winmm.lib dbghelp.lib usp10.lib synchronization.lib" />
+  <!-- system libs beyond ILC defaults (verified list — RedJs.Smoke.csproj) -->
+  <LinkerArg Include="shell32.lib" />
+  <LinkerArg Include="ole32.lib" />
+  <LinkerArg Include="oleaut32.lib" />
+  <LinkerArg Include="shlwapi.lib" />
+  <LinkerArg Include="winmm.lib" />
+  <LinkerArg Include="dbghelp.lib" />
+  <LinkerArg Include="usp10.lib" />
+  <LinkerArg Include="synchronization.lib" />
+  <LinkerArg Include="userenv.lib" />
+  <LinkerArg Include="ws2_32.lib" />
+  <LinkerArg Include="rpcrt4.lib" />
+  <LinkerArg Include="crypt32.lib" />
 </ItemGroup>
 ```
 
-(Exact system-lib tail may need trimming/extending on unresolved externals;
-the full list redjs links is in `redjs/build.rs`. WebKit libs are `/MT` —
-NativeAOT's static-CRT link is compatible; the DLL path already proves the
-mixed-CRT case runs.)
+This exact wiring is proven by `csharp/RedJs.Smoke` (publishes and passes all
+50 checks as a 42 MB standalone exe — JSC statically linked, no dll shipped).
+WebKit libs are `/MT`; NativeAOT's link accepts the mix (both smoke paths run).
 
 ## C# codegen plan (next step)
 

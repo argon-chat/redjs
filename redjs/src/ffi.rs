@@ -1,5 +1,5 @@
 //! The exported `redjs_*` C ABI — the single surface the C# (NativeAOT)
-//! bindings are generated from (csbindgen reads this file + src/glue.rs).
+//! bindings are generated from (csbindgen reads exactly this file).
 //!
 //! Conventions:
 //! - `ctx` is the value returned by [`redjs_context_create`] (a
