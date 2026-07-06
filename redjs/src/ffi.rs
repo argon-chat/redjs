@@ -145,6 +145,18 @@ pub struct RjsPumpStats {
 /// Idempotent; must be called before the first context on options use.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_init(options: *const c_char) -> i32 {
+    // ── AOT ICU anchor ──────────────────────────────────────────────────
+    // The bun-webkit ICU is repacked: brkitr / display-name items are zstd
+    // frames, and the patched udata.cpp calls our `bun_icu_maybe_decompress`
+    // hook (icu.rs) only through a WEAK reference. In the cdylib (redjs.dll,
+    // JIT path) every object is kept so the strong hook wins. But the thin
+    // `-bundle` staticlib pulls an archive member only on a STRONG reference,
+    // and nothing strongly references the hook → icu.o is dropped from the
+    // NativeAOT image → the weak-null default leaves compressed items raw →
+    // text layout (BreakIterator) reads garbage and JSC fastfails. Touching
+    // the symbol here (redjs_init is DirectPInvoke'd, always in the image)
+    // forces icu.o into the static-link closure. See packages/jscore/README.
+    core::hint::black_box(crate::icu::bun_icu_maybe_decompress as *const ());
     glue::rjs_init(options)
 }
 
@@ -753,12 +765,20 @@ pub unsafe extern "C" fn redjs_hostobject_create(
 /// not a host object). The single FFI call in a wrapper method dispatch.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_hostobject_data(v: u64) -> *mut c_void {
+    // Immediates (null/undefined/numbers) must never reach JSObjectGetPrivate
+    // — it derefs the value as a cell pointer.
+    if v == 0 || (v & (0xfffe_0000_0000_0000u64 | 0x2)) != 0 {
+        return core::ptr::null_mut();
+    }
     capi::JSObjectGetPrivate(v as usize as capi::JSObjectRef)
 }
 
 /// Replaces the private data pointer (0 allowed). Returns 1 on success.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_hostobject_set_data(v: u64, data: *mut c_void) -> i32 {
+    if v == 0 || (v & (0xfffe_0000_0000_0000u64 | 0x2)) != 0 {
+        return 0;
+    }
     capi::JSObjectSetPrivate(v as usize as capi::JSObjectRef, data) as i32
 }
 
@@ -895,4 +915,27 @@ pub unsafe extern "C" fn redjs_image_pixels(
         }
         None => REDJS_BAD_ARG,
     }
+}
+
+/// Defines a spec accessor property on `obj`. `getter`/`setter` are function
+/// values (or undefined for one-sided accessors). attrs as in redjs_define.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_define_accessor(
+    ctx: *mut c_void,
+    obj: u64,
+    atom: *mut c_void,
+    getter: u64,
+    setter: u64,
+    attrs: u32,
+) -> i32 {
+    glue::rjs_define_accessor(ctx, obj, atom, getter, setter, attrs)
+}
+
+/// Aggressive memory release for level transitions / minimized window:
+/// two full sync GCs (second pass sweeps finalizer-freed externals) followed
+/// by returning free heap pages to the OS. Expect a frame-time spike — call
+/// on loading screens, not mid-gameplay.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_release_memory(ctx: *mut c_void) {
+    glue::rjs_release_memory(ctx)
 }

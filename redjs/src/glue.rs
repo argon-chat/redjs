@@ -24,6 +24,8 @@ extern "C" {
     pub fn rjs_gc(g: *mut c_void, mode: i32);
     pub fn rjs_heap_stats(g: *mut c_void, out: *mut RjsHeapStats);
     pub fn rjs_report_extra_memory(g: *mut c_void, bytes: u64);
+    /// Full GC ×2 + release free malloc pages to the OS (bmalloc scavenge).
+    pub fn rjs_release_memory(g: *mut c_void);
 
     pub fn rjs_eval16(g: *mut c_void, src: *const u16, len: usize, url: *const u16, url_len: usize, out: *mut u64) -> i32;
     pub fn rjs_eval8(g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize, out: *mut u64) -> i32;

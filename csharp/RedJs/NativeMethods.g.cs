@@ -474,6 +474,22 @@ namespace RedJs.Native
         [DllImport(__DllName, EntryPoint = "redjs_image_pixels", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern int redjs_image_pixels(void* ctx, ulong v, byte** out_ptr, nuint* out_byte_len, uint* out_width, uint* out_height);
 
+        /// <summary>
+        ///  Defines a spec accessor property on `obj`. `getter`/`setter` are function
+        ///  values (or undefined for one-sided accessors). attrs as in redjs_define.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_define_accessor", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_define_accessor(void* ctx, ulong obj, void* atom, ulong getter, ulong setter, uint attrs);
+
+        /// <summary>
+        ///  Aggressive memory release for level transitions / minimized window:
+        ///  two full sync GCs (second pass sweeps finalizer-freed externals) followed
+        ///  by returning free heap pages to the OS. Expect a frame-time spike — call
+        ///  on loading screens, not mid-gameplay.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_release_memory", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_release_memory(void* ctx);
+
 
     }
 

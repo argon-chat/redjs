@@ -21,6 +21,7 @@
 #include <JavaScriptCore/JavaScript.h>
 #include <JavaScriptCore/APICast.h>
 #include <JavaScriptCore/CallData.h>
+#include <JavaScriptCore/DeferredWorkTimer.h>
 #include <JavaScriptCore/Completion.h>
 #include <JavaScriptCore/Error.h>
 #include <JavaScriptCore/ExceptionHelpers.h>
@@ -181,8 +182,22 @@ extern "C" void rjs_layout(RjsLayout* out)
 // Init / lifecycle
 // ---------------------------------------------------------------------------
 
+// The bun-webkit static ICU expects the common data to be handed over
+// explicitly (u_init otherwise fails with U_FILE_ACCESS_ERROR and every
+// Intl/toLocale* API breaks). Same wiring Bun does at startup.
+extern "C" const char icudt73_dat[];
+extern "C" void udata_setCommonData_73(const void* data, int32_t* err);
+
 extern "C" int32_t rjs_init(const char* options)
 {
+    static bool icuReady = false;
+    if (!icuReady) {
+        icuReady = true;
+        int32_t err = 0;
+        udata_setCommonData_73(icudt73_dat, &err);
+        if (err > 0)
+            fprintf(stderr, "[redjs] udata_setCommonData failed: %d\n", err);
+    }
     JSC::initialize();
     if (options && *options) {
         if (!Options::setOptions(options))
@@ -217,6 +232,12 @@ extern "C" void rjs_drain_microtasks(void* g)
 {
     VM& vm = G(g)->vm();
     JSLockHolder lock(vm);
+    // Async engine work (WebAssembly.instantiate compilation, Atomics.waitAsync
+    // …) resolves its promises through the VM's DeferredWorkTimer, which is
+    // normally serviced by a host run loop we don't run — pump it here so
+    // those promises settle on the frame tick, then drain the microtasks it
+    // queued.
+    vm.deferredWorkTimer->doWork(vm);
     vm.drainMicrotasks();
 }
 
@@ -932,4 +953,22 @@ extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
     }
     *out = JSValue::encode(JSValue(arr));
     return RJS_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Memory release (level transitions / background): full GC + return free
+// malloc pages to the OS (bmalloc scavenge).
+// ---------------------------------------------------------------------------
+
+#include <wtf/FastMalloc.h>
+
+extern "C" void rjs_release_memory(void* g)
+{
+    VM& vm = G(g)->vm();
+    {
+        JSLockHolder lock(vm);
+        vm.heap.collectNow(Sync, CollectionScope::Full);
+        vm.heap.collectNow(Sync, CollectionScope::Full); // finalize weaks/finalizers freed by pass 1
+    }
+    WTF::releaseFastMallocFreeMemory();
 }

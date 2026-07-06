@@ -340,10 +340,17 @@ Same pipeline as miniaudio (`csharp/codegen` with csbindgen), but richer:
 - **No module loader / dynamic `import()`** (classic scripts only) and **no
   remote inspector** yet — both need a custom `JSGlobalObject`/method-table
   layer (v2).
-- **Memory**: JSC commits ~162 MB private (28 MB resident) per VM on Windows —
-  commit charge, not RAM; env-level options didn't shrink it (measured in
-  battle_test). `redjs_init` exposes the full options string if we want to
-  dig further; revisit only if commit charge actually matters.
+- **Memory (tuned, verdict: a non-problem)**: the ~162 MB private per VM is
+  **address-space RESERVATION** (JIT fixed-VM pool + gigacage + bmalloc
+  arenas), fixed at context creation and **unmoved by every runtime option**
+  (`forceMiniVMMode`, `jitMemoryReservationSize`, `useGigacage`, `forceRAMSize`,
+  JIT-tier toggles — all measured via a staged WS/private probe). Only
+  `useJIT=false` lowers it, which defeats the purpose. **Working set (real
+  RAM) is the honest number: ~12 MB at boot, ~22–24 MB after a GC even
+  post-heavy-workload.** bmalloc's scavenger returns free pages to the OS on
+  its own after ~4 s idle (48 → 22 MB WS observed); `redjs_release_memory`
+  (C# `JsContext.ReleaseMemory` — 2 full GCs + scavenge) forces it immediately
+  for loading screens / window-minimize (the player calls it on blur).
 - The internal-header dependency means **prebuilt bumps are a real upgrade
   task**: re-run `build.ps1 -Test`; the layout export + conformance suite are
   the tripwires. This is the same commitment Bun makes — it's the price of

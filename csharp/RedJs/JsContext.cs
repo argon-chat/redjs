@@ -175,6 +175,15 @@ public sealed unsafe class JsContext
     public void Define(JsValue obj, JsAtom name, JsValue v, uint attributes = 0)
         => Check(NativeMethods.redjs_define(_ctx, obj.Raw, (void*)name.Handle, v.Raw, attributes), 0, "define");
 
+    /// <summary>Defines a spec accessor property (getter/setter are function
+    /// values; pass default for one-sided accessors).</summary>
+    public void DefineAccessor(JsValue obj, string name, JsValue getter, JsValue setter = default, uint attributes = 2)
+    {
+        var g = getter.Raw == 0 ? JsValue.Undefined : getter;
+        var s = setter.Raw == 0 ? JsValue.Undefined : setter;
+        Check(NativeMethods.redjs_define_accessor(_ctx, obj.Raw, (void*)Atom(name).Handle, g.Raw, s.Raw, attributes), 0, "define_accessor");
+    }
+
     public void Define(JsValue obj, string name, JsValue v, uint attributes = 0)
         => Define(obj, Atom(name), v, attributes);
 
@@ -580,6 +589,13 @@ public sealed unsafe class JsContext
     }
 
     public void ReportExtraMemory(ulong bytes) => NativeMethods.redjs_report_extra_memory(_ctx, bytes);
+
+    /// <summary>Aggressive release: two full sync GCs + return free heap pages
+    /// to the OS (bmalloc scavenge). Causes a frame-time spike, so call it on
+    /// loading screens / level transitions / window-minimize, never mid-frame.
+    /// (bmalloc scavenges free pages on its own after ~4s idle; this just
+    /// forces it immediately.)</summary>
+    public void ReleaseMemory() => NativeMethods.redjs_release_memory(_ctx);
 
     /// <summary>Holds the VM API lock for a batch of calls (e.g. one frame) so
     /// every inner per-call lock is a free recursive acquire.</summary>
