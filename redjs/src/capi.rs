@@ -151,4 +151,6 @@ extern "C" {
     pub fn JSObjectGetPrivate(object: JSObjectRef) -> *mut c_void;
     pub fn JSObjectSetPrivate(object: JSObjectRef, data: *mut c_void) -> bool;
     pub fn JSObjectSetPrototype(ctx: JSContextRef, object: JSObjectRef, value: JSValueRef);
+    /// Brand check: is `value` an object created from `js_class`?
+    pub fn JSValueIsObjectOfClass(ctx: JSContextRef, value: JSValueRef, js_class: JSClassRef) -> bool;
 }

@@ -40,6 +40,9 @@ extern "C" {
 
     pub fn rjs_atom16(g: *mut c_void, p: *const u16, len: usize) -> *mut c_void;
     pub fn rjs_atom8(g: *mut c_void, p: *const u8, len: usize) -> *mut c_void;
+    /// Private-name atom: properties keyed by it are invisible to all JS —
+    /// internal slots for native classes.
+    pub fn rjs_atom_private(g: *mut c_void, p: *const u8, len: usize) -> *mut c_void;
     pub fn rjs_atom_free(g: *mut c_void, atom: *mut c_void);
 
     pub fn rjs_get(g: *mut c_void, base: u64, atom: *mut c_void, out: *mut u64) -> i32;
@@ -53,7 +56,14 @@ extern "C" {
     pub fn rjs_object_create(g: *mut c_void, proto: u64, out: *mut u64) -> i32;
     pub fn rjs_array_create(g: *mut c_void, len: u32, out: *mut u64) -> i32;
     pub fn rjs_array_length(g: *mut c_void, v: u64, out: *mut u32) -> i32;
+    /// Own enumerable string keys as a JS array of strings.
+    pub fn rjs_own_keys(g: *mut c_void, obj: u64, out: *mut u64) -> i32;
     pub fn rjs_function_create(g: *mut c_void, name: *const u16, name_len: usize, arity: u32, sysv_fn: *const c_void, out: *mut u64) -> i32;
+    /// Constructable function: `ctor_fn` runs for `new F()`. Inside it the
+    /// CallFrame's THIS slot holds new.target (JSC C++-constructor convention).
+    pub fn rjs_function_create_full(g: *mut c_void, name: *const u16, name_len: usize, arity: u32, call_fn: *const c_void, ctor_fn: *const c_void, out: *mut u64) -> i32;
+    /// Spec accessor property; getter/setter are function values or undefined.
+    pub fn rjs_define_accessor(g: *mut c_void, obj: u64, atom: *mut c_void, getter: u64, setter: u64, attrs: u32) -> i32;
     pub fn rjs_call(g: *mut c_void, f: u64, this_v: u64, args: *const u64, argc: u32, out: *mut u64) -> i32;
     pub fn rjs_construct(g: *mut c_void, ctor: u64, args: *const u64, argc: u32, out: *mut u64) -> i32;
 

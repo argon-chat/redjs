@@ -122,6 +122,20 @@ impl Default for RjsAbInfo {
     }
 }
 
+/// Result of one `redjs_pump`: what fired and what is still scheduled.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RjsPumpStats {
+    /// The pump's snapshot time (ms, same clock as performance.now()).
+    pub now: f64,
+    pub timers_fired: u32,
+    pub raf_fired: u32,
+    pub raf_pending: u32,
+    pub timers_active: u32,
+    /// -1 when no timers are scheduled.
+    pub next_timer_deadline: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Init / context / VM
 // ---------------------------------------------------------------------------
@@ -746,4 +760,139 @@ pub unsafe extern "C" fn redjs_hostobject_data(v: u64) -> *mut c_void {
 #[no_mangle]
 pub unsafe extern "C" fn redjs_hostobject_set_data(v: u64, data: *mut c_void) -> i32 {
     capi::JSObjectSetPrivate(v as usize as capi::JSObjectRef, data) as i32
+}
+
+// ---------------------------------------------------------------------------
+// Web scheduling core (performance / rAF / timers), pumped by the host
+// ---------------------------------------------------------------------------
+
+/// Installs NATIVE `performance` (now/timeOrigin), requestAnimationFrame /
+/// cancelAnimationFrame and setTimeout/setInterval/clearTimeout/clearInterval
+/// globals. All of them and `redjs_now` share one monotonic clock, so rAF
+/// timestamps, timer deadlines and performance.now() are a single time base.
+/// Idempotent per context (re-install replaces the globals, state persists).
+#[no_mangle]
+pub unsafe extern "C" fn redjs_web_install(ctx: *mut c_void) -> i32 {
+    crate::web::install(ctx)
+}
+
+/// Runs one frame of the web scheduler: due timers (flag 1), the rAF batch
+/// with the snapshot time as timestamp (flag 2), then the microtask queue
+/// (flag 4). Call once per render frame with flags=7. Callback exceptions go
+/// to the uncaught handler and never abort the pump. `stats` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_pump(ctx: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
+    crate::web::pump(ctx, flags, stats)
+}
+
+/// Milliseconds on the scheduler clock — the exact value JS sees from
+/// performance.now(). Use this on the host for unified frame timing.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_now() -> f64 {
+    crate::web::now_ms()
+}
+
+/// Process-global handler for exceptions thrown by pumped callbacks:
+/// `void f(ctx, exception_value)` (MS ABI). Called with the VM lock held —
+/// extract info (redjs_error_info), don't re-enter JS.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_set_uncaught_handler(handler: *const c_void) {
+    crate::web::set_uncaught(handler)
+}
+
+/// Installs the NATIVE Web-API layer (standards-shaped, defined through
+/// JSC's object model): Event/CustomEvent/EventTarget, TextEncoder/Decoder,
+/// Blob, URL/URLSearchParams, Headers/Response/fetch (local files + data:
+/// URIs), ImageBitmap/HTMLImageElement/Image/createImageBitmap,
+/// document/window ' plus a small JS remainder for dumb stubs (console fmt,
+/// atob/btoa, OffscreenCanvas-2D, silent Web Audio).
+///
+/// `scripts_root`/`assets_root` (UTF-16) are the fetch/Image URL resolution
+/// bases (bundle dir, assets dir). Call AFTER `redjs_web_install` (the
+/// scheduler drives async image loads). Idempotent per context.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_webshim_install(
+    ctx: *mut c_void,
+    scripts_root: *const u16,
+    scripts_len: usize,
+    assets_root: *const u16,
+    assets_len: usize,
+) -> i32 {
+    let scripts = if scripts_len == 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(core::slice::from_raw_parts(scripts_root, scripts_len))
+    };
+    let assets = if assets_len == 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(core::slice::from_raw_parts(assets_root, assets_len))
+    };
+    crate::webapi::install(ctx, &scripts, &assets)
+}
+
+// ---------------------------------------------------------------------------
+// DOM host hooks + image pixel access (native web API)
+// ---------------------------------------------------------------------------
+
+/// Updates window.innerWidth/innerHeight/devicePixelRatio and dispatches a
+/// trusted `resize` event on window. `dpr` <= 0 keeps the current value.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_dom_resize(ctx: *mut c_void, width: i32, height: i32, dpr: f64) {
+    crate::webapi::dom::resize(ctx, width, height, dpr)
+}
+
+/// Updates document.hidden/visibilityState and dispatches `visibilitychange`.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_dom_set_visibility(ctx: *mut c_void, hidden: i32) {
+    crate::webapi::dom::set_visibility(ctx, hidden != 0)
+}
+
+/// Fires DOMContentLoaded on document (readyState interactive→complete) and
+/// `load` on window. Call once after the entry script has been evaluated.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_dom_content_loaded(ctx: *mut c_void) {
+    crate::webapi::dom::dom_content_loaded(ctx)
+}
+
+/// Registers a value under `document.getElementById(id)` (the host canvas
+/// wrapper, etc). UTF-16 id.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_dom_register_element(ctx: *mut c_void, id: *const u16, id_len: usize, value: u64) {
+    let id = String::from_utf16_lossy(core::slice::from_raw_parts(id, id_len));
+    crate::webapi::dom::register_element(ctx, &id, value)
+}
+
+/// RGBA8 pixels of an ImageBitmap / loaded HTMLImageElement / ImageData —
+/// direct pointer into engine memory for zero-copy GPU upload
+/// (`copyExternalImageToTexture`). The pointer stays valid while the value is
+/// alive (protect during upload if it leaves the stack). Returns 2 when the
+/// value is not an image source.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_image_pixels(
+    ctx: *mut c_void,
+    v: u64,
+    out_ptr: *mut *const u8,
+    out_byte_len: *mut usize,
+    out_width: *mut u32,
+    out_height: *mut u32,
+) -> i32 {
+    let st = crate::webapi::util::state(ctx);
+    // ImageBitmap directly, else an HTMLImageElement's loaded bitmap.
+    let bmp = if let Some(b) = crate::webapi::util::host_data::<crate::webapi::image::BitmapData>(ctx, st.bitmap_class, v) {
+        Some(&*b)
+    } else {
+        let slot = crate::webapi::util::get_a(ctx, v, st.s_image);
+        crate::webapi::util::host_data::<crate::webapi::image::BitmapData>(ctx, st.bitmap_class, slot).map(|b| &*b)
+    };
+    match bmp {
+        Some(b) => {
+            *out_ptr = b.rgba.as_ptr();
+            *out_byte_len = b.rgba.len();
+            *out_width = b.width;
+            *out_height = b.height;
+            REDJS_OK
+        }
+        None => REDJS_BAD_ARG,
+    }
 }

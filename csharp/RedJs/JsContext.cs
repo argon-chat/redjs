@@ -464,6 +464,108 @@ public sealed unsafe class JsContext
     public static nint GetHostObjectData(JsValue v) => (nint)NativeMethods.redjs_hostobject_data(v.Raw);
 
     // ---------------------------------------------------------------------
+    // Web scheduling core (performance / rAF / timers)
+    // ---------------------------------------------------------------------
+
+    /// <summary>Installs NATIVE <c>performance</c> (now/timeOrigin),
+    /// requestAnimationFrame/cancelAnimationFrame and setTimeout/setInterval/
+    /// clearTimeout/clearInterval globals. They, <see cref="Now"/> and pump
+    /// timestamps all share one monotonic clock — a single time base for the
+    /// whole frame.</summary>
+    public void InstallWebGlobals()
+    {
+        var rc = NativeMethods.redjs_web_install(_ctx);
+        if (rc != 0) throw new RedJsEngineException("web_install", rc);
+    }
+
+    /// <summary>Milliseconds on the scheduler clock — exactly what JS sees
+    /// from <c>performance.now()</c>. Use for host-side frame timing.</summary>
+    public static double Now => NativeMethods.redjs_now();
+
+    /// <summary>Runs one frame of the web scheduler: due timers, the rAF
+    /// batch (timestamp = snapshot now), then microtasks. THE per-frame call
+    /// — replaces ProcessTimers + ProcessFrame + drain in the old runtime.
+    /// Callback exceptions go to the uncaught handler; the pump never throws.</summary>
+    public JsPumpStats Pump(JsPumpFlags flags = JsPumpFlags.All)
+    {
+        RjsPumpStats s;
+        NativeMethods.redjs_pump(_ctx, (uint)flags, &s);
+        return new JsPumpStats(s.now, s.timers_fired, s.raf_fired, s.raf_pending, s.timers_active, s.next_timer_deadline);
+    }
+
+    /// <summary>Process-global handler for exceptions thrown by pumped
+    /// callbacks: <c>void F(nint ctx, ulong exception)</c>. Called with the
+    /// VM lock held — extract info via <see cref="GetErrorInfo"/>, don't
+    /// re-enter JS.</summary>
+    public static void SetUncaughtHandler(delegate* unmanaged<nint, ulong, void> handler)
+        => NativeMethods.redjs_set_uncaught_handler(handler);
+
+    // ---------------------------------------------------------------------
+    // Native Web-API layer (browser runtime shims)
+    // ---------------------------------------------------------------------
+
+    /// <summary>Installs the native web API: Event/CustomEvent/EventTarget,
+    /// TextEncoder/TextDecoder, Blob, URL/URLSearchParams, fetch/Response/
+    /// Headers (local files + data: URIs), ImageBitmap/HTMLImageElement/
+    /// Image/createImageBitmap, document/window, plus small JS stubs
+    /// (OffscreenCanvas-2D, silent Web Audio, atob/btoa…). Replaces the
+    /// player's C# WebApi/Browser* classes. Call after
+    /// <see cref="InstallWebGlobals"/>. Idempotent.</summary>
+    public void InstallWebShims(string scriptsRoot, string assetsRoot)
+    {
+        fixed (char* s = scriptsRoot)
+        fixed (char* a = assetsRoot)
+        {
+            var rc = NativeMethods.redjs_webshim_install(_ctx, (ushort*)s, (nuint)scriptsRoot.Length, (ushort*)a, (nuint)assetsRoot.Length);
+            if (rc != 0) throw new RedJsEngineException("webshim_install", rc);
+        }
+    }
+
+    /// <summary>Updates window.innerWidth/innerHeight/devicePixelRatio and
+    /// dispatches a trusted `resize` event. dpr &lt;= 0 keeps the current value.</summary>
+    public void DomResize(int width, int height, double devicePixelRatio = 0)
+        => NativeMethods.redjs_dom_resize(_ctx, width, height, devicePixelRatio);
+
+    /// <summary>document.hidden/visibilityState + `visibilitychange` event.</summary>
+    public void DomSetVisibility(bool hidden)
+        => NativeMethods.redjs_dom_set_visibility(_ctx, hidden ? 1 : 0);
+
+    /// <summary>Fires DOMContentLoaded + window `load` (call once after the
+    /// entry script has run).</summary>
+    public void DomContentLoaded() => NativeMethods.redjs_dom_content_loaded(_ctx);
+
+    /// <summary>Registers a value for document.getElementById(id) — the host
+    /// canvas wrapper. The value is protected by the registry.</summary>
+    public void DomRegisterElement(string id, JsValue element)
+    {
+        Protect(element);
+        fixed (char* p = id)
+        {
+            NativeMethods.redjs_dom_register_element(_ctx, (ushort*)p, (nuint)id.Length, element.Raw);
+        }
+    }
+
+    /// <summary>RGBA8 pixels of an ImageBitmap / loaded HTMLImageElement —
+    /// direct span into engine memory for zero-copy GPU upload
+    /// (copyExternalImageToTexture). Valid while the value stays alive.</summary>
+    public bool TryGetImagePixels(JsValue image, out ReadOnlySpan<byte> pixels, out uint width, out uint height)
+    {
+        byte* ptr;
+        nuint len;
+        uint w, h;
+        if (NativeMethods.redjs_image_pixels(_ctx, image.Raw, &ptr, &len, &w, &h) != 0)
+        {
+            pixels = default;
+            width = height = 0;
+            return false;
+        }
+        pixels = new ReadOnlySpan<byte>(ptr, (int)len);
+        width = w;
+        height = h;
+        return true;
+    }
+
+    // ---------------------------------------------------------------------
     // VM control
     // ---------------------------------------------------------------------
 
@@ -564,3 +666,16 @@ public readonly record struct JsTypedArrayInfo(nint Data, uint Length, uint Byte
 public readonly record struct JsArrayBufferInfo(nint Data, ulong ByteLength, bool Detached, bool Shared);
 
 public readonly record struct JsHeapStats(ulong HeapSize, ulong HeapCapacity, ulong ExtraMemory, ulong ObjectCount, ulong ProtectedObjectCount, ulong GlobalObjectCount);
+
+[Flags]
+public enum JsPumpFlags : uint
+{
+    Timers = 1,
+    AnimationFrames = 2,
+    Microtasks = 4,
+    All = Timers | AnimationFrames | Microtasks,
+}
+
+/// <param name="Now">The pump's snapshot time (ms, performance.now() clock).</param>
+/// <param name="NextTimerDeadline">-1 when no timers are scheduled.</param>
+public readonly record struct JsPumpStats(double Now, uint TimersFired, uint RafFired, uint RafPending, uint TimersActive, double NextTimerDeadline);

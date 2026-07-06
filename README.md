@@ -152,6 +152,84 @@ and the conformance suite `redjs/tests/smoke.rs`, which exercises every group
 end-to-end **exactly the way the C# bindings will** (including raw CallFrame
 reads against `redjs_layout`).
 
+### Web scheduling core — one clock, one pump
+
+The player's frame plumbing (rAF, setTimeout/setInterval, `performance`)
+lives NATIVELY inside redjs (`src/web.rs`), not in C#:
+
+- `redjs_web_install(ctx)` registers `performance.now()/timeOrigin`,
+  `requestAnimationFrame/cancelAnimationFrame`,
+  `setTimeout/setInterval/clearTimeout/clearInterval` as **SysV host
+  functions** (~2 ns from JS, no trampoline slots, no reverse-P/Invoke).
+- **One monotonic clock** for everything: rAF timestamps, timer deadlines,
+  `performance.now()` and `redjs_now()` (host-side reads for the profiler)
+  are the same time base. (The ClearScript player has three different clocks
+  for these.)
+- The host drives a frame with **one FFI call**:
+  `redjs_pump(ctx, TIMERS|RAF|MICROTASKS, &stats)` → due timers (deadline
+  order; callbacks scheduled during the drain fire next pump; intervals
+  reschedule from `now + interval`, min 1 ms) → the rAF batch (snapshot `now`
+  as the DOMHighResTimeStamp; re-registrations land in the next frame) → the
+  microtask queue. Stats report what fired and the next timer deadline.
+- Callback exceptions go to `redjs_set_uncaught_handler` (C# formats them via
+  `redjs_error_info`); a throw never aborts the pump.
+
+The player's `ProcessFrame` becomes:
+
+```csharp
+ctx.InstallWebGlobals();                     // once at startup
+JsContext.SetUncaughtHandler(&OnJsError);    // once
+
+void OnRender(double _) {                    // per frame
+    using var _lock = ctx.Lock();
+    var stats = ctx.Pump();                  // timers + rAF + microtasks
+    navigator.Update(); audio.Update(); canvasContext.Present();
+}
+```
+
+### Native Web-API layer (the browser-runtime shims)
+
+The runtime shims the player kept in C# (`Scripting/WebApi/*`, `Browser*`)
+live INSIDE redjs as **native, standards-shaped classes** (`src/webapi/`),
+defined through JSC's own object model: native constructors (with `new.target`
+subclassing), prototype methods/getters, private-name internal slots
+(invisible even to `getOwnPropertySymbols`), real `instanceof` — no `__brand`
+hacks, no JS megashim:
+
+| class | notes |
+|---|---|
+| `Event` / `CustomEvent` / `EventTarget` | WHATWG dispatch: once, duplicate suppression, `handleEvent` objects, `stopImmediatePropagation`, cancelable/`preventDefault`, on-`type` handler props, listener snapshotting |
+| `TextEncoder` / `TextDecoder` | UTF-8; wrong labels throw RangeError per spec |
+| `Blob` | Arc-shared bytes — spec `slice()` is zero-copy; promise `arrayBuffer/bytes/text` |
+| `URL` / `URLSearchParams` | backed by the `url` crate (rust-url = the reference WHATWG implementation); searchParams↔href live sync |
+| `fetch` / `Response` / `Headers` | local files (scripts→assets root resolution) + `data:` URIs; http(s) → network-error response |
+| `ImageBitmap` / `HTMLImageElement` / `Image` / `createImageBitmap` | decode via the `image` crate (png/jpeg/webp/bmp/gif); `img.src` loads async on the pump tick and fires `load`/`error`; region-crop overload for sprite atlases |
+| `document` / `window` | EventTarget-backed; `window === globalThis` (proxy-normalized) |
+| `crypto` | **OS CSPRNG** (`getrandom` → BCryptGenRandom): getRandomValues (spec type/quota checks) + randomUUID v4; no `subtle` |
+| `structuredClone` | native deep clone: plain objects/arrays, typed arrays/ArrayBuffers, Date/RegExp/Map/Set, Blob/ImageBitmap, cycles; functions → DataCloneError |
+| `Element` / `HTMLElement` / `SVGElement` / `Node` | real prototype chain off EventTarget (Vue's `instanceof HTMLElement` checks work); `document.createElement` instances are HTMLElements |
+| `requestIdleCallback` / `cancelIdleCallback` | native queue fired after the rAF batch each pump; IdleDeadline with a real decreasing ~4 ms budget (hydrate loops progress AND terminate) |
+| `matchMedia` / `IntersectionObserver` | inert but spec-shaped (EventTarget-backed MediaQueryList; observer never fires) |
+
+Coverage is verified against the real engine bundle:
+`bun run packages/rp-spatial/index.ts packages/player/dist/player.js` →
+**0 missing** of 116 detected API usages (the analyzer's HOST_SHIMS list now
+describes this runtime; keep the two in sync).
+
+Host integration:
+- `redjs_webshim_install(ctx, scriptsRoot, assetsRoot)` (C#:
+  `InstallWebShims`) — after `redjs_web_install`.
+- Hooks instead of the old C# objects: `redjs_dom_resize`,
+  `redjs_dom_set_visibility`, `redjs_dom_content_loaded`,
+  `redjs_dom_register_element` (the WebGPU canvas wrapper).
+- **`redjs_image_pixels(value)`** → direct RGBA8 pointer of an
+  ImageBitmap/loaded image — the zero-copy `copyExternalImageToTexture`
+  upload path (C#: `TryGetImagePixels` → `ReadOnlySpan<byte>`).
+
+`src/bootstrap.js` now holds ONLY dumb stubs: console formatting (prefers a
+host `__hostConsole`), atob/btoa, crypto (non-secure), AbortController,
+OffscreenCanvas-2D (over native pixels), silent Web Audio, BroadcastChannel.
+
 ## ClearScript → redjs mapping (from the player's actual usage)
 
 | ClearScript (RedPew.Player today) | redjs |
@@ -159,7 +237,17 @@ reads against `redjs_layout`).
 | `V8ScriptEngine(…flags…)` | `redjs_init(options)` + `redjs_context_create` |
 | `engine.Execute(name, code)` | `redjs_eval16(src, url)` — url shows in JS stacks |
 | `AddHostObject("navigator", obj)` (reflection binding) | `redjs_hostclass_create` + `redjs_hostobject_create` + prototype of `redjs_function_create` methods, `redjs_define` on global |
-| `AddHostObject("setTimeout", (ScriptObject cb, …) => …)` | `redjs_function_create` + `redjs_define(global, …)` |
+| `setTimeout/setInterval` + `TimerScheduler` (C#, stopwatch clock) | native, built into redjs — `redjs_web_install` + `redjs_pump` |
+| `requestAnimationFrame` + `AnimationFrameScheduler` (ScriptObject marshaling) | native rAF in redjs; registration ≈ 2 ns, fired by the pump |
+| `AddPerformanceObject` + `Execute("performance = Performance")` (own clock!) | native `performance.now()` on THE shared clock |
+| `GlobalFunctions.NowTime()` stopwatch (third clock) | `redjs_now()` / `JsContext.Now` — same clock as JS |
+| `__hostFetch`/`FetchApi` + JS Response wrapper | native `fetch`/`Response` in redjs |
+| `Blob`, `HTMLImageElement`, `ImageBitmap`, `CreateImageBitmapApi` (ImageSharp) | native classes in redjs (`image` crate decode) |
+| `BrowserHostFns.Utf8Encode/Decode/ImagePixels` | native `TextEncoder`/`TextDecoder`; pixels via `redjs_image_pixels` |
+| `DocumentObject`/`WindowObject`/`EventTargetObject` | native `document`/`window`/`EventTarget`; C# pokes via `DomResize`/`DomContentLoaded`/`DomSetVisibility` |
+| `copyExternalImageToTexture` → `bmp.GetPixelData()` (C# byte[]) | `TryGetImagePixels` → `ReadOnlySpan<byte>` straight into `wgpuQueueWriteTexture` |
+| `BrowserBootstrap.Install` (513-line JS string in C#) | gone — native classes + a small `bootstrap.js` inside redjs |
+| custom host fns (`AddHostObject("__x", …)`) | `redjs_function_create` + `redjs_define(global, …)` |
 | `AddHostType("GPUBufferUsage", typeof(...))` (const bags) | plain JS object: `object_create` + `define` readonly ints |
 | `ScriptObject.GetProperty("size")` + `Convert.ToUInt32` (descriptor parsing, GPUDevice 1224 LOC) | cached `redjs_atom16` + `redjs_get` → **decode u64 in C#, no FFI for numbers** |
 | `so[i]` / `GetProperty("length")` | `redjs_get_index` / `redjs_array_length` |

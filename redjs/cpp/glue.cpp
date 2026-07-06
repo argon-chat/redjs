@@ -856,3 +856,80 @@ extern "C" int32_t rjs_promise_info(void* g, uint64_t v, uint32_t* statusOut, ui
     *resultOut = JSValue::encode(p->result());
     return RJS_OK;
 }
+
+// ---------------------------------------------------------------------------
+// Native classes: constructors, accessors, private-name slots
+// ---------------------------------------------------------------------------
+
+#include <JavaScriptCore/GetterSetter.h>
+#include <JavaScriptCore/PrivateName.h>
+
+// Like rjs_function_create but constructable: `ctorFn` runs for `new F()` /
+// Reflect.construct. Inside the construct callback the CallFrame's THIS slot
+// holds new.target (JSC convention for C++ constructors).
+extern "C" int32_t rjs_function_create_full(void* g, const char16_t* name, size_t nameLen, uint32_t arity, void* callFn, void* ctorFn, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    using RawHostFn = EncodedJSValue(JSC_HOST_CALL_ATTRIBUTES*)(JSGlobalObject*, CallFrame*);
+    WTF::String n = nameLen ? WTF::String(std::span<const char16_t> { name, nameLen }) : WTF::String();
+    JSFunction* f = JSFunction::create(vm, go, arity, n,
+        reinterpret_cast<RawHostFn>(callFn), ImplementationVisibility::Public, NoIntrinsic,
+        reinterpret_cast<RawHostFn>(ctorFn));
+    *out = JSValue::encode(JSValue(f));
+    return RJS_OK;
+}
+
+// Defines a spec accessor property. `getter`/`setter` are function values (or
+// undefined for write-only/read-only).
+extern "C" int32_t rjs_define_accessor(void* g, uint64_t obj, void* atom, uint64_t getter, uint64_t setter, uint32_t attrs)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return RJS_BAD_ARG;
+    GetterSetter* gs = GetterSetter::create(vm, go, JSValue::decode(getter), JSValue::decode(setter));
+    asObject(base)->putDirectAccessor(go, *static_cast<Identifier*>(atom), gs, mapAttributes(attrs) | PropertyAttribute::Accessor);
+    return RJS_OK;
+}
+
+// A PRIVATE-name atom: properties keyed by it are invisible to all of JS
+// (not even Object.getOwnPropertySymbols) — internal slots for native classes.
+extern "C" void* rjs_atom_private(void* g, const char* p, size_t len)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    auto s = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(p), len });
+    PrivateName pn(PrivateName::PrivateSymbol, s);
+    return new Identifier(Identifier::fromUid(pn));
+}
+
+// Own enumerable string-keyed property names of an object, as a JS array of
+// strings (structuredClone / object walking).
+extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return RJS_BAD_ARG;
+    JSObject* o = asObject(base);
+    // The Bun fork replaced PropertyNameArray construction with a builder.
+    PropertyNameArrayBuilder names(vm, PropertyNameMode::Strings, PrivateSymbolMode::Exclude);
+    o->methodTable()->getOwnPropertyNames(o, go, names, DontEnumPropertiesMode::Exclude);
+    if (takeException(vm, out))
+        return RJS_EXCEPTION;
+    JSArray* arr = constructEmptyArray(go, nullptr, 0);
+    if (takeException(vm, out))
+        return RJS_EXCEPTION;
+    unsigned i = 0;
+    for (const auto& id : names) {
+        arr->putDirectIndex(go, i++, jsString(vm, id.string()));
+    }
+    *out = JSValue::encode(JSValue(arr));
+    return RJS_OK;
+}

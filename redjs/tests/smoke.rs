@@ -47,8 +47,437 @@ fn conformance() {
     gc_and_stats(&ctx);
     sec("host_function_throw");
     host_function_throw(&ctx);
+    sec("web_scheduler");
+    web_scheduler(&ctx);
+    sec("webapi_events");
+    webapi_events(&ctx);
+    sec("webapi_encoding_url_blob");
+    webapi_encoding_url_blob(&ctx);
+    sec("webapi_fetch_images_dom");
+    webapi_fetch_images_dom(&ctx);
+    sec("webapi_platform");
+    webapi_platform(&ctx);
 
     println!("redjs conformance: all sections passed");
+}
+
+/// crypto / structuredClone / Element hierarchy / matchMedia /
+/// IntersectionObserver / requestIdleCallback — the gaps rp-spatial found in
+/// the real player bundle.
+fn webapi_platform(ctx: &Context) {
+    install_webapi(ctx);
+
+    // crypto: real CSPRNG, spec checks.
+    let probe = ctx.eval("[typeof crypto, typeof structuredClone, typeof HTMLElement, typeof matchMedia, typeof IntersectionObserver, typeof requestIdleCallback].join()");
+    match probe {
+        Ok(p) => {
+            let s = ctx.to_rust_string(p).unwrap();
+            assert_eq!(s, "object,function,function,function,function,function", "platform globals present: {s}");
+        }
+        Err(Error::Exception(e)) => {
+            let (m, st) = ctx.error_info(e);
+            panic!("probe threw: {m}\n{st}");
+        }
+        Err(e) => panic!("probe failed: {e}"),
+    }
+    let v = ctx
+        .eval(
+            "(() => { const a = new Uint8Array(64); const r = crypto.getRandomValues(a); \
+             return [r === a, a.some(b => b !== 0), crypto.randomUUID().length, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(crypto.randomUUID()), crypto.randomUUID() !== crypto.randomUUID()].join(); })()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,36,true,true");
+    assert_eq!(
+        ctx.eval("(() => { try { crypto.getRandomValues(new Float32Array(2)); return 'no'; } catch (e) { return e instanceof TypeError ? 'type' : 'other'; } })()")
+            .map(|v| ctx.to_rust_string(v).unwrap())
+            .unwrap(),
+        "type"
+    );
+
+    // structuredClone: deep, cycle-safe, typed arrays, Map/Set/Date preserved.
+    let v = ctx
+        .eval(
+            "(() => { const src = { n: 1, s: 'x', arr: [1, { deep: true }], ta: new Float32Array([1.5, 2.5]), \
+                           m: new Map([['k', 5]]), st: new Set([7]), d: new Date(12345) }; \
+             src.self = src; \
+             const c = structuredClone(src); \
+             return [c !== src, c.self === c, c.arr[1].deep, c.arr !== src.arr, c.ta[1], c.ta !== src.ta, \
+              c.m.get('k'), c.st.has(7), c.d.getTime(), c.d !== src.d].join(); })()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,true,true,2.5,true,5,true,12345,true");
+    assert_eq!(
+        ctx.eval("(() => { try { structuredClone({ f: () => 1 }); return 'no'; } catch (e) { return e.message.includes('DataCloneError') ? 'dce' : 'other'; } })()")
+            .map(|v| ctx.to_rust_string(v).unwrap())
+            .unwrap(),
+        "dce"
+    );
+
+    // Element hierarchy: instanceof works (and is false for randoms).
+    let v = ctx
+        .eval(
+            "(() => { const div = document.createElement('div'); \
+             return [div instanceof HTMLElement, div instanceof Element, div instanceof EventTarget, \
+              ({}) instanceof HTMLElement, typeof SVGElement === 'function', \
+              (() => { try { new HTMLElement(); return 'no'; } catch (e) { return 'illegal'; } })()].join(); })()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,true,false,true,illegal");
+
+    // matchMedia + IntersectionObserver stubs are callable and inert.
+    let v = ctx
+        .eval(
+            "(() => { const mql = matchMedia('(prefers-reduced-motion)'); mql.addEventListener('change', () => {}); \
+             const io = new IntersectionObserver(() => {}); io.observe(document.body); io.disconnect(); \
+             return [mql.matches, mql.media.includes('reduced'), io.takeRecords().length].join(); })()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "false,true,0");
+
+    // requestIdleCallback: fires on the pump with a live decreasing budget;
+    // cancel works.
+    ctx.eval(
+        "globalThis.idle = null; \
+         (() => { requestIdleCallback((d) => { let steps = 0; while (d.timeRemaining() > 0 && steps < 100000) steps++; idle = [d.didTimeout, steps > 0].join(); }); \
+         const dead = requestIdleCallback(() => { idle = 'dead'; }); cancelIdleCallback(dead); })();",
+    )
+    .unwrap();
+    unsafe { ffi::redjs_pump(ctx.raw(), 7, core::ptr::null_mut()) };
+    assert_eq!(ctx.to_rust_string(ctx.eval("idle").unwrap()).unwrap(), "false,true");
+}
+
+fn install_webapi(ctx: &Context) -> std::path::PathBuf {
+    // Assets dir with a generated PNG + a JSON for fetch/Image tests.
+    let dir = std::env::temp_dir().join("redjs-webapi-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let img = image::RgbaImage::from_fn(4, 2, |x, y| image::Rgba([x as u8 * 10, y as u8 * 10, 200, 255]));
+    img.save(dir.join("test.png")).unwrap();
+    std::fs::write(dir.join("data.json"), br#"{"hello": 42}"#).unwrap();
+
+    let scripts: Vec<u16> = dir.to_string_lossy().encode_utf16().collect();
+    let rc = unsafe {
+        ffi::redjs_webshim_install(ctx.raw(), scripts.as_ptr(), scripts.len(), scripts.as_ptr(), scripts.len())
+    };
+    assert_eq!(rc, 0, "webshim install");
+    dir
+}
+
+fn webapi_events(ctx: &Context) {
+    install_webapi(ctx);
+
+    // Native classes are real classes: constructors, prototypes, instanceof.
+    let v = ctx
+        .eval(
+            "const e = new CustomEvent('boom', { cancelable: true, detail: { n: 7 } }); \
+             [e instanceof CustomEvent, e instanceof Event, e.type, e.cancelable, e.bubbles, e.detail.n].join()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,boom,true,false,7");
+
+    // Getters live on the prototype (spec shape), readonly.
+    assert_eq!(
+        ctx.eval("Object.getOwnPropertyNames(Event.prototype).includes('type') && !Object.getOwnPropertyNames(new Event('x')).includes('type')")
+            .unwrap()
+            .as_bool(),
+        Some(true)
+    );
+    // Internal slots are invisible (private names, not even symbols).
+    assert_eq!(
+        ctx.eval("Object.getOwnPropertyNames(new Event('x')).length + Object.getOwnPropertySymbols(new Event('x')).length")
+            .unwrap()
+            .as_number(),
+        Some(0.0)
+    );
+
+    // EventTarget: subclassing + once + duplicate suppression + handleEvent +
+    // stopImmediatePropagation + preventDefault/dispatch return value.
+    let v = ctx
+        .eval(
+            "globalThis.log = []; \
+             class Emitter extends EventTarget {} \
+             const t = new Emitter(); \
+             const h = (e) => log.push('a:' + e.type); \
+             t.addEventListener('ping', h); \
+             t.addEventListener('ping', h); /* duplicate — suppressed */ \
+             t.addEventListener('ping', { handleEvent(e) { log.push('obj'); } }); \
+             t.addEventListener('ping', () => log.push('once'), { once: true }); \
+             t.dispatchEvent(new Event('ping')); \
+             t.dispatchEvent(new Event('ping')); \
+             log.join()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "a:ping,obj,once,a:ping,obj");
+
+    let v = ctx
+        .eval(
+            "const t2 = new EventTarget(); \
+             t2.addEventListener('x', (e) => { e.stopImmediatePropagation(); e.preventDefault(); }); \
+             t2.addEventListener('x', () => log.push('never')); \
+             const r = t2.dispatchEvent(new Event('x', { cancelable: true })); \
+             [r, log.includes('never')].join()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "false,false", "canceled dispatch returns false, stopImmediate works");
+
+    // onX handler property participates in dispatch.
+    let v = ctx
+        .eval(
+            "const t3 = new EventTarget(); globalThis.onFired = 0; \
+             t3.onping = () => { onFired++; }; \
+             t3.dispatchEvent(new Event('ping')); onFired",
+        )
+        .unwrap();
+    assert_eq!(v.as_number(), Some(1.0));
+}
+
+fn webapi_encoding_url_blob(ctx: &Context) {
+    // TextEncoder/TextDecoder.
+    let v = ctx
+        .eval(
+            "const enc = new TextEncoder(); const dec = new TextDecoder(); \
+             [enc.encoding, dec.decode(enc.encode('привет 🎮')) === 'привет 🎮', enc.encode('abc').length].join()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "utf-8,true,3");
+    // Unsupported label throws RangeError per spec.
+    assert_eq!(
+        ctx.eval("(() => { try { new TextDecoder('windows-1251'); return 'no'; } catch (e) { return e instanceof RangeError ? 'range' : 'other'; } })()")
+            .map(|v| ctx.to_rust_string(v).unwrap())
+            .unwrap(),
+        "range"
+    );
+
+    // URL — WHATWG parser (rust-url): normalization, components, setters,
+    // searchParams live-sync both ways.
+    let v = ctx
+        .eval(
+            "const u = new URL('HTTPS://ExAmPlE.com:8080/a/../b?x=1&y=%D0%B4#frag'); \
+             [u.protocol, u.hostname, u.port, u.pathname, u.search, u.hash, u.origin].join('|')",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "https:|example.com|8080|/b|?x=1&y=%D0%B4|#frag|https://example.com:8080");
+
+    let v = ctx
+        .eval(
+            "const u2 = new URL('rel/path?q=1', 'https://host/base/dir/'); \
+             [u2.href, u2.searchParams.get('q'), URL.canParse('nope'), u2 instanceof URL].join('|')",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "https://host/base/dir/rel/path?q=1|1|false|true");
+
+    let v = ctx
+        .eval(
+            "const u3 = new URL('https://h/p'); \
+             u3.searchParams.set('a', '1'); u3.searchParams.append('a', '2'); \
+             const afterSet = u3.href; \
+             u3.search = '?z=9'; \
+             [afterSet, u3.searchParams.get('z'), u3.searchParams.size].join('|')",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "https://h/p?a=1&a=2|9|1");
+
+    // Invalid URL throws TypeError per spec.
+    assert_eq!(
+        ctx.eval("(() => { try { new URL('not a url'); return 'no'; } catch (e) { return e instanceof TypeError ? 'type' : 'other'; } })()")
+            .map(|v| ctx.to_rust_string(v).unwrap())
+            .unwrap(),
+        "type"
+    );
+
+    // Blob: parts, size/type, slice (negative indices), text/arrayBuffer.
+    ctx.eval(
+        "globalThis.blobDone = null; \
+         (async () => { \
+           const b = new Blob(['hello ', new TextEncoder().encode('world'), '!'], { type: 'Text/Plain' }); \
+           const s = b.slice(-6, -1); \
+           blobDone = [b.size, b.type, await b.text(), await s.text(), (await b.arrayBuffer()).byteLength, b instanceof Blob].join('|'); \
+         })()",
+    )
+    .unwrap();
+    ctx.drain_microtasks();
+    let v = ctx.eval("blobDone").unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "12|text/plain|hello world!|world|12|true");
+}
+
+fn webapi_fetch_images_dom(ctx: &Context) {
+    let dir = install_webapi(ctx); // idempotent; returns the assets dir
+    let _ = dir;
+
+    // fetch: local file → json; 404 semantics; data: URI; Response.blob→createImageBitmap.
+    ctx.eval(
+        "globalThis.fetched = null; \
+         (async () => { \
+           const r = await fetch('data.json'); \
+           const missing = await fetch('nope.bin'); \
+           const dataUri = await fetch('data:text/plain;base64,aGk='); \
+           fetched = [r.ok, r.status, r.headers.get('Content-Type'), (await r.json()).hello, \
+                      missing.ok, missing.status, await dataUri.text()].join('|'); \
+         })()",
+    )
+    .unwrap();
+    ctx.drain_microtasks();
+    let v = ctx.eval("fetched").unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "true|200|application/json|42|false|404|hi");
+
+    // createImageBitmap from fetch().blob() + region crop — the sprite path.
+    ctx.eval(
+        "globalThis.imgDone = null; \
+         (async () => { \
+           const blob = await (await fetch('test.png')).blob(); \
+           const bmp = await createImageBitmap(blob); \
+           const region = await createImageBitmap(bmp, 1, 0, 2, 2); \
+           imgDone = [bmp instanceof ImageBitmap, bmp.width, bmp.height, region.width, region.height, blob.type].join('|'); \
+         })()",
+    )
+    .unwrap();
+    ctx.drain_microtasks();
+    let v = ctx.eval("imgDone").unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "true|4|2|2|2|image/png");
+
+    // Image/HTMLImageElement: async load through the pump + events + instanceof.
+    ctx.eval(
+        "globalThis.imgEvents = []; \
+         globalThis.im = new Image(); \
+         im.addEventListener('load', () => imgEvents.push('listener')); \
+         im.onload = () => imgEvents.push('onload:' + im.naturalWidth + 'x' + im.naturalHeight); \
+         im.src = 'test.png'; \
+         imgEvents.push('sync:' + im.complete);",
+    )
+    .unwrap();
+    unsafe { ffi::redjs_pump(ctx.raw(), 7, core::ptr::null_mut()) };
+    let v = ctx.eval("[im instanceof HTMLImageElement, im.complete, imgEvents.join()].join('|')").unwrap();
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "true|true|sync:false,listener,onload:4x2",
+        "image loads on pump tick, events in order"
+    );
+
+    // Zero-copy pixel access for the GPU upload path.
+    unsafe {
+        let bmp = ctx.eval("(() => im)()").unwrap();
+        let (mut ptr, mut len, mut w, mut h) = (core::ptr::null::<u8>(), 0usize, 0u32, 0u32);
+        let rc = ffi::redjs_image_pixels(ctx.raw(), bmp.0, &mut ptr, &mut len, &mut w, &mut h);
+        assert_eq!((rc, w, h, len), (0, 4, 2, 32), "image_pixels on HTMLImageElement");
+        let px = core::slice::from_raw_parts(ptr, len);
+        assert_eq!(px[2], 200, "blue channel of the generated png");
+    }
+
+    // document/window natives + host hooks.
+    unsafe {
+        let canvas = ctx.eval("({ __brand: 'HTMLCanvasElement', width: 640 })").unwrap();
+        ctx.protect(canvas);
+        let id: Vec<u16> = "canvas".encode_utf16().collect();
+        ffi::redjs_dom_register_element(ctx.raw(), id.as_ptr(), id.len(), canvas.0);
+        assert_eq!(
+            ctx.eval("document.getElementById('canvas').width === 640 && document.getElementById('canvas') instanceof HTMLCanvasElement")
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+
+        ctx.eval("globalThis.sizes = []; window.addEventListener('resize', () => sizes.push(innerWidth + 'x' + innerHeight));").unwrap();
+        ffi::redjs_dom_resize(ctx.raw(), 1280, 720, 2.0);
+        assert_eq!(
+            ctx.to_rust_string(ctx.eval("[sizes.join(), devicePixelRatio, window === globalThis].join('|')").unwrap()).unwrap(),
+            "1280x720|2|true"
+        );
+
+        ctx.eval("globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dcl:' + document.readyState)); window.addEventListener('load', () => lifecycle.push('load'));").unwrap();
+        ffi::redjs_dom_content_loaded(ctx.raw());
+        assert_eq!(ctx.to_rust_string(ctx.eval("lifecycle.join()").unwrap()).unwrap(), "dcl:interactive,load");
+
+        ctx.eval("globalThis.vis = []; document.addEventListener('visibilitychange', () => vis.push(document.visibilityState));").unwrap();
+        ffi::redjs_dom_set_visibility(ctx.raw(), 1);
+        ffi::redjs_dom_set_visibility(ctx.raw(), 0);
+        assert_eq!(ctx.to_rust_string(ctx.eval("vis.join()").unwrap()).unwrap(), "hidden,visible");
+    }
+
+    // The dumb-stub remainder still works (OffscreenCanvas over native pixels).
+    let v = ctx
+        .eval(
+            "(() => { const c = new OffscreenCanvas(4, 2).getContext('2d'); c.drawImage(im, 0, 0); \
+             const d = c.getImageData(0, 0, 4, 2); return d.data[2]; })()",
+        )
+        .unwrap();
+    assert_eq!(v.as_number(), Some(200.0), "OffscreenCanvas drawImage from native image");
+}
+
+fn web_scheduler(ctx: &Context) {
+    unsafe {
+        assert_eq!(ffi::redjs_web_install(ctx.raw()), 0);
+
+        // performance.now() is the native clock — same base as redjs_now().
+        let before = ffi::redjs_now();
+        let v = ctx.eval("performance.now()").unwrap().as_number().unwrap();
+        let after = ffi::redjs_now();
+        assert!(v >= before && v <= after, "performance.now ({v}) within [{before}, {after}]");
+        assert!(ctx.eval("performance.timeOrigin").unwrap().as_number().unwrap() > 0.0);
+
+        // rAF: registered → fires ONCE with the pump timestamp; re-registration
+        // during the callback lands in the NEXT frame's batch.
+        ctx.eval(
+            "globalThis.frames = []; \
+             function tick(ts) { frames.push(ts); if (frames.length < 3) requestAnimationFrame(tick); } \
+             requestAnimationFrame(tick);",
+        )
+        .unwrap();
+        let mut stats = redjs::ffi::RjsPumpStats::default();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        assert_eq!((stats.raf_fired, stats.raf_pending), (1, 1), "one fired, re-registration pending");
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        assert_eq!(stats.raf_pending, 0, "chain stopped after 3 frames");
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        assert_eq!(stats.raf_fired, 0);
+        let n = ctx.eval("frames.length").unwrap().as_number().unwrap();
+        assert_eq!(n, 3.0);
+        // Timestamps are the shared clock and monotonic.
+        assert_eq!(ctx.eval("frames.every(t => t > 0) && frames[0] <= frames[1] && frames[1] <= frames[2]").unwrap().as_bool(), Some(true));
+
+        // cancelAnimationFrame.
+        ctx.eval("globalThis.c = 0; const id = requestAnimationFrame(() => c++); cancelAnimationFrame(id);").unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, core::ptr::null_mut());
+        assert_eq!(ctx.eval("c").unwrap().as_number(), Some(0.0));
+
+        // Timers: 0-delay fires on next pump; clearTimeout works; interval
+        // fires repeatedly until cleared; nested setTimeout waits a tick.
+        ctx.eval(
+            "globalThis.log = []; \
+             setTimeout(() => { log.push('t0'); setTimeout(() => log.push('nested'), 0); }, 0); \
+             const dead = setTimeout(() => log.push('dead'), 0); clearTimeout(dead); \
+             globalThis.iv = setInterval(() => { log.push('iv'); if (log.filter(x => x === 'iv').length >= 2) clearInterval(iv); }, 1);",
+        )
+        .unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        assert_eq!(stats.timers_fired, 1, "only t0 due immediately (interval waits 1ms)");
+        assert_eq!(ctx.to_rust_string(ctx.eval("log.join()").unwrap()).unwrap(), "t0");
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats); // nested + first interval fire
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats); // second interval fires, clears itself
+        let log = ctx.to_rust_string(ctx.eval("log.join()").unwrap()).unwrap();
+        assert_eq!(log, "t0,nested,iv,iv", "timer order/semantics (got: {log})");
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        assert_eq!(stats.timers_active, 0, "interval cleared itself");
+        assert_eq!(stats.next_timer_deadline, -1.0);
+
+        // Microtasks drain as part of the pump (async work driven per frame).
+        ctx.eval("globalThis.mt = 0; requestAnimationFrame(async () => { await Promise.resolve(); mt = 42; });").unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, core::ptr::null_mut());
+        assert_eq!(ctx.eval("mt").unwrap().as_number(), Some(42.0));
+
+        // Callback exceptions hit the uncaught handler and don't break the pump.
+        static UNCAUGHT_HITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        unsafe extern "C" fn on_uncaught(_g: *mut c_void, _exc: u64) {
+            UNCAUGHT_HITS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        }
+        ffi::redjs_set_uncaught_handler(on_uncaught as *const c_void);
+        ctx.eval("globalThis.after = 0; requestAnimationFrame(() => { throw new Error('cb boom'); }); requestAnimationFrame(() => { after = 1; });").unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        assert_eq!(stats.raf_fired, 2, "both callbacks ran despite the throw");
+        assert_eq!(UNCAUGHT_HITS.load(core::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(ctx.eval("after").unwrap().as_number(), Some(1.0));
+    }
 }
 
 fn eval_basics(ctx: &Context) {

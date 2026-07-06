@@ -388,6 +388,92 @@ namespace RedJs.Native
         [DllImport(__DllName, EntryPoint = "redjs_hostobject_set_data", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern int redjs_hostobject_set_data(ulong v, void* data);
 
+        /// <summary>
+        ///  Installs NATIVE `performance` (now/timeOrigin), requestAnimationFrame /
+        ///  cancelAnimationFrame and setTimeout/setInterval/clearTimeout/clearInterval
+        ///  globals. All of them and `redjs_now` share one monotonic clock, so rAF
+        ///  timestamps, timer deadlines and performance.now() are a single time base.
+        ///  Idempotent per context (re-install replaces the globals, state persists).
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_web_install", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_web_install(void* ctx);
+
+        /// <summary>
+        ///  Runs one frame of the web scheduler: due timers (flag 1), the rAF batch
+        ///  with the snapshot time as timestamp (flag 2), then the microtask queue
+        ///  (flag 4). Call once per render frame with flags=7. Callback exceptions go
+        ///  to the uncaught handler and never abort the pump. `stats` may be null.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_pump", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_pump(void* ctx, uint flags, RjsPumpStats* stats);
+
+        /// <summary>
+        ///  Milliseconds on the scheduler clock — the exact value JS sees from
+        ///  performance.now(). Use this on the host for unified frame timing.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_now", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern double redjs_now();
+
+        /// <summary>
+        ///  Process-global handler for exceptions thrown by pumped callbacks:
+        ///  `void f(ctx, exception_value)` (MS ABI). Called with the VM lock held —
+        ///  extract info (redjs_error_info), don't re-enter JS.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_set_uncaught_handler", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_set_uncaught_handler(void* handler);
+
+        /// <summary>
+        ///  Installs the NATIVE Web-API layer (standards-shaped, defined through
+        ///  JSC's object model): Event/CustomEvent/EventTarget, TextEncoder/Decoder,
+        ///  Blob, URL/URLSearchParams, Headers/Response/fetch (local files + data:
+        ///  URIs), ImageBitmap/HTMLImageElement/Image/createImageBitmap,
+        ///  document/window ' plus a small JS remainder for dumb stubs (console fmt,
+        ///  atob/btoa, OffscreenCanvas-2D, silent Web Audio).
+        ///
+        ///  `scripts_root`/`assets_root` (UTF-16) are the fetch/Image URL resolution
+        ///  bases (bundle dir, assets dir). Call AFTER `redjs_web_install` (the
+        ///  scheduler drives async image loads). Idempotent per context.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_webshim_install", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_webshim_install(void* ctx, ushort* scripts_root, nuint scripts_len, ushort* assets_root, nuint assets_len);
+
+        /// <summary>
+        ///  Updates window.innerWidth/innerHeight/devicePixelRatio and dispatches a
+        ///  trusted `resize` event on window. `dpr` &lt;= 0 keeps the current value.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_dom_resize", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_dom_resize(void* ctx, int width, int height, double dpr);
+
+        /// <summary>
+        ///  Updates document.hidden/visibilityState and dispatches `visibilitychange`.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_dom_set_visibility", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_dom_set_visibility(void* ctx, int hidden);
+
+        /// <summary>
+        ///  Fires DOMContentLoaded on document (readyState interactive→complete) and
+        ///  `load` on window. Call once after the entry script has been evaluated.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_dom_content_loaded", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_dom_content_loaded(void* ctx);
+
+        /// <summary>
+        ///  Registers a value under `document.getElementById(id)` (the host canvas
+        ///  wrapper, etc). UTF-16 id.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_dom_register_element", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_dom_register_element(void* ctx, ushort* id, nuint id_len, ulong value);
+
+        /// <summary>
+        ///  RGBA8 pixels of an ImageBitmap / loaded HTMLImageElement / ImageData —
+        ///  direct pointer into engine memory for zero-copy GPU upload
+        ///  (`copyExternalImageToTexture`). The pointer stays valid while the value is
+        ///  alive (protect during upload if it leaves the stack). Returns 2 when the
+        ///  value is not an image source.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_image_pixels", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_image_pixels(void* ctx, ulong v, byte** out_ptr, nuint* out_byte_len, uint* out_width, uint* out_height);
+
 
     }
 
@@ -467,6 +553,26 @@ namespace RedJs.Native
         public ulong byte_length;
         public uint detached;
         public uint shared;
+    }
+
+    /// <summary>
+    ///  Result of one `redjs_pump`: what fired and what is still scheduled.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe partial struct RjsPumpStats
+    {
+        /// <summary>
+        ///  The pump's snapshot time (ms, same clock as performance.now()).
+        /// </summary>
+        public double now;
+        public uint timers_fired;
+        public uint raf_fired;
+        public uint raf_pending;
+        public uint timers_active;
+        /// <summary>
+        ///  -1 when no timers are scheduled.
+        /// </summary>
+        public double next_timer_deadline;
     }
 
 

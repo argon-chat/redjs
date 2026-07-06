@@ -37,6 +37,8 @@ internal static unsafe class Program
             Promises();
             HostObjects();
             GcAndStats();
+            WebScheduler();
+            WebApi();
 
             Console.WriteLine($"\nRedJs C# smoke: OK ({_checks} checks, " +
                 (RuntimeFeature.IsDynamicCodeSupported ? "JIT" : "NativeAOT") + ")");
@@ -295,6 +297,96 @@ internal static unsafe class Program
     {
         for (int i = 0; i < 4; i++)
             _ctx.CreateHostObject(cls, 25);
+    }
+
+    private static int _uncaught;
+
+    [UnmanagedCallersOnly]
+    private static void OnUncaught(nint g, ulong exc) => _uncaught++;
+
+    private static void WebScheduler()
+    {
+        Console.WriteLine("[web scheduler]");
+        _ctx.InstallWebGlobals();
+        JsContext.SetUncaughtHandler(&OnUncaught);
+
+        // One clock everywhere: JS performance.now() sits between two host reads.
+        var before = JsContext.Now;
+        var jsNow = _ctx.Eval("performance.now()").AsNumber;
+        var after = JsContext.Now;
+        Check(jsNow >= before && jsNow <= after, "performance.now == host clock");
+
+        // The game loop shape: rAF chain driven by Pump, timestamps from the pump.
+        _ctx.Eval("globalThis.frames = []; function tick(ts) { frames.push(ts); if (frames.length < 3) requestAnimationFrame(tick); } requestAnimationFrame(tick);");
+        var s1 = _ctx.Pump();
+        Check(s1.RafFired == 1 && s1.RafPending == 1, "rAF fired, re-registration next frame");
+        _ctx.Pump();
+        var s3 = _ctx.Pump();
+        Check(s3.RafPending == 0 && _ctx.Eval("frames.length").AsInt32 == 3, "rAF chain of 3");
+        Check(_ctx.Eval("frames[0] <= frames[1] && frames[1] <= frames[2]").AsBoolean, "monotonic pump timestamps");
+
+        // Timers through the pump.
+        _ctx.Eval("globalThis.tlog = []; setTimeout(() => tlog.push('a'), 0); const d = setTimeout(() => tlog.push('dead'), 0); clearTimeout(d);");
+        var st = _ctx.Pump(JsPumpFlags.Timers);
+        Check(st.TimersFired == 1 && _ctx.GetStringCoerced(_ctx.Eval("tlog.join()")) == "a", "setTimeout + clearTimeout");
+
+        // Uncaught callback exception → handler, pump survives.
+        _ctx.Eval("requestAnimationFrame(() => { throw new Error('cb'); }); requestAnimationFrame(() => { globalThis.alive = 1; });");
+        var se = _ctx.Pump();
+        Check(se.RafFired == 2 && _uncaught == 1 && _ctx.Eval("alive").AsInt32 == 1, "uncaught handler + pump survives");
+    }
+
+    private static void WebApi()
+    {
+        Console.WriteLine("[web api]");
+        // Assets dir with a JSON + a tiny PNG (1x1 red, hand-encoded).
+        var dir = Path.Combine(Path.GetTempPath(), "redjs-cs-webapi");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "data.json"), "{\"hello\":42}");
+        File.WriteAllBytes(Path.Combine(dir, "px.png"), Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="));
+
+        _ctx.InstallWebShims(dir, dir);
+
+        // Native classes with real instanceof + spec behaviors.
+        var v = _ctx.Eval(
+            "const t = new EventTarget(); globalThis.elog = []; " +
+            "t.addEventListener('hit', e => elog.push(e.detail), { once: true }); " +
+            "t.dispatchEvent(new CustomEvent('hit', { detail: 7 })); " +
+            "t.dispatchEvent(new CustomEvent('hit', { detail: 8 })); " +
+            "[elog.join(), new URL('https://A.com/x/../y').href, new TextDecoder().decode(new TextEncoder().encode('ок'))].join('|')");
+        Check(_ctx.GetString(v) == "7|https://a.com/y|ок", "EventTarget/URL/TextCodec native");
+
+        // fetch → json + blob → createImageBitmap, driven by microtask drain.
+        _ctx.Eval(
+            "globalThis.webDone = null; " +
+            "(async () => { " +
+            "  const j = await (await fetch('data.json')).json(); " +
+            "  const bmp = await createImageBitmap(await (await fetch('px.png')).blob()); " +
+            "  webDone = [j.hello, bmp instanceof ImageBitmap, bmp.width, bmp.height].join('|'); " +
+            "})()");
+        _ctx.DrainMicrotasks();
+        Check(_ctx.GetStringCoerced(_ctx.Eval("webDone")) == "42|true|1|1", "fetch → blob → createImageBitmap");
+
+        // Image loads through the pump; zero-copy pixels for the GPU path.
+        _ctx.Eval("globalThis.im = new Image(); im.src = 'px.png';");
+        _ctx.Pump();
+        var im = _ctx.Eval("(() => im)()");
+        Check(_ctx.TryGetImagePixels(im, out var px, out var w, out var h) && w == 1 && h == 1 && px[0] == 255,
+            "Image pump-load + zero-copy pixels (red)");
+
+        // DOM hooks.
+        _ctx.Eval("globalThis.rs = null; addEventListener('resize', () => rs = innerWidth + 'x' + innerHeight + '@' + devicePixelRatio);");
+        _ctx.DomResize(800, 600, 1.5);
+        Check(_ctx.GetStringCoerced(_ctx.Eval("rs")) == "800x600@1.5", "DomResize event");
+
+        var canvas = _ctx.Eval("({ __brand: 'HTMLCanvasElement' })");
+        _ctx.DomRegisterElement("canvas", canvas);
+        Check(_ctx.Eval("document.getElementById('canvas') instanceof HTMLCanvasElement").AsBoolean, "canvas registration");
+
+        _ctx.Eval("globalThis.dcl = false; document.addEventListener('DOMContentLoaded', () => dcl = true);");
+        _ctx.DomContentLoaded();
+        Check(_ctx.Eval("dcl && document.readyState === 'complete'").AsBoolean, "DomContentLoaded");
     }
 
     private static void GcAndStats()
