@@ -17,6 +17,12 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 # Pure-Rust decoders only; matches the formats games actually ship.
 url = "2"
 getrandom = "0.3"
+# TextDecoder: the reference WHATWG Encoding implementation (Firefox's);
+# already in the tree transitively via symphonia, so ~free.
+encoding_rs = "0.8"
+# crypto.subtle.digest (RustCrypto, pure Rust).
+sha1 = "0.10"
+sha2 = "0.10"
 zstd-sys = { version = "2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 # Audio: the native Web Audio implementation (webapi/audio.rs) maps the

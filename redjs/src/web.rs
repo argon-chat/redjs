@@ -199,14 +199,20 @@ unsafe extern "sysv64" fn raf_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn timer_set(g: *mut c_void, cf: *mut c_void, repeating: bool) -> u64 {
+    timer_set_inner(g, cf, repeating, None, 2)
+}
+
+/// `delay_override`: fixed delay ignoring arg 1 (setImmediate). `args_from`:
+/// first callback-argument index (2 for setTimeout, 1 for setImmediate).
+unsafe fn timer_set_inner(g: *mut c_void, cf: *mut c_void, repeating: bool, delay_override: Option<f64>, args_from: u32) -> u64 {
     let cb = cf_arg(cf, 0);
     if !is_cell(cb) {
         return enc_int32(0);
     }
-    let delay = dec_number(cf_arg(cf, 1)).unwrap_or(0.0).max(0.0);
+    let delay = delay_override.unwrap_or_else(|| dec_number(cf_arg(cf, 1)).unwrap_or(0.0).max(0.0));
     let interval = if repeating { delay.max(1.0) } else { delay };
-    // Spec: arguments after the delay are passed to the callback on every fire.
-    let args: Vec<u64> = (2..cf_argc(cf)).map(|i| cf_arg(cf, i)).collect();
+    // Spec: trailing arguments are passed to the callback on every fire.
+    let args: Vec<u64> = (args_from..cf_argc(cf)).map(|i| cf_arg(cf, i)).collect();
     capi::JSValueProtect(g, cb as usize as capi::JSValueRef);
     for &a in &args {
         if is_cell(a) {
@@ -228,6 +234,25 @@ unsafe extern "sysv64" fn timer_set_timeout(g: *mut c_void, cf: *mut c_void) -> 
 
 unsafe extern "sysv64" fn timer_set_interval(g: *mut c_void, cf: *mut c_void) -> u64 {
     timer_set(g, cf, true)
+}
+
+/// `setImmediate(cb, ...args)` — a 0-delay macrotask (fires on the next pump,
+/// before that pump's rAF batch). Shares the timer registry, so
+/// `clearImmediate` is just `clearTimeout`.
+unsafe extern "sysv64" fn immediate_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+    timer_set_inner(g, cf, false, Some(0.0), 1)
+}
+
+/// `queueMicrotask(cb)` — the VM's real microtask queue.
+unsafe extern "sysv64" fn queue_microtask(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let cb = cf_arg(cf, 0);
+    if glue::rjs_queue_microtask(g, cb) != 0 {
+        let m: Vec<u16> = "queueMicrotask: argument must be callable".encode_utf16().collect();
+        let mut err = ENC_UNDEFINED;
+        glue::rjs_error_create(g, 1, m.as_ptr(), m.len(), &mut err);
+        glue::rjs_throw(g, err);
+    }
+    ENC_UNDEFINED
 }
 
 unsafe extern "sysv64" fn idle_request(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -342,13 +367,16 @@ pub unsafe fn install(g: *mut c_void) -> i32 {
         return rc;
     }
 
-    let fns: [(&str, u32, *const c_void); 8] = [
+    let fns: [(&str, u32, *const c_void); 11] = [
         ("requestAnimationFrame", 1, raf_request as *const c_void),
         ("cancelAnimationFrame", 1, raf_cancel as *const c_void),
         ("setTimeout", 2, timer_set_timeout as *const c_void),
         ("setInterval", 2, timer_set_interval as *const c_void),
         ("clearTimeout", 1, timer_clear as *const c_void),
         ("clearInterval", 1, timer_clear as *const c_void),
+        ("setImmediate", 1, immediate_set as *const c_void),
+        ("clearImmediate", 1, timer_clear as *const c_void),
+        ("queueMicrotask", 1, queue_microtask as *const c_void),
         ("requestIdleCallback", 1, idle_request as *const c_void),
         ("cancelIdleCallback", 1, idle_cancel as *const c_void),
     ];

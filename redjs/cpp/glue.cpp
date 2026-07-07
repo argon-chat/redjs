@@ -39,6 +39,7 @@
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/JSLock.h>
 #include <JavaScriptCore/JSPromise.h>
+#include <JavaScriptCore/MicrotaskQueue.h>
 #include <JavaScriptCore/JSString.h>
 #include <JavaScriptCore/ObjectConstructor.h>
 #include <JavaScriptCore/Options.h>
@@ -935,6 +936,22 @@ extern "C" void* rjs_atom_iterator(void* g)
     VM& vm = G(g)->vm();
     JSLockHolder lock(vm);
     return new Identifier(vm.propertyNames->iteratorSymbol);
+}
+
+// Enqueues `fn` on the VM's real microtask queue (the HTML `queueMicrotask`).
+// InvokeFunctionJob is JSC's "call this function" microtask; the prebuilt
+// exports VM::queueMicrotask(QueuedTask&&) (the JSGlobalObject convenience
+// overloads aren't in the import lib), and QueuedTask is header-constructible.
+extern "C" int32_t rjs_queue_microtask(void* g, uint64_t fn)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue f = JSValue::decode(fn);
+    if (!f.isCallable())
+        return RJS_BAD_ARG;
+    vm.queueMicrotask(QueuedTask(nullptr, InternalMicrotask::InvokeFunctionJob, 0, go, f));
+    return RJS_OK;
 }
 
 // Own enumerable string-keyed property names of an object, as a JS array of

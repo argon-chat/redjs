@@ -1,9 +1,11 @@
 //! Native `crypto`: getRandomValues over the OS CSPRNG (`getrandom` →
 //! BCryptGenRandom on Windows — actually secure, unlike the old Math.random
-//! JS stub) and spec-shaped randomUUID (v4). `crypto.subtle` is not provided
-//! (the engine bundle only typeof-guards crypto).
+//! JS stub), spec-shaped randomUUID (v4), and `crypto.subtle.digest`
+//! (SHA-1/256/384/512 via RustCrypto) for asset hashing / cache keys.
 
 use core::ffi::c_void;
+
+use sha1::Digest;
 
 use super::util::*;
 use crate::glue;
@@ -40,18 +42,45 @@ unsafe extern "sysv64" fn random_uuid(g: *mut c_void, _cf: *mut c_void) -> u64 {
     js_string(g, &s)
 }
 
+/// crypto.subtle.digest(algorithm, data) → Promise<ArrayBuffer>.
+/// `algorithm` is a name string or `{ name }` per spec.
+unsafe extern "sysv64" fn subtle_digest(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let alg_v = cf_arg(cf, 0);
+    // Spec: AlgorithmIdentifier = name string | { name } dictionary.
+    // (read_string ToString-coerces objects, so check the kind explicitly.)
+    let alg_v = if glue::rjs_kind(g, alg_v) == 8 { get(g, alg_v, "name") } else { alg_v };
+    let alg = read_string(g, alg_v).unwrap_or_default();
+    let Some(bytes) = bufferish(g, cf_arg(cf, 1)) else {
+        return rejected_promise(g, 1, "crypto.subtle.digest: data must be a BufferSource");
+    };
+    let hash: Vec<u8> = match alg.trim().to_ascii_uppercase().as_str() {
+        "SHA-1" => sha1::Sha1::digest(bytes).to_vec(),
+        "SHA-256" => sha2::Sha256::digest(bytes).to_vec(),
+        "SHA-384" => sha2::Sha384::digest(bytes).to_vec(),
+        "SHA-512" => sha2::Sha512::digest(bytes).to_vec(),
+        other => return rejected_promise(g, 0, &format!("crypto.subtle.digest: unsupported algorithm \"{other}\" (NotSupportedError)")),
+    };
+    // Spec returns an ArrayBuffer; build it as a fresh Uint8Array's buffer.
+    let u8v = make_u8(g, &hash);
+    resolved_promise(g, get(g, u8v, "buffer"))
+}
+
 pub unsafe fn install(g: *mut c_void) {
     let global = glue::rjs_global(g);
     let crypto = new_object(g, UNDEF);
 
-    let mut def_fn = |name: &str, arity: u32, f: HostFn| {
+    let mut def_fn = |target: u64, name: &str, arity: u32, f: HostFn| {
         let n16: Vec<u16> = name.encode_utf16().collect();
         let mut func = UNDEF;
         glue::rjs_function_create(g, n16.as_ptr(), n16.len(), arity, f as *const c_void, &mut func);
-        define(g, crypto, name, func, 2);
+        define(g, target, name, func, 2);
     };
-    def_fn("getRandomValues", 1, get_random_values);
-    def_fn("randomUUID", 0, random_uuid);
+    def_fn(crypto, "getRandomValues", 1, get_random_values);
+    def_fn(crypto, "randomUUID", 0, random_uuid);
+
+    let subtle = new_object(g, UNDEF);
+    def_fn(subtle, "digest", 2, subtle_digest);
+    define(g, crypto, "subtle", subtle, 1 | 2);
 
     define(g, global, "crypto", crypto, 2);
 }

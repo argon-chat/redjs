@@ -37,81 +37,10 @@
     };
   })();
 
-  // ── microtask / immediate ──
-  if (typeof g.queueMicrotask !== 'function') {
-    g.queueMicrotask = function (cb) { Promise.resolve().then(cb); };
-  }
-  if (typeof g.setImmediate !== 'function') {
-    g.setImmediate = function (cb) {
-      var a = Array.prototype.slice.call(arguments, 1);
-      return setTimeout(function () { cb.apply(null, a); }, 0);
-    };
-    g.clearImmediate = function (id) { clearTimeout(id); };
-  }
-
-  // ── atob / btoa (latin1 string ↔ base64) ──
-  if (typeof g.atob !== 'function') {
-    var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    g.atob = function (input) {
-      var s = String(input).replace(/[\t\n\f\r ]+/g, '');
-      if (/[^A-Za-z0-9+/=]/.test(s)) throw new Error('atob: invalid character');
-      s = s.replace(/=+$/, '');
-      var out = '', buffer = 0, bits = 0;
-      for (var i = 0; i < s.length; i++) {
-        buffer = (buffer << 6) | B64.indexOf(s[i]);
-        bits += 6;
-        if (bits >= 8) { bits -= 8; out += String.fromCharCode((buffer >> bits) & 0xff); }
-      }
-      return out;
-    };
-    g.btoa = function (input) {
-      var s = String(input), out = '';
-      for (var i = 0; i < s.length; i += 3) {
-        var c0 = s.charCodeAt(i), c1 = s.charCodeAt(i + 1), c2 = s.charCodeAt(i + 2);
-        if (c0 > 255 || c1 > 255 || c2 > 255) throw new Error('btoa: character out of latin1 range');
-        var triplet = (c0 << 16) | ((c1 || 0) << 8) | (c2 || 0);
-        out += B64[(triplet >> 18) & 63] + B64[(triplet >> 12) & 63];
-        out += i + 1 < s.length ? B64[(triplet >> 6) & 63] : '=';
-        out += i + 2 < s.length ? B64[triplet & 63] : '=';
-      }
-      return out;
-    };
-  }
-
-  // ── AbortController / AbortSignal (no async cancellation sources here) ──
-  if (typeof g.AbortController !== 'function') {
-    g.AbortSignal = class AbortSignal {
-      constructor() { this.aborted = false; this.reason = undefined; this.onabort = null; }
-      addEventListener() {} removeEventListener() {} throwIfAborted() { if (this.aborted) throw new Error('Aborted'); }
-    };
-    g.AbortController = class AbortController {
-      constructor() { this.signal = new g.AbortSignal(); }
-      abort(reason) { this.signal.aborted = true; this.signal.reason = reason; if (typeof this.signal.onabort === 'function') this.signal.onabort(); }
-    };
-  }
-
   // ── Request (minimal record) ──
   if (typeof g.Request !== 'function') {
     g.Request = class Request {
       constructor(input, init) { init = init || {}; this.url = String((input && input.url) || input || ''); this.method = init.method || 'GET'; this.headers = new g.Headers(); }
-    };
-  }
-
-  // ── ImageData (plain pixel record; consumed by the native image pipeline) ──
-  if (typeof g.ImageData !== 'function') {
-    g.ImageData = class ImageData {
-      constructor(dataOrW, wOrH, h) {
-        if (typeof dataOrW === 'number') {
-          this.width = dataOrW | 0; this.height = wOrH | 0;
-          this.data = new Uint8ClampedArray(this.width * this.height * 4);
-        } else {
-          this.data = dataOrW;
-          this.width = wOrH | 0;
-          this.height = (h != null ? h : (dataOrW.length / 4 / wOrH)) | 0;
-        }
-        this.colorSpace = 'srgb';
-      }
-      get __brand() { return 'ImageData'; }
     };
   }
 
@@ -128,11 +57,6 @@
   })();
   if (typeof g.HTMLVideoElement !== 'function') {
     g.HTMLVideoElement = class HTMLVideoElement {};
-  }
-
-  // ── BroadcastChannel stub ──
-  if (typeof g.BroadcastChannel !== 'function') {
-    g.BroadcastChannel = class BroadcastChannel { constructor(name) { this.name = name; this.onmessage = null; } postMessage() {} close() {} addEventListener() {} removeEventListener() {} };
   }
 
   // ── location ──

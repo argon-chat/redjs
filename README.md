@@ -199,14 +199,18 @@ hacks, no JS megashim:
 | class | notes |
 |---|---|
 | `Event` / `CustomEvent` / `EventTarget` | WHATWG dispatch: once, duplicate suppression, `handleEvent` objects, `stopImmediatePropagation`, cancelable/`preventDefault`, on-`type` handler props, listener snapshotting |
-| `TextEncoder` / `TextDecoder` | UTF-8; wrong labels throw RangeError per spec |
+| `TextEncoder` / `TextDecoder` | encoder: utf-8 + real `encodeInto`; decoder: EVERY WHATWG label via encoding_rs (windows-125x, utf-16le/be, koi8, shift_jis, …), `fatal`/`ignoreBOM` honored; unknown labels → RangeError; no `{stream:true}` |
 | `Blob` | Arc-shared bytes — spec `slice()` is zero-copy; promise `arrayBuffer/bytes/text` |
 | `URL` / `URLSearchParams` | backed by the `url` crate (rust-url = the reference WHATWG implementation); searchParams↔href live sync; full iteration protocol (`entries/keys/values/forEach/[Symbol.iterator]`, live-list semantics) |
 | `fetch` / `Response` / `Headers` | local files (scripts→assets root resolution) + `data:` URIs; http(s) → network-error response |
 | `ImageBitmap` / `HTMLImageElement` / `Image` / `createImageBitmap` | decode via the `image` crate (png/jpeg/webp/bmp/gif); `img.src` loads async on the pump tick and fires `load`/`error`; region-crop overload for sprite atlases |
 | `document` / `window` | EventTarget-backed; `window === globalThis` (proxy-normalized) |
-| `crypto` | **OS CSPRNG** (`getrandom` → BCryptGenRandom): getRandomValues (spec type/quota checks) + randomUUID v4; no `subtle` |
+| `crypto` | **OS CSPRNG** (`getrandom` → BCryptGenRandom): getRandomValues (spec type/quota checks) + randomUUID v4; `subtle.digest` SHA-1/256/384/512 (RustCrypto) |
 | `structuredClone` | native deep clone: plain objects/arrays, typed arrays/ArrayBuffers, Date/RegExp/Map/Set, Blob/ImageBitmap, cycles; functions → DataCloneError |
+| `AbortController` / `AbortSignal` | real EventTarget signals: `abort` event + `onabort`, `reason`, `throwIfAborted()`, statics `AbortSignal.abort()` / `AbortSignal.timeout(ms)` (scheduler-driven TimeoutError) |
+| `ImageData` | both constructor forms with spec validation; consumed by the native image pipeline and the 2D canvas stub |
+| `BroadcastChannel` | same-context channels: `postMessage` structured-clones and delivers `message` events on the next pump tick to other same-name channels |
+| `atob` / `btoa` / `queueMicrotask` / `setImmediate` | native: base64 in Rust, queueMicrotask enqueues on the VM's REAL microtask queue (QueuedTask/InvokeFunctionJob), setImmediate = 0-delay macrotask sharing the timer registry (`clearImmediate` = `clearTimeout`) |
 | **Web Audio** (`AudioContext`, `GainNode`, `StereoPannerNode`, `PannerNode`+listener, `BiquadFilterNode`, `AnalyserNode`, `AudioBufferSourceNode`, `AudioBuffer`, `AudioParam` automation, `decodeAudioData`) | REAL native implementation over the **Firewheel** audio-graph engine (cpal output stream, sample-clock `currentTime`); decode via symphonium (wav/flac/mp3/ogg-vorbis, resampled to the stream rate). Param ramps evaluated per pump tick + node smoothers. Deviations: `suspend()` mutes instead of pausing the clock; Analyser is a neutral pass-through; exponential ramps fall back to linear. ⚠ firewheel 0.10 gotcha: the sampler's `sync_*_event` helpers emit the wrong `ParamData` for `Notify` fields — use `Diff`-generated events (see `webapi/audio.rs`). |
 | `Element` / `HTMLElement` / `SVGElement` / `Node` | real prototype chain off EventTarget (Vue's `instanceof HTMLElement` checks work); `document.createElement` instances are HTMLElements |
 | `requestIdleCallback` / `cancelIdleCallback` | native queue fired after the rAF batch each pump; IdleDeadline with a real decreasing ~4 ms budget (hydrate loops progress AND terminate) |

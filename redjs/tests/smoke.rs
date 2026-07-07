@@ -59,8 +59,100 @@ fn conformance() {
     webapi_platform(&ctx);
     sec("webapi_audio");
     webapi_audio(&ctx);
+    sec("webapi_platform2");
+    webapi_platform2(&ctx);
 
     println!("redjs conformance: all sections passed");
+}
+
+/// The natives that replaced the last bootstrap stubs: atob/btoa,
+/// AbortController/AbortSignal, ImageData, BroadcastChannel, queueMicrotask,
+/// setImmediate.
+fn webapi_platform2(ctx: &Context) {
+    unsafe {
+        // atob/btoa round trip + error shapes.
+        let v = ctx
+            .eval(
+                "(() => { const b = btoa('Hello \\xFF!'); const a = atob(b); \
+                 let badA = 'no'; try { atob('@@'); } catch (e) { badA = 'yes'; } \
+                 let badB = 'no'; try { btoa('\\u0100'); } catch (e) { badB = 'yes'; } \
+                 return [b, a === 'Hello \\xFF!', badA, badB].join('|'); })()",
+            )
+            .unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "SGVsbG8g/yE=|true|yes|yes");
+
+        // AbortController: abort event (listener + onabort), reason, throwIfAborted.
+        let v = ctx
+            .eval(
+                "(() => { const c = new AbortController(); const s = c.signal; \
+                 const log = []; \
+                 s.addEventListener('abort', () => log.push('listener')); \
+                 s.onabort = () => log.push('onabort'); \
+                 log.push(s.aborted, s instanceof AbortSignal, s instanceof EventTarget); \
+                 c.abort('why'); \
+                 log.push(s.aborted, s.reason); \
+                 c.abort('again'); /* no re-fire per spec */ \
+                 let threw = 'no'; try { s.throwIfAborted(); } catch (e) { threw = e; } \
+                 const pre = AbortSignal.abort(); \
+                 return [log.join(','), threw, pre.aborted, pre.reason.name].join('|'); })()",
+            )
+            .unwrap();
+        assert_eq!(
+            ctx.to_rust_string(v).unwrap(),
+            "false,true,true,listener,onabort,true,why|why|true|AbortError"
+        );
+
+        // AbortSignal.timeout fires through the scheduler.
+        ctx.eval("globalThis.tsig = AbortSignal.timeout(1); globalThis.tlog = []; tsig.onabort = () => tlog.push(tsig.reason.name);").unwrap();
+        let mut stats = redjs::ffi::RjsPumpStats::default();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        let v = ctx.eval("[tsig.aborted, tlog.join()].join('|')").unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "true|TimeoutError");
+
+        // ImageData: both constructor forms + validation.
+        let v = ctx
+            .eval(
+                "(() => { const a = new ImageData(2, 3); \
+                 const src = new Uint8ClampedArray(16); src[0] = 7; \
+                 const b = new ImageData(src, 2); \
+                 let bad = 'no'; try { new ImageData(new Uint8ClampedArray(15), 2); } catch (e) { bad = 'yes'; } \
+                 return [a.width, a.height, a.data.length, a.colorSpace, b.height, b.data[0], bad, b instanceof ImageData].join('|'); })()",
+            )
+            .unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "2|3|24|srgb|2|7|yes|true");
+
+        // BroadcastChannel: async structured-clone delivery to same-name peers.
+        ctx.eval(
+            "globalThis.bcLog = []; \
+             const rx1 = new BroadcastChannel('game'); \
+             const rx2 = new BroadcastChannel('game'); \
+             const other = new BroadcastChannel('other'); \
+             const tx = new BroadcastChannel('game'); \
+             rx1.onmessage = e => bcLog.push('rx1:' + e.data.n); \
+             rx2.addEventListener('message', e => bcLog.push('rx2:' + e.data.n)); \
+             other.onmessage = () => bcLog.push('other'); \
+             rx2.close(); \
+             tx.postMessage({ n: 5 }); \
+             bcLog.push('sync-after-post:' + bcLog.length);",
+        )
+        .unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        let v = ctx.eval("bcLog.join('|')").unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), "sync-after-post:0|rx1:5");
+
+        // queueMicrotask runs before timers; setImmediate passes args.
+        ctx.eval(
+            "globalThis.ord = []; \
+             setImmediate((a, b) => ord.push('imm:' + a + b), 'x', 'y'); \
+             queueMicrotask(() => ord.push('micro'));",
+        )
+        .unwrap();
+        ffi::redjs_pump(ctx.raw(), 7, &mut stats);
+        let v = ctx.eval("ord.join('|')").unwrap();
+        let s = ctx.to_rust_string(v).unwrap();
+        assert!(s.contains("micro") && s.contains("imm:xy"), "queueMicrotask + setImmediate ran: {s}");
+    }
 }
 
 /// Web Audio over Firewheel: graph construction, params + automation,
@@ -350,12 +442,49 @@ fn webapi_encoding_url_blob(ctx: &Context) {
         )
         .unwrap();
     assert_eq!(ctx.to_rust_string(v).unwrap(), "utf-8,true,3");
-    // Unsupported label throws RangeError per spec.
+    // Full WHATWG label support (encoding_rs): windows-1251 cyrillic,
+    // UTF-16LE, label→canonical-name resolution, fatal mode, unknown labels.
+    let v = ctx
+        .eval(
+            "(() => { \
+             const cp1251 = new TextDecoder('windows-1251'); \
+             const ru = cp1251.decode(new Uint8Array([0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2])); \
+             const u16 = new TextDecoder('utf-16le').decode(new Uint8Array([0x41, 0x00, 0x16, 0x04])); \
+             const canon = new TextDecoder('latin1').encoding; \
+             let fatal = 'no'; \
+             try { new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array([0xff])); } \
+             catch (e) { fatal = e instanceof TypeError ? 'type' : 'other'; } \
+             let unknown = 'no'; \
+             try { new TextDecoder('klingon'); } catch (e) { unknown = e instanceof RangeError ? 'range' : 'other'; } \
+             const into = new TextEncoder().encodeInto('привет', new Uint8Array(7)); \
+             return [ru, u16, canon, fatal, unknown, into.read, into.written].join('|'); })()",
+        )
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), "Привет|AЖ|windows-1252|type|range|3|6");
+
+    // crypto.subtle.digest against known SHA test vectors.
+    let probe = ctx
+        .eval("(() => { try { crypto.subtle.digest('SHA-256', new Uint8Array([1])); return 'sync-ok'; } catch (e) { return 'sync-throw: ' + e; } })()")
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(probe).unwrap(), "sync-ok");
+    ctx.eval(
+        "globalThis.digests = null; \
+         (async () => { \
+           const data = new TextEncoder().encode('abc'); \
+           const hex = b => Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, '0')).join(''); \
+           const s256 = hex(await crypto.subtle.digest('SHA-256', data)); \
+           const s1 = hex(await crypto.subtle.digest({ name: 'sha-1' }, data)); \
+           let bad = 'no'; \
+           try { await crypto.subtle.digest('MD5', data); } catch (e) { bad = 'rejected'; } \
+           digests = [s256, s1, bad].join('|'); \
+         })().catch(e => { digests = 'threw: ' + String(e) + ' @ ' + (e && e.stack); })",
+    )
+    .unwrap();
+    ctx.drain_microtasks();
+    let v = ctx.eval("digests").unwrap();
     assert_eq!(
-        ctx.eval("(() => { try { new TextDecoder('windows-1251'); return 'no'; } catch (e) { return e instanceof RangeError ? 'range' : 'other'; } })()")
-            .map(|v| ctx.to_rust_string(v).unwrap())
-            .unwrap(),
-        "range"
+        ctx.to_rust_string(v).unwrap(),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad|a9993e364706816aba3e25717850c26c9cd0d89d|rejected"
     );
 
     // URL — WHATWG parser (rust-url): normalization, components, setters,

@@ -23,6 +23,11 @@ unsafe fn ctor_is(g: *mut c_void, v: u64, global_name: &str) -> bool {
     is_cell(ctor) && ctor == get(g, glue::rjs_global(g), global_name)
 }
 
+/// Structured clone for other native modules (BroadcastChannel.postMessage).
+pub unsafe fn clone(g: *mut c_void, v: u64) -> Result<u64, String> {
+    clone_value(g, v, &mut HashMap::new(), 0)
+}
+
 unsafe fn clone_value(g: *mut c_void, v: u64, seen: &mut HashMap<u64, u64>, depth: u32) -> Result<u64, String> {
     if depth > 256 {
         return Err("structuredClone: object graph too deep".into());
