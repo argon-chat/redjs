@@ -27,14 +27,18 @@
 //! - `createView`-style object identity rules aside, `suspend()` mutes the
 //!   master bus instead of pausing the stream, so `currentTime` keeps
 //!   advancing while suspended.
-//! - `AnalyserNode` is a pass-through: the analysis getters fill neutral
-//!   data (games use it for cosmetic meters).
+//! - `AnalyserNode` is REAL (W-MIX MIX-13): a bypass monitor node captures the
+//!   last `MONITOR_WINDOW` mono-mixed samples into a lock-free ring; the
+//!   getters serve true time-domain data and a Blackman-windowed radix-2 FFT
+//!   with spec smoothing. Deviations: `fftSize` caps at 4096 (spec: 32768) and
+//!   reads may tear across a processing-block boundary (fine for meters).
 //! - `exponentialRampToValueAtTime` falls back to a linear ramp.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::ops::Range;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use firewheel::{
@@ -184,6 +188,153 @@ impl Timeline {
 }
 
 // ---------------------------------------------------------------------------
+// AnalyserNode backing (W-MIX MIX-13): a bypass monitor node captures the last
+// MONITOR_WINDOW mono-mixed samples into a lock-free ring shared with the main
+// thread; the analysis getters (time-domain + FFT) read it on demand.
+// ---------------------------------------------------------------------------
+
+/// Native max `fftSize` (power of two). The spec allows up to 32768; games use
+/// 256–2048 — 4096 keeps the per-analyser footprint at 16 KB.
+const MONITOR_WINDOW: usize = 4096;
+
+struct MonitorRing {
+    /// f32 bits, mono mix of the inputs. Torn reads across a processing-block
+    /// boundary are acceptable for analysis purposes.
+    samples: Box<[AtomicU32]>,
+    cursor: AtomicUsize,
+}
+
+impl MonitorRing {
+    fn new() -> Self {
+        Self {
+            samples: (0..MONITOR_WINDOW).map(|_| AtomicU32::new(0)).collect(),
+            cursor: AtomicUsize::new(0),
+        }
+    }
+
+    /// Copy the most recent `out.len()` samples, oldest → newest.
+    fn read_latest(&self, out: &mut [f32]) {
+        let cur = self.cursor.load(Ordering::Acquire);
+        let n = out.len().min(MONITOR_WINDOW);
+        let start = cur.wrapping_sub(n);
+        for (i, slot) in out.iter_mut().take(n).enumerate() {
+            let bits = self.samples[start.wrapping_add(i) & (MONITOR_WINDOW - 1)].load(Ordering::Relaxed);
+            *slot = f32::from_bits(bits);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MonitorNode {
+    ring: ArcGc<MonitorRing>,
+}
+
+impl firewheel::node::AudioNode for MonitorNode {
+    type Configuration = firewheel::node::EmptyConfig;
+
+    fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
+        firewheel::node::AudioNodeInfo::new()
+            .debug_name("webaudio_analyser")
+            .channel_config(firewheel::channel_config::ChannelConfig {
+                num_inputs: firewheel::channel_config::ChannelCount::new(2).unwrap(),
+                num_outputs: firewheel::channel_config::ChannelCount::new(2).unwrap(),
+            })
+    }
+
+    fn construct_processor(
+        &self,
+        _config: &Self::Configuration,
+        _cx: firewheel::node::ConstructProcessorContext,
+    ) -> impl firewheel::node::AudioNodeProcessor {
+        MonitorProcessor { ring: ArcGc::clone(&self.ring) }
+    }
+}
+
+struct MonitorProcessor {
+    ring: ArcGc<MonitorRing>,
+}
+
+impl firewheel::node::AudioNodeProcessor for MonitorProcessor {
+    fn process(
+        &mut self,
+        info: &firewheel::node::ProcInfo,
+        buffers: firewheel::node::ProcBuffers,
+        _events: &mut firewheel::event::ProcEvents,
+        _extra: &mut firewheel::node::ProcExtra,
+    ) -> firewheel::node::ProcessStatus {
+        let n_ch = buffers.inputs.len().max(1) as f32;
+        let mut cur = self.ring.cursor.load(Ordering::Relaxed);
+        for i in 0..info.frames {
+            let mut s = 0.0f32;
+            for (ch, buf) in buffers.inputs.iter().enumerate() {
+                if !info.in_silence_mask.is_channel_silent(ch) {
+                    s += buf[i];
+                }
+            }
+            self.ring.samples[cur & (MONITOR_WINDOW - 1)].store((s / n_ch).to_bits(), Ordering::Relaxed);
+            cur = cur.wrapping_add(1);
+        }
+        self.ring.cursor.store(cur, Ordering::Release);
+        firewheel::node::ProcessStatus::Bypass
+    }
+}
+
+/// Blackman window (spec α = 0.16), applied before the FFT.
+fn blackman(n: usize, len: usize) -> f32 {
+    const A0: f32 = 0.42;
+    const A1: f32 = 0.5;
+    const A2: f32 = 0.08;
+    let x = core::f32::consts::TAU * n as f32 / len as f32;
+    A0 - A1 * x.cos() + A2 * (2.0 * x).cos()
+}
+
+/// In-place iterative radix-2 Cooley-Tukey. `re.len()` must be a power of two.
+fn fft_in_place(re: &mut [f32], im: &mut [f32]) {
+    let n = re.len();
+    debug_assert!(n.is_power_of_two() && im.len() == n);
+
+    // Bit-reversal permutation
+    let mut j = 0usize;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+
+    let mut len = 2;
+    while len <= n {
+        let ang = -core::f32::consts::TAU / len as f32;
+        let (wr, wi) = (ang.cos(), ang.sin());
+        let half = len / 2;
+        let mut i = 0;
+        while i < n {
+            let (mut cr, mut ci) = (1.0f32, 0.0f32);
+            for k in 0..half {
+                let (ur, ui) = (re[i + k], im[i + k]);
+                let (br, bi) = (re[i + k + half], im[i + k + half]);
+                let (vr, vi) = (br * cr - bi * ci, br * ci + bi * cr);
+                re[i + k] = ur + vr;
+                im[i + k] = ui + vi;
+                re[i + k + half] = ur - vr;
+                im[i + k + half] = ui - vi;
+                let ncr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = ncr;
+            }
+            i += len;
+        }
+        len <<= 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Engine / node state
 // ---------------------------------------------------------------------------
 
@@ -195,7 +346,13 @@ enum Params {
     Spatial(SpatialBasicNode),
     Svf(Box<SvfNode<2>>),
     Sampler(Box<SamplerNode>),
-    /// AnalyserNode et al: audio passes through untouched.
+    /// AnalyserNode: bypass monitor capturing samples for the analysis getters.
+    Analyser {
+        ring: ArcGc<MonitorRing>,
+        /// Smoothed magnitude spectrum (spec `smoothingTimeConstant`), sized on first use.
+        smooth: Vec<f32>,
+    },
+    /// Generic no-op nodes: audio passes through untouched.
     Passthrough,
 }
 
@@ -524,6 +681,7 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
         Params::Spatial(p) => eng.fw.add_node(p.clone(), None),
         Params::Svf(p) => eng.fw.add_node((**p).clone(), None),
         Params::Sampler(s) => eng.fw.add_node((**s).clone(), Some(SamplerConfig::default())),
+        Params::Analyser { ring, .. } => eng.fw.add_node(MonitorNode { ring: ArcGc::clone(ring) }, None),
         Params::Passthrough => eng.fw.add_node(VolumeNode::default(), None),
         Params::Dest => eng.master,
     };
@@ -954,57 +1112,166 @@ unsafe extern "sysv64" fn biquad_set_type(g: *mut c_void, cf: *mut c_void) -> u6
     UNDEF
 }
 
-/// Analyser data getters fill neutral values (pass-through node).
-unsafe fn analyser_fill(g: *mut c_void, cf: *mut c_void, byte: u8, float: f32, is_float: bool) -> u64 {
+/// A typed-array argument as a mutable slice (`kind`: 2 = u8, 8 = f32).
+unsafe fn analyser_out<'a, T>(g: *mut c_void, cf: *mut c_void, kind: u32) -> Option<&'a mut [T]> {
     let arr = cf_arg(cf, 0);
     let mut ta = crate::ffi::RjsTaInfo::default();
-    if glue::rjs_typedarray_info(g, arr, &mut ta) == 0 && !ta.data.is_null() {
-        if is_float && ta.kind == 8 {
-            core::slice::from_raw_parts_mut(ta.data as *mut f32, ta.length as usize).fill(float);
-        } else if !is_float && ta.kind == 2 {
-            core::slice::from_raw_parts_mut(ta.data as *mut u8, ta.length as usize).fill(byte);
+    if glue::rjs_typedarray_info(g, arr, &mut ta) == 0 && !ta.data.is_null() && ta.kind == kind {
+        Some(core::slice::from_raw_parts_mut(ta.data as *mut T, ta.length as usize))
+    } else {
+        None
+    }
+}
+
+/// A valid analyser `fftSize`: power of two in 32..=MONITOR_WINDOW.
+fn valid_fft_size(v: f64) -> Option<usize> {
+    let n = v as usize;
+    (v.fract() == 0.0 && (32..=MONITOR_WINDOW).contains(&n) && n.is_power_of_two()).then_some(n)
+}
+
+unsafe fn analyser_slot_f64(g: *mut c_void, cf: *mut c_void, name: &str, default: f64) -> f64 {
+    let slots = slots_of(g, cf_this(cf));
+    dec_f64(get(g, slots, name)).unwrap_or(default)
+}
+
+unsafe fn analyser_fft_size(g: *mut c_void, cf: *mut c_void) -> usize {
+    valid_fft_size(analyser_slot_f64(g, cf, "fftSize", 2048.0)).unwrap_or(2048)
+}
+
+/// The last `fftSize` mono samples of THIS analyser's ring (oldest → newest).
+unsafe fn analyser_time_domain(g: *mut c_void, cf: *mut c_void) -> Option<Vec<f32>> {
+    let handle = this_node_handle(g, cf)?;
+    let n = analyser_fft_size(g, cf);
+    let gl = glob().lock().unwrap();
+    match gl.nodes.get(&handle).map(|r| &r.params) {
+        Some(Params::Analyser { ring, .. }) => {
+            let mut buf = vec![0.0f32; n];
+            ring.read_latest(&mut buf);
+            Some(buf)
         }
+        _ => None,
+    }
+}
+
+/// Smoothed magnitude spectrum (fftSize/2 linear magnitudes): Blackman window
+/// → radix-2 FFT → |X[k]|/N → exponential smoothing (spec §AnalyserNode).
+unsafe fn analyser_spectrum(g: *mut c_void, cf: *mut c_void) -> Option<Vec<f32>> {
+    let handle = this_node_handle(g, cf)?;
+    let n = analyser_fft_size(g, cf);
+    let tau = analyser_slot_f64(g, cf, "smoothingTimeConstant", 0.8).clamp(0.0, 1.0) as f32;
+
+    let mut gl = glob().lock().unwrap();
+    let Some(rec) = gl.nodes.get_mut(&handle) else { return None };
+    let Params::Analyser { ring, smooth } = &mut rec.params else { return None };
+
+    let mut re = vec![0.0f32; n];
+    ring.read_latest(&mut re);
+    for (i, v) in re.iter_mut().enumerate() {
+        *v *= blackman(i, n);
+    }
+    let mut im = vec![0.0f32; n];
+    fft_in_place(&mut re, &mut im);
+
+    if smooth.len() != n / 2 {
+        smooth.clear();
+        smooth.resize(n / 2, 0.0);
+    }
+    for k in 0..n / 2 {
+        let mag = (re[k] * re[k] + im[k] * im[k]).sqrt() / n as f32;
+        smooth[k] = tau * smooth[k] + (1.0 - tau) * mag;
+    }
+    Some(smooth.clone())
+}
+
+unsafe extern "sysv64" fn analyser_float_time(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(out) = analyser_out::<f32>(g, cf, 8) else { return UNDEF };
+    match analyser_time_domain(g, cf) {
+        Some(data) => {
+            let n = out.len().min(data.len());
+            out[..n].copy_from_slice(&data[..n]);
+        }
+        None => out.fill(0.0),
+    }
+    UNDEF
+}
+
+unsafe extern "sysv64" fn analyser_byte_time(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(out) = analyser_out::<u8>(g, cf, 2) else { return UNDEF };
+    match analyser_time_domain(g, cf) {
+        Some(data) => {
+            for (o, &v) in out.iter_mut().zip(data.iter()) {
+                *o = ((128.0 * (1.0 + v)).round()).clamp(0.0, 255.0) as u8;
+            }
+        }
+        None => out.fill(128),
+    }
+    UNDEF
+}
+
+unsafe extern "sysv64" fn analyser_float_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(out) = analyser_out::<f32>(g, cf, 8) else { return UNDEF };
+    match analyser_spectrum(g, cf) {
+        Some(mags) => {
+            for (o, &m) in out.iter_mut().zip(mags.iter()) {
+                *o = 20.0 * m.log10(); // m == 0 → -inf, matching browsers
+            }
+        }
+        None => out.fill(f32::NEG_INFINITY),
     }
     UNDEF
 }
 
 unsafe extern "sysv64" fn analyser_byte_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
-    analyser_fill(g, cf, 0, 0.0, false)
-}
-
-unsafe extern "sysv64" fn analyser_float_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
-    analyser_fill(g, cf, 0, -100.0, true)
-}
-
-unsafe extern "sysv64" fn analyser_byte_time(g: *mut c_void, cf: *mut c_void) -> u64 {
-    analyser_fill(g, cf, 128, 0.0, false)
-}
-
-unsafe extern "sysv64" fn analyser_float_time(g: *mut c_void, cf: *mut c_void) -> u64 {
-    analyser_fill(g, cf, 0, 0.0, true)
+    let min_db = analyser_slot_f64(g, cf, "minDecibels", -100.0) as f32;
+    let max_db = analyser_slot_f64(g, cf, "maxDecibels", -30.0) as f32;
+    let range = (max_db - min_db).max(1e-6);
+    let Some(out) = analyser_out::<u8>(g, cf, 2) else { return UNDEF };
+    match analyser_spectrum(g, cf) {
+        Some(mags) => {
+            for (o, &m) in out.iter_mut().zip(mags.iter()) {
+                let db = 20.0 * m.log10();
+                *o = (255.0 * (db - min_db) / range).clamp(0.0, 255.0) as u8;
+            }
+        }
+        None => out.fill(0),
+    }
+    UNDEF
 }
 
 unsafe extern "sysv64" fn analyser_get_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let slots = slots_of(g, cf_this(cf));
-    let v = get(g, slots, "fftSize");
-    if dec_f64(v).is_some() {
-        v
-    } else {
-        enc_i32(2048)
-    }
+    enc_i32(analyser_fft_size(g, cf) as i32)
 }
 
 unsafe extern "sysv64" fn analyser_set_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let v = dec_f64(cf_arg(cf, 0)).unwrap_or(f64::NAN);
+    if valid_fft_size(v).is_none() {
+        return throw_type_error(g, "AnalyserNode.fftSize must be a power of two in [32, 4096]");
+    }
     let slots = slots_of(g, cf_this(cf));
     define(g, slots, "fftSize", cf_arg(cf, 0), 0);
     UNDEF
 }
 
 unsafe extern "sysv64" fn analyser_bin_count(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let slots = slots_of(g, cf_this(cf));
-    let fft = get(g, slots, "fftSize");
-    enc_i32((dec_f64(fft).unwrap_or(2048.0) as i32 / 2).max(1))
+    enc_i32((analyser_fft_size(g, cf) / 2) as i32)
 }
+
+// smoothingTimeConstant / minDecibels / maxDecibels — plain slot-backed accessors
+macro_rules! analyser_slot_accessor {
+    ($get:ident, $set:ident, $name:literal, $default:expr) => {
+        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+            enc_f64(analyser_slot_f64(g, cf, $name, $default))
+        }
+        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+            let slots = slots_of(g, cf_this(cf));
+            define(g, slots, $name, cf_arg(cf, 0), 0);
+            UNDEF
+        }
+    };
+}
+analyser_slot_accessor!(analyser_get_smoothing, analyser_set_smoothing, "smoothingTimeConstant", 0.8);
+analyser_slot_accessor!(analyser_get_min_db, analyser_set_min_db, "minDecibels", -100.0);
+analyser_slot_accessor!(analyser_get_max_db, analyser_set_max_db, "maxDecibels", -30.0);
 
 // ---------------------------------------------------------------------------
 // Slot getters (AudioParam / object properties)
@@ -1255,7 +1522,8 @@ unsafe extern "sysv64" fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> 
 
 unsafe extern "sysv64" fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
-    ctx_create_node(g, cf, Params::Passthrough, c.analyser.proto, &[])
+    let params = Params::Analyser { ring: ArcGc::new(MonitorRing::new()), smooth: Vec::new() };
+    ctx_create_node(g, cf, params, c.analyser.proto, &[])
 }
 
 /// createMediaElementSource: no media elements in the player — a silent
@@ -1652,7 +1920,12 @@ pub unsafe fn install(g: *mut c_void) {
             ("getFloatTimeDomainData", 1, analyser_float_time),
         ],
         getters: &[("frequencyBinCount", analyser_bin_count)],
-        accessors: &[("fftSize", analyser_get_fft, analyser_set_fft)],
+        accessors: &[
+            ("fftSize", analyser_get_fft, analyser_set_fft),
+            ("smoothingTimeConstant", analyser_get_smoothing, analyser_set_smoothing),
+            ("minDecibels", analyser_get_min_db, analyser_set_min_db),
+            ("maxDecibels", analyser_get_max_db, analyser_set_max_db),
+        ],
     });
 
     let source = define_class(g, &ClassSpec {
