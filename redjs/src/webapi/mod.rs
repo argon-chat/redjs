@@ -21,6 +21,7 @@ pub mod dom;
 pub mod events;
 pub mod fetch;
 pub mod fsutil;
+pub mod hrtf;
 pub mod image;
 pub mod platform;
 pub mod textcodec;

@@ -10,7 +10,7 @@
 //! | `destination`            | master `VolumeNode` → graph out              |
 //! | `GainNode`               | `VolumeNode`                                 |
 //! | `StereoPannerNode`       | `VolumePanNode`                              |
-//! | `PannerNode` + listener  | `SpatialBasicNode` (offset = pos − listener) |
+//! | `PannerNode` + listener  | `WebPannerNode` (webapi/hrtf.rs): spec distance models + cones + listener basis; REAL HRTF via Chromium's HRIR set, or equal-power |
 //! | `BiquadFilterNode`       | `SvfNode<2>`                                 |
 //! | `AudioBufferSourceNode`  | `SamplerNode`                                |
 //! | `AudioBuffer`            | planar `f32` `SampleResource`                |
@@ -48,7 +48,6 @@ use firewheel::{
     node::NodeID,
     nodes::{
         sampler::{PlayFrom, RepeatMode, SamplerConfig, SamplerNode},
-        spatial_basic::SpatialBasicNode,
         svf::{SvfNode, SvfType},
         volume::VolumeNode,
         volume_pan::VolumePanNode,
@@ -57,6 +56,7 @@ use firewheel::{
     FirewheelContext, Volume,
 };
 
+use super::hrtf::{HrtfDatabase, WebPannerConfig, WebPannerNode};
 use super::util::*;
 use crate::glue;
 
@@ -72,11 +72,19 @@ const P_Q: u8 = 4; // BiquadFilterNode.Q
 const P_POS_X: u8 = 6; // PannerNode.positionX
 const P_POS_Y: u8 = 7;
 const P_POS_Z: u8 = 8;
-const P_INERT: u8 = 9; // detune / orientation / … — stored, no effect
+const P_INERT: u8 = 9; // detune / … — stored, no effect
+const P_ORIENT_X: u8 = 10; // PannerNode.orientationX (cone direction)
+const P_ORIENT_Y: u8 = 11;
+const P_ORIENT_Z: u8 = 12;
 const P_L_POS_X: u8 = 100; // AudioListener.positionX (param.node = engine handle)
 const P_L_POS_Y: u8 = 101;
 const P_L_POS_Z: u8 = 102;
-const P_L_INERT: u8 = 103; // listener forward/up — stored, no effect
+const P_L_FWD_X: u8 = 103; // AudioListener.forwardX (rotates panning space)
+const P_L_FWD_Y: u8 = 104;
+const P_L_FWD_Z: u8 = 105;
+const P_L_UP_X: u8 = 106;
+const P_L_UP_Y: u8 = 107;
+const P_L_UP_Z: u8 = 108;
 
 // ---------------------------------------------------------------------------
 // AudioBuffer backing store (planar f32, shared with playing samplers)
@@ -343,8 +351,9 @@ enum Params {
     Dest,
     Gain(VolumeNode),
     Pan(VolumePanNode),
-    Spatial(SpatialBasicNode),
     Svf(Box<SvfNode<2>>),
+    /// PannerNode: equal-power / HRTF panner (see webapi/hrtf.rs).
+    Spatial(WebPannerNode),
     Sampler(Box<SamplerNode>),
     /// AnalyserNode: bypass monitor capturing samples for the analysis getters.
     Analyser {
@@ -356,6 +365,14 @@ enum Params {
     Passthrough,
 }
 
+/// Web Audio distance models (spec formulas implemented in `distance_gain`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DistModel {
+    Inverse,
+    Linear,
+    Exponential,
+}
+
 struct NodeRec {
     engine: u64,
     id: NodeID,
@@ -364,6 +381,13 @@ struct NodeRec {
     outs: Vec<u64>,
     /// PannerNode world position.
     pos: [f32; 3],
+    /// PannerNode orientation (cone direction; Web Audio default +x).
+    orient: [f32; 3],
+    /// PannerNode cone: [innerAngle°, outerAngle°, outerGain].
+    cone: [f32; 3],
+    /// PannerNode distance attenuation: model + [refDistance, maxDistance, rolloffFactor].
+    dist_model: DistModel,
+    dist: [f32; 3],
     // -- sampler bookkeeping --
     buffer: Option<Arc<PlanarBuffer>>,
     loop_: bool,
@@ -384,6 +408,10 @@ impl NodeRec {
             params,
             outs: Vec::new(),
             pos: [0.0; 3],
+            orient: [1.0, 0.0, 0.0],
+            cone: [360.0, 360.0, 0.0],
+            dist_model: DistModel::Inverse,
+            dist: [1.0, 10_000.0, 1.0], // Web Audio defaults: ref, max, rolloff
             buffer: None,
             loop_: false,
             started: false,
@@ -410,6 +438,9 @@ struct Engine {
     master: NodeID,
     master_params: VolumeNode,
     listener: [f32; 3],
+    /// Listener orientation — rotates the panning space (Web Audio defaults).
+    listener_fwd: [f32; 3],
+    listener_up: [f32; 3],
     sample_rate: u32,
 }
 
@@ -541,17 +572,117 @@ unsafe fn queue_diff<T: Diff>(fw: &mut FirewheelContext, id: NodeID, old: &T, ne
     }
 }
 
-fn update_spatial(eng: &mut Engine, rec: &mut NodeRec) {
+fn v_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn v_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Normalize, or `fallback` for (near-)zero vectors.
+fn v_norm(v: [f32; 3], fallback: [f32; 3]) -> [f32; 3] {
+    let len = v_dot(v, v).sqrt();
+    if len < 1e-6 {
+        fallback
+    } else {
+        [v[0] / len, v[1] / len, v[2] / len]
+    }
+}
+
+/// Web Audio cone gain: the angle between the source's orientation and the
+/// source→listener vector, mapped 1 → coneOuterGain across the inner/outer
+/// cone halves (spec §PannerNode "sound cones").
+fn cone_gain(src_to_listener: [f32; 3], orient: [f32; 3], cone: [f32; 3]) -> f32 {
+    let (inner, outer, outer_gain) = (cone[0], cone[1], cone[2].clamp(0.0, 1.0));
+    if inner >= 360.0 && outer >= 360.0 {
+        return 1.0;
+    }
+    let dist = v_dot(src_to_listener, src_to_listener).sqrt();
+    let olen = v_dot(orient, orient).sqrt();
+    if dist < 1e-6 || olen < 1e-6 {
+        return 1.0; // degenerate — spec treats as no cone effect
+    }
+    let cos = (v_dot(src_to_listener, orient) / (dist * olen)).clamp(-1.0, 1.0);
+    let angle = cos.acos().to_degrees();
+    let half_inner = inner.min(360.0) / 2.0;
+    let half_outer = outer.min(360.0) / 2.0;
+    if angle <= half_inner {
+        1.0
+    } else if angle >= half_outer {
+        outer_gain
+    } else {
+        let t = (angle - half_inner) / (half_outer - half_inner).max(1e-6);
+        1.0 + (outer_gain - 1.0) * t
+    }
+}
+
+/// Web Audio distance attenuation (MDN formulas, distances clamped per spec).
+fn distance_gain(model: DistModel, dist: f32, ref_d: f32, max_d: f32, rolloff: f32) -> f32 {
+    let ref_d = ref_d.max(1e-4);
+    match model {
+        DistModel::Inverse => {
+            let d = dist.max(ref_d);
+            ref_d / (ref_d + rolloff.max(0.0) * (d - ref_d))
+        }
+        DistModel::Linear => {
+            if max_d <= ref_d {
+                1.0
+            } else {
+                let d = dist.clamp(ref_d, max_d);
+                (1.0 - rolloff.clamp(0.0, 1.0) * (d - ref_d) / (max_d - ref_d)).clamp(0.0, 1.0)
+            }
+        }
+        DistModel::Exponential => {
+            let d = dist.max(ref_d);
+            (d / ref_d).powf(-rolloff.max(0.0))
+        }
+    }
+}
+
+/// Recompute a panner's derived params — Web Audio azimuth/elevation in the
+/// LISTENER's basis (right = fwd×up; azimuth 0 = front, +90 = right) and the
+/// combined distance × cone gain — then diff-push. `mutate` applies attribute
+/// writes (panningModel etc.) first so everything lands in one event batch.
+fn update_spatial_with(eng: &mut Engine, rec: &mut NodeRec, mutate: impl FnOnce(&mut WebPannerNode)) {
+    let (pos, orient, cone) = (rec.pos, rec.orient, rec.cone);
+    let (dist_model, dist_params) = (rec.dist_model, rec.dist);
     if let Params::Spatial(p) = &mut rec.params {
-        let old = p.clone();
-        p.offset = [
-            rec.pos[0] - eng.listener[0],
-            rec.pos[1] - eng.listener[1],
-            rec.pos[2] - eng.listener[2],
-        ]
-        .into();
+        let old = *p;
+        mutate(p);
+
+        let d = [
+            pos[0] - eng.listener[0],
+            pos[1] - eng.listener[1],
+            pos[2] - eng.listener[2],
+        ];
+        let fwd = v_norm(eng.listener_fwd, [0.0, 0.0, -1.0]);
+        let up = v_norm(eng.listener_up, [0.0, 1.0, 0.0]);
+        let right = v_norm(v_cross(fwd, up), [1.0, 0.0, 0.0]);
+        let (lx, ly, lz) = (v_dot(d, right), v_dot(d, up), v_dot(d, fwd));
+
+        let dist = v_dot(d, d).sqrt();
+        p.azimuth = lx.atan2(lz).to_degrees();
+        p.elevation = if dist > 1e-6 {
+            (ly / dist).clamp(-1.0, 1.0).asin().to_degrees()
+        } else {
+            0.0
+        };
+
+        let to_listener = [-d[0], -d[1], -d[2]];
+        p.gain = distance_gain(dist_model, dist, dist_params[0], dist_params[1], dist_params[2])
+            * cone_gain(to_listener, orient, cone);
+
         unsafe { queue_diff(&mut eng.fw, rec.id, &old, p) };
     }
+}
+
+fn update_spatial(eng: &mut Engine, rec: &mut NodeRec) {
+    update_spatial_with(eng, rec, |_| {});
 }
 
 /// Route a param write to the owning Firewheel node.
@@ -559,11 +690,14 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
     if kind >= P_L_POS_X {
         let Some(eng) = engines.get_mut(&handle) else { return };
         let i = (kind - P_L_POS_X) as usize;
-        if i < 3 {
-            eng.listener[i] = v as f32;
-            for rec in nodes.values_mut().filter(|r| r.engine == handle) {
-                update_spatial(eng, rec);
-            }
+        match i {
+            0..=2 => eng.listener[i] = v as f32,
+            3..=5 => eng.listener_fwd[i - 3] = v as f32,
+            6..=8 => eng.listener_up[i - 6] = v as f32,
+            _ => return,
+        }
+        for rec in nodes.values_mut().filter(|r| r.engine == handle) {
+            update_spatial(eng, rec);
         }
         return;
     }
@@ -603,6 +737,10 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
             }
             (Params::Spatial(_), P_POS_X..=P_POS_Z) => {
                 rec.pos[(kind - P_POS_X) as usize] = v as f32;
+                update_spatial(eng, rec);
+            }
+            (Params::Spatial(_), P_ORIENT_X..=P_ORIENT_Z) => {
+                rec.orient[(kind - P_ORIENT_X) as usize] = v as f32;
                 update_spatial(eng, rec);
             }
             _ => {}
@@ -678,7 +816,12 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
     let id = match &params {
         Params::Gain(p) => eng.fw.add_node(*p, None),
         Params::Pan(p) => eng.fw.add_node(*p, None),
-        Params::Spatial(p) => eng.fw.add_node(p.clone(), None),
+        // The HRIR database loads once per stream rate (~136 KB flac decode);
+        // None (decode failure) degrades HRTF mode to equal-power inside the node.
+        Params::Spatial(p) => eng.fw.add_node(
+            *p,
+            Some(WebPannerConfig { db: HrtfDatabase::for_rate(eng.sample_rate) }),
+        ),
         Params::Svf(p) => eng.fw.add_node((**p).clone(), None),
         Params::Sampler(s) => eng.fw.add_node((**s).clone(), Some(SamplerConfig::default())),
         Params::Analyser { ring, .. } => eng.fw.add_node(MonitorNode { ring: ArcGc::clone(ring) }, None),
@@ -763,8 +906,11 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
     if kind >= P_L_POS_X {
         if let Some(eng) = gl.engines.get(&node) {
             let i = (kind - P_L_POS_X) as usize;
-            if i < 3 {
-                return eng.listener[i] as f64;
+            match i {
+                0..=2 => return eng.listener[i] as f64,
+                3..=5 => return eng.listener_fwd[i - 3] as f64,
+                6..=8 => return eng.listener_up[i - 6] as f64,
+                _ => {}
             }
         }
         return fallback;
@@ -780,6 +926,7 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
         (Params::Svf(p), P_Q) => p.q_factor as f64,
         (Params::Sampler(s), P_RATE) => s.speed,
         (Params::Spatial(_), P_POS_X..=P_POS_Z) => rec.pos[(kind - P_POS_X) as usize] as f64,
+        (Params::Spatial(_), P_ORIENT_X..=P_ORIENT_Z) => rec.orient[(kind - P_ORIENT_X) as usize] as f64,
         _ => fallback,
     }
 }
@@ -1112,6 +1259,102 @@ unsafe extern "sysv64" fn biquad_set_type(g: *mut c_void, cf: *mut c_void) -> u6
     UNDEF
 }
 
+// ---------------------------------------------------------------------------
+// PannerNode attributes (W-MIX MIX-14/20): distance model + cone + panning model
+// ---------------------------------------------------------------------------
+
+/// Read a PannerNode value under the glob lock (0.0 for non-panner `this`).
+unsafe fn panner_read(g: *mut c_void, cf: *mut c_void, read: impl FnOnce(&NodeRec) -> f64) -> u64 {
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "PannerNode attribute on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    match gl.nodes.get(&handle) {
+        Some(rec) if matches!(rec.params, Params::Spatial(_)) => enc_f64(read(rec)),
+        _ => enc_f64(0.0),
+    }
+}
+
+/// Mutate the panner's record fields, then re-derive + diff-push.
+unsafe fn panner_write(g: *mut c_void, cf: *mut c_void, apply: impl FnOnce(&mut NodeRec)) -> u64 {
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "PannerNode attribute on wrong this");
+    };
+    let mut gl = glob().lock().unwrap();
+    let gl = &mut *gl;
+    let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
+    let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
+    apply(rec);
+    update_spatial(eng, rec);
+    UNDEF
+}
+
+/// [refDistance, maxDistance, rolloffFactor] and [inner°, outer°, outerGain] accessors.
+macro_rules! panner_f32_accessor {
+    ($get:ident, $set:ident, $field:ident, $idx:expr, $clamp:expr) => {
+        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+            panner_read(g, cf, |rec| rec.$field[$idx] as f64)
+        }
+        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+            let v = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0) as f32;
+            panner_write(g, cf, |rec| rec.$field[$idx] = ($clamp)(v))
+        }
+    };
+}
+panner_f32_accessor!(panner_get_ref, panner_set_ref, dist, 0, |v: f32| v.max(1e-4));
+panner_f32_accessor!(panner_get_max, panner_set_max, dist, 1, |v: f32| v.max(0.0));
+panner_f32_accessor!(panner_get_rolloff, panner_set_rolloff, dist, 2, |v: f32| v.max(0.0));
+panner_f32_accessor!(panner_get_cone_inner, panner_set_cone_inner, cone, 0, |v: f32| v);
+panner_f32_accessor!(panner_get_cone_outer, panner_set_cone_outer, cone, 1, |v: f32| v);
+panner_f32_accessor!(panner_get_cone_gain, panner_set_cone_gain, cone, 2, |v: f32| v);
+
+unsafe extern "sysv64" fn panner_get_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "PannerNode.distanceModel on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    let s = match gl.nodes.get(&handle).map(|r| r.dist_model) {
+        Some(DistModel::Linear) => "linear",
+        Some(DistModel::Exponential) => "exponential",
+        _ => "inverse",
+    };
+    js_string(g, s)
+}
+
+unsafe extern "sysv64" fn panner_set_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
+    let model = match ty.as_str() {
+        "linear" => DistModel::Linear,
+        "exponential" => DistModel::Exponential,
+        _ => DistModel::Inverse,
+    };
+    panner_write(g, cf, |rec| rec.dist_model = model)
+}
+
+/// Real HRTF (W-MIX MIX-20): switches the node's panning mode live.
+unsafe extern "sysv64" fn panner_get_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "PannerNode.panningModel on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    let hrtf = matches!(gl.nodes.get(&handle).map(|r| &r.params), Some(Params::Spatial(p)) if p.hrtf);
+    js_string(g, if hrtf { "HRTF" } else { "equalpower" })
+}
+
+unsafe extern "sysv64" fn panner_set_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
+    let hrtf = ty == "HRTF";
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "PannerNode.panningModel on wrong this");
+    };
+    let mut gl = glob().lock().unwrap();
+    let gl = &mut *gl;
+    let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
+    let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
+    update_spatial_with(eng, rec, |p| p.hrtf = hrtf);
+    UNDEF
+}
+
 /// A typed-array argument as a mutable slice (`kind`: 2 = u8, 8 = f32).
 unsafe fn analyser_out<'a, T>(g: *mut c_void, cf: *mut c_void, kind: u32) -> Option<&'a mut [T]> {
     let arr = cf_arg(cf, 0);
@@ -1344,6 +1587,8 @@ unsafe extern "sysv64" fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 
                 master,
                 master_params: VolumeNode::default(),
                 listener: [0.0; 3],
+                listener_fwd: [0.0, 0.0, -1.0],
+                listener_up: [0.0, 1.0, 0.0],
                 sample_rate,
             },
         );
@@ -1372,12 +1617,12 @@ unsafe extern "sysv64" fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 
         ("positionX", P_L_POS_X, 0.0),
         ("positionY", P_L_POS_Y, 0.0),
         ("positionZ", P_L_POS_Z, 0.0),
-        ("forwardX", P_L_INERT, 0.0),
-        ("forwardY", P_L_INERT, 0.0),
-        ("forwardZ", P_L_INERT, -1.0),
-        ("upX", P_L_INERT, 0.0),
-        ("upY", P_L_INERT, 1.0),
-        ("upZ", P_L_INERT, 0.0),
+        ("forwardX", P_L_FWD_X, 0.0),
+        ("forwardY", P_L_FWD_Y, 0.0),
+        ("forwardZ", P_L_FWD_Z, -1.0),
+        ("upX", P_L_UP_X, 0.0),
+        ("upY", P_L_UP_Y, 1.0),
+        ("upZ", P_L_UP_Z, 0.0),
     ];
     for &(name, kind, initial) in lparams {
         let p = host_create(g, c.param_cls, c.param.proto, ParamRef { node: engine_handle, kind, last: initial });
@@ -1487,18 +1732,21 @@ unsafe extern "sysv64" fn ctx_create_stereo_panner(g: *mut c_void, cf: *mut c_vo
 
 unsafe extern "sysv64" fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
+    // WebPannerNode (webapi/hrtf.rs): equal-power by default per spec, real
+    // HRTF when panningModel='HRTF'. Distance/cone params live in NodeRec with
+    // Web Audio defaults and are baked into the node's gain on the pump side.
     ctx_create_node(
         g,
         cf,
-        Params::Spatial(SpatialBasicNode::default()),
+        Params::Spatial(WebPannerNode::default()),
         c.panner.proto,
         &[
             ("positionX", P_POS_X, 0.0),
             ("positionY", P_POS_Y, 0.0),
             ("positionZ", P_POS_Z, 0.0),
-            ("orientationX", P_INERT, 1.0),
-            ("orientationY", P_INERT, 0.0),
-            ("orientationZ", P_INERT, 0.0),
+            ("orientationX", P_ORIENT_X, 1.0),
+            ("orientationY", P_ORIENT_Y, 0.0),
+            ("orientationZ", P_ORIENT_Z, 0.0),
         ],
     )
 }
@@ -1562,7 +1810,7 @@ unsafe extern "sysv64" fn ctx_create_buffer(g: *mut c_void, cf: *mut c_void) -> 
 
 // ---- decodeAudioData -------------------------------------------------------
 
-fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<PlanarBuffer, String> {
+pub(crate) fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<PlanarBuffer, String> {
     static LOADER: OnceLock<Mutex<symphonium::SymphoniumLoader>> = OnceLock::new();
     let loader = LOADER.get_or_init(|| Mutex::new(symphonium::SymphoniumLoader::new()));
     let mut loader = loader.lock().unwrap();
@@ -1890,7 +2138,16 @@ pub unsafe fn install(g: *mut c_void) {
             ("orientationY", get_slot_orient_y),
             ("orientationZ", get_slot_orient_z),
         ],
-        accessors: &[],
+        accessors: &[
+            ("distanceModel", panner_get_distance_model, panner_set_distance_model),
+            ("panningModel", panner_get_panning_model, panner_set_panning_model),
+            ("refDistance", panner_get_ref, panner_set_ref),
+            ("maxDistance", panner_get_max, panner_set_max),
+            ("rolloffFactor", panner_get_rolloff, panner_set_rolloff),
+            ("coneInnerAngle", panner_get_cone_inner, panner_set_cone_inner),
+            ("coneOuterAngle", panner_get_cone_outer, panner_set_cone_outer),
+            ("coneOuterGain", panner_get_cone_gain, panner_set_cone_gain),
+        ],
     });
 
     let biquad = define_class(g, &ClassSpec {
