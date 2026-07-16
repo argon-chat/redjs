@@ -28,6 +28,74 @@ pub fn get_roots(g: *mut c_void) -> Roots {
     roots().lock().unwrap().get(&(g as usize)).cloned().unwrap_or_default()
 }
 
+// --- host content provider (W-HIVE) ----------------------------------------
+// The player routes every content-relative local read through its single
+// C#-side IContentProvider (DeHive `game.hb` bank or loose files), registered
+// per context via `redjs_content_provider_set`. Standard C ABI — these are
+// called BY Rust, not by JSC, so no SysV trampoline is involved.
+
+/// Receives the full decoded bytes of one read. Called exactly once per hit.
+pub type ContentSinkFn = unsafe extern "C" fn(sink_ctx: *mut c_void, ptr: *const u8, len: usize);
+
+/// Host read: UTF-8 content-relative path in, `sink` called once with the
+/// decoded bytes on success. Returns 0 on hit, non-zero on miss (the caller
+/// then falls back to on-disk root resolution).
+pub type ContentReadFn =
+    unsafe extern "C" fn(path_ptr: *const u8, path_len: usize, sink: ContentSinkFn, sink_ctx: *mut c_void) -> i32;
+
+fn providers() -> &'static Mutex<HashMap<usize, ContentReadFn>> {
+    static P: OnceLock<Mutex<HashMap<usize, ContentReadFn>>> = OnceLock::new();
+    P.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn set_content_provider(g: *mut c_void, read: Option<ContentReadFn>) {
+    let mut map = providers().lock().unwrap();
+    match read {
+        Some(f) => {
+            map.insert(g as usize, f);
+        }
+        None => {
+            map.remove(&(g as usize));
+        }
+    }
+}
+
+fn get_content_provider(g: *mut c_void) -> Option<ContentReadFn> {
+    providers().lock().unwrap().get(&(g as usize)).copied()
+}
+
+unsafe extern "C" fn vec_sink(sink_ctx: *mut c_void, ptr: *const u8, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let vec = &mut *(sink_ctx as *mut Vec<u8>);
+    vec.extend_from_slice(core::slice::from_raw_parts(ptr, len));
+}
+
+/// URL → provider key: query/hash stripped, separators normalized, `./` and
+/// leading `/` trimmed — the same cleaning `resolve_local` applies before its
+/// root join. None for `file:///` and absolute host paths (host-filesystem
+/// forms, never content keys).
+fn clean_relative(url: &str) -> Option<String> {
+    let mut clean = url;
+    if let Some(cut) = clean.find(['?', '#']) {
+        clean = &clean[..cut];
+    }
+    if clean.starts_with("file:///") {
+        return None;
+    }
+    let clean = clean.replace('\\', "/");
+    let mut clean = clean.as_str();
+    while let Some(rest) = clean.strip_prefix("./") {
+        clean = rest;
+    }
+    let clean = clean.trim_start_matches('/');
+    if clean.is_empty() || Path::new(clean).is_absolute() {
+        return None;
+    }
+    Some(clean.to_string())
+}
+
 pub fn guess_content_type(path: &str) -> &'static str {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
@@ -100,6 +168,24 @@ pub fn fetch_url(g: *mut c_void, url: &str) -> Fetched {
     }
     if url.starts_with("http://") || url.starts_with("https://") {
         return Fetched { ok: false, status: 0, status_text: "", mime: "text/plain".into(), bytes: Vec::new() };
+    }
+    // Host content provider (W-HIVE): content-relative reads are served by the player's single
+    // IContentProvider (bank or loose). A miss falls through to the on-disk resolution below
+    // (absolute paths, dev layouts without a provider).
+    if let Some(read) = get_content_provider(g) {
+        if let Some(key) = clean_relative(url) {
+            let mut bytes: Vec<u8> = Vec::new();
+            let rc = unsafe { read(key.as_ptr(), key.len(), vec_sink, &mut bytes as *mut Vec<u8> as *mut c_void) };
+            if rc == 0 {
+                return Fetched {
+                    ok: true,
+                    status: 200,
+                    status_text: "OK",
+                    mime: guess_content_type(&key).to_string(),
+                    bytes,
+                };
+            }
+        }
     }
     let r = get_roots(g);
     match resolve_local(&r, url).and_then(|p| std::fs::read(&p).ok().map(|b| (p, b))) {

@@ -550,6 +550,17 @@ public sealed unsafe class JsContext
         }
     }
 
+    /// <summary>
+    /// Registers (or clears, with null) the host content provider for fetch/Image local reads
+    /// (W-HIVE): every content-relative URL is offered to <paramref name="readFn"/> (UTF-8 path +
+    /// one-shot byte sink; return 0 = served, non-zero = miss → fall back to the on-disk roots
+    /// from <see cref="InstallWebShims"/>). Called with the standard C ABI from any JS thread —
+    /// the provider must be thread-safe.
+    /// </summary>
+    public void SetContentProvider(
+        delegate* unmanaged<byte*, nuint, delegate* unmanaged<void*, byte*, nuint, void>, void*, int> readFn)
+        => NativeMethods.redjs_content_provider_set(_ctx, readFn);
+
     /// <summary>Updates window.innerWidth/innerHeight/devicePixelRatio and
     /// dispatches a trusted `resize` event. dpr &lt;= 0 keeps the current value.</summary>
     public void DomResize(int width, int height, double devicePixelRatio = 0)

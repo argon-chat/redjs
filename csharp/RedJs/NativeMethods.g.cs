@@ -447,6 +447,19 @@ namespace RedJs.Native
         internal static extern int redjs_webshim_install(void* ctx, ushort* scripts_root, nuint scripts_len, ushort* assets_root, nuint assets_len);
 
         /// <summary>
+        ///  Registers (or clears, with null) the host CONTENT PROVIDER for fetch/Image
+        ///  local reads (W-HIVE). `read_fn` is
+        ///  `int32_t (const uint8_t* path_utf8, size_t path_len, void (*sink)(void* ctx, const uint8_t* ptr, size_t len), void* sink_ctx)`
+        ///  — on a hit it returns 0 after calling `sink` exactly once with the full
+        ///  decoded bytes; non-zero = miss, resolution then falls back to the on-disk
+        ///  roots from `redjs_webshim_install`. Called by Rust with the standard C ABI
+        ///  (never by JSC — no SysV trampoline). Reads may come from any JS thread —
+        ///  the provider must be thread-safe.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_content_provider_set", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_content_provider_set(void* ctx, void* read_fn);
+
+        /// <summary>
         ///  Updates window.innerWidth/innerHeight/devicePixelRatio and dispatches a
         ///  trusted `resize` event on window. `dpr` &lt;= 0 keeps the current value.
         /// </summary>

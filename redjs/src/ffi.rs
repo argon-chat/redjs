@@ -860,6 +860,24 @@ pub unsafe extern "C" fn redjs_webshim_install(
     crate::webapi::install(ctx, &scripts, &assets)
 }
 
+/// Registers (or clears, with null) the host CONTENT PROVIDER for fetch/Image
+/// local reads (W-HIVE). `read_fn` is
+/// `int32_t (const uint8_t* path_utf8, size_t path_len, void (*sink)(void* ctx, const uint8_t* ptr, size_t len), void* sink_ctx)`
+/// — on a hit it returns 0 after calling `sink` exactly once with the full
+/// decoded bytes; non-zero = miss, resolution then falls back to the on-disk
+/// roots from `redjs_webshim_install`. Called by Rust with the standard C ABI
+/// (never by JSC — no SysV trampoline). Reads may come from any JS thread —
+/// the provider must be thread-safe.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_content_provider_set(ctx: *mut c_void, read_fn: *const c_void) {
+    let read = if read_fn.is_null() {
+        None
+    } else {
+        Some(core::mem::transmute::<*const c_void, crate::webapi::fsutil::ContentReadFn>(read_fn))
+    };
+    crate::webapi::fsutil::set_content_provider(ctx, read);
+}
+
 // ---------------------------------------------------------------------------
 // DOM host hooks + image pixel access (native web API)
 // ---------------------------------------------------------------------------
