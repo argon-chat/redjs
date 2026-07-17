@@ -157,6 +157,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     audio::install(g);
     abort::install(g, et_proto);
     platform::install(g, et_proto);
+    crate::physics::install(g);
 
     // The dumb-stub remainder.
     let mut out = 0u64;

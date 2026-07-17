@@ -30,6 +30,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the game formats.
 firewheel = { version = "0.10", features = ["spatial_basic_node", "svf_node"] }
 symphonium = { version = "0.7", default-features = false, features = ["resampler", "wav", "pcm", "flac", "mp3", "ogg", "vorbis"] }
+# 2D physics: native Rapier for the player (webapi-adjacent host class RedPhysics2D;
+# see .refactor/PHYSICS-NATIVE-DESIGN.md). simd-stable only — no rayon `parallel`
+# (pays off only on huge scenes), no wasm. rapier3d will sit alongside when the
+# engine grows a 3D path.
+rapier2d = { version = "0.34", features = ["simd-stable"] }
 
 [build-dependencies]
 cc = "1"
