@@ -73,6 +73,10 @@ const INITIAL_QUERIES: usize = 4096;
 //               [14]=radius [15]=width [16]=height [17]=falloff [18]=falloffStart [19]=affectedLayers
 // surfaceFx:    [0]=speed [1]=speedVariation(unused v1) [2]=forceScale [3]=useContactNormal
 //               [4]=useFriction(unused v1) [5]=useBounce(unused v1)
+// createJoint:  [0]=type(0 fixed/1 hinge/2 slider/3 rope/4 spring) [1..2]=anchorA [3..4]=anchorB
+//               [5]=enableCollision [6]=limitsEnabled [7]=limitMin [8]=limitMax
+//               [9]=motorEnabled [10]=motorVel [11]=motorMaxForce [12..13]=axis
+//               [14]=maxDistance [15]=restLength [16]=stiffness [17]=damping
 // raycast out:  [0]=px [1]=py [2]=nx [3]=ny [4]=dist [5]=bodySlot
 // getLinearVelocity out: [0]=vx [1]=vy
 // diagnostics out: [0]=bodyCount [1]=colliderCount [2]=activeBodies [3]=sleepingBodies
@@ -349,6 +353,7 @@ struct WorldData {
     wind_zones: Slab<WindZone>,
     surface_fx: HashMap<u32, SurfaceFx>,
     characters: HashMap<u32, CharRec>,
+    joints: Slab<ImpulseJointHandle>,
     poses: ExposedF32,
     /// Previous fixed-step poses (same slot layout) — render-rate interpolation
     /// blends prev→curr TS-side using the accumulator remainder.
@@ -381,6 +386,7 @@ impl WorldData {
             wind_zones: Slab::new(),
             surface_fx: HashMap::new(),
             characters: HashMap::new(),
+            joints: Slab::new(),
             poses: ExposedF32::new(g, INITIAL_POSES),
             prev_poses: ExposedF32::new(g, INITIAL_POSES),
             events: ExposedF32::new(g, INITIAL_EVENTS),
@@ -520,6 +526,7 @@ unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
     wd.wind_zones.clear();
     wd.surface_fx.clear();
     wd.characters.clear();
+    wd.joints.clear();
     UNDEF
 }
 
@@ -1824,6 +1831,79 @@ unsafe extern "sysv64" fn overlap_point(g: *mut c_void, cf: *mut c_void) -> u64 
     write_overlap_hits(g, wd, &slots)
 }
 
+// ---- joints (PHYS-21) -------------------------------------------------------
+
+/// createJoint(bodyA, bodyB) — descriptor from scratch (layout in header). All values
+/// arrive in PHYSICS space (anchors pre-scaled body-local, angles negated engine-side).
+/// Returns the joint slot id, or -1 when a body slot is dead.
+unsafe extern "sysv64" fn create_joint(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    let (Some(ha), Some(hb)) = (wd.body(arg_u(cf, 0)), wd.body(arg_u(cf, 1))) else {
+        return enc_f64(-1.0);
+    };
+    let s: Vec<f64> = wd.scratch.data()[..18].to_vec();
+    let a1 = Vec2::new(s[1] as f32, s[2] as f32);
+    let a2 = Vec2::new(s[3] as f32, s[4] as f32);
+    let contacts = s[5] != 0.0;
+    let joint: GenericJoint = match s[0] as u32 {
+        1 => {
+            let mut b = RevoluteJointBuilder::new()
+                .local_anchor1(a1)
+                .local_anchor2(a2)
+                .contacts_enabled(contacts);
+            if s[6] != 0.0 {
+                b = b.limits([s[7] as f32, s[8] as f32]);
+            }
+            if s[9] != 0.0 {
+                b = b.motor_velocity(s[10] as f32, 1.0).motor_max_force(s[11] as f32);
+            }
+            b.into()
+        }
+        2 => {
+            let ax = Vec2::new(s[12] as f32, s[13] as f32);
+            let ax = if ax.length() > 1e-6 { ax.normalize() } else { Vec2::new(1.0, 0.0) };
+            let mut b = PrismaticJointBuilder::new(ax)
+                .local_anchor1(a1)
+                .local_anchor2(a2)
+                .contacts_enabled(contacts);
+            if s[6] != 0.0 {
+                b = b.limits([s[7] as f32, s[8] as f32]);
+            }
+            if s[9] != 0.0 {
+                b = b.motor_velocity(s[10] as f32, 1.0).motor_max_force(s[11] as f32);
+            }
+            b.into()
+        }
+        3 => RopeJointBuilder::new((s[14] as f32).max(1e-4))
+            .local_anchor1(a1)
+            .local_anchor2(a2)
+            .contacts_enabled(contacts)
+            .into(),
+        4 => SpringJointBuilder::new(s[15] as f32, s[16] as f32, s[17] as f32)
+            .local_anchor1(a1)
+            .local_anchor2(a2)
+            .contacts_enabled(contacts)
+            .into(),
+        _ => FixedJointBuilder::new()
+            .local_anchor1(a1)
+            .local_anchor2(a2)
+            .contacts_enabled(contacts)
+            .into(),
+    };
+    let jh = wd.world.insert_impulse_joint(ha, hb, joint);
+    enc_f64(wd.joints.insert(jh) as f64)
+}
+
+/// removeJoint(slot) — no-op for dead slots (rapier already killed joints whose body
+/// was removed; the stale ImpulseJointHandle makes remove_impulse_joint return None).
+unsafe extern "sysv64" fn remove_joint(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    if let Some(jh) = wd.joints.remove(arg_u(cf, 0)) {
+        wd.world.remove_impulse_joint(jh);
+    }
+    UNDEF
+}
+
 // ---- debug render -----------------------------------------------------------
 
 /// Rapier's debug style colors are HSLA ([hue°, sat, light, alpha]) — convert to RGBA.
@@ -2113,6 +2193,8 @@ pub unsafe fn install(g: *mut c_void) {
                 ("overlapCircle", 4, overlap_circle),
                 ("overlapBox", 5, overlap_box),
                 ("overlapPoint", 3, overlap_point),
+                ("createJoint", 2, create_joint),
+                ("removeJoint", 1, remove_joint),
                 ("debugRender", 0, debug_render),
                 ("addGravityZone", 1, add_gravity_zone),
                 ("updateGravityZone", 2, update_gravity_zone),
