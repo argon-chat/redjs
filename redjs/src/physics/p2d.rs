@@ -16,6 +16,9 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use rapier2d::control::{
+    CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
+};
 use rapier2d::prelude::*;
 
 use super::{ExposedF32, ExposedF64, Slab};
@@ -148,6 +151,13 @@ struct SurfaceFx {
     speed: f32,
     force_scale: f32,
     use_contact_normal: bool,
+}
+
+struct CharRec {
+    ctl: KinematicCharacterController,
+    apply_impulses: bool,
+    /// Mass used for pushing dynamics; 0 = the body's own mass.
+    mass: f32,
 }
 
 /// One-way platform hook. The canonical rapier approach: contact-NORMAL based
@@ -335,7 +345,11 @@ struct WorldData {
     buoyancy_zones: Slab<BuoyancyZone>,
     wind_zones: Slab<WindZone>,
     surface_fx: HashMap<u32, SurfaceFx>,
+    characters: HashMap<u32, CharRec>,
     poses: ExposedF32,
+    /// Previous fixed-step poses (same slot layout) — render-rate interpolation
+    /// blends prev→curr TS-side using the accumulator remainder.
+    prev_poses: ExposedF32,
     events: ExposedF32,
     queries: ExposedF32,
     scratch: ExposedF64,
@@ -363,7 +377,9 @@ impl WorldData {
             buoyancy_zones: Slab::new(),
             wind_zones: Slab::new(),
             surface_fx: HashMap::new(),
+            characters: HashMap::new(),
             poses: ExposedF32::new(g, INITIAL_POSES),
+            prev_poses: ExposedF32::new(g, INITIAL_POSES),
             events: ExposedF32::new(g, INITIAL_EVENTS),
             queries: ExposedF32::new(g, INITIAL_QUERIES),
             scratch: ExposedF64::new(g, SCRATCH_LEN),
@@ -483,6 +499,7 @@ unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     wd.dead = true;
     wd.poses.release(g);
+    wd.prev_poses.release(g);
     wd.events.release(g);
     wd.queries.release(g);
     wd.scratch.release(g);
@@ -499,6 +516,7 @@ unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
     wd.buoyancy_zones.clear();
     wd.wind_zones.clear();
     wd.surface_fx.clear();
+    wd.characters.clear();
     UNDEF
 }
 
@@ -511,6 +529,10 @@ unsafe extern "sysv64" fn generation(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 unsafe extern "sysv64" fn get_poses(g: *mut c_void, cf: *mut c_void) -> u64 {
     world!(g, cf).poses.view()
+}
+
+unsafe extern "sysv64" fn get_poses_prev(g: *mut c_void, cf: *mut c_void) -> u64 {
+    world!(g, cf).prev_poses.view()
 }
 
 unsafe extern "sysv64" fn get_events(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -573,6 +595,10 @@ fn reseed_all_poses(wd: &mut WorldData) {
         buf[base] = t.x;
         buf[base + 1] = t.y;
         buf[base + 2] = angle;
+        let prev = wd.prev_poses.data();
+        prev[base] = t.x;
+        prev[base + 1] = t.y;
+        prev[base + 2] = angle;
     }
 }
 
@@ -665,21 +691,28 @@ unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
             }
         }
     }
-    // Seed the pose buffer so the slot reads correctly before the first step.
+    // Seed the pose buffers so the slot reads correctly before the first step.
     let needed = (id as usize + 1) * POSE_STRIDE;
-    if wd.poses.ensure(g, needed) {
+    let regrew = wd.poses.ensure(g, needed);
+    let regrew_prev = wd.prev_poses.ensure(g, needed);
+    if regrew || regrew_prev {
         wd.generation += 1;
         // Regrown buffer starts zeroed — reseed EVERY live body, not just the
         // new one (step()'s own regrow branch can't fire after this ensure()
         // already grew the buffer; sleeping bodies would snap to the origin).
         reseed_all_poses(wd);
     }
-    let p = wd.poses.data();
     let base = id as usize * POSE_STRIDE;
+    let p = wd.poses.data();
     p[base] = s[1] as f32;
     p[base + 1] = s[2] as f32;
     p[base + 2] = s[3] as f32;
     p[base + 3] = 0.0;
+    let prev = wd.prev_poses.data();
+    prev[base] = s[1] as f32;
+    prev[base + 1] = s[2] as f32;
+    prev[base + 2] = s[3] as f32;
+    prev[base + 3] = 0.0;
     enc_f64(id as f64)
 }
 
@@ -702,6 +735,7 @@ unsafe extern "sysv64" fn remove_body(g: *mut c_void, cf: *mut c_void) -> u64 {
         wd.hooks.one_way.remove(&handle);
     }
     wd.surface_fx.remove(&id);
+    wd.characters.remove(&id);
     wd.events_enabled.remove(&id);
     wd.forced_bodies.remove(&rec.handle);
     wd.world.remove_body(rec.handle);
@@ -943,7 +977,9 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     // ── write poses for awake bodies (sleeping slots keep their last pose) ──
     let needed = wd.bodies.capacity() * POSE_STRIDE;
-    if wd.poses.ensure(g, needed) {
+    let regrew = wd.poses.ensure(g, needed);
+    let regrew_prev = wd.prev_poses.ensure(g, needed);
+    if regrew || regrew_prev {
         wd.generation += 1;
         reseed_all_poses(wd);
     } else {
@@ -965,6 +1001,15 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
             let t = rb.translation();
             let angle = rb.rotation().angle();
             let base = id as usize * POSE_STRIDE;
+            // Shift the outgoing pose into the prev buffer (interpolation pair).
+            let (px, py, pr) = {
+                let buf = wd.poses.data();
+                (buf[base], buf[base + 1], buf[base + 2])
+            };
+            let prev = wd.prev_poses.data();
+            prev[base] = px;
+            prev[base + 1] = py;
+            prev[base + 2] = pr;
             let buf = wd.poses.data();
             buf[base] = t.x;
             buf[base + 1] = t.y;
@@ -1527,6 +1572,128 @@ unsafe extern "sysv64" fn set_body_position(g: *mut c_void, cf: *mut c_void) -> 
     })
 }
 
+// ---- character controller ---------------------------------------------------
+
+/// configureCharacter(bodyId) — scratch: [0]=offset [1]=slide [2]=autostepEnabled
+/// [3]=autostepMaxHeight [4]=autostepMinWidth [5]=autostepIncludeDynamic
+/// [6]=maxSlopeClimbAngle(rad) [7]=minSlopeSlideAngle(rad) [8]=snapDistance(0=off)
+/// [9]=applyImpulsesToDynamic [10]=characterMass(0=body mass)
+unsafe extern "sysv64" fn configure_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    let body_id = arg_u(cf, 0);
+    let s: Vec<f64> = wd.scratch.data()[..11].to_vec();
+    let mut ctl = KinematicCharacterController::default();
+    ctl.up = Vec2::new(0.0, 1.0);
+    ctl.offset = CharacterLength::Absolute((s[0] as f32).max(0.001));
+    ctl.slide = s[1] != 0.0;
+    ctl.autostep = if s[2] != 0.0 {
+        Some(CharacterAutostep {
+            max_height: CharacterLength::Absolute(s[3] as f32),
+            min_width: CharacterLength::Absolute(s[4] as f32),
+            include_dynamic_bodies: s[5] != 0.0,
+        })
+    } else {
+        None
+    };
+    ctl.max_slope_climb_angle = s[6] as f32;
+    ctl.min_slope_slide_angle = s[7] as f32;
+    ctl.snap_to_ground = if s[8] > 0.0 {
+        Some(CharacterLength::Absolute(s[8] as f32))
+    } else {
+        None
+    };
+    wd.characters.insert(
+        body_id,
+        CharRec { ctl, apply_impulses: s[9] != 0.0, mass: s[10] as f32 },
+    );
+    UNDEF
+}
+
+unsafe extern "sysv64" fn remove_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    wd.characters.remove(&arg_u(cf, 0));
+    UNDEF
+}
+
+/// moveCharacter(bodyId, dx, dy, dt) → scratch [0]=appliedX [1]=appliedY
+/// [2]=grounded; returns true when a controller ran.
+unsafe extern "sysv64" fn move_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    let body_id = arg_u(cf, 0);
+    let desired = Vec2::new(arg_f(cf, 1) as f32, arg_f(cf, 2) as f32);
+    let dt = (arg_f(cf, 3) as f32).max(1e-6);
+
+    let Some(body_handle) = wd.body(body_id) else { return FALSE };
+    let Some(ch) = wd.characters.get(&body_id) else { return FALSE };
+    let ctl = ch.ctl;
+    let apply_impulses = ch.apply_impulses;
+    let cfg_mass = ch.mass;
+    // First collider carries the character's shape.
+    let Some(col_handle) = wd
+        .colliders
+        .iter()
+        .find(|(_, c)| c.body_id == body_id)
+        .map(|(_, c)| c.handle)
+    else {
+        return FALSE;
+    };
+    // Clone the SharedShape (Arc) so the impulse phase can alias the collider
+    // set mutably without holding a borrow into it.
+    let (shape, shape_pos) = {
+        let Some(co) = wd.world.colliders.get(col_handle) else { return FALSE };
+        (co.shared_shape().clone(), *co.position())
+    };
+
+    let filter = QueryFilter {
+        exclude_rigid_body: Some(body_handle),
+        ..QueryFilter::default()
+    };
+    let mut collisions: Vec<CharacterCollision> = Vec::new();
+    let eff = {
+        let queries = wd.world.broad_phase.as_query_pipeline(
+            wd.world.narrow_phase.query_dispatcher(),
+            &wd.world.bodies,
+            &wd.world.colliders,
+            filter,
+        );
+        ctl.move_shape(dt, &queries, &*shape, &shape_pos, desired, |c| collisions.push(c))
+    };
+
+    // Apply as the body's next-kinematic target (contract: kinematic bodies).
+    if let Some(rb) = wd.world.bodies.get_mut(body_handle) {
+        if rb.is_kinematic() {
+            let target = rb.translation() + eff.translation;
+            rb.set_next_kinematic_translation(target);
+        }
+    }
+
+    // Push dynamic bodies we ran into (rapier's approximate impulse solver).
+    if apply_impulses && !collisions.is_empty() {
+        let mass = if cfg_mass > 0.0 {
+            cfg_mass
+        } else {
+            wd.world.bodies.get(body_handle).map(|b| b.mass()).unwrap_or(1.0).max(0.001)
+        };
+        let filter = QueryFilter {
+            exclude_rigid_body: Some(body_handle),
+            ..QueryFilter::default()
+        };
+        let mut queries = wd.world.broad_phase.as_query_pipeline_mut(
+            wd.world.narrow_phase.query_dispatcher(),
+            &mut wd.world.bodies,
+            &mut wd.world.colliders,
+            filter,
+        );
+        ctl.solve_character_collision_impulses(dt, &mut queries, &*shape, mass, collisions.iter());
+    }
+
+    let s = wd.scratch.data();
+    s[0] = eff.translation.x as f64;
+    s[1] = eff.translation.y as f64;
+    s[2] = if eff.grounded { 1.0 } else { 0.0 };
+    TRUE
+}
+
 // ---- queries ----------------------------------------------------------------
 
 unsafe fn body_slot_of_collider(wd: &WorldData, ch: ColliderHandle) -> f32 {
@@ -1842,6 +2009,7 @@ pub unsafe fn install(g: *mut c_void) {
                 ("free", 0, free),
                 ("generation", 0, generation),
                 ("getPoses", 0, get_poses),
+                ("getPosesPrev", 0, get_poses_prev),
                 ("getEvents", 0, get_events),
                 ("getQueries", 0, get_queries),
                 ("getScratch", 0, get_scratch),
@@ -1872,6 +2040,9 @@ pub unsafe fn install(g: *mut c_void) {
                 ("isSleeping", 1, is_sleeping),
                 ("setKinematicTarget", 4, set_kinematic_target),
                 ("setBodyPosition", 4, set_body_position),
+                ("configureCharacter", 1, configure_character),
+                ("removeCharacter", 1, remove_character),
+                ("moveCharacter", 4, move_character),
                 ("raycast", 6, raycast),
                 ("raycastAll", 6, raycast_all),
                 ("overlapCircle", 4, overlap_circle),
