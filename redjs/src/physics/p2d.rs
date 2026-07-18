@@ -43,6 +43,9 @@ const EV_TRIG_STAY: f32 = 4.0;
 const EV_TRIG_EXIT: f32 = 5.0;
 /// raycastAll query records: stride 6 = [bodySlot, px, py, nx, ny, dist].
 const RAY_STRIDE: usize = 6;
+/// debugRender vertex records (queries buffer): stride 6 = [x, y, r, g, b, a],
+/// two vertices per line segment; colors already converted HSLA→RGBA.
+const DEBUG_STRIDE: usize = 6;
 
 const SCRATCH_LEN: usize = 512;
 const INITIAL_POSES: usize = 1024 * POSE_STRIDE;
@@ -1821,6 +1824,68 @@ unsafe extern "sysv64" fn overlap_point(g: *mut c_void, cf: *mut c_void) -> u64 
     write_overlap_hits(g, wd, &slots)
 }
 
+// ---- debug render -----------------------------------------------------------
+
+/// Rapier's debug style colors are HSLA ([hue°, sat, light, alpha]) — convert to RGBA.
+fn hsla_to_rgba(c: [f32; 4]) -> [f32; 4] {
+    let h = c[0].rem_euclid(360.0);
+    let (s, l) = (c[1], c[2]);
+    let ch = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = ch * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - ch / 2.0;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (ch, x, 0.0),
+        1 => (x, ch, 0.0),
+        2 => (0.0, ch, x),
+        3 => (0.0, x, ch),
+        4 => (x, 0.0, ch),
+        _ => (ch, 0.0, x),
+    };
+    [r + m, g + m, b + m, c[3]]
+}
+
+/// debugRender() — snapshot collider/joint wireframes into the queries buffer as
+/// per-vertex records (DEBUG_STRIDE, 2 vertices per segment); returns the vertex
+/// count. Reuses `queries` like raycastAll — the adapter drains it synchronously.
+unsafe extern "sysv64" fn debug_render(g: *mut c_void, cf: *mut c_void) -> u64 {
+    use rapier2d::pipeline::{
+        DebugRenderBackend, DebugRenderMode, DebugRenderObject, DebugRenderPipeline,
+        DebugRenderStyle,
+    };
+
+    struct Sink {
+        data: Vec<f32>,
+    }
+    impl DebugRenderBackend for Sink {
+        fn draw_line(&mut self, _object: DebugRenderObject, a: Vector, b: Vector, color: [f32; 4]) {
+            let c = hsla_to_rgba(color);
+            self.data.extend_from_slice(&[a.x, a.y, c[0], c[1], c[2], c[3]]);
+            self.data.extend_from_slice(&[b.x, b.y, c[0], c[1], c[2], c[3]]);
+        }
+    }
+
+    let wd = world!(g, cf);
+    let mut sink = Sink { data: Vec::new() };
+    // Shapes + joints (no body axes/AABBs) — parity with the wasm adapter's debugRender view.
+    let mut pipeline = DebugRenderPipeline::new(
+        DebugRenderStyle::default(),
+        DebugRenderMode::COLLIDER_SHAPES | DebugRenderMode::JOINTS,
+    );
+    pipeline.render(
+        &mut sink,
+        &wd.world.bodies,
+        &wd.world.colliders,
+        &wd.world.impulse_joints,
+        &wd.world.multibody_joints,
+        &wd.world.narrow_phase,
+    );
+    if wd.queries.ensure(g, sink.data.len()) {
+        wd.generation += 1;
+    }
+    wd.queries.data()[..sink.data.len()].copy_from_slice(&sink.data);
+    enc_f64((sink.data.len() / DEBUG_STRIDE) as f64)
+}
+
 // ---- zones CRUD -------------------------------------------------------------
 
 unsafe fn read_gravity_zone(wd: &mut WorldData, g: *mut c_void, cf: *mut c_void, points_arg: u32) -> GravityZone {
@@ -2048,6 +2113,7 @@ pub unsafe fn install(g: *mut c_void) {
                 ("overlapCircle", 4, overlap_circle),
                 ("overlapBox", 5, overlap_box),
                 ("overlapPoint", 3, overlap_point),
+                ("debugRender", 0, debug_render),
                 ("addGravityZone", 1, add_gravity_zone),
                 ("updateGravityZone", 2, update_gravity_zone),
                 ("removeGravityZone", 1, remove_gravity_zone),

@@ -34,7 +34,7 @@ symphonium = { version = "0.7", default-features = false, features = ["resampler
 # see .refactor/PHYSICS-NATIVE-DESIGN.md). simd-stable only — no rayon `parallel`
 # (pays off only on huge scenes), no wasm. rapier3d will sit alongside when the
 # engine grows a 3D path.
-rapier2d = { version = "0.34", features = ["simd-stable"] }
+rapier2d = { version = "0.34", features = ["simd-stable", "debug-render"] }
 
 [build-dependencies]
 cc = "1"
