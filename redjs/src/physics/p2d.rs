@@ -139,39 +139,70 @@ struct SurfaceFx {
     use_contact_normal: bool,
 }
 
-/// One-way platform filter state, shared with the rapier step via PhysicsHooks.
-/// Direct port of the WASM adapter's position+velocity filter.
+/// One-way platform hook. The canonical rapier approach: contact-NORMAL based
+/// filtering in `modify_solver_contacts` (a mirror of rapier's own
+/// `update_as_oneway_platform` state machine, but on the WORLD normal so the
+/// platform may be either collider of the pair and bodies may rotate freely).
+/// A position/velocity filter in `filter_contact_pair` cannot express this —
+/// the manifold doesn't exist yet at filter time, and the old center-based
+/// rule both bonked upward jumpers and let everything through.
 #[derive(Default)]
 struct Hooks {
     one_way: HashMap<ColliderHandle, Vec2>,
 }
 
+/// `ContactModificationContext.user_data` states (per-manifold, persistent).
+const OW_UNKNOWN: u32 = 0;
+const OW_ALLOWED: u32 = 1;
+const OW_FORBIDDEN: u32 = 2;
+
 impl PhysicsHooks for Hooks {
-    fn filter_contact_pair(&self, ctx: &PairFilterContext) -> Option<SolverFlags> {
-        let ow1 = self.one_way.get(&ctx.collider1);
-        let ow2 = self.one_way.get(&ctx.collider2);
-        if ow1.is_none() && ow2.is_none() {
-            return Some(SolverFlags::COMPUTE_IMPULSES);
-        }
-        let (dir, plat_rb, other_rb) = match ow1 {
-            Some(d) => (*d, ctx.rigid_body1, ctx.rigid_body2),
-            None => (*ow2.unwrap(), ctx.rigid_body2, ctx.rigid_body1),
+    fn modify_solver_contacts(&self, ctx: &mut ContactModificationContext) {
+        let (dir, platform_is_first) = match (
+            self.one_way.get(&ctx.collider1),
+            self.one_way.get(&ctx.collider2),
+        ) {
+            (Some(d), _) => (*d, true),
+            (_, Some(d)) => (*d, false),
+            _ => return,
         };
-        let (Some(plat), Some(other)) = (
-            plat_rb.and_then(|h| ctx.bodies.get(h)),
-            other_rb.and_then(|h| ctx.bodies.get(h)),
-        ) else {
-            return Some(SolverFlags::COMPUTE_IMPULSES);
-        };
-        let rel = other.translation() - plat.translation();
-        let pos_dot = rel.dot(dir);
-        let vel_dot = other.linvel().dot(dir);
-        // Passable side + moving toward the platform → contacts exist (events
-        // still fire) but the solver ignores them.
-        if pos_dot < 0.01 && vel_dot < 0.0 {
-            return Some(SolverFlags::empty());
+        // World contact normal points out of collider1 — orient it out of the
+        // PLATFORM toward the other body.
+        let n_from_platform = if platform_is_first { *ctx.normal } else { -*ctx.normal };
+        // 180° arc: contact is "from the solid side" when the platform pushes
+        // the other body along the one-way direction.
+        let contact_is_ok = n_from_platform.dot(dir) >= 0.0;
+
+        match *ctx.user_data {
+            OW_UNKNOWN => {
+                if contact_is_ok {
+                    *ctx.user_data = OW_ALLOWED;
+                } else {
+                    ctx.solver_contacts.clear();
+                    // Degenerate normals (exact touching) can't classify — wait
+                    // for the next frame before latching FORBIDDEN.
+                    if n_from_platform.length_squared() > 0.1 {
+                        *ctx.user_data = OW_FORBIDDEN;
+                    }
+                }
+            }
+            OW_FORBIDDEN => {
+                // Keep pass-through until fully separated again, then allow if
+                // the approach direction became legal (hysteresis — no popping
+                // while overlapping mid-jump).
+                if contact_is_ok && ctx.solver_contacts.iter().all(|c| c.dist > 0.0) {
+                    *ctx.user_data = OW_ALLOWED;
+                } else {
+                    ctx.solver_contacts.clear();
+                }
+            }
+            OW_ALLOWED => {
+                if ctx.solver_contacts.is_empty() {
+                    *ctx.user_data = OW_UNKNOWN;
+                }
+            }
+            _ => *ctx.user_data = OW_UNKNOWN,
         }
-        Some(SolverFlags::COMPUTE_IMPULSES)
     }
 
     fn filter_intersection_pair(&self, _ctx: &PairFilterContext) -> bool {
@@ -280,6 +311,15 @@ struct WorldData {
     events_enabled: std::collections::HashSet<u32>,
     active_contacts: HashMap<PairKey, ActivePair>,
     active_triggers: HashMap<PairKey, ActivePair>,
+    /// Exit records synthesized by removeBody/removeCollider mid-frame (slots
+    /// still valid at synthesis time); prepended to the next step's events.
+    /// Rapier's own Stopped(REMOVED) for these pairs arrives a step later, when
+    /// the slot may already be REUSED by a new body — dispatching then would
+    /// name the wrong entity.
+    pending_exits: Vec<[f32; EV_STRIDE]>,
+    /// Bodies given applyForce/applyTorque since the last step — reset after it
+    /// (one-shot semantics; rapier user forces otherwise persist forever).
+    forced_bodies: std::collections::HashSet<RigidBodyHandle>,
     gravity_zones: Slab<GravityZone>,
     buoyancy_zones: Slab<BuoyancyZone>,
     wind_zones: Slab<WindZone>,
@@ -306,6 +346,8 @@ impl WorldData {
             events_enabled: Default::default(),
             active_contacts: HashMap::new(),
             active_triggers: HashMap::new(),
+            pending_exits: Vec::new(),
+            forced_bodies: Default::default(),
             gravity_zones: Slab::new(),
             buoyancy_zones: Slab::new(),
             wind_zones: Slab::new(),
@@ -440,6 +482,8 @@ unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
     wd.events_enabled.clear();
     wd.active_contacts.clear();
     wd.active_triggers.clear();
+    wd.pending_exits.clear();
+    wd.forced_bodies.clear();
     wd.gravity_zones.clear();
     wd.buoyancy_zones.clear();
     wd.wind_zones.clear();
@@ -496,6 +540,62 @@ unsafe extern "sysv64" fn set_solver_iterations(g: *mut c_void, cf: *mut c_void)
 
 // ---- bodies -----------------------------------------------------------------
 
+/// Rewrites every live body's pose row. Regrown buffers start zeroed — without
+/// a full reseed, sleeping bodies would read (0,0,0) until they wake (the
+/// active-bodies sync in step() never rewrites them). W-PHYS PHYS-12.
+fn reseed_all_poses(wd: &mut WorldData) {
+    let poses_len = wd.poses.len();
+    wd.dyn_scratch.clear();
+    for (id, rec) in wd.bodies.iter() {
+        wd.dyn_scratch.push((id, rec.handle, 0.0));
+    }
+    for i in 0..wd.dyn_scratch.len() {
+        let (id, handle, _) = wd.dyn_scratch[i];
+        let Some(rb) = wd.world.bodies.get(handle) else { continue };
+        let base = id as usize * POSE_STRIDE;
+        if base + POSE_STRIDE > poses_len {
+            continue;
+        }
+        let t = rb.translation();
+        let angle = rb.rotation().angle();
+        let buf = wd.poses.data();
+        buf[base] = t.x;
+        buf[base + 1] = t.y;
+        buf[base + 2] = angle;
+    }
+}
+
+/// Removes active contact/trigger pairs matching `involves`, staging exit
+/// records with the still-valid slot ids. Called at removal time — waiting for
+/// rapier's Stopped(REMOVED) a step later risks the slot being reused by a new
+/// body and the exit naming the wrong entity. W-PHYS PHYS-12.
+fn purge_pairs_involving(wd: &mut WorldData, involves: impl Fn(&ActivePair) -> bool) {
+    let keys: Vec<PairKey> = wd
+        .active_contacts
+        .iter()
+        .filter(|(_, p)| involves(p))
+        .map(|(k, _)| *k)
+        .collect();
+    for k in keys {
+        if let Some(p) = wd.active_contacts.remove(&k) {
+            wd.pending_exits
+                .push([EV_COLL_EXIT, p.a as f32, p.b as f32, 0.0, 0.0, 0.0, 0.0]);
+        }
+    }
+    let keys: Vec<PairKey> = wd
+        .active_triggers
+        .iter()
+        .filter(|(_, p)| involves(p))
+        .map(|(k, _)| *k)
+        .collect();
+    for k in keys {
+        if let Some(p) = wd.active_triggers.remove(&k) {
+            wd.pending_exits
+                .push([EV_TRIG_EXIT, p.a as f32, p.b as f32, 0.0, 0.0, 0.0, 0.0]);
+        }
+    }
+}
+
 unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let s: Vec<f64> = wd.scratch.data()[..13].to_vec();
@@ -541,6 +641,10 @@ unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let needed = (id as usize + 1) * POSE_STRIDE;
     if wd.poses.ensure(g, needed) {
         wd.generation += 1;
+        // Regrown buffer starts zeroed — reseed EVERY live body, not just the
+        // new one (step()'s own regrow branch can't fire after this ensure()
+        // already grew the buffer; sleeping bodies would snap to the origin).
+        reseed_all_poses(wd);
     }
     let p = wd.poses.data();
     let base = id as usize * POSE_STRIDE;
@@ -557,19 +661,21 @@ unsafe extern "sysv64" fn remove_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(rec) = wd.bodies.remove(id) else { return UNDEF };
     // Remove collider slots + one-way entries owned by this body (rapier
     // removes the actual colliders together with the body).
-    let owned: Vec<u32> = wd
+    let owned: Vec<(u32, ColliderHandle)> = wd
         .colliders
         .iter()
         .filter(|(_, c)| c.body_id == id)
-        .map(|(cid, _)| cid)
+        .map(|(cid, c)| (cid, c.handle))
         .collect();
-    for cid in owned {
-        if let Some(c) = wd.colliders.remove(cid) {
-            wd.hooks.one_way.remove(&c.handle);
-        }
+    // Stage exits for pairs this body is touching BEFORE its slot can be reused.
+    purge_pairs_involving(wd, |p| owned.iter().any(|(_, h)| *h == p.h1 || *h == p.h2));
+    for (cid, handle) in owned {
+        wd.colliders.remove(cid);
+        wd.hooks.one_way.remove(&handle);
     }
     wd.surface_fx.remove(&id);
     wd.events_enabled.remove(&id);
+    wd.forced_bodies.remove(&rec.handle);
     wd.world.remove_body(rec.handle);
     UNDEF
 }
@@ -614,7 +720,7 @@ unsafe extern "sysv64" fn add_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
         builder = builder.active_events(ActiveEvents::COLLISION_EVENTS);
     }
     if one_way {
-        builder = builder.active_hooks(ActiveHooks::FILTER_CONTACT_PAIRS);
+        builder = builder.active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS);
     }
     let id = wd.colliders.insert(ColRec { handle: ColliderHandle::invalid(), body_id });
     let handle = wd
@@ -644,8 +750,10 @@ unsafe extern "sysv64" fn remove_collider(g: *mut c_void, cf: *mut c_void) -> u6
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let Some(rec) = wd.colliders.remove(id) else { return UNDEF };
-    wd.hooks.one_way.remove(&rec.handle);
-    wd.world.remove_collider(rec.handle);
+    let handle = rec.handle;
+    purge_pairs_involving(wd, |p| p.h1 == handle || p.h2 == handle);
+    wd.hooks.one_way.remove(&handle);
+    wd.world.remove_collider(handle);
     UNDEF
 }
 
@@ -695,12 +803,34 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     wd.world.step_with_events(&wd.hooks, &wd.collector);
 
+    // One-shot force semantics (builtin/Unity parity, W-PHYS PHYS-13): rapier's
+    // add_force/add_torque persist until reset — clear them after the step they
+    // were applied to. Mirrors the WASM adapter's per-substep reset.
+    if !wd.forced_bodies.is_empty() {
+        let handles: Vec<RigidBodyHandle> = wd.forced_bodies.drain().collect();
+        for h in handles {
+            if let Some(rb) = wd.world.bodies.get_mut(h) {
+                rb.reset_forces(false);
+                rb.reset_torques(false);
+            }
+        }
+    }
+
     // ── event pipeline: drain → enter/exit vs active maps → synthesize stay ──
     let drained: Vec<RawEv> = {
         let mut lock = wd.collector.evs.lock().unwrap();
         lock.drain(..).collect()
     };
     wd.ev_staging.clear();
+    // Exits staged by removeBody/removeCollider since the last step go first
+    // (their slots were resolved at removal time, before any reuse).
+    for i in 0..wd.pending_exits.len() {
+        let rec = wd.pending_exits[i];
+        wd.ev_staging.push(rec);
+    }
+    wd.pending_exits.clear();
+    // Pairs that ENTERED this step — their stay starts next step (WASM parity).
+    let mut entered: std::collections::HashSet<PairKey> = std::collections::HashSet::new();
     for ev in drained {
         let key = pair_key(ev.h1, ev.h2);
         if ev.started {
@@ -713,6 +843,7 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
                 kind, ev.a as f32, ev.b as f32, ev.contact[0], ev.contact[1], ev.contact[2],
                 ev.contact[3],
             ]);
+            entered.insert(key);
             if ev.sensor {
                 wd.active_triggers.insert(key, pair);
             } else {
@@ -729,9 +860,12 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
             }
         }
     }
-    // Stay events every step for still-active pairs (WASM-adapter semantics),
-    // with a fresh deepest-contact probe for collision stays.
-    for p in wd.active_contacts.values() {
+    // Stay events every step for still-active pairs (WASM-adapter semantics:
+    // NOT on the enter step), with a fresh deepest-contact probe for collisions.
+    for (key, p) in wd.active_contacts.iter() {
+        if entered.contains(key) {
+            continue;
+        }
         let c = wd
             .world
             .contact_pair(p.h1, p.h2)
@@ -740,7 +874,10 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
         wd.ev_staging
             .push([EV_COLL_STAY, p.a as f32, p.b as f32, c[0], c[1], c[2], c[3]]);
     }
-    for p in wd.active_triggers.values() {
+    for (key, p) in wd.active_triggers.iter() {
+        if entered.contains(key) {
+            continue;
+        }
         wd.ev_staging
             .push([EV_TRIG_STAY, p.a as f32, p.b as f32, 0.0, 0.0, 0.0, 0.0]);
     }
@@ -761,24 +898,7 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
     let needed = wd.bodies.capacity() * POSE_STRIDE;
     if wd.poses.ensure(g, needed) {
         wd.generation += 1;
-        // Regrown buffer starts zeroed — reseed every live body once.
-        wd.dyn_scratch.clear();
-        for (id, rec) in wd.bodies.iter() {
-            wd.dyn_scratch.push((id, rec.handle, 0.0));
-        }
-        let poses_len = wd.poses.len();
-        for (id, handle, _) in wd.dyn_scratch.iter() {
-            if let Some(rb) = wd.world.bodies.get(*handle) {
-                let base = *id as usize * POSE_STRIDE;
-                if base + POSE_STRIDE <= poses_len {
-                    let t = rb.translation();
-                    let buf = wd.poses.data();
-                    buf[base] = t.x;
-                    buf[base + 1] = t.y;
-                    buf[base + 2] = rb.rotation().angle();
-                }
-            }
-        }
+        reseed_all_poses(wd);
     } else {
         let poses_len = wd.poses.len();
         wd.dyn_scratch.clear();
@@ -928,10 +1048,14 @@ fn falloff_weight(nd: f32, falloff: u32) -> f32 {
 }
 
 fn effective_gravity(pos: Vec2, global: Vec2, zones: &Slab<GravityZone>) -> Vec2 {
+    // Separate accumulators (lockstep with the WASM adapter, W-PHYS PHYS-14):
+    // Override zones REPLACE base gravity (priority-weighted average among
+    // themselves); Additive/Point zones ADD afterwards; Scale multiplies the
+    // base only when no override is active.
     let mut g = global;
-    let mut total_weight = 0.0f32;
-    let mut blend = Vec2::ZERO;
-    let mut has_override = false;
+    let mut override_weight = 0.0f32;
+    let mut override_blend = Vec2::ZERO;
+    let mut add_blend = Vec2::ZERO;
     let mut scale_accum = 1.0f32;
     for (_, z) in zones.iter() {
         let c = zone_containment(pos.x, pos.y, z);
@@ -945,23 +1069,21 @@ fn effective_gravity(pos: Vec2, global: Vec2, zones: &Slab<GravityZone>) -> Vec2
         let weight = (z.priority + 1.0) * fw;
         match z.kind {
             0 => {
-                blend += z.gravity * weight;
-                total_weight += weight;
-                has_override = true;
+                override_blend += z.gravity * weight;
+                override_weight += weight;
             }
-            1 => blend += z.gravity * fw,
-            2 => blend += c.dir * (z.strength * fw),
+            1 => add_blend += z.gravity * fw,
+            2 => add_blend += c.dir * (z.strength * fw),
             3 => scale_accum *= 1.0 + (z.strength - 1.0) * fw,
             _ => {}
         }
     }
-    if has_override && total_weight > 0.0 {
-        g = blend / total_weight;
+    if override_weight > 0.0 {
+        g = override_blend / override_weight;
     } else {
         g *= scale_accum;
-        g += blend;
     }
-    g
+    g + add_blend
 }
 
 fn buoyancy_depth(x: f32, y: f32, z: &BuoyancyZone) -> Option<f32> {
@@ -1178,10 +1300,13 @@ macro_rules! with_body_mut {
 }
 
 unsafe extern "sysv64" fn apply_force(g: *mut c_void, cf: *mut c_void) -> u64 {
-    with_body_mut!(g, cf, wd, rb, {
-        rb.add_force(Vec2::new(arg_f(cf, 1) as f32, arg_f(cf, 2) as f32), true);
-        UNDEF
-    })
+    let wd = world!(g, cf);
+    let id = arg_u(cf, 0);
+    let Some(handle) = wd.body(id) else { return UNDEF };
+    let Some(rb) = wd.world.bodies.get_mut(handle) else { return UNDEF };
+    rb.add_force(Vec2::new(arg_f(cf, 1) as f32, arg_f(cf, 2) as f32), true);
+    wd.forced_bodies.insert(handle); // one-shot: reset after the next step
+    UNDEF
 }
 
 unsafe extern "sysv64" fn apply_impulse(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -1192,10 +1317,13 @@ unsafe extern "sysv64" fn apply_impulse(g: *mut c_void, cf: *mut c_void) -> u64 
 }
 
 unsafe extern "sysv64" fn apply_torque(g: *mut c_void, cf: *mut c_void) -> u64 {
-    with_body_mut!(g, cf, wd, rb, {
-        rb.add_torque(arg_f(cf, 1) as f32, true);
-        UNDEF
-    })
+    let wd = world!(g, cf);
+    let id = arg_u(cf, 0);
+    let Some(handle) = wd.body(id) else { return UNDEF };
+    let Some(rb) = wd.world.bodies.get_mut(handle) else { return UNDEF };
+    rb.add_torque(arg_f(cf, 1) as f32, true);
+    wd.forced_bodies.insert(handle); // one-shot: reset after the next step
+    UNDEF
 }
 
 unsafe extern "sysv64" fn apply_angular_impulse(g: *mut c_void, cf: *mut c_void) -> u64 {

@@ -110,6 +110,19 @@ macro_rules! exposed_buf {
                 self.ta = UNDEF;
             }
         }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                // GC-finalizer teardown (free() never called): the protected JS
+                // views still alias this Vec's memory and the finalizer cannot
+                // detach them (no JS access on GC threads) — LEAK the Vec rather
+                // than free memory under live views (use-after-free otherwise).
+                if is_cell(self.ab) {
+                    let vec = core::mem::take(&mut self.vec);
+                    core::mem::forget(vec);
+                }
+            }
+        }
     };
 }
 
