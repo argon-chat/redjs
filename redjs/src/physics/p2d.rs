@@ -47,22 +47,24 @@ const INITIAL_EVENTS: usize = 512 * EV_STRIDE;
 const INITIAL_QUERIES: usize = 4096;
 
 // Scratch layouts (f64 indices), kept in sync with the TS adapter:
-// createBody:   [0]=bodyType(0 dyn/1 kin/2 static) [1]=x [2]=y [3]=rot [4]=mass(0=auto)
+// createBody:   [0]=bodyType(0 dyn/1 kin/2 static) [1]=x [2]=y [3]=rot
+//               [4]=mass(0=auto; >0 = authored TOTAL, re-targeted after colliders)
 //               [5]=linearDamping [6]=angularDamping [7]=gravityScale
 //               [8]=constraints(bit0 freezeX,bit1 freezeY,bit2 freezeRot)
-//               [9]=ccd [10]=dominance [11..12]=sleep thresholds (accepted, unused — WASM-adapter parity)
+//               [9]=ccd [10]=dominance [11..12]=sleep thresholds (native-only) [13]=allowSleep
 // addCollider:  [0]=shape(0 box/1 circle/2 capsule/3 polygon) [1]=a [2]=b [3]=offX [4]=offY
 //               [5]=rot [6]=isTrigger [7]=friction [8]=restitution [9]=density
 //               [10]=frictionCombine [11]=restitutionCombine (engine CombineMode values)
 //               [12]=layerMask [13]=collisionMask [14]=oneWay [15]=oneWayDirX [16]=oneWayDirY
 // gravityZone:  [0]=posX [1]=posY [2]=rot [3]=scaleX [4]=scaleY [5]=shape [6]=type
 //               [7]=gravX [8]=gravY [9]=strength [10]=falloff [11]=innerRadius [12]=outerRadius
-//               [13]=sizeX [14]=sizeY [15]=direction [16]=priority
+//               [13]=sizeX [14]=sizeY [15]=direction [16]=priority [17]=affectedLayers
 // buoyancyZone: [0]=posX [1]=posY [2]=rot [3]=scaleX [4]=scaleY [5]=density [6]=linearDrag
 //               [7]=angularDrag [8]=flowX [9]=flowY [10]=normX [11]=normY [12]=width [13]=height
+//               [14]=affectedLayers
 // windZone:     [0]=posX [1]=posY [2]=rot [3]=scaleX [4]=scaleY [5]=mode [6]=dirX [7]=dirY
 //               [8]=strength [9]=turbulence [10]=turbFreq [11]=pulse [12]=pulseFreq [13]=shape
-//               [14]=radius [15]=width [16]=height [17]=falloff [18]=falloffStart
+//               [14]=radius [15]=width [16]=height [17]=falloff [18]=falloffStart [19]=affectedLayers
 // surfaceFx:    [0]=speed [1]=speedVariation(unused v1) [2]=forceScale [3]=useContactNormal
 //               [4]=useFriction(unused v1) [5]=useBounce(unused v1)
 // raycast out:  [0]=px [1]=py [2]=nx [3]=ny [4]=dist [5]=bodySlot
@@ -77,6 +79,12 @@ struct BodyRec {
     body_type: u8,
     /// last collider material density — buoyancy divisor (WASM-adapter parity).
     density: f32,
+    /// Last additional mass we set (rapier REPLACES it on set — needed for drift-free setMass).
+    additional_mass: f32,
+    /// Authored total mass (>0 = Mass field set; re-targeted after colliders attach).
+    explicit_mass: f32,
+    /// Union of the body's collider layer memberships (zone affectedLayers filtering; 0 → layer 0).
+    layer_bits: u32,
 }
 
 struct ColRec {
@@ -98,6 +106,7 @@ struct GravityZone {
     size: Vec2,
     direction: u32,
     priority: f32,
+    affected_layers: u32,
     points: Vec<Vec2>,
 }
 
@@ -112,6 +121,7 @@ struct BuoyancyZone {
     normal: Vec2,
     width: f32,
     height: f32,
+    affected_layers: u32,
 }
 
 struct WindZone {
@@ -131,6 +141,7 @@ struct WindZone {
     height: f32,
     falloff: u32,
     falloff_start: f32,
+    affected_layers: u32,
 }
 
 struct SurfaceFx {
@@ -331,7 +342,7 @@ struct WorldData {
     generation: u32,
     time: f64,
     ev_staging: Vec<[f32; EV_STRIDE]>,
-    dyn_scratch: Vec<(u32, RigidBodyHandle, f32)>,
+    dyn_scratch: Vec<(u32, RigidBodyHandle, f32, u32)>,
 }
 
 impl WorldData {
@@ -547,10 +558,10 @@ fn reseed_all_poses(wd: &mut WorldData) {
     let poses_len = wd.poses.len();
     wd.dyn_scratch.clear();
     for (id, rec) in wd.bodies.iter() {
-        wd.dyn_scratch.push((id, rec.handle, 0.0));
+        wd.dyn_scratch.push((id, rec.handle, 0.0, 0));
     }
     for i in 0..wd.dyn_scratch.len() {
-        let (id, handle, _) = wd.dyn_scratch[i];
+        let (id, handle, _, _) = wd.dyn_scratch[i];
         let Some(rb) = wd.world.bodies.get(handle) else { continue };
         let base = id as usize * POSE_STRIDE;
         if base + POSE_STRIDE > poses_len {
@@ -598,7 +609,7 @@ fn purge_pairs_involving(wd: &mut WorldData, involves: impl Fn(&ActivePair) -> b
 
 unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
-    let s: Vec<f64> = wd.scratch.data()[..13].to_vec();
+    let s: Vec<f64> = wd.scratch.data()[..14].to_vec();
     let body_type = s[0] as u8;
     let builder = match body_type {
         1 => RigidBodyBuilder::kinematic_position_based(),
@@ -612,9 +623,11 @@ unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
         .angular_damping(s[6] as f32)
         .gravity_scale(s[7] as f32)
         .ccd_enabled(s[9] != 0.0)
-        .dominance_group((s[10] as i32).clamp(-127, 127) as i8);
-    if s[4] > 0.0 {
-        builder = builder.additional_mass(s[4] as f32);
+        .dominance_group((s[10] as i32).clamp(-127, 127) as i8)
+        .can_sleep(s[13] != 0.0);
+    let explicit_mass = if s[4] > 0.0 { s[4] as f32 } else { 0.0 };
+    if explicit_mass > 0.0 {
+        builder = builder.additional_mass(explicit_mass);
     }
     let constraints = s[8] as u32;
     let mut locked = LockedAxes::empty();
@@ -634,9 +647,24 @@ unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
         handle: RigidBodyHandle::invalid(),
         body_type,
         density: 1.0,
+        additional_mass: explicit_mass,
+        explicit_mass,
+        layer_bits: 0,
     });
     let handle = wd.world.insert_body(builder.user_data(id as u128));
     wd.bodies.get_mut(id).unwrap().handle = handle;
+    // Sleep thresholds (native-only knobs — rapier.js does not expose these).
+    if s[11] > 0.0 || s[12] > 0.0 {
+        if let Some(rb) = wd.world.bodies.get_mut(handle) {
+            let act = rb.activation_mut();
+            if s[11] > 0.0 {
+                act.normalized_linear_threshold = s[11] as f32;
+            }
+            if s[12] > 0.0 {
+                act.angular_threshold = s[12] as f32;
+            }
+        }
+    }
     // Seed the pose buffer so the slot reads correctly before the first step.
     let needed = (id as usize + 1) * POSE_STRIDE;
     if wd.poses.ensure(g, needed) {
@@ -732,8 +760,9 @@ unsafe extern "sysv64" fn add_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
         let dir = if dir.length_squared() > 1e-6 { dir.normalize() } else { Vec2::new(0.0, 1.0) };
         wd.hooks.one_way.insert(handle, dir);
     }
-    if s[9] > 0.0 {
-        if let Some(rec) = wd.bodies.get_mut(body_id) {
+    if let Some(rec) = wd.bodies.get_mut(body_id) {
+        rec.layer_bits |= s[12] as u32;
+        if s[9] > 0.0 {
             rec.density = s[9] as f32;
         }
     }
@@ -741,6 +770,24 @@ unsafe extern "sysv64" fn add_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
     if wd.events_enabled.contains(&body_id) {
         if let Some(co) = wd.world.colliders.get_mut(handle) {
             co.set_active_events(ActiveEvents::COLLISION_EVENTS);
+        }
+    }
+    // Authored Mass means TOTAL mass — re-target after this collider added its
+    // density-derived contribution.
+    let (explicit, stored) = wd
+        .bodies
+        .get(body_id)
+        .map(|r| (r.explicit_mass, r.additional_mass))
+        .unwrap_or((0.0, 0.0));
+    if explicit > 0.0 {
+        if let Some(rb) = wd.world.bodies.get_mut(body) {
+            rb.recompute_mass_properties_from_colliders(&wd.world.colliders);
+            let base = (rb.mass() - stored).max(0.0);
+            let add = explicit - base;
+            rb.set_additional_mass(add, true);
+            if let Some(rec) = wd.bodies.get_mut(body_id) {
+                rec.additional_mass = add;
+            }
         }
     }
     enc_f64(id as f64)
@@ -907,11 +954,11 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
             let id = rb.user_data as u32;
             let base = id as usize * POSE_STRIDE;
             if base + POSE_STRIDE <= poses_len {
-                wd.dyn_scratch.push((id, RigidBodyHandle::invalid(), 0.0));
+                wd.dyn_scratch.push((id, RigidBodyHandle::invalid(), 0.0, 0));
             }
         }
         // Two passes to appease the borrow checker: collect ids, then write.
-        let ids: Vec<u32> = wd.dyn_scratch.iter().map(|(id, _, _)| *id).collect();
+        let ids: Vec<u32> = wd.dyn_scratch.iter().map(|(id, _, _, _)| *id).collect();
         for id in ids {
             let Some(handle) = wd.body(id) else { continue };
             let Some(rb) = wd.world.bodies.get(handle) else { continue };
@@ -1047,7 +1094,7 @@ fn falloff_weight(nd: f32, falloff: u32) -> f32 {
     }
 }
 
-fn effective_gravity(pos: Vec2, global: Vec2, zones: &Slab<GravityZone>) -> Vec2 {
+fn effective_gravity(pos: Vec2, global: Vec2, zones: &Slab<GravityZone>, body_bits: u32) -> Vec2 {
     // Separate accumulators (lockstep with the WASM adapter, W-PHYS PHYS-14):
     // Override zones REPLACE base gravity (priority-weighted average among
     // themselves); Additive/Point zones ADD afterwards; Scale multiplies the
@@ -1058,6 +1105,9 @@ fn effective_gravity(pos: Vec2, global: Vec2, zones: &Slab<GravityZone>) -> Vec2
     let mut add_blend = Vec2::ZERO;
     let mut scale_accum = 1.0f32;
     for (_, z) in zones.iter() {
+        if z.affected_layers & body_bits == 0 {
+            continue;
+        }
         let c = zone_containment(pos.x, pos.y, z);
         if !c.inside {
             continue;
@@ -1134,13 +1184,14 @@ fn apply_zone_forces(wd: &mut WorldData, dt: f32) {
     wd.dyn_scratch.clear();
     for (id, rec) in wd.bodies.iter() {
         if rec.body_type == 0 {
-            wd.dyn_scratch.push((id, rec.handle, rec.density));
+            wd.dyn_scratch.push((id, rec.handle, rec.density, rec.layer_bits));
         }
     }
     let global = wd.world.gravity;
     let time = wd.time as f32;
     for i in 0..wd.dyn_scratch.len() {
-        let (_, handle, density) = wd.dyn_scratch[i];
+        let (_, handle, density, layer_bits) = wd.dyn_scratch[i];
+        let body_bits = if layer_bits == 0 { 1 } else { layer_bits };
         let Some(rb) = wd.world.bodies.get(handle) else { continue };
         if rb.is_sleeping() {
             continue;
@@ -1152,7 +1203,7 @@ fn apply_zone_forces(wd: &mut WorldData, dt: f32) {
         // Gravity zones: Rapier applies global gravity itself — add the delta.
         let mut impulse = Vec2::ZERO;
         if wd.gravity_zones.capacity() > 0 {
-            let eff = effective_gravity(pos, global, &wd.gravity_zones);
+            let eff = effective_gravity(pos, global, &wd.gravity_zones, body_bits);
             let delta = (eff - global) * gravity_scale;
             if delta.x.abs() > 0.0001 || delta.y.abs() > 0.0001 {
                 impulse += delta * mass * dt;
@@ -1162,6 +1213,9 @@ fn apply_zone_forces(wd: &mut WorldData, dt: f32) {
         // Buoyancy (impulse + velocity drag), Archimedes with body density.
         let mut drag: Option<(f32, f32)> = None;
         for (_, z) in wd.buoyancy_zones.iter() {
+            if z.affected_layers & body_bits == 0 {
+                continue;
+            }
             let Some(depth) = buoyancy_depth(pos.x, pos.y, z) else { continue };
             let n = z.normal;
             let mag = n.length();
@@ -1179,6 +1233,9 @@ fn apply_zone_forces(wd: &mut WorldData, dt: f32) {
 
         // Wind.
         for (_, z) in wd.wind_zones.iter() {
+            if z.affected_layers & body_bits == 0 {
+                continue;
+            }
             let Some(factor) = wind_falloff(pos.x, pos.y, z) else { continue };
             let mut strength = z.strength * factor;
             if z.turbulence > 0.0 {
@@ -1403,12 +1460,23 @@ unsafe extern "sysv64" fn get_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe extern "sysv64" fn set_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
-    with_body_mut!(g, cf, wd, rb, {
-        // WASM-adapter parity: additional mass tops up to the requested total.
-        let delta = arg_f(cf, 1) as f32 - rb.mass();
-        rb.set_additional_mass(delta, true);
-        UNDEF
-    })
+    let wd = world!(g, cf);
+    let id = arg_u(cf, 0);
+    let target = arg_f(cf, 1) as f32;
+    let Some(rec) = wd.bodies.get(id) else { return UNDEF };
+    let handle = rec.handle;
+    let stored = rec.additional_mass;
+    let Some(rb) = wd.world.bodies.get_mut(handle) else { return UNDEF };
+    // set_additional_mass REPLACES the stored extra — compute against the
+    // collider-derived base, not the current total (repeated calls drifted).
+    rb.recompute_mass_properties_from_colliders(&wd.world.colliders);
+    let base = (rb.mass() - stored).max(0.0);
+    let add = target - base;
+    rb.set_additional_mass(add, true);
+    if let Some(rec) = wd.bodies.get_mut(id) {
+        rec.additional_mass = add;
+    }
+    UNDEF
 }
 
 unsafe extern "sysv64" fn sleep_body(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -1589,7 +1657,7 @@ unsafe extern "sysv64" fn overlap_point(g: *mut c_void, cf: *mut c_void) -> u64 
 // ---- zones CRUD -------------------------------------------------------------
 
 unsafe fn read_gravity_zone(wd: &mut WorldData, g: *mut c_void, cf: *mut c_void, points_arg: u32) -> GravityZone {
-    let s: Vec<f64> = wd.scratch.data()[..17].to_vec();
+    let s: Vec<f64> = wd.scratch.data()[..18].to_vec();
     GravityZone {
         pos: Vec2::new(s[0] as f32, s[1] as f32),
         rot: s[2] as f32,
@@ -1604,6 +1672,7 @@ unsafe fn read_gravity_zone(wd: &mut WorldData, g: *mut c_void, cf: *mut c_void,
         size: Vec2::new(s[13] as f32, s[14] as f32),
         direction: s[15] as u32,
         priority: s[16] as f32,
+        affected_layers: s[17] as u32,
         points: arg_verts(g, cf, points_arg),
     }
 }
@@ -1631,7 +1700,7 @@ unsafe extern "sysv64" fn remove_gravity_zone(g: *mut c_void, cf: *mut c_void) -
 }
 
 unsafe fn read_buoyancy_zone(wd: &mut WorldData) -> BuoyancyZone {
-    let s: Vec<f64> = wd.scratch.data()[..14].to_vec();
+    let s: Vec<f64> = wd.scratch.data()[..15].to_vec();
     BuoyancyZone {
         pos: Vec2::new(s[0] as f32, s[1] as f32),
         rot: s[2] as f32,
@@ -1643,6 +1712,7 @@ unsafe fn read_buoyancy_zone(wd: &mut WorldData) -> BuoyancyZone {
         normal: Vec2::new(s[10] as f32, s[11] as f32),
         width: s[12] as f32,
         height: s[13] as f32,
+        affected_layers: s[14] as u32,
     }
 }
 
@@ -1669,7 +1739,7 @@ unsafe extern "sysv64" fn remove_buoyancy_zone(g: *mut c_void, cf: *mut c_void) 
 }
 
 unsafe fn read_wind_zone(wd: &mut WorldData) -> WindZone {
-    let s: Vec<f64> = wd.scratch.data()[..19].to_vec();
+    let s: Vec<f64> = wd.scratch.data()[..20].to_vec();
     WindZone {
         pos: Vec2::new(s[0] as f32, s[1] as f32),
         rot: s[2] as f32,
@@ -1687,6 +1757,7 @@ unsafe fn read_wind_zone(wd: &mut WorldData) -> WindZone {
         height: s[16] as f32,
         falloff: s[17] as u32,
         falloff_start: s[18] as f32,
+        affected_layers: s[19] as u32,
     }
 }
 
