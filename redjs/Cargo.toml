@@ -32,9 +32,13 @@ firewheel = { version = "0.10", features = ["spatial_basic_node", "svf_node"] }
 symphonium = { version = "0.7", default-features = false, features = ["resampler", "wav", "pcm", "flac", "mp3", "ogg", "vorbis"] }
 # 2D physics: native Rapier for the player (webapi-adjacent host class RedPhysics2D;
 # see .refactor/PHYSICS-NATIVE-DESIGN.md). simd-stable only — no rayon `parallel`
-# (pays off only on huge scenes), no wasm. rapier3d will sit alongside when the
-# engine grows a 3D path.
+# (pays off only on huge scenes), no wasm.
 rapier2d = { version = "0.34", features = ["simd-stable", "debug-render"] }
+# 3D physics: Rapier3D alongside 2D (W-3D 3D-3, see .refactor/3D-TOOLKIT-DESIGN.md §4/§16). Same
+# crate family + version as rapier2d, same host-class pattern (RedPhysics3D with zero-copy Isometry3
+# pose views). simd-stable only, no rayon/wasm. The host class + engine.physics3d wiring land in
+# epic 3D-3; the dep is pinned here now as part of the W-3D toolkit foundation.
+rapier3d = { version = "0.34", features = ["simd-stable", "debug-render"] }
 
 [build-dependencies]
 cc = "1"
