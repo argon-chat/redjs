@@ -158,6 +158,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     abort::install(g, et_proto);
     platform::install(g, et_proto);
     crate::physics::install(g);
+    crate::mesh::install(g);
 
     // The dumb-stub remainder.
     let mut out = 0u64;

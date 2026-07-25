@@ -39,6 +39,11 @@ rapier2d = { version = "0.34", features = ["simd-stable", "debug-render"] }
 # pose views). simd-stable only, no rayon/wasm. The host class + engine.physics3d wiring land in
 # epic 3D-3; the dep is pinned here now as part of the W-3D toolkit foundation.
 rapier3d = { version = "0.34", features = ["simd-stable", "debug-render"] }
+# meshopt vertex/index decode for the `.rmesh` runtime format (`RedMesh` global,
+# see .refactor/RMESH-FORMAT-DESIGN.md §5) — the native counterpart of the npm
+# MeshoptDecoder the editor/web player use. cc-compiles the vendored C++; the
+# static-CRT match comes from .cargo/config.toml (+crt-static).
+meshopt = "0.6"
 
 [build-dependencies]
 cc = "1"

@@ -25,6 +25,7 @@ pub mod capi;
 pub mod ffi;
 pub mod glue;
 pub mod icu;
+pub mod mesh;
 pub mod physics;
 pub mod trampoline;
 pub mod web;

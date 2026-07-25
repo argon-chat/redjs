@@ -61,6 +61,8 @@ fn conformance() {
     webapi_audio(&ctx);
     sec("webapi_platform2");
     webapi_platform2(&ctx);
+    sec("native_meshopt");
+    native_meshopt(&ctx);
 
     println!("redjs conformance: all sections passed");
 }
@@ -347,6 +349,127 @@ fn webapi_platform(ctx: &Context) {
     .unwrap();
     unsafe { ffi::redjs_pump(ctx.raw(), 7, core::ptr::null_mut()) };
     assert_eq!(ctx.to_rust_string(ctx.eval("idle").unwrap()).unwrap(), "false,true");
+}
+
+/// `RedMesh` — native meshopt decode into JS-owned buffers, the .rmesh runtime
+/// path for the native player (`.refactor/RMESH-FORMAT-DESIGN.md` §5). Sources
+/// are encoded here with the same meshopt build the global decodes with.
+fn native_meshopt(ctx: &Context) {
+    install_webapi(ctx);
+
+    fn csv(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+    }
+
+    assert_eq!(
+        ctx.to_rust_string(
+            ctx.eval("[typeof RedMesh, typeof RedMesh.decodeVertexBuffer, typeof RedMesh.decodeIndexBuffer].join()")
+                .unwrap()
+        )
+        .unwrap(),
+        "object,function,function"
+    );
+
+    // stride-16 interleaved vertices — the raw-f32 stream the writer emits.
+    let verts: Vec<[f32; 4]> = (0..8).map(|i| [i as f32, i as f32 * 2.5, i as f32 * -3.0, 1.0]).collect();
+    let plain: Vec<u8> = verts.iter().flat_map(|v| v.iter().flat_map(|f| f.to_le_bytes())).collect();
+    let venc = meshopt::encode_vertex_buffer(&verts).unwrap();
+    let v = ctx
+        .eval(&format!(
+            "(() => {{ const src = new Uint8Array([{}]); const t = new Uint8Array({}); \
+              RedMesh.decodeVertexBuffer(t, {}, 16, src); return Array.from(t).join(); }})()",
+            csv(&venc),
+            plain.len(),
+            verts.len()
+        ))
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), csv(&plain));
+
+    // Index buffer, both index widths the format allows. The codec may rotate
+    // triangles, so the reference is the Rust decode of the same blob.
+    let indices: Vec<u32> = vec![0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
+    let ienc = meshopt::encode_index_buffer(&indices, verts.len()).unwrap();
+    let expect_i = meshopt::decode_index_buffer::<u32>(&ienc, indices.len())
+        .unwrap()
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    for (index_size, view) in [(4, "Uint32Array"), (2, "Uint16Array")] {
+        let v = ctx
+            .eval(&format!(
+                "(() => {{ const src = new Uint8Array([{}]); const t = new Uint8Array({}); \
+                  RedMesh.decodeIndexBuffer(t, {}, {index_size}, src); \
+                  return Array.from(new {view}(t.buffer)).join(); }})()",
+                csv(&ienc),
+                indices.len() * index_size,
+                indices.len()
+            ))
+            .unwrap();
+        assert_eq!(ctx.to_rust_string(v).unwrap(), expect_i, "index decode at {index_size} bytes");
+    }
+
+    // Octahedral filter: JS decode must match the Rust reference byte for byte
+    // (proves the post-decode filter dispatch, not just the codec).
+    let normals: Vec<[f32; 4]> =
+        vec![[0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0], [0.0, -1.0, 0.0, 1.0], [0.577, 0.577, 0.577, 1.0]];
+    let count = normals.len();
+    let mut filtered = vec![0u8; count * 8];
+    unsafe {
+        meshopt::ffi::meshopt_encodeFilterOct(
+            filtered.as_mut_ptr() as *mut c_void,
+            count,
+            8,
+            16,
+            normals.as_ptr() as *const f32,
+        )
+    };
+    let chunks: Vec<[u8; 8]> = filtered.chunks_exact(8).map(|c| c.try_into().unwrap()).collect();
+    let fenc = meshopt::encode_vertex_buffer(&chunks).unwrap();
+    let mut expect_f = filtered.clone();
+    unsafe { meshopt::ffi::meshopt_decodeFilterOct(expect_f.as_mut_ptr() as *mut c_void, count, 8) };
+    let v = ctx
+        .eval(&format!(
+            "(() => {{ const src = new Uint8Array([{}]); const t = new Uint8Array({}); \
+              RedMesh.decodeVertexBuffer(t, {count}, 8, src, 'OCTAHEDRAL'); return Array.from(t).join(); }})()",
+            csv(&fenc),
+            expect_f.len()
+        ))
+        .unwrap();
+    assert_eq!(ctx.to_rust_string(v).unwrap(), csv(&expect_f));
+
+    // Bad arguments throw TypeError; a corrupt source throws Error — never
+    // silent garbage. stride %4 and count %3 are the rules meshopt itself only
+    // asserts (asserts are compiled out here), so this gate is all that stands
+    // between a game script and an out-of-bounds write. A detached target
+    // reports NULL + zero length, which with count 0 would pass a size-only gate.
+    let ab = ctx.eval("new ArrayBuffer(8)").unwrap();
+    ctx.global_set("detachedTarget", ab).unwrap();
+    ctx.arraybuffer_detach(ab).unwrap();
+
+    let v = ctx
+        .eval(
+            "(() => { const name = (f) => { try { f(); return 'none'; } catch (e) { return e.constructor.name; } }; \
+              const src = new Uint8Array(64); \
+              return [name(() => RedMesh.decodeVertexBuffer(new Uint8Array(8), 4, 16, src)), \
+                      name(() => RedMesh.decodeVertexBuffer(new Uint8Array(64), 4, 0, src)), \
+                      name(() => RedMesh.decodeVertexBuffer(new Uint8Array(64), 4, 300, src)), \
+                      name(() => RedMesh.decodeVertexBuffer(new Uint8Array(64), 4, 6, src)), \
+                      name(() => RedMesh.decodeVertexBuffer(new Uint8Array(64), 4, 16, src, 'BOGUS')), \
+                      name(() => RedMesh.decodeVertexBuffer(new Uint8Array(64), 4, 16, src, 'QUATERNION')), \
+                      name(() => RedMesh.decodeVertexBuffer(new Uint8Array(64), 4, 16, {})), \
+                      name(() => RedMesh.decodeVertexBuffer(detachedTarget, 0, 16, src)), \
+                      name(() => RedMesh.decodeIndexBuffer(new Uint8Array(64), 12, 3, src)), \
+                      name(() => RedMesh.decodeIndexBuffer(new Uint8Array(8), 12, 4, src)), \
+                      name(() => RedMesh.decodeIndexBuffer(new Uint8Array(2), 1, 2, src)), \
+                      name(() => RedMesh.decodeIndexBuffer(detachedTarget, 0, 4, src)), \
+                      name(() => RedMesh.decodeVertexBuffer(new Uint8Array(64), 4, 16, src))].join(); })()",
+        )
+        .unwrap();
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        ["TypeError"; 12].join(",") + ",Error"
+    );
 }
 
 fn install_webapi(ctx: &Context) -> std::path::PathBuf {
