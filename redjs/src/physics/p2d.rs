@@ -1243,6 +1243,11 @@ fn apply_zone_forces(wd: &mut WorldData, dt: f32) {
         }
     }
     let global = wd.world.gravity;
+    // `g` for Archimedes is the world's own gravity magnitude, not a constant — a moon-gravity
+    // project must float bodies at moon strength here exactly as it does on the web backend
+    // (`physics2d-rapier2d/src/index.ts`, `_applyEffectorForces`), or the same content sinks
+    // differently in the desktop player.
+    let g_mag = global.length();
     let time = wd.time as f32;
     for i in 0..wd.dyn_scratch.len() {
         let (_, handle, density, layer_bits) = wd.dyn_scratch[i];
@@ -1276,7 +1281,7 @@ fn apply_zone_forces(wd: &mut WorldData, dt: f32) {
             let mag = n.length();
             let n = if mag > 0.001 { n / mag } else { Vec2::new(0.0, 1.0) };
             let body_density = if density > 0.001 { density } else { 1.0 };
-            let f = (z.density / body_density) * mass * 9.81 * depth;
+            let f = (z.density / body_density) * mass * g_mag * depth;
             impulse += (n * f + z.flow * (depth * mass)) * dt;
             let lin = (1.0 - z.linear_drag * dt * depth).max(0.0);
             let ang = (1.0 - z.angular_drag * dt * depth).max(0.0);
