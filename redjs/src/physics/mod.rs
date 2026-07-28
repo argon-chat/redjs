@@ -1,7 +1,8 @@
-//! Native physics host classes for the RedPew player. `RedPhysics2D` (p2d.rs,
-//! rapier2d) is the live one; a future `RedPhysics3D` (rapier3d) reuses the
-//! plumbing in this module when the engine grows a 3D path. Protocol and
-//! rationale: `.refactor/PHYSICS-NATIVE-DESIGN.md`.
+//! Native physics host classes for the RedPew player: `RedPhysics2D` (p2d.rs,
+//! rapier2d) and `RedPhysics3D` (p3d.rs, rapier3d). Both share the plumbing in
+//! this module and coexist — a level may hold 2D and 3D bodies at once, each
+//! driven by its own subsystem. Protocol and rationale:
+//! `.refactor/PHYSICS-NATIVE-DESIGN.md` (2D) / `.refactor/3D-TOOLKIT-DESIGN.md` §4 (3D).
 //!
 //! Wire conventions (shared by all dimensions):
 //! - JS never sees rapier handles — only dense u32 slot ids minted by [`Slab`].
@@ -10,10 +11,11 @@
 //!   `generation()`, detaching the old ArrayBuffer so stale references read
 //!   empty instead of dangling.
 //! - Fixed-size descriptors and small multi-value returns ride the f64
-//!   `scratch` buffer; variable-size data (polygon vertices) comes in as a
-//!   typed-array argument.
+//!   `scratch` buffer; variable-size data (polygon/hull vertices, trimesh
+//!   indices) comes in as a typed-array argument.
 
 pub mod p2d;
+pub mod p3d;
 
 use core::ffi::c_void;
 
@@ -23,6 +25,7 @@ use crate::webapi::util::{is_cell, UNDEF};
 /// `webapi::install` (idempotence rides its `has_state` gate).
 pub unsafe fn install(g: *mut c_void) {
     p2d::install(g);
+    p3d::install(g);
 }
 
 // ---- zero-copy exposed buffers ---------------------------------------------
