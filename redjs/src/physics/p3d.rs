@@ -5,8 +5,8 @@
 //! same, exactly as the 2D pair does.
 //!
 //! Architecture is a 1:1 port of [`super::p2d`] minus the T1 scope cuts (no joints,
-//! no gravity/buoyancy/wind zones, no surface effectors, no character controller,
-//! no one-way platforms) plus the quaternion pose lanes 3D needs:
+//! no gravity/buoyancy/wind zones, no surface effectors, no one-way platforms) plus
+//! the quaternion pose lanes 3D needs:
 //! - descriptors come in through the shared f64 `scratch` buffer (layouts below);
 //!   variable-size data (hull points, trimesh vertices/indices) as typed-array args;
 //! - `step(dt)` = ONE rapier step (the fixed-timestep accumulator lives in the
@@ -18,6 +18,9 @@ use core::ffi::c_void;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
+use rapier3d::control::{
+    CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
+};
 use rapier3d::prelude::*;
 
 use super::{ExposedF32, ExposedF64, Slab};
@@ -76,12 +79,32 @@ const BODY_STATIC: u8 = 2;
 //               [15]=frictionCombine [16]=restitutionCombine (ENGINE CombineMode3D values —
 //                     remapped 2↔3 to rapier's CoefficientCombineRule, never a raw cast)
 //               [17]=layerMask [18]=collisionMask
+// configureCharacter: [0]=offset(skin) [1]=slide [2]=autostepEnabled [3]=autostepMaxHeight
+//               [4]=autostepMinWidth [5]=autostepIncludeDynamic
+//               [6]=maxSlopeClimbAngle(RAD) [7]=minSlopeSlideAngle(RAD)
+//               [8]=snapToGroundDistance(0=off) [9]=applyImpulsesToDynamic
+//               [10]=characterMass(0=body mass). The SHAPE is not a lane (the body's first
+//               collider is swept, as on WASM) and neither is UP — fixed at +Y here.
+// moveCharacter out: [0..2]=appliedX,appliedY,appliedZ [3]=grounded(0/1)
 // raycast out:  [0..2]=px,py,pz [3..5]=nx,ny,nz [6]=dist [7]=bodySlot
 // getLinearVelocity / getAngularVelocity out: [0..2]=x,y,z
 // diagnostics out: [0]=bodyCount [1]=colliderCount [2]=activeBodies [3]=sleepingBodies
 
 const CREATE_BODY_FIELDS: usize = 18;
 const ADD_COLLIDER_FIELDS: usize = 19;
+const CONFIGURE_CHARACTER_FIELDS: usize = 11;
+
+/// Which body-type PAIRS reach the narrow phase, on every collider.
+///
+/// Rapier's default is dynamic-vs-anything, so a kinematic character would generate no
+/// contacts and no events against static geometry — walking into a static trigger zone,
+/// the most common thing a character does, would report nothing. Mirrors
+/// `ACTIVE_COLLISION_TYPES3D` in the WASM adapter; FIXED_FIXED stays off.
+fn active_collision_types() -> ActiveCollisionTypes {
+    ActiveCollisionTypes::default()
+        | ActiveCollisionTypes::KINEMATIC_FIXED
+        | ActiveCollisionTypes::KINEMATIC_KINEMATIC
+}
 
 // ---- world state ------------------------------------------------------------
 
@@ -98,6 +121,23 @@ struct BodyRec {
 struct ColRec {
     handle: ColliderHandle,
     body_id: u32,
+}
+
+/// A configured kinematic character: rapier's controller plus the movement it has
+/// already resolved and the body has not travelled yet.
+///
+/// The shape is NOT stored: both backends sweep the body's first collider, and the
+/// WASM binding (`computeColliderMovement`) can sweep nothing else — a capsule rebuilt
+/// from the configure lanes made the native player collide as a capsule where the web
+/// build collided as whatever the entity actually authored.
+struct CharRec {
+    ctl: KinematicCharacterController,
+    apply_impulses: bool,
+    /// Mass used for pushing dynamics; 0 = the body's own mass.
+    mass: f32,
+    /// Displacement resolved since the last step; the body reaches it when the world
+    /// steps, so until then every further move must re-request it (see `move_character`).
+    pending: Vector,
 }
 
 /// Raw event captured during the step; body slots + contact data resolved at
@@ -317,6 +357,9 @@ struct WorldData {
     /// Bodies given applyForce/applyTorque since the last step — reset after it
     /// (one-shot semantics; rapier user forces otherwise persist forever).
     forced_bodies: HashSet<RigidBodyHandle>,
+    /// Configured character controllers, keyed by BODY SLOT (the WASM adapter keys
+    /// its map by rigid-body handle — same association, same lifetime).
+    characters: HashMap<u32, CharRec>,
     poses: ExposedF32,
     /// Previous fixed-step poses (same slot layout) — render-rate interpolation
     /// blends prev→curr TS-side using the accumulator remainder.
@@ -341,6 +384,7 @@ impl WorldData {
             events_enabled: Default::default(),
             ev_state: EventState::default(),
             forced_bodies: Default::default(),
+            characters: HashMap::new(),
             poses: ExposedF32::new(g, INITIAL_POSES),
             prev_poses: ExposedF32::new(g, INITIAL_POSES),
             events: ExposedF32::new(g, INITIAL_EVENTS),
@@ -617,7 +661,8 @@ fn collider_builder_from_scratch(
         .density((s[14] as f32).max(1e-4))
         .friction_combine_rule(combine_rule(s[15] as u32))
         .restitution_combine_rule(combine_rule(s[16] as u32))
-        .collision_groups(groups(s[17] as u32, s[18] as u32));
+        .collision_groups(groups(s[17] as u32, s[18] as u32))
+        .active_collision_types(active_collision_types());
     if is_trigger {
         builder = builder.active_events(ActiveEvents::COLLISION_EVENTS);
     }
@@ -658,6 +703,7 @@ unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
     wd.events_enabled.clear();
     wd.ev_state.clear();
     wd.forced_bodies.clear();
+    wd.characters.clear();
     UNDEF
 }
 
@@ -795,6 +841,9 @@ unsafe extern "sysv64" fn remove_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     wd.events_enabled.remove(&id);
     wd.forced_bodies.remove(&rec.handle);
+    // Slot ids are recycled: a controller left behind would be inherited by the next
+    // body to land in this slot (WASM parity — its map is cleared on removeBody too).
+    wd.characters.remove(&id);
     wd.world.remove_body(rec.handle);
     UNDEF
 }
@@ -908,6 +957,12 @@ unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
     // No physics hooks in T1 (one-way platforms are the 2D-only feature that
     // needs them) — `()` is rapier's no-op PhysicsHooks.
     wd.world.step_with_events(&(), &wd.collector);
+
+    // The step consumed every character's next-kinematic target, so the movement they had
+    // resolved has now been travelled: the next move starts a fresh accumulation window.
+    for ch in wd.characters.values_mut() {
+        ch.pending = Vector::ZERO;
+    }
 
     // One-shot force semantics (Unity parity): rapier's add_force/add_torque
     // persist until reset — clear them after the step they were applied to.
@@ -1183,6 +1238,185 @@ unsafe extern "sysv64" fn set_body_position(g: *mut c_void, cf: *mut c_void) -> 
     })
 }
 
+// ---- character controller ---------------------------------------------------
+
+/// `configureCharacter` scratch → [`CharRec`]. Setting-for-setting the WASM adapter's
+/// `configureCharacter`, including the two places rapier's Rust defaults differ from
+/// the ones rapier.js hands out:
+///   - `up` is written explicitly (contract: fixed at +Y, never inherited);
+///   - `snap_to_ground` is None when the distance is 0. Rust's `Default` snaps at
+///     `Relative(0.2)` while the wasm binding starts with snapping OFF, so inheriting
+///     the default here would make native characters stick to ledges the web build
+///     drops off — the exact web/native split this port exists to avoid.
+fn char_rec_from_scratch(s: &[f64]) -> CharRec {
+    let mut ctl = KinematicCharacterController::default();
+    ctl.up = Vector::Y;
+    // A zero skin starts the shape-cast already touching, which rapier cannot resolve
+    // (MIN_CHARACTER_SKIN3D — the WASM adapter clamps to the same floor).
+    ctl.offset = CharacterLength::Absolute((s[0] as f32).max(0.001));
+    ctl.slide = s[1] != 0.0;
+    ctl.autostep = if s[2] != 0.0 {
+        Some(CharacterAutostep {
+            max_height: CharacterLength::Absolute(s[3] as f32),
+            min_width: CharacterLength::Absolute(s[4] as f32),
+            include_dynamic_bodies: s[5] != 0.0,
+        })
+    } else {
+        None
+    };
+    // RADIANS at this seam — the subsystem already converted the authored degrees.
+    ctl.max_slope_climb_angle = s[6] as f32;
+    ctl.min_slope_slide_angle = s[7] as f32;
+    ctl.snap_to_ground = if s[8] > 0.0 {
+        Some(CharacterLength::Absolute(s[8] as f32))
+    } else {
+        None
+    };
+    // Anti-stick. A character that ends up overlapping the floor — which every character
+    // does at least once, since the first move of a level runs before the world has ever
+    // stepped and therefore against an empty broad-phase — gets a contact normal a hair
+    // off vertical from the shape-cast, and its slope handling then reads the whole walk
+    // as "sliding down" and cancels it: the character freezes in place for good. 1e-3 is
+    // the smallest value that clears a one-frame overlap in the parity scenarios; going
+    // higher (5e-3) also lets a character creep UP a slope its climb limit refuses. The
+    // WASM adapter sets the same number through `setNormalNudgeFactor`
+    // (CHARACTER_NORMAL_NUDGE3D) — rapier's own default, 1e-4, is too small on both.
+    ctl.normal_nudge_factor = 1.0e-3;
+    CharRec {
+        ctl,
+        apply_impulses: s[9] != 0.0,
+        mass: s[10] as f32,
+        pending: Vector::ZERO,
+    }
+}
+
+/// Collide-and-slide `desired` ON TOP of what this character has already resolved since the
+/// last step, drive the kinematic body toward the resolved pose, and push whatever dynamics
+/// were hit. Returns THIS call's increment plus the grounded flag, or `None` when the body or
+/// its collider is gone. Split out of the host fn so the controller can be exercised against a
+/// real rapier world in `cargo test`.
+fn move_character_core(
+    world: &mut PhysicsWorld,
+    body: RigidBodyHandle,
+    ch: &mut CharRec,
+    desired: Vector,
+    dt: f32,
+) -> Option<(Vector, bool)> {
+    // The character's SHAPE and POSE are its FIRST collider — read off rapier's own
+    // attach-ordered list, which is the very list the WASM adapter indexes with
+    // `body.collider(0)`, so both backends sweep the same collider of a multi-collider body.
+    let col = *world.bodies.get(body)?.colliders().first()?;
+    let (shape, shape_pos) = {
+        let co = world.colliders.get(col)?;
+        // Clone the SharedShape (an Arc) so the impulse phase can borrow the collider set
+        // mutably without holding a borrow into it.
+        (co.shared_shape().clone(), *co.position())
+    };
+
+    // Sensors are excluded (a trigger volume must not block a character) and the
+    // character's own colliders are dropped — otherwise the capsule collides with
+    // itself and resolves to zero movement. Same filter as the WASM adapter's.
+    let filter = QueryFilter {
+        flags: QueryFilterFlags::EXCLUDE_SENSORS,
+        exclude_rigid_body: Some(body),
+        ..QueryFilter::default()
+    };
+    let mut collisions: Vec<CharacterCollision> = Vec::new();
+    // The sweep starts at the collider's CURRENT pose, i.e. the pose of the last substep, so
+    // movement resolved since then has to be re-requested here: the whole un-consumed path,
+    // resolved as one. Without it every call made in a frame that runs no substep is thrown
+    // away and walk speed silently scales with frame rate.
+    let requested = ch.pending + desired;
+    let eff = {
+        let queries = world.broad_phase.as_query_pipeline(
+            world.narrow_phase.query_dispatcher(),
+            &world.bodies,
+            &world.colliders,
+            filter,
+        );
+        ch.ctl
+            .move_shape(dt, &queries, &*shape, &shape_pos, requested, |c| collisions.push(c))
+    };
+
+    // The controller only COMPUTES. A kinematic body is driven through its next-position
+    // target so the solver sees the motion; writing the translation would teleport it.
+    let mut increment = eff.translation;
+    if let Some(rb) = world.bodies.get_mut(body) {
+        if rb.is_kinematic() {
+            let target = rb.translation() + eff.translation;
+            rb.set_next_kinematic_translation(target);
+            // Report the increment, not the re-resolved total: the increments of every call
+            // between two substeps sum to the movement the body actually makes.
+            increment = eff.translation - ch.pending;
+            ch.pending = eff.translation;
+        }
+    }
+
+    if ch.apply_impulses && !collisions.is_empty() {
+        let mass = if ch.mass > 0.0 {
+            ch.mass
+        } else {
+            world.bodies.get(body).map(|b| b.mass()).unwrap_or(1.0).max(0.001)
+        };
+        let mut queries = world.broad_phase.as_query_pipeline_mut(
+            world.narrow_phase.query_dispatcher(),
+            &mut world.bodies,
+            &mut world.colliders,
+            filter,
+        );
+        ch.ctl.solve_character_collision_impulses(
+            dt,
+            &mut queries,
+            &*shape,
+            mass,
+            collisions.iter(),
+        );
+    }
+
+    Some((increment, eff.grounded))
+}
+
+/// configureCharacter(bodyId) — reads the 13-field scratch layout; keyed by body slot.
+unsafe extern "sysv64" fn configure_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    let body_id = arg_u(cf, 0);
+    let s: Vec<f64> = wd.scratch.data()[..CONFIGURE_CHARACTER_FIELDS].to_vec();
+    let rec = char_rec_from_scratch(&s);
+    wd.characters.insert(body_id, rec);
+    UNDEF
+}
+
+unsafe extern "sysv64" fn remove_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    wd.characters.remove(&arg_u(cf, 0));
+    UNDEF
+}
+
+/// moveCharacter(bodyId, dx, dy, dz, dt) → scratch [0..2]=applied [3]=grounded;
+/// returns true when a controller actually ran.
+unsafe extern "sysv64" fn move_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let wd = world!(g, cf);
+    let body_id = arg_u(cf, 0);
+    let desired = arg_vec3(cf, 1);
+    let dt = (arg_f(cf, 4) as f32).max(1e-6);
+
+    let Some(body_handle) = wd.body(body_id) else { return FALSE };
+    let Some(ch) = wd.characters.get_mut(&body_id) else { return FALSE };
+    // No collider ⇒ nothing to sweep (the WASM adapter returns null in the same case).
+    let Some((applied, grounded)) =
+        move_character_core(&mut wd.world, body_handle, ch, desired, dt)
+    else {
+        return FALSE;
+    };
+
+    let s = wd.scratch.data();
+    s[0] = applied.x as f64;
+    s[1] = applied.y as f64;
+    s[2] = applied.z as f64;
+    s[3] = if grounded { 1.0 } else { 0.0 };
+    TRUE
+}
+
 // ---- queries ----------------------------------------------------------------
 
 fn body_slot_of_collider(wd: &WorldData, ch: ColliderHandle) -> f32 {
@@ -1439,6 +1673,9 @@ pub unsafe fn install(g: *mut c_void) {
                 ("step", 1, step),
                 ("setKinematicTarget", 8, set_kinematic_target),
                 ("setBodyPosition", 8, set_body_position),
+                ("configureCharacter", 1, configure_character),
+                ("removeCharacter", 1, remove_character),
+                ("moveCharacter", 5, move_character),
                 ("applyForce", 4, apply_force),
                 ("applyImpulse", 4, apply_impulse),
                 ("applyTorque", 4, apply_torque),
@@ -1926,6 +2163,349 @@ mod tests {
         assert_eq!(out[0][1], 3.0);
         assert_eq!(out[1][0], EV_COLL_ENTER);
         assert!(st.pending_exits.is_empty());
+    }
+
+    // ---- character controller -------------------------------------------------
+    //
+    // The same four scenarios the WASM suite asserts
+    // (`packages/physics3d-rapier3d/test/character.test.ts`), run against a real rapier
+    // world so web and native are shown to behave the same way, not merely to be wired
+    // the same way. Two conventions carried over from that suite:
+    //   - every scenario drives the character the way a game does (a horizontal step PLUS
+    //     a small downward term each frame) because grounded/autostep/snap are all
+    //     resolved from the downward part of the motion;
+    //   - the fall term is much smaller than the step, since rapier resolves autostep
+    //     against the DESIRED direction and a large fall term turns a walk into a
+    //     downward shove that refuses stairs it should climb.
+    // Resting feet sit `offset` (0.02) above the surface, so height checks carry slack.
+
+    const CH_HALF_HEIGHT: f32 = 0.5;
+    const CH_RADIUS: f32 = 0.5;
+    /// Capsule centre → lowest point.
+    const FOOT_OFFSET: f32 = CH_HALF_HEIGHT + CH_RADIUS;
+    const STEP_DT: f32 = 1.0 / 60.0;
+    const FALL: f32 = -0.02;
+
+    /// The `characterConfig3DFrom` defaults (degrees already converted), as the 11-lane
+    /// configure scratch record.
+    fn character_scratch() -> Vec<f64> {
+        vec![
+            0.02,                           // [0] offset
+            1.0,                            // [1] slide
+            1.0,                            // [2] autostep enabled
+            0.4,                            // [3] autostep max height
+            0.15,                           // [4] autostep min width
+            0.0,                            // [5] autostep include dynamic
+            45.0f64.to_radians(),           // [6] max slope climb
+            30.0f64.to_radians(),           // [7] min slope slide
+            0.2,                            // [8] snap distance
+            1.0,                            // [9] apply impulses
+            0.0,                            // [10] character mass (body's own)
+        ]
+    }
+
+    fn new_char_world() -> PhysicsWorld {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::new(0.0, -9.81, 0.0);
+        world.integration_parameters.dt = STEP_DT;
+        world
+    }
+
+    /// A static box whose TOP face sits at `top_y`, spanning `2*hx` in X around `cx`.
+    fn add_ground(world: &mut PhysicsWorld, cx: f32, top_y: f32, hx: f32) {
+        let body = world.insert_body(RigidBodyBuilder::fixed().pose(Pose::from_parts(
+            Vector::new(cx, top_y - 0.5, 0.0),
+            Rotation::IDENTITY,
+        )));
+        world.insert_collider(ColliderBuilder::cuboid(hx, 0.5, 5.0), Some(body));
+    }
+
+    /// A kinematic capsule with its feet on `foot_y`, plus the matching collider.
+    fn add_character(world: &mut PhysicsWorld, x: f32, foot_y: f32) -> RigidBodyHandle {
+        let body = world.insert_body(RigidBodyBuilder::kinematic_position_based().pose(
+            Pose::from_parts(Vector::new(x, foot_y + FOOT_OFFSET, 0.0), Rotation::IDENTITY),
+        ));
+        world.insert_collider(ColliderBuilder::capsule_y(CH_HALF_HEIGHT, CH_RADIUS), Some(body));
+        body
+    }
+
+    /// Walk `frames` frames at `dx` per frame; returns the number of airborne frames.
+    fn walk(
+        world: &mut PhysicsWorld,
+        body: RigidBodyHandle,
+        ch: &mut CharRec,
+        dx: f32,
+        frames: usize,
+    ) -> usize {
+        walk_substepped(world, body, ch, dx, frames, 1)
+    }
+
+    /// Walk `frames` frames, stepping the world once every `moves_per_step` frames — the
+    /// shape of a render loop running above the fixed rate. Returns airborne frames, and
+    /// clears each character's pending window exactly as the `step` host fn does.
+    fn walk_substepped(
+        world: &mut PhysicsWorld,
+        body: RigidBodyHandle,
+        ch: &mut CharRec,
+        dx: f32,
+        frames: usize,
+        moves_per_step: usize,
+    ) -> usize {
+        let mut airborne = 0;
+        for i in 0..frames {
+            let (_, grounded) =
+                move_character_core(world, body, ch, Vector::new(dx, FALL, 0.0), STEP_DT)
+                    .expect("character has a body and a collider");
+            if !grounded {
+                airborne += 1;
+            }
+            // The controller only set the next kinematic target — the body moves on step.
+            if (i + 1) % moves_per_step == 0 {
+                world.step();
+                ch.pending = Vector::ZERO;
+            }
+        }
+        airborne
+    }
+
+    /// Let the capsule settle onto its ground before anything is asserted about contact.
+    fn settle(world: &mut PhysicsWorld, body: RigidBodyHandle, ch: &mut CharRec) {
+        walk(world, body, ch, 0.0, 5);
+    }
+
+    fn foot_height(world: &PhysicsWorld, body: RigidBodyHandle) -> f32 {
+        world.bodies.get(body).unwrap().translation().y - FOOT_OFFSET
+    }
+
+    fn x_of(world: &PhysicsWorld, body: RigidBodyHandle) -> f32 {
+        world.bodies.get(body).unwrap().translation().x
+    }
+
+    /// The lane decode, including the snap default that differs between rapier's Rust
+    /// `Default` and the wasm binding — the one setting a silent inherit would flip.
+    #[test]
+    fn character_scratch_decodes_every_lane() {
+        let mut s = character_scratch();
+        let ch = char_rec_from_scratch(&s);
+        assert_eq!(ch.ctl.up, Vector::Y);
+        assert_eq!(ch.ctl.offset, CharacterLength::Absolute(0.02));
+        assert!(ch.ctl.slide);
+        let autostep = ch.ctl.autostep.expect("autostep enabled");
+        assert_eq!(autostep.max_height, CharacterLength::Absolute(0.4));
+        assert_eq!(autostep.min_width, CharacterLength::Absolute(0.15));
+        assert!(!autostep.include_dynamic_bodies);
+        assert!((ch.ctl.max_slope_climb_angle - std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+        assert!((ch.ctl.min_slope_slide_angle - 30f32.to_radians()).abs() < 1e-5);
+        assert_eq!(ch.ctl.snap_to_ground, Some(CharacterLength::Absolute(0.2)));
+        assert!(ch.apply_impulses);
+        assert_eq!(ch.mass, 0.0);
+        assert_eq!(ch.pending, Vector::ZERO);
+        // Rapier's own default (1e-4) freezes a character that starts a level overlapping
+        // the floor; the WASM adapter sets the same 1e-3 through setNormalNudgeFactor.
+        assert!((ch.ctl.normal_nudge_factor - 1.0e-3).abs() < 1e-9);
+
+        // Disabled toggles collapse to None rather than to rapier's own defaults.
+        s[2] = 0.0;
+        s[8] = 0.0;
+        let ch = char_rec_from_scratch(&s);
+        assert!(ch.ctl.autostep.is_none());
+        assert!(ch.ctl.snap_to_ground.is_none(), "snap must be OFF at distance 0 (wasm parity)");
+    }
+
+    #[test]
+    fn character_walks_a_flat_plane_without_leaving_the_ground() {
+        let mut world = new_char_world();
+        add_ground(&mut world, 0.0, 0.0, 20.0);
+        let mut ch = char_rec_from_scratch(&character_scratch());
+        let body = add_character(&mut world, 0.0, 0.0);
+        settle(&mut world, body, &mut ch);
+
+        let airborne = walk(&mut world, body, &mut ch, 0.05, 40);
+
+        assert_eq!(airborne, 0);
+        // 40 frames x 0.05 with nothing in the way.
+        assert!((x_of(&world, body) - 2.0).abs() < 0.1, "x={}", x_of(&world, body));
+        // The downward term is absorbed by the floor rather than accumulating into a sink.
+        assert!(foot_height(&world, body).abs() < 0.1, "foot={}", foot_height(&world, body));
+    }
+
+    #[test]
+    fn character_autosteps_a_0_3m_riser_and_is_blocked_without_autostep() {
+        // The differential proves the climb came from autostep and not from the capsule
+        // rolling over the edge on its curved bottom.
+        let climb = |autostep: bool| -> (f32, f32) {
+            let mut world = new_char_world();
+            add_ground(&mut world, 0.0, 0.0, 20.0);
+            // A 0.3 m riser whose face is at x = 1, with a wide tread to land on.
+            add_ground(&mut world, 4.0, 0.3, 3.0);
+            let mut s = character_scratch();
+            s[2] = if autostep { 1.0 } else { 0.0 };
+            let mut ch = char_rec_from_scratch(&s);
+            let body = add_character(&mut world, 0.0, 0.0);
+            settle(&mut world, body, &mut ch);
+            walk(&mut world, body, &mut ch, 0.05, 80);
+            (foot_height(&world, body), x_of(&world, body))
+        };
+
+        let (foot, x) = climb(true);
+        // Standing ON the step (0.3 plus the collision skin), not stuck against its face.
+        assert!(foot > 0.29 && foot < 0.36, "foot={foot}");
+        assert!(x > 1.5, "x={x}");
+
+        let (foot, x) = climb(false);
+        assert!(foot < 0.05, "foot={foot}");
+        // Stopped at the face: capsule radius 0.5 short of the riser at x = 1.
+        assert!(x < 0.6, "x={x}");
+    }
+
+    #[test]
+    fn character_refuses_a_60_degree_slope_until_the_climb_limit_allows_it() {
+        // Absolute travel on a ramp depends on contact details, so the assertion is the
+        // DIFFERENTIAL: one identical world walked twice, climb limit the only change.
+        let rise_with_climb_limit = |max_slope_climb_deg: f64| -> f32 {
+            let mut world = new_char_world();
+            add_ground(&mut world, 0.0, 0.0, 20.0);
+            // A box rotated +60° about Z: its upper face is a 60° incline rising toward
+            // +X, placed so the foot of the incline lands at x = 2 on the floor plane.
+            let a = 60f32.to_radians();
+            let (hx, hy) = (3.0f32, 0.5f32);
+            let ramp = world.insert_body(RigidBodyBuilder::fixed().pose(Pose::from_parts(
+                Vector::new(2.0 + hx * a.cos() + hy * a.sin(), hx * a.sin() - hy * a.cos(), 0.0),
+                Rotation::from_xyzw(0.0, 0.0, (a / 2.0).sin(), (a / 2.0).cos()),
+            )));
+            world.insert_collider(ColliderBuilder::cuboid(hx, hy, 5.0), Some(ramp));
+
+            let mut s = character_scratch();
+            s[2] = 0.0; // autostep off — the ramp must be climbed as a slope, not stepped
+            s[6] = max_slope_climb_deg.to_radians();
+            s[8] = 0.0; // snap off
+            let mut ch = char_rec_from_scratch(&s);
+            let body = add_character(&mut world, 0.0, 0.0);
+            settle(&mut world, body, &mut ch);
+            walk(&mut world, body, &mut ch, 0.05, 150);
+            foot_height(&world, body)
+        };
+
+        // A 60° face is above a 45° limit: the character must not ride up it at all.
+        let refused = rise_with_climb_limit(45.0);
+        assert!(refused < 0.05, "refused rise={refused}");
+        // Raising the limit past the slope lets the very same walk gain real height.
+        let allowed = rise_with_climb_limit(80.0);
+        assert!(allowed > 0.5, "allowed rise={allowed}");
+    }
+
+    #[test]
+    fn character_walk_distance_does_not_depend_on_how_many_moves_share_a_step() {
+        // A render loop above the fixed rate calls moveCharacter several times between two
+        // substeps. Each of those calls must add to the pending target rather than replace
+        // it, or the character walks a fraction of its authored speed at high frame rates.
+        let travel = |moves_per_step: usize| -> f32 {
+            let mut world = new_char_world();
+            add_ground(&mut world, 0.0, 0.0, 40.0);
+            // Autostep and snap-to-ground off: both resolve against the DESIRED direction, which
+            // a longer accumulated sweep tilts, and this test is about distance, not contact
+            // handling. Flat ground plus plain sliding leaves only the accumulation.
+            let mut s = character_scratch();
+            s[2] = 0.0;
+            s[8] = 0.0;
+            let mut ch = char_rec_from_scratch(&s);
+            let body = add_character(&mut world, 0.0, 0.0);
+            settle(&mut world, body, &mut ch);
+            let start = x_of(&world, body);
+            // Same total authored displacement either way: 120 moves x 0.025.
+            walk_substepped(&mut world, body, &mut ch, 0.025, 120, moves_per_step);
+            x_of(&world, body) - start
+        };
+
+        // 4 %: a grounded sweep clips its downward term, and how much of the horizontal that
+        // costs depends on the angle of the request — which accumulation makes shallower. The
+        // defect this guards against is not a few percent but a few TIMES (a 4-moves-per-step
+        // character used to travel a quarter of this).
+        for moves in [1usize, 2, 3, 4] {
+            let d = travel(moves);
+            assert!((d - 3.0).abs() < 0.12, "{moves} moves per step travelled {d}, wanted 3.0");
+        }
+    }
+
+    #[test]
+    fn character_move_increments_sum_to_the_distance_the_body_travels() {
+        let mut world = new_char_world();
+        add_ground(&mut world, 0.0, 0.0, 40.0);
+        let mut ch = char_rec_from_scratch(&character_scratch());
+        let body = add_character(&mut world, 0.0, 0.0);
+        settle(&mut world, body, &mut ch);
+
+        let start = x_of(&world, body);
+        let mut reported = 0.0f32;
+        for i in 0..90 {
+            let (applied, _) =
+                move_character_core(&mut world, body, &mut ch, Vector::new(0.02, FALL, 0.0), STEP_DT)
+                    .expect("configured character");
+            reported += applied.x;
+            if (i + 1) % 3 == 0 {
+                world.step();
+                ch.pending = Vector::ZERO;
+            }
+        }
+        let travelled = x_of(&world, body) - start;
+        assert!((reported - travelled).abs() < 1e-3, "reported={reported} travelled={travelled}");
+    }
+
+    #[test]
+    fn character_sweeps_the_colliders_own_shape_not_a_rebuilt_capsule() {
+        // The controller shape is whatever the entity authored — the WASM adapter can sweep
+        // nothing but `body.collider(0)`, so a native-only capsule would collide differently
+        // on the two players from identical content. A WIDE box proves which one is swept.
+        let mut world = new_char_world();
+        add_ground(&mut world, 0.0, 0.0, 20.0);
+        // Wall face at x = 2.
+        let wall = world.insert_body(RigidBodyBuilder::fixed().pose(Pose::from_parts(
+            Vector::new(4.0, 1.0, 0.0),
+            Rotation::IDENTITY,
+        )));
+        world.insert_collider(ColliderBuilder::cuboid(2.0, 2.0, 5.0), Some(wall));
+
+        let body = world.insert_body(RigidBodyBuilder::kinematic_position_based().pose(
+            Pose::from_parts(Vector::new(0.0, FOOT_OFFSET, 0.0), Rotation::IDENTITY),
+        ));
+        // Half-extent 1.5 in X — three times the capsule radius the old code rebuilt.
+        world.insert_collider(ColliderBuilder::cuboid(1.5, 1.0, 0.5), Some(body));
+
+        let mut ch = char_rec_from_scratch(&character_scratch());
+        walk(&mut world, body, &mut ch, 0.05, 60);
+
+        // A box stops with its own half-extent to spare; a 0.5-radius capsule would have
+        // walked another metre before touching the same wall.
+        let x = x_of(&world, body);
+        assert!(x < 0.6, "box-shaped character stopped at x={x}");
+    }
+
+    #[test]
+    fn snap_to_ground_keeps_the_character_grounded_over_a_ledge() {
+        let walk_off_ledge = |snap: bool| -> usize {
+            let mut world = new_char_world();
+            // Upper deck out to x = 0, lower deck 0.2 m below it from x = 0 on.
+            add_ground(&mut world, -5.0, 0.0, 5.0);
+            add_ground(&mut world, 5.0, -0.2, 5.0);
+            let mut s = character_scratch();
+            s[2] = 0.0; // autostep off
+            s[8] = if snap { 0.2 } else { 0.0 };
+            let mut ch = char_rec_from_scratch(&s);
+            let body = add_character(&mut world, -1.0, 0.0);
+            settle(&mut world, body, &mut ch);
+            // Fast enough that the lip is crossed in one frame — a slow shuffle rolls down
+            // the corner and never goes airborne, so it could not tell the two apart.
+            let airborne = walk(&mut world, body, &mut ch, 0.1, 30);
+            assert!(x_of(&world, body) > 0.5, "x={}", x_of(&world, body));
+            // Either way the character ends on the lower deck (feet at -0.2 plus the skin).
+            let foot = foot_height(&world, body);
+            assert!((foot + 0.2).abs() < 0.1, "foot={foot}");
+            airborne
+        };
+
+        // Snapping holds contact across the lip; without it there is brief free fall.
+        assert_eq!(walk_off_ledge(true), 0);
+        assert!(walk_off_ledge(false) > 0);
     }
 
     #[test]

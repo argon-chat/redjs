@@ -470,10 +470,66 @@ fn combine_rule(v: u32) -> CoefficientCombineRule {
     }
 }
 
+/// Scratch lanes an `addCollider` descriptor occupies. Kept as a named constant so the tests
+/// build the same-width descriptor the JS side writes.
+const ADD_COLLIDER_FIELDS: usize = 17;
+
+const SHAPE_CIRCLE: u32 = 1;
+const SHAPE_CAPSULE: u32 = 2;
+const SHAPE_CONVEX_HULL: u32 = 3;
+
+/// Which body-type PAIRS reach the narrow phase, on every collider.
+///
+/// Rapier's default is dynamic-vs-anything, so a kinematic body would generate no contacts and no
+/// intersection pairs against static geometry — walking into a static trigger zone, the most
+/// common thing a character does, would report nothing. Mirrors `ACTIVE_COLLISION_TYPES2D` in the
+/// WASM adapter and `p3d.rs`; FIXED_FIXED stays off.
+fn active_collision_types() -> ActiveCollisionTypes {
+    ActiveCollisionTypes::default()
+        | ActiveCollisionTypes::KINEMATIC_FIXED
+        | ActiveCollisionTypes::KINEMATIC_KINEMATIC
+}
+
 fn groups(layer_mask: u32, collision_mask: u32) -> InteractionGroups {
     InteractionGroups::all()
         .with_memberships(Group::from_bits_truncate(layer_mask))
         .with_filter(Group::from_bits_truncate(collision_mask))
+}
+
+/// Build a collider from an `addCollider` scratch descriptor. Split out of the FFI entry point so
+/// the flags a collider ships with are reachable from tests; `verts` is decoded by the caller
+/// because it arrives on the call frame rather than in scratch. `None` = degenerate hull.
+fn collider_builder_from_scratch(s: &[f64], verts: Vec<Vec2>) -> Option<ColliderBuilder> {
+    let builder = match s[0] as u32 {
+        SHAPE_CIRCLE => ColliderBuilder::ball((s[1] as f32).max(1e-4)),
+        SHAPE_CAPSULE => {
+            ColliderBuilder::capsule_y((s[1] as f32).max(0.0), (s[2] as f32).max(1e-4))
+        }
+        SHAPE_CONVEX_HULL => {
+            if verts.len() < 3 {
+                return None;
+            }
+            ColliderBuilder::convex_hull(&verts)?
+        }
+        _ => ColliderBuilder::cuboid((s[1] as f32).max(1e-4), (s[2] as f32).max(1e-4)),
+    };
+    let is_trigger = s[6] != 0.0;
+    let builder = builder
+        .translation(Vec2::new(s[3] as f32, s[4] as f32))
+        .rotation(s[5] as f32)
+        .sensor(is_trigger)
+        .friction(s[7] as f32)
+        .restitution(s[8] as f32)
+        .density((s[9] as f32).max(1e-4))
+        .friction_combine_rule(combine_rule(s[10] as u32))
+        .restitution_combine_rule(combine_rule(s[11] as u32))
+        .collision_groups(groups(s[12] as u32, s[13] as u32))
+        .active_collision_types(active_collision_types());
+    Some(if is_trigger {
+        builder.active_events(ActiveEvents::COLLISION_EVENTS)
+    } else {
+        builder
+    })
 }
 
 fn query_filter<'a>(mask: u32) -> QueryFilter<'a> {
@@ -760,37 +816,12 @@ unsafe extern "sysv64" fn add_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(body) = wd.bodies.get(body_id).map(|r| r.handle) else {
         return enc_f64(-1.0);
     };
-    let s: Vec<f64> = wd.scratch.data()[..17].to_vec();
-    let shape = s[0] as u32;
-    let builder = match shape {
-        1 => Some(ColliderBuilder::ball((s[1] as f32).max(1e-4))),
-        2 => Some(ColliderBuilder::capsule_y((s[1] as f32).max(0.0), (s[2] as f32).max(1e-4))),
-        3 => {
-            let verts = arg_verts(g, cf, 1);
-            if verts.len() >= 3 {
-                ColliderBuilder::convex_hull(&verts)
-            } else {
-                None
-            }
-        }
-        _ => Some(ColliderBuilder::cuboid((s[1] as f32).max(1e-4), (s[2] as f32).max(1e-4))),
-    };
-    let Some(builder) = builder else { return enc_f64(-1.0) };
-    let is_trigger = s[6] != 0.0;
+    let s: Vec<f64> = wd.scratch.data()[..ADD_COLLIDER_FIELDS].to_vec();
+    // Hull verts are decoded here because they come off the FFI frame, not the scratch lane.
+    let verts = if s[0] as u32 == SHAPE_CONVEX_HULL { arg_verts(g, cf, 1) } else { Vec::new() };
+    let Some(builder) = collider_builder_from_scratch(&s, verts) else { return enc_f64(-1.0) };
     let one_way = s[14] != 0.0;
-    let mut builder = builder
-        .translation(Vec2::new(s[3] as f32, s[4] as f32))
-        .rotation(s[5] as f32)
-        .sensor(is_trigger)
-        .friction(s[7] as f32)
-        .restitution(s[8] as f32)
-        .density((s[9] as f32).max(1e-4))
-        .friction_combine_rule(combine_rule(s[10] as u32))
-        .restitution_combine_rule(combine_rule(s[11] as u32))
-        .collision_groups(groups(s[12] as u32, s[13] as u32));
-    if is_trigger {
-        builder = builder.active_events(ActiveEvents::COLLISION_EVENTS);
-    }
+    let mut builder = builder;
     if one_way {
         builder = builder.active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS);
     }
@@ -2222,4 +2253,162 @@ pub unsafe fn install(g: *mut c_void) {
         .lock()
         .unwrap()
         .insert(g as usize, SendState(ClassState { cls, proto: class.proto }));
+}
+
+// ---- tests ------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Neutral `addCollider` descriptor: unit box, solid, unit density, all layers.
+    fn collider_scratch() -> Vec<f64> {
+        let mut s = vec![0.0f64; ADD_COLLIDER_FIELDS];
+        s[1] = 0.5; // half extent x
+        s[2] = 0.5; // half extent y
+        s[9] = 1.0; // density
+        s[12] = u32::MAX as f64; // layerMask
+        s[13] = u32::MAX as f64; // collisionMask
+        s
+    }
+
+    /// Body slots double as the event payload, so each body carries its slot as user_data —
+    /// exactly what `add_body` does at runtime.
+    fn insert(
+        world: &mut PhysicsWorld,
+        builder: RigidBodyBuilder,
+        slot: u32,
+        s: &[f64],
+    ) -> RigidBodyHandle {
+        let body = world.insert_body(builder.user_data(slot as u128));
+        let col = collider_builder_from_scratch(s, Vec::new()).unwrap();
+        world.insert_collider(col, Some(body));
+        body
+    }
+
+    /// Step once and report the sensor-flagged Started events the runtime would fold.
+    fn sensor_enters(world: &mut PhysicsWorld, hooks: &Hooks, collector: &Collector) -> usize {
+        world.integration_parameters.dt = 1.0 / 60.0;
+        world.step_with_events(hooks, collector);
+        let evs = collector.evs.lock().unwrap();
+        evs.iter().filter(|e| e.started && e.sensor).count()
+    }
+
+    /// What `setEventsEnabled(body, true)` does at runtime: solid colliders only report contacts
+    /// when the body carries a script handler, so a contact scenario has to opt in the same way.
+    fn enable_events(world: &mut PhysicsWorld, body: RigidBodyHandle) {
+        let handles: Vec<ColliderHandle> =
+            world.bodies.get(body).unwrap().colliders().to_vec();
+        for h in handles {
+            world.colliders.get_mut(h).unwrap().set_active_events(ActiveEvents::COLLISION_EVENTS);
+        }
+    }
+
+    fn contact_enters(world: &mut PhysicsWorld, hooks: &Hooks, collector: &Collector) -> usize {
+        world.integration_parameters.dt = 1.0 / 60.0;
+        world.step_with_events(hooks, collector);
+        let evs = collector.evs.lock().unwrap();
+        evs.iter().filter(|e| e.started && !e.sensor).count()
+    }
+
+    #[test]
+    fn kinematic_body_enters_a_static_trigger_zone() {
+        // Rapier's DEFAULT ActiveCollisionTypes omits KINEMATIC_FIXED — before the widening this
+        // overlap produced no event at all, so a kinematic character never noticed a static zone.
+        let mut world = PhysicsWorld::new();
+        let hooks = Hooks::default();
+        let collector = Collector::default();
+
+        let mut zone = collider_scratch();
+        zone[6] = 1.0; // sensor
+        insert(&mut world, RigidBodyBuilder::fixed(), 1, &zone);
+        insert(
+            &mut world,
+            RigidBodyBuilder::kinematic_position_based(),
+            2,
+            &collider_scratch(),
+        );
+
+        assert_eq!(sensor_enters(&mut world, &hooks, &collector), 1);
+    }
+
+    #[test]
+    fn kinematic_body_contacts_static_solid_geometry() {
+        let mut world = PhysicsWorld::new();
+        let hooks = Hooks::default();
+        let collector = Collector::default();
+        insert(&mut world, RigidBodyBuilder::fixed(), 1, &collider_scratch());
+        let walker = insert(
+            &mut world,
+            RigidBodyBuilder::kinematic_position_based(),
+            2,
+            &collider_scratch(),
+        );
+        enable_events(&mut world, walker);
+        assert_eq!(contact_enters(&mut world, &hooks, &collector), 1);
+    }
+
+    #[test]
+    fn kinematic_body_enters_a_kinematic_trigger_zone() {
+        let mut world = PhysicsWorld::new();
+        let hooks = Hooks::default();
+        let collector = Collector::default();
+        let mut zone = collider_scratch();
+        zone[6] = 1.0;
+        insert(&mut world, RigidBodyBuilder::kinematic_position_based(), 1, &zone);
+        insert(
+            &mut world,
+            RigidBodyBuilder::kinematic_position_based(),
+            2,
+            &collider_scratch(),
+        );
+        assert_eq!(sensor_enters(&mut world, &hooks, &collector), 1);
+    }
+
+    #[test]
+    fn two_static_bodies_stay_silent() {
+        // Negative control: FIXED_FIXED must remain off. Co-located static bodies cannot touch in
+        // any way a game can observe, and turning this on would flood every level's static geometry.
+        let mut world = PhysicsWorld::new();
+        let hooks = Hooks::default();
+        let collector = Collector::default();
+        let mut zone = collider_scratch();
+        zone[6] = 1.0;
+        insert(&mut world, RigidBodyBuilder::fixed(), 1, &zone);
+        insert(&mut world, RigidBodyBuilder::fixed(), 2, &collider_scratch());
+
+        world.integration_parameters.dt = 1.0 / 60.0;
+        world.step_with_events(&hooks, &collector);
+        assert_eq!(collector.evs.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn dynamic_pairs_still_report() {
+        // The widening is additive: the pairs that already worked must keep working.
+        let mut world = PhysicsWorld::new();
+        let hooks = Hooks::default();
+        let collector = Collector::default();
+        let mut zone = collider_scratch();
+        zone[6] = 1.0;
+        insert(&mut world, RigidBodyBuilder::fixed(), 1, &zone);
+        insert(&mut world, RigidBodyBuilder::dynamic(), 2, &collider_scratch());
+        assert_eq!(sensor_enters(&mut world, &hooks, &collector), 1);
+    }
+
+    #[test]
+    fn active_collision_types_widens_kinematic_without_enabling_fixed_fixed() {
+        let t = active_collision_types();
+        assert!(t.contains(ActiveCollisionTypes::KINEMATIC_FIXED));
+        assert!(t.contains(ActiveCollisionTypes::KINEMATIC_KINEMATIC));
+        assert!(t.contains(ActiveCollisionTypes::DYNAMIC_FIXED));
+        assert!(!t.contains(ActiveCollisionTypes::FIXED_FIXED));
+    }
+
+    #[test]
+    fn degenerate_hull_is_rejected_rather_than_substituted() {
+        let mut s = collider_scratch();
+        s[0] = SHAPE_CONVEX_HULL as f64;
+        assert!(collider_builder_from_scratch(&s, Vec::new()).is_none());
+        assert!(collider_builder_from_scratch(&s, vec![Vec2::ZERO, Vec2::X]).is_none());
+    }
 }
