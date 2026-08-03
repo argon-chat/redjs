@@ -12,7 +12,12 @@
 //!    the exact flags of the prebuilt (clang-cl, /MT, NDEBUG, C++23,
 //!    force-included cmakeconfig.h).
 //!
-//! 3. Links the WebKit static libs. They are linked with the `-bundle`
+//! 3. Compiles the vendored Yoga flexbox engine (`cpp/yoga`, facebook/yoga
+//!    v3.2.1 — the exact commit the `yoga-layout` npm pin ships) into its own
+//!    static lib for the `RedYoga` host class. Plain portable C++20: it must
+//!    NOT see the WebKit cmakeconfig force-include.
+//!
+//! 4. Links the WebKit static libs. They are linked with the `-bundle`
 //!    modifier so the `staticlib` artifact (redjs.lib for NativeAOT) stays
 //!    thin — the consuming link (ILC) must also pass the WebKit libs. The
 //!    `cdylib` artifact (redjs.dll) is always fully self-contained.
@@ -76,6 +81,33 @@ fn main() {
         .define("_CRT_SECURE_NO_WARNINGS", None)
         .compile("redjs_glue");
 
+    // --- vendored Yoga (flexbox layout for the RedYoga host class) ---------
+    // Ordinary self-contained C++20 — same compiler/CRT as the rest of the
+    // crate (clang-cl + /MT, so it links with `+crt-static`) but NONE of the
+    // WebKit configuration: no cmakeconfig force-include, no WebKit includes.
+    // `cpp/` on the include path is what makes yoga's own `#include
+    // <yoga/...>` resolve. This flag set is the one proven to reproduce the
+    // wasm layout goldens (scripts/yoga-parity.ts).
+    let yoga_dir = manifest.join("cpp").join("yoga");
+    let mut yoga = cc::Build::new();
+    yoga.cpp(true)
+        .compiler("clang-cl")
+        .static_crt(true)
+        .include(manifest.join("cpp"))
+        .flag("/std:c++20")
+        .flag("/EHsc")
+        .flag("/W0")
+        .define("NDEBUG", None)
+        .define("NOMINMAX", None)
+        .define("_CRT_SECURE_NO_WARNINGS", None);
+    let mut yoga_sources = Vec::new();
+    collect_cpp(&yoga_dir, &mut yoga_sources);
+    yoga_sources.sort(); // deterministic object order
+    if yoga_sources.is_empty() {
+        panic!("no .cpp sources under {} — vendored yoga is missing", yoga_dir.display());
+    }
+    yoga.files(&yoga_sources).compile("redjs_yoga");
+
     println!("cargo:rustc-link-search=native={}", lib.display());
 
     // WebKit static libs. `-bundle`: not embedded into the staticlib artifact
@@ -96,7 +128,23 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cpp/glue.cpp");
     println!("cargo:rerun-if-changed=cpp/compat/wtf/PlatformEnableWin.h");
+    // Directory form: cargo walks it recursively, so headers and any future
+    // .cpp under cpp/yoga/ are covered without listing them.
+    println!("cargo:rerun-if-changed=cpp/yoga");
     println!("cargo:rerun-if-env-changed=BUN_WEBKIT_DIR");
+}
+
+/// Collects every `.cpp` under `dir`, recursively.
+fn collect_cpp(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_cpp(&path, out);
+        } else if path.extension().is_some_and(|e| e == "cpp") {
+            out.push(path);
+        }
+    }
 }
 
 fn generate_trampolines(out_dir: &std::path::Path) {
