@@ -11,14 +11,17 @@
 //! makes `JSC_useWasm=0` reachable (`.refactor/UI-LAYOUT-NATIVE-DESIGN.md` §3 "Measured — memory"),
 //! and re-introducing a wasm CSS parser here would undo it.
 //!
-//! Surface — one function, because the parser is stateless:
+//! Surface — stateless, so every entry point is a pure function of its argument:
 //! ```js
-//! RedCss.parseSheet(cssText) -> jsonText   // rules + selectors + specificity + diagnostics
+//! RedCss.parseSheet(cssText)      -> jsonText  // rules, selectors, specificity, @keyframes, diags
+//! RedCss.parseInline(declBody)    -> jsonText  // an inline `style` prop
+//! RedCss.parseDecl(prop, value)   -> jsonText  // ONE declaration (var() substitution at runtime)
+//! RedCss.props()                  -> jsonText  // the property registry
 //! ```
-//! The JSON shape is `redcss::sheet::to_json`; `packages/ui` parses it once per stylesheet at
-//! import. Strings cross whole rather than per-declaration: a stylesheet is parsed once, so this is
-//! the cheap direction — unlike the per-node layout traffic that forced `RedYoga`'s batched
-//! scratch protocol.
+//! Each declaration arrives with its value already resolved, so the JS side does no CSS parsing at
+//! all. Whole strings cross rather than per-declaration ones: a stylesheet is parsed once at import
+//! and an inline style once per change, which is the cheap direction — unlike the per-node layout
+//! traffic that forced `RedYoga`'s batched scratch protocol.
 
 use core::ffi::c_void;
 
@@ -33,6 +36,39 @@ unsafe extern "sysv64" fn parse_sheet(g: *mut c_void, cf: *mut c_void) -> u64 {
     js_string(g, &redcss::sheet::to_json(&redcss::sheet::parse_sheet(&src)))
 }
 
+/// `RedCss.parseInline(body: string): string` — an inline `style` prop's declaration list.
+unsafe extern "sysv64" fn parse_inline(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(src) = read_string(g, cf_arg(cf, 0)) else {
+        return throw_type_error(g, "RedCss.parseInline expects a string");
+    };
+    js_string(g, &redcss::sheet::decls_to_json(&redcss::sheet::parse_inline(&src)))
+}
+
+/// `RedCss.parseDecl(prop: string, value: string): string` — one declaration's patch.
+///
+/// Two arguments here rather than the wasm build's `prop\0value` packing: the wasm form exists to
+/// avoid a second `alloc` across the linear-memory boundary, which is not a cost that exists when
+/// the call is a direct one.
+unsafe extern "sysv64" fn parse_decl(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let (Some(prop), Some(value)) = (read_string(g, cf_arg(cf, 0)), read_string(g, cf_arg(cf, 1))) else {
+        return throw_type_error(g, "RedCss.parseDecl expects (prop, value)");
+    };
+    let out = match redcss::value::parse_decl(&prop, &value) {
+        redcss::value::Coverage::Patch(json) => json,
+        redcss::value::Coverage::Invalid => "\"invalid\"".to_string(),
+        redcss::value::Coverage::NotPorted => "\"notported\"".to_string(),
+    };
+    js_string(g, &out)
+}
+
+/// `RedCss.props(): string` — the property registry as a sorted JSON array.
+unsafe extern "sysv64" fn props(g: *mut c_void, _cf: *mut c_void) -> u64 {
+    let mut names: Vec<&str> = redcss::value::PORTED.to_vec();
+    names.sort_unstable();
+    let body: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+    js_string(g, &format!("[{}]", body.join(",")))
+}
+
 /// Installs the `RedCss` global. Called from `webapi::install` next to the other host classes.
 pub unsafe fn install(g: *mut c_void) {
     let global = glue::rjs_global(g);
@@ -45,6 +81,9 @@ pub unsafe fn install(g: *mut c_void) {
         define(g, target, name, func, 2);
     };
     def_fn(obj, "parseSheet", 1, parse_sheet);
+    def_fn(obj, "parseInline", 1, parse_inline);
+    def_fn(obj, "parseDecl", 2, parse_decl);
+    def_fn(obj, "props", 0, props);
 
     define(g, global, "RedCss", obj, 2);
 }
