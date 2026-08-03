@@ -19,6 +19,7 @@
 //! (`packages/ui/src/layout/ILayoutEngine.ts`); the wasm adapter it must stay
 //! bit-identical to is `packages/ui/src/layout/YogaLayoutEngine.ts`.
 
+pub mod css;
 pub mod yoga;
 
 use core::ffi::c_void;
@@ -28,4 +29,5 @@ use core::ffi::c_void;
 /// (idempotence rides each class's own per-global state map).
 pub unsafe fn install(g: *mut c_void) {
     yoga::install(g);
+    css::install(g);
 }

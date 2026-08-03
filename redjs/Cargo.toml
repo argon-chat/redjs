@@ -44,6 +44,10 @@ rapier3d = { version = "0.34", features = ["simd-stable", "debug-render"] }
 # MeshoptDecoder the editor/web player use. cc-compiles the vendored C++; the
 # static-CRT match comes from .cargo/config.toml (+crt-static).
 meshopt = "0.6"
+# CSS front end (W-UI UI-29) — the `RedCss` host class. Path-dep, not a registry crate: the SAME
+# source compiles to wasm for the editor and the web player, so a stylesheet cannot parse one way
+# in the browser and another in the shipped game (`packages/redcss`, `.refactor/UI-CSS-ENGINE-DESIGN.md`).
+redcss = { path = "../../redcss" }
 
 [build-dependencies]
 cc = "1"
