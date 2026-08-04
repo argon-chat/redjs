@@ -55,6 +55,11 @@ unsafe extern "sysv64" fn parse_decl(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let out = match redcss::value::parse_decl(&prop, &value) {
         redcss::value::Coverage::Patch(json) => json,
+        // A knowingly-ignored property (`redcss::value::IGNORED`) parses successfully and contributes
+        // nothing — an empty patch, never a rejection sentinel. Must match the wasm build's
+        // `redcss_parse_decl` exactly: the two spellings of this ABI have to agree, which is the
+        // whole reason redcss is one crate rather than two implementations.
+        redcss::value::Coverage::Ignored => "{}".to_string(),
         redcss::value::Coverage::Invalid => "\"invalid\"".to_string(),
         redcss::value::Coverage::NotPorted => "\"notported\"".to_string(),
     };
