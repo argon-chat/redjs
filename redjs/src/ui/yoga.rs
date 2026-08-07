@@ -55,7 +55,9 @@
 //!  3 flexGrow       4 flexShrink
 //!  5,6   flexBasis  (value, unit)
 //!  7 justifyContent (0 flex-start,1 center,2 flex-end,3 space-between,4 space-around,5 space-evenly)
-//!  8 alignItems     9 alignSelf    10 alignContent   (0 auto,1 flex-start,2 center,3 flex-end,4 stretch,5 baseline)
+//!  8 alignItems     9 alignSelf    (0 auto,1 flex-start,2 center,3 flex-end,4 stretch,5 baseline)
+//! 10 alignContent   (the same six, PLUS 6 space-between,7 space-around,8 space-evenly — the
+//!                    distribution keywords are legal on this slot only, see `align_content_of`)
 //! 11 rowGap        12 columnGap
 //! 13,14 width      15,16 height
 //! 17,18 minWidth   19,20 minHeight   21,22 maxWidth   23,24 maxHeight
@@ -68,11 +70,13 @@
 //! 52 overflow      (0 visible, 1 hidden, 2 scroll)
 //! ```
 //!
-//! Note that the wire enums are the **adapter's** ordinals, not yoga's, and two of
-//! them differ: `positionType` 0/1 means relative/absolute while `YGPositionType`
-//! is Static=0/Relative=1/Absolute=2, and the `align*` family shares one wire enum.
-//! Everything else happens to line up, and [`apply_style_to`] maps all of them
-//! explicitly anyway so a future yoga bump cannot silently shift a value.
+//! Note that the wire enums are the **adapter's** ordinals, not yoga's, and one of
+//! them differs: `positionType` 0/1 means relative/absolute while `YGPositionType`
+//! is Static=0/Relative=1/Absolute=2. The `align*` family shares one NUMBERING (it
+//! is `YGAlign`'s) but not one decoder — slot 10 accepts three values slots 8/9 do
+//! not, see [`align_content_of`]. Everything else happens to line up, and
+//! [`apply_style_to`] maps all of them explicitly anyway so a future yoga bump
+//! cannot silently shift a value.
 //!
 //! # Measure callbacks: the re-entrancy contract
 //!
@@ -230,6 +234,9 @@ const YG_ALIGN_CENTER: i32 = 2;
 const YG_ALIGN_FLEX_END: i32 = 3;
 const YG_ALIGN_STRETCH: i32 = 4;
 const YG_ALIGN_BASELINE: i32 = 5;
+const YG_ALIGN_SPACE_BETWEEN: i32 = 6;
+const YG_ALIGN_SPACE_AROUND: i32 = 7;
+const YG_ALIGN_SPACE_EVENLY: i32 = 8;
 
 const YG_DIRECTION_LTR: i32 = 1;
 
@@ -511,6 +518,26 @@ fn align_of(v: f64) -> i32 {
     }
 }
 
+/// `align-content` (slot 10) — [`align_of`] plus the three line-DISTRIBUTION values.
+///
+/// A second decoder rather than three more arms on [`align_of`], because the extra values are legal
+/// on this slot only: `align-items` / `align-self` place ONE box inside its line, so a keyword about
+/// spreading space BETWEEN lines has nothing to act on, and yoga answers it by falling back to
+/// `flex-start`. Keeping slots 8/9 clamped to 1..5 makes that unreachable instead of silent.
+///
+/// This is the third decoder on the wire and the only one no JS gate runs (the conformance suite
+/// needs `globalThis.RedYoga`), so it is the one that goes stale quietly. It must stay in step with
+/// `ALIGN_CONTENT` in `packages/ui/src/layout/NativeLayoutEngine.ts` — same ordinals, which are
+/// `YGAlign`'s own.
+fn align_content_of(v: f64) -> i32 {
+    match v as u32 {
+        6 => YG_ALIGN_SPACE_BETWEEN,
+        7 => YG_ALIGN_SPACE_AROUND,
+        8 => YG_ALIGN_SPACE_EVENLY,
+        _ => align_of(v),
+    }
+}
+
 fn position_type_of(v: f64) -> i32 {
     if v as u32 == 1 { YG_POSITION_TYPE_ABSOLUTE } else { YG_POSITION_TYPE_RELATIVE }
 }
@@ -595,7 +622,7 @@ pub unsafe fn apply_style_to(n: YGNodeRef, s: &[f64]) {
     YGNodeStyleSetJustifyContent(n, justify_of(s[7]));
     YGNodeStyleSetAlignItems(n, align_of(s[8]));
     YGNodeStyleSetAlignSelf(n, align_of(s[9]));
-    YGNodeStyleSetAlignContent(n, align_of(s[10]));
+    YGNodeStyleSetAlignContent(n, align_content_of(s[10]));
     YGNodeStyleSetGap(n, YG_GUTTER_ROW, s[11] as f32);
     YGNodeStyleSetGap(n, YG_GUTTER_COLUMN, s[12] as f32);
 

@@ -966,3 +966,29 @@ pub unsafe extern "C" fn redjs_define_accessor(
 pub unsafe extern "C" fn redjs_release_memory(ctx: *mut c_void) {
     glue::rjs_release_memory(ctx)
 }
+
+// ---------------------------------------------------------------------------
+// Simple dialogs (alert / confirm / prompt) — host hook
+// ---------------------------------------------------------------------------
+
+/// Registers (or clears, with null) the host DIALOG handler backing `alert`,
+/// `confirm` and `prompt`. `handler` is
+/// `int32_t (int32_t kind, const uint16_t* msg, size_t msg_len, const uint16_t* def, size_t def_len, void (*sink)(void* ctx, const uint16_t* ptr, size_t len), void* sink_ctx)`
+/// — `kind` is 0 alert / 1 confirm / 2 prompt; the return value is ignored for
+/// alert, and is 0 = false/cancelled, non-zero = true/accepted otherwise. A
+/// prompt returning non-zero must call `sink` exactly once with the entered
+/// text. Called by Rust with the standard C ABI (never by JSC — no SysV
+/// trampoline), on the JS thread with the caller blocked: a handler that pumps
+/// a modal loop must not re-enter JS.
+///
+/// With NO handler registered the three globals THROW rather than returning a
+/// default — see `webapi::dialogs` for why that is the safer failure.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_dialog_handler_set(ctx: *mut c_void, handler: *const c_void) {
+    let f = if handler.is_null() {
+        None
+    } else {
+        Some(core::mem::transmute::<*const c_void, crate::webapi::dialogs::DialogFn>(handler))
+    };
+    crate::webapi::dialogs::set_handler(ctx, f);
+}

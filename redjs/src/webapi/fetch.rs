@@ -224,11 +224,24 @@ unsafe extern "sysv64" fn resp_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe extern "sysv64" fn response_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
-    // `new Response(body?, init?)` — string/bufferish bodies.
+    // `new Response(body?, init?)` — string / bufferish / Blob / FormData bodies.
     let body = cf_arg(cf, 0);
     let mut bytes: Vec<u8> = Vec::new();
+    // Fetch §"body with type": a BodyInit that carries its own type supplies the
+    // Content-Type. FormData's is the one that MATTERS — the boundary is
+    // generated per body, so a caller cannot write the header itself.
+    let mut mime = "text/plain".to_string();
     if body != UNDEF && body != NULL {
-        if let Some(b) = bufferish(g, body) {
+        if let Some((encoded, content_type)) = super::formdata::encode_body(g, body) {
+            bytes = encoded;
+            mime = content_type;
+        } else if let Some(b) = super::blob::bytes_of(g, body) {
+            let t = read_string(g, get(g, body, "type")).unwrap_or_default();
+            bytes = b;
+            if !t.is_empty() {
+                mime = t;
+            }
+        } else if let Some(b) = bufferish(g, body) {
             bytes = b.to_vec();
         } else if let Some(s) = read_string(g, body) {
             bytes = s.into_bytes();
@@ -246,7 +259,7 @@ unsafe extern "sysv64" fn response_construct(g: *mut c_void, cf: *mut c_void) ->
     };
     create_response(g, RespData {
         bytes: Arc::new(bytes),
-        mime: "text/plain".into(),
+        mime,
         url: String::new(),
         status,
         status_text,

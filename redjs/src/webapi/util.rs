@@ -117,6 +117,29 @@ pub unsafe fn read_string(g: *mut c_void, v: u64) -> Option<String> {
     }
 }
 
+/// ToNumber-coercing read (spec argument conversion). `undefined` → NaN, like
+/// the language: callers that want a default must test for `UNDEF` first.
+pub unsafe fn read_number(g: *mut c_void, v: u64) -> f64 {
+    if let Some(d) = dec_f64(v) {
+        return d;
+    }
+    let mut out = 0.0f64;
+    if glue::rjs_to_number(g, v, &mut out) != 0 {
+        return f64::NAN;
+    }
+    out
+}
+
+/// A numeric argument with a default for `undefined` — the shape almost every
+/// geometry/path method wants (`unrestricted double x = 0`).
+pub unsafe fn arg_num(g: *mut c_void, cf: *mut c_void, i: u32, default: f64) -> f64 {
+    let v = cf_arg(cf, i);
+    if v == UNDEF {
+        return default;
+    }
+    read_number(g, v)
+}
+
 pub unsafe fn make_u8(g: *mut c_void, bytes: &[u8]) -> u64 {
     let mut out = UNDEF;
     if crate::ffi::redjs_typedarray_create(g, 2, bytes.len(), &mut out) != 0 {

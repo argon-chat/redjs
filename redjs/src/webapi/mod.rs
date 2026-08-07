@@ -17,22 +17,78 @@ pub mod audio;
 pub mod blob;
 pub mod clone;
 pub mod crypto;
+pub mod dialogs;
 pub mod dom;
 pub mod events;
 pub mod fetch;
+pub mod formdata;
 pub mod fsutil;
+pub mod geometry;
 pub mod hrtf;
 pub mod image;
+pub mod path2d;
 pub mod platform;
 pub mod textcodec;
+pub mod uievents;
 pub mod url;
 pub mod util;
+pub mod xmlser;
 
 use core::ffi::c_void;
 
 use util::*;
 
 const BOOTSTRAP_JS: &str = include_str!("../bootstrap.js");
+
+/// Shared harness for the web-API tests: a real JSC context with the whole
+/// native layer installed — the same thing the player runs. Every assertion in
+/// the modules below goes through actual JS, because the half these modules can
+/// get wrong is the JSC wiring (prototype chains, `instanceof`, accessor
+/// `this`), and pure-Rust unit tests cannot see any of it.
+#[cfg(test)]
+pub mod testing {
+    use crate::api::{Context, Error};
+
+    pub fn ctx() -> Context {
+        let c = Context::new();
+        unsafe {
+            crate::ffi::redjs_webshim_install(c.raw(), core::ptr::null(), 0, core::ptr::null(), 0);
+        }
+        c
+    }
+
+    /// Evaluate; the result stringified. Panics with the JS message on throw.
+    pub fn s(c: &Context, src: &str) -> String {
+        match c.eval(src) {
+            Ok(v) => c.to_rust_string(v).unwrap_or_else(|_| "<unstringifiable>".into()),
+            Err(Error::Exception(e)) => {
+                let (m, _) = c.error_info(e);
+                panic!("eval threw:\n  {src}\n  → {m}")
+            }
+            Err(e) => panic!("eval failed:\n  {src}\n  → {e}"),
+        }
+    }
+
+    /// Evaluate expecting a boolean `true`. The workhorse: a JS expression that
+    /// is false fails loudly with its own source as the message.
+    pub fn ok(c: &Context, src: &str) {
+        let got = s(c, src);
+        assert_eq!(got, "true", "expected true from: {src}");
+    }
+
+    /// The message of the exception `src` throws. Panics if it did NOT throw —
+    /// which is what makes a refusal test unable to pass by accident.
+    pub fn throws(c: &Context, src: &str) -> String {
+        match c.eval(src) {
+            Err(Error::Exception(e)) => c.error_info(e).0,
+            Err(e) => panic!("expected a JS exception, got {e}: {src}"),
+            Ok(v) => {
+                let shown = c.to_rust_string(v).unwrap_or_else(|_| "<unstringifiable>".into());
+                panic!("expected a throw from `{src}`, but it returned {shown}")
+            }
+        }
+    }
+}
 
 unsafe extern "sysv64" fn print(g: *mut c_void, cf: *mut c_void) -> u64 {
     let level = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0) as i32;
@@ -120,6 +176,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let st_mut = st as *const WebState as *mut WebState;
 
     let (event, custom_event, event_target) = events::install(g);
+    let ev_proto = event.proto;
     (*st_mut).event = event;
     (*st_mut).custom_event = custom_event;
     let et_proto = event_target.proto;
@@ -153,6 +210,12 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     (*st_mut).elements = elements;
 
     crypto::install(g);
+    formdata::install(g);
+    geometry::install(g);
+    path2d::install(g);
+    xmlser::install(g);
+    dialogs::install(g);
+    uievents::install(g, ev_proto);
     clone::install(g);
     audio::install(g);
     abort::install(g, et_proto);
