@@ -1944,6 +1944,7 @@ dependencies = [
  "cc",
  "encoding_rs",
  "firewheel",
+ "flate2",
  "getrandom 0.3.4",
  "image",
  "meshopt",

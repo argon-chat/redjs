@@ -2,20 +2,42 @@
 //! own object model (native constructors, prototype methods/getters via
 //! accessors, private-name internal slots, real `instanceof`).
 //!
+//! ## This tree is not a compatibility shim
+//!
+//! `CLAUDE.md` rule 1 bans backward-compatibility shims — `compat/`, `legacy/`,
+//! `*-old.ts`, deprecated re-exports. That rule is about this repo's own
+//! history and does NOT apply here. Nothing in this directory bridges to dead
+//! code: these are implementations of *current* web platform specifications for
+//! a runtime (JavaScriptCore) that ships the language and none of the browser.
+//! They are forward-looking, they are the reason application code can run on
+//! the native player at all, and deleting one because the folder looks like a
+//! polyfill directory would remove a working API, not a crutch.
+//!
 //! Native here: Event / CustomEvent / EventTarget, TextEncoder / TextDecoder,
 //! Blob, URL / URLSearchParams, Headers / Request(min) / Response / fetch,
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
-//! window (+ host hooks). Only genuinely dumb stubs remain in the embedded
+//! window (+ host hooks), UIEvent / MouseEvent / PointerEvent / DragEvent /
+//! DataTransfer, DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, the
+//! Streams queueing cores and the gzip/deflate codec, and the alert / confirm /
+//! prompt host hooks. Only genuinely dumb stubs remain in the embedded
 //! `bootstrap.js` (console fmt, atob/btoa, crypto, OffscreenCanvas-2D over
 //! native pixels, silent Web Audio, misc instanceof brands).
 //!
+//! One more embedded script, `streams.js`, is NOT a stub: it is the
+//! promise-shaped surface of the Streams classes over the Rust state machine in
+//! [`streams`]. See that module's header for what is in Rust, what stayed in JS,
+//! and why.
+//!
 //! Install order: `web::install` (timers/rAF/performance) must come first —
-//! image loading and bootstrap use the scheduler.
+//! image loading and bootstrap use the scheduler. Within this function
+//! `streams::install_surface` must follow both `streams::install` and
+//! `compression::install`, because `CompressionStream` wraps `RedZip`.
 
 pub mod abort;
 pub mod audio;
 pub mod blob;
 pub mod clone;
+pub mod compression;
 pub mod crypto;
 pub mod dialogs;
 pub mod dom;
@@ -28,6 +50,7 @@ pub mod hrtf;
 pub mod image;
 pub mod path2d;
 pub mod platform;
+pub mod streams;
 pub mod textcodec;
 pub mod uievents;
 pub mod url;
@@ -215,6 +238,15 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     path2d::install(g);
     xmlser::install(g);
     dialogs::install(g);
+    streams::install(g);
+    compression::install(g);
+    // Needs RedReadableCore/RedWritableCore AND RedZip to exist first. Fatal
+    // like bootstrap.js: a context without ReadableStream is not the shape
+    // anything downstream is written against, and a half-installed environment
+    // fails later and further away than the install does.
+    if streams::install_surface(g) != 0 {
+        return 1;
+    }
     uievents::install(g, ev_proto);
     clone::install(g);
     audio::install(g);

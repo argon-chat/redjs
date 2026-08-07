@@ -44,6 +44,11 @@ rapier3d = { version = "0.34", features = ["simd-stable", "debug-render"] }
 # MeshoptDecoder the editor/web player use. cc-compiles the vendored C++; the
 # static-CRT match comes from .cargo/config.toml (+crt-static).
 meshopt = "0.6"
+# gzip / zlib / raw-deflate for CompressionStream and DecompressionStream
+# (webapi/compression.rs). `rust_backend` = miniz_oxide: pure Rust, no C toolchain,
+# no zlib link, and it is the dependency that lets those two classes be a REAL
+# codec instead of a passthrough that returns its input.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # CSS front end (W-UI UI-29) — the `RedCss` host class. Path-dep, not a registry crate: the SAME
 # source compiles to wasm for the editor and the web player, so a stylesheet cannot parse one way
 # in the browser and another in the shipped game (`packages/redcss`, `.refactor/UI-CSS-ENGINE-DESIGN.md`).
