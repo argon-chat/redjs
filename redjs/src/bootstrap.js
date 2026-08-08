@@ -14,7 +14,18 @@
       for (var i = 0; i < args.length; i++) {
         var a = args[i];
         if (typeof a === 'string') { parts.push(a); continue; }
-        if (a instanceof Error) { parts.push(a.stack || a.message); continue; }
+        // `stack` FIRST would drop the message, and that is not a style preference — it is a
+        // V8 assumption that does not hold here. V8's `Error.prototype.stack` begins with a
+        // "Name: message" header line; **JSC's does not** — it is frames only. So `a.stack`
+        // alone silently discards the single most useful part of every error ever logged in
+        // this runtime, and the fallback to `a.message` never runs because `stack` is truthy.
+        //
+        // Emit the header ourselves, then the frames.
+        if (a instanceof Error) {
+          var head = (a.name || 'Error') + (a.message ? ': ' + a.message : '');
+          parts.push(a.stack ? head + '\n' + a.stack : head);
+          continue;
+        }
         try { parts.push(JSON.stringify(a)); } catch (e) { parts.push(String(a)); }
       }
       return parts.join(' ');

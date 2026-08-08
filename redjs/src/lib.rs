@@ -6,6 +6,8 @@
 //! - [`glue`]: raw externs into our C++ glue (`cpp/glue.cpp`, JSC internal API).
 //! - [`capi`]: raw externs into JSC's stable C API (the subset we use).
 //! - [`trampoline`]: the SysV→MS host-function trampoline pool (C# entry).
+//! - [`errors`]: the one funnel for exceptions no JS code will ever see —
+//!   pumped-callback throws and unhandled promise rejections.
 //! - [`ffi`]: the exported `redjs_*` C ABI for C# (csbindgen input).
 //! - [`api`]: safe-ish Rust API over the same machinery (tests, tools, and
 //!   any Rust-side host logic).
@@ -22,6 +24,7 @@
 
 pub mod api;
 pub mod capi;
+pub mod errors;
 pub mod ffi;
 pub mod glue;
 pub mod hostbuf;

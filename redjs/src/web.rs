@@ -18,8 +18,8 @@
 //! - a timer cleared mid-drain by an earlier callback does not fire;
 //! - rAF callbacks are moved out before invoking; re-registration lands in
 //!   the next frame's batch; each gets the pump's `now` as DOMHighResTimeStamp;
-//! - callback exceptions go to the registered uncaught handler and never
-//!   abort the pump.
+//! - callback exceptions go to the error funnel (`errors::report`, kind
+//!   `PumpCallback`) and never abort the pump.
 //!
 //! Threading: schedule/cancel host fns run on the JS thread (inside the VM);
 //! `redjs_pump` must be called from that same thread. The registry mutex is
@@ -27,7 +27,6 @@
 
 use core::ffi::c_void;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -98,18 +97,6 @@ pub(crate) fn schedule_native(g: *mut c_void, delay_ms: f64, task: NativeTask) {
 fn registry() -> &'static Mutex<HashMap<usize, Scheduler>> {
     static REG: OnceLock<Mutex<HashMap<usize, Scheduler>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// `void handler(ctx, exception_value)` — MS ABI (C#-friendly). Called with
-/// the VM lock held; extracting error info is fine, re-entering JS is not.
-static UNCAUGHT: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
-
-unsafe fn report_uncaught(g: *mut c_void, exc: u64) {
-    let h = UNCAUGHT.load(Ordering::Acquire);
-    if !h.is_null() {
-        let f: unsafe extern "C" fn(*mut c_void, u64) = core::mem::transmute(h);
-        f(g, exc);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +390,7 @@ unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64]) {
     let mut out = 0u64;
     let rc = glue::rjs_call(g, cb, ENC_UNDEFINED, args.as_ptr(), args.len() as u32, &mut out);
     if rc == 1 {
-        report_uncaught(g, out);
+        crate::errors::report(g, out, crate::errors::ErrKind::PumpCallback);
     }
 }
 
@@ -530,6 +517,9 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         // Web Audio upkeep: firewheel graph update, AudioParam timelines,
         // scheduled starts/stops, `onended` dispatch.
         crate::webapi::audio::pump(g);
+        // Device hot-plug polling. Costs two property reads unless something
+        // is actually listening for `devicechange`.
+        crate::webapi::mediadevices::pump(g);
     }
 
     if flags & PUMP_MICROTASKS != 0 {
@@ -559,5 +549,5 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
 }
 
 pub fn set_uncaught(handler: *const c_void) {
-    UNCAUGHT.store(handler as *mut c_void, Ordering::Release);
+    crate::errors::set_handler(handler)
 }

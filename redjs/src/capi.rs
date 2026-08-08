@@ -146,6 +146,17 @@ extern "C" {
         exception: *mut JSValueRef,
     ) -> JSObjectRef;
 
+    /// `JSContextRefPrivate.h` — the unhandled-promise-rejection hook, the
+    /// context-level equivalent of `window.onunhandledrejection`. `function`
+    /// receives `(promise, reason)`. Present and functional in this prebuilt
+    /// (verified against the shipped export table); the slot is null until set,
+    /// which is exactly why rejections used to vanish. See `errors.rs`.
+    pub fn JSGlobalContextSetUnhandledRejectionCallback(
+        ctx: JSGlobalContextRef,
+        function: JSObjectRef,
+        exception: *mut JSValueRef,
+    );
+
     pub fn JSClassCreate(definition: *const JSClassDefinition) -> JSClassRef;
     pub fn JSObjectMake(ctx: JSContextRef, js_class: JSClassRef, data: *mut c_void) -> JSObjectRef;
     pub fn JSObjectGetPrivate(object: JSObjectRef) -> *mut c_void;

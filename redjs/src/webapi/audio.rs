@@ -57,6 +57,7 @@ use firewheel::{
 };
 
 use super::hrtf::{HrtfDatabase, WebPannerConfig, WebPannerNode};
+use super::mediadevices;
 use super::util::*;
 use crate::glue;
 
@@ -442,11 +443,77 @@ struct Engine {
     listener_fwd: [f32; 3],
     listener_up: [f32; 3],
     sample_rate: u32,
+    /// `AudioContext.sinkId` exactly as JS last set it (`""` = system default).
+    /// Kept as the string rather than the resolved device so the getter can
+    /// return what was assigned, per spec.
+    sink_id: String,
 }
 
 impl Engine {
     fn now(&self) -> f64 {
         self.fw.audio_clock().seconds.0
+    }
+}
+
+/// How long `setSinkId` will wait for the previous output stream to finish
+/// tearing down before giving up.
+///
+/// `FirewheelCtx::stop_stream` drops the CPAL stream, but the processor travels
+/// back to the context through a ring buffer written from the audio thread, and
+/// `start_stream` refuses until it lands. In practice the CPAL stream's `Drop`
+/// has already joined that thread and the wait is zero iterations; the bound
+/// exists so a wedged audio thread rejects a promise instead of hanging the VM.
+const SINK_SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// Move an engine's output onto `device` (`None` = system default).
+///
+/// The node graph survives: `stop_stream` only deactivates the graph, and
+/// `start_stream` recompiles the same one. Firewheel's clock survives too — it
+/// is rescaled, not reset, if the new device runs at a different rate — so
+/// `currentTime` stays monotonic and the `AudioParam` timelines keyed on it
+/// (which store absolute times) keep their meaning across the switch.
+fn restart_stream(eng: &mut Engine, device: Option<firewheel::cpal::cpal::DeviceId>) -> Result<(), String> {
+    use firewheel::cpal::{CpalConfig, CpalOutputConfig};
+
+    if eng.fw.is_audio_stream_running() {
+        eng.fw.stop_stream();
+    }
+    let deadline = std::time::Instant::now() + SINK_SWITCH_TIMEOUT;
+    while !eng.fw.can_start_stream() {
+        if std::time::Instant::now() >= deadline {
+            eng.running = false;
+            return Err("the previous output stream did not finish stopping".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    let cfg = CpalConfig {
+        output: CpalOutputConfig {
+            device_id: device,
+            // Keep the rate the context was built at. A device that cannot do
+            // it still opens at its own rate (and `sample_rate` below picks
+            // that up) — the request just avoids a gratuitous resample.
+            desired_sample_rate: Some(eng.sample_rate),
+            // NOT the CPAL default. Falling back to the system default here
+            // would resolve `setSinkId` while the audio came out of a device
+            // the user did not choose.
+            fallback: false,
+            ..Default::default()
+        },
+        input: None,
+    };
+    match eng.fw.start_stream(cfg) {
+        Ok(()) => {
+            eng.running = true;
+            if let Some(rate) = eng.fw.stream_info().map(|i| i.sample_rate.get()) {
+                eng.sample_rate = rate;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eng.running = false;
+            Err(format!("{e:?}"))
+        }
     }
 }
 
@@ -1590,6 +1657,7 @@ unsafe extern "sysv64" fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 
                 listener_fwd: [0.0, 0.0, -1.0],
                 listener_up: [0.0, 1.0, 0.0],
                 sample_rate,
+                sink_id: String::new(),
             },
         );
         dest_handle = alloc_node(&mut gl, engine_handle, Params::Dest).unwrap();
@@ -1660,6 +1728,113 @@ unsafe extern "sysv64" fn ctx_get_state(g: *mut c_void, cf: *mut c_void) -> u64 
         _ => "running",
     };
     js_string(g, s)
+}
+
+unsafe extern "sysv64" fn ctx_get_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(h) = this_engine_handle(g, cf) else {
+        return throw_type_error(g, "AudioContext.sinkId on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    let id = gl.engines.get(&h).map(|e| e.sink_id.clone()).unwrap_or_default();
+    drop(gl);
+    js_string(g, &id)
+}
+
+/// `AudioContext.setSinkId(sinkId)` — the whole reason this runtime needs no
+/// `<audio>` element to route output. Maps onto re-opening the CPAL output
+/// stream on the selected device, keeping the node graph and the clock.
+///
+/// Refusals are named rather than silent, because the failure this replaces
+/// (playing out of the wrong speakers) is invisible from JS:
+/// - a non-string argument → `TypeError` (the spec's `AudioSinkOptions`
+///   overload, the `{type:'none'}` silent sink, is not implemented);
+/// - an id no longer in `enumerateDevices()` → `NotFoundError`;
+/// - a closed context → `InvalidStateError`;
+/// - a device that will not open → the CPAL error, after restoring the
+///   previous device so the failure is not also a silence.
+unsafe extern "sysv64" fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(h) = this_engine_handle(g, cf) else {
+        return rejected_promise(g, 1, "AudioContext.setSinkId on wrong this");
+    };
+    let arg = cf_arg(cf, 0);
+    if glue::rjs_kind(g, arg) != 5 {
+        return rejected_promise(
+            g,
+            1,
+            "AudioContext.setSinkId: sinkId must be a device id string (AudioSinkOptions — the \
+             {type:'none'} silent sink — is not implemented)",
+        );
+    }
+    let requested = read_string(g, arg).unwrap_or_default();
+
+    let device = match mediadevices::resolve_output(&requested) {
+        Ok(d) => d,
+        Err(()) => {
+            return rejected_promise(
+                g,
+                0,
+                &format!(
+                    "NotFoundError: AudioContext.setSinkId: no audio output device with id '{requested}'"
+                ),
+            )
+        }
+    };
+
+    // Everything that touches the engine happens under the lock; nothing that
+    // re-enters JS does.
+    enum Outcome {
+        Ok,
+        Closed,
+        Failed(String),
+    }
+    let outcome = {
+        let mut gl = glob().lock().unwrap();
+        match gl.engines.get_mut(&h) {
+            None => Outcome::Closed,
+            Some(eng) if eng.state == ST_CLOSED => Outcome::Closed,
+            Some(eng) => {
+                let previous = mediadevices::resolve_output(&eng.sink_id).ok().flatten();
+                if previous == device && eng.running {
+                    // Same endpoint (e.g. "" → "default"): record the new
+                    // spelling, but do not interrupt the stream for it.
+                    eng.sink_id = requested.clone();
+                    Outcome::Ok
+                } else {
+                    match restart_stream(eng, device) {
+                        Ok(()) => {
+                            eng.sink_id = requested.clone();
+                            alog!("setSinkId -> '{}' (rate={})", eng.sink_id, eng.sample_rate);
+                            Outcome::Ok
+                        }
+                        Err(e) => {
+                            // Do not leave the user in silence because their
+                            // new choice failed: put the old one back.
+                            let restored = restart_stream(eng, previous);
+                            if restored.is_err() {
+                                eprintln!(
+                                    "[audio] setSinkId: '{requested}' failed ({e}) and the previous \
+                                     device could not be reopened either — output is stopped"
+                                );
+                            }
+                            Outcome::Failed(e)
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    match outcome {
+        Outcome::Ok => resolved_promise(g, UNDEF),
+        Outcome::Closed => {
+            rejected_promise(g, 0, "InvalidStateError: AudioContext.setSinkId: the context is closed")
+        }
+        Outcome::Failed(e) => rejected_promise(
+            g,
+            0,
+            &format!("AudioContext.setSinkId: could not open output device '{requested}': {e}"),
+        ),
+    }
 }
 
 /// suspend() mutes the master bus / resume() restores it (the stream keeps
@@ -2214,6 +2389,7 @@ pub unsafe fn install(g: *mut c_void) {
             ("createBuffer", 3, ctx_create_buffer),
             ("createMediaElementSource", 1, ctx_create_media_element_source),
             ("decodeAudioData", 1, ctx_decode_audio_data),
+            ("setSinkId", 1, ctx_set_sink_id),
             ("resume", 0, ctx_resume),
             ("suspend", 0, ctx_suspend),
             ("close", 0, ctx_close),
@@ -2222,6 +2398,7 @@ pub unsafe fn install(g: *mut c_void) {
             ("currentTime", ctx_get_current_time),
             ("sampleRate", ctx_get_sample_rate),
             ("state", ctx_get_state),
+            ("sinkId", ctx_get_sink_id),
             ("destination", get_slot_destination),
             ("listener", get_slot_listener),
         ],
@@ -2253,4 +2430,151 @@ pub unsafe fn install(g: *mut c_void) {
         buffer,
     }));
     class_registry().lock().unwrap().insert(g as usize, boxed);
+}
+
+#[cfg(test)]
+mod jsc_tests {
+    use crate::api::Context;
+    use crate::webapi::testing::*;
+
+    /// Run an async body and return its resolved value stringified. A body that
+    /// never settles comes back as `<pending>`, so "the test passed because
+    /// nothing happened" is not one of the outcomes.
+    fn run(c: &Context, body: &str) -> String {
+        s(
+            c,
+            &format!(
+                "globalThis.__out = '<pending>'; (async () => {{ {body} }})().then(\
+                   v => {{ globalThis.__out = String(v); }}, \
+                   e => {{ globalThis.__out = 'ERROR: ' + ((e && e.message) || e); }}); 'started'"
+            ),
+        );
+        for _ in 0..64 {
+            c.drain_microtasks();
+        }
+        s(c, "globalThis.__out")
+    }
+
+    #[test]
+    fn the_harness_can_report_a_stall() {
+        // Every async test below rests on `<pending>` being observable.
+        let c = ctx();
+        assert_eq!(run(&c, "await new Promise(() => {}); return 1;"), "<pending>");
+    }
+
+    #[test]
+    fn a_context_exposes_the_element_free_output_selection_surface() {
+        // The feature check the application's audio package performs. If either
+        // half is missing it takes the `<audio>`-element path, which on this
+        // host has no elements to take.
+        let c = ctx();
+        ok(&c, "const a = new AudioContext(); const r = ('setSinkId' in a) && ('sinkId' in a); a.close(); r");
+        ok(&c, "typeof AudioContext.prototype.setSinkId === 'function'");
+        ok(&c, "AudioContext.prototype.setSinkId.length === 1");
+    }
+
+    #[test]
+    fn sink_id_starts_empty_and_records_what_was_set() {
+        // The test a no-op `setSinkId` cannot pass: resolving the promise is
+        // not enough, the id has to be observable afterwards. `''` and
+        // `'default'` name the same endpoint, so no stream is disturbed —
+        // which is what makes this deterministic with or without hardware.
+        let c = ctx();
+        assert_eq!(
+            run(
+                &c,
+                "const a = new AudioContext();
+                 const before = a.sinkId;
+                 await a.setSinkId('default');
+                 const mid = a.sinkId;
+                 await a.setSinkId('');
+                 const after = a.sinkId;
+                 a.close();
+                 return JSON.stringify([before, mid, after]);"
+            ),
+            r#"["","default",""]"#
+        );
+    }
+
+    #[test]
+    fn an_unknown_sink_is_refused_by_name() {
+        // A device id that is not in `enumerateDevices()` must not be silently
+        // turned into the default device: that failure is inaudible — the user
+        // picks the headset, hears the speakers, and nothing reports an error.
+        let c = ctx();
+        let got = run(
+            &c,
+            "const a = new AudioContext();
+             try { await a.setSinkId('no-such-endpoint'); return 'resolved'; }
+             finally { a.close(); }",
+        );
+        assert!(got.contains("NotFoundError"), "{got}");
+        assert!(got.contains("no-such-endpoint"), "{got}");
+    }
+
+    #[test]
+    fn a_non_string_sink_is_a_type_error() {
+        let c = ctx();
+        for arg in ["42", "null", "undefined", "{ type: 'none' }"] {
+            let got = run(
+                &c,
+                &format!(
+                    "const a = new AudioContext();
+                     try {{ await a.setSinkId({arg}); return 'resolved'; }}
+                     finally {{ a.close(); }}"
+                ),
+            );
+            assert!(got.starts_with("ERROR:"), "setSinkId({arg}) did not reject: {got}");
+            assert!(got.contains("must be a device id string"), "setSinkId({arg}): {got}");
+        }
+    }
+
+    #[test]
+    fn a_closed_context_refuses_to_switch() {
+        let c = ctx();
+        let got = run(
+            &c,
+            "const a = new AudioContext();
+             await a.close();
+             await a.setSinkId('');
+             return 'resolved';",
+        );
+        assert!(got.contains("InvalidStateError"), "{got}");
+    }
+
+    #[test]
+    fn switching_to_a_real_device_keeps_the_graph_and_the_clock() {
+        // Hardware-conditional by construction: the loop body runs once per
+        // enumerated endpoint, so on a machine with no audio output it proves
+        // only that the enumeration is empty. What it pins where hardware does
+        // exist is the part a naive implementation gets wrong — rebuilding the
+        // context instead of re-opening its stream, which would lose the node
+        // graph, the `destination` identity and the clock.
+        let c = ctx();
+        let got = run(
+            &c,
+            "const a = new AudioContext();
+             const dest = a.destination;
+             const g = a.createGain();
+             g.connect(dest);
+             const t0 = a.currentTime;
+             const ids = (await navigator.mediaDevices.enumerateDevices())
+               .map(d => d.deviceId).filter(id => id !== 'default');
+             for (const id of ids) {
+               await a.setSinkId(id);
+               if (a.sinkId !== id) return 'sinkId did not take: ' + a.sinkId;
+               if (a.destination !== dest) return 'destination identity lost';
+               if (!(a.sampleRate > 0)) return 'sampleRate: ' + a.sampleRate;
+               if (a.currentTime < t0) return 'clock went backwards';
+               if (a.state !== 'running') return 'state: ' + a.state;
+               g.gain.value = 0.5;
+               g.disconnect();
+               g.connect(dest);
+             }
+             a.close();
+             return 'ok:' + ids.length;",
+        );
+        assert!(got.starts_with("ok:"), "{got}");
+        eprintln!("[setSinkId] round-tripped {} real output device(s)", &got[3..]);
+    }
 }

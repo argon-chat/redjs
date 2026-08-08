@@ -14,7 +14,8 @@
 //! polyfill directory would remove a working API, not a crutch.
 //!
 //! Native here: Event / CustomEvent / EventTarget, TextEncoder / TextDecoder,
-//! Blob, URL / URLSearchParams, Headers / Request(min) / Response / fetch,
+//! Blob, URL / URLSearchParams, Headers / Request / Response / fetch (over a
+//! real HTTP/1.1 + TLS client, see [`http`]),
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
 //! window (+ host hooks), UIEvent / MouseEvent / PointerEvent / DragEvent /
 //! DataTransfer, DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, the
@@ -46,10 +47,14 @@ pub mod fetch;
 pub mod formdata;
 pub mod fsutil;
 pub mod geometry;
+pub mod headers;
 pub mod hrtf;
+pub mod http;
 pub mod image;
+pub mod mediadevices;
 pub mod path2d;
 pub mod platform;
+pub mod request;
 pub mod streams;
 pub mod textcodec;
 pub mod uievents;
@@ -250,6 +255,9 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     uievents::install(g, ev_proto);
     clone::install(g);
     audio::install(g);
+    // After audio: `navigator.mediaDevices` only ever hands out ids that
+    // `AudioContext.setSinkId` can select, so the two belong together.
+    mediadevices::install(g, et_proto);
     abort::install(g, et_proto);
     platform::install(g, et_proto);
     crate::physics::install(g);

@@ -170,10 +170,21 @@ pub unsafe extern "C" fn redjs_set_options(options: *const c_char) -> i32 {
 /// Creates a VM + global object and returns the context handle
 /// (`JSGlobalObject*`). Contexts are expected to live for the process
 /// lifetime in the player.
+///
+/// Also arms JSC's unhandled-promise-rejection hook (`crate::errors`) — here
+/// rather than behind an opt-in call, because the hook existing and nobody
+/// arming it is precisely how a rejection became an empty screen and no log
+/// line. Rejections surface through the same handler as pumped-callback
+/// throws (`redjs_set_uncaught_handler`); until one is registered they go to
+/// stderr.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
     glue::rjs_init(core::ptr::null());
-    capi::JSGlobalContextCreate(null_mut())
+    let g = capi::JSGlobalContextCreate(null_mut());
+    if !g.is_null() {
+        crate::errors::install_rejection(g);
+    }
+    g
 }
 
 /// Releases the context. ⚠ Known issue: this Bun WebKit prebuilt fastfail-
@@ -821,9 +832,18 @@ pub unsafe extern "C" fn redjs_now() -> f64 {
     crate::web::now_ms()
 }
 
-/// Process-global handler for exceptions thrown by pumped callbacks:
+/// Process-global handler for exceptions no JS code will ever see:
 /// `void f(ctx, exception_value)` (MS ABI). Called with the VM lock held —
 /// extract info (redjs_error_info), don't re-enter JS.
+///
+/// Two sources today: a throw from a pumped callback (timer / rAF / idle), and
+/// an **unhandled promise rejection** (armed for every context at creation —
+/// `crate::errors`), where the value is the rejection reason. With no handler
+/// registered both go to stderr instead of vanishing.
+///
+/// ⚠ Print the message, not just the stack: JSC's `Error.prototype.stack` has
+/// no `Name: message` header line, so a `stack || message` formatter silently
+/// drops what went wrong. `redjs_error_info` returns the two separately.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_set_uncaught_handler(handler: *const c_void) {
     crate::web::set_uncaught(handler)

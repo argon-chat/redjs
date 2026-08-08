@@ -49,6 +49,16 @@ meshopt = "0.6"
 # no zlib link, and it is the dependency that lets those two classes be a REAL
 # codec instead of a passthrough that returns its input.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# TLS for `fetch` (webapi/http.rs). PLATFORM TLS on purpose: on Windows this is
+# the `schannel` crate — a thin safe wrapper over the OS SChannel API, pure Rust,
+# no C toolchain, and — the part that matters for a shipped player — NO BUNDLED
+# ROOT STORE. Trust follows Windows Update instead of our release cadence, and
+# the binary does not carry ~250 KB of baked CA certificates. The alternative
+# (rustls + ring/aws-lc-rs + webpki-roots) compiles C/asm, fights `+crt-static`,
+# and pins the trust anchors to whatever we last shipped.
+# HTTP/1.1 framing itself is ours (webapi/http.rs): owning the socket is what
+# makes `AbortSignal` a real socket shutdown rather than a promise we abandon.
+native-tls = "0.2"
 # CSS front end (W-UI UI-29) — the `RedCss` host class. Path-dep, not a registry crate: the SAME
 # source compiles to wasm for the editor and the web player, so a stylesheet cannot parse one way
 # in the browser and another in the shipped game (`packages/redcss`, `.refactor/UI-CSS-ENGINE-DESIGN.md`).
