@@ -88,25 +88,30 @@ fn main() {
     // `cpp/` on the include path is what makes yoga's own `#include
     // <yoga/...>` resolve. This flag set is the one proven to reproduce the
     // wasm layout goldens (scripts/yoga-parity.ts).
-    let yoga_dir = manifest.join("cpp").join("yoga");
-    let mut yoga = cc::Build::new();
-    yoga.cpp(true)
-        .compiler("clang-cl")
-        .static_crt(true)
-        .include(manifest.join("cpp"))
-        .flag("/std:c++20")
-        .flag("/EHsc")
-        .flag("/W0")
-        .define("NDEBUG", None)
-        .define("NOMINMAX", None)
-        .define("_CRT_SECURE_NO_WARNINGS", None);
-    let mut yoga_sources = Vec::new();
-    collect_cpp(&yoga_dir, &mut yoga_sources);
-    yoga_sources.sort(); // deterministic object order
-    if yoga_sources.is_empty() {
-        panic!("no .cpp sources under {} — vendored yoga is missing", yoga_dir.display());
+    // Feature-gated: embedders without the RedYoga host class (vue-native uses
+    // gpui/taffy for layout) skip both the compile and the vendored-sources
+    // requirement.
+    if env::var_os("CARGO_FEATURE_YOGA_HOST").is_some() {
+        let yoga_dir = manifest.join("cpp").join("yoga");
+        let mut yoga = cc::Build::new();
+        yoga.cpp(true)
+            .compiler("clang-cl")
+            .static_crt(true)
+            .include(manifest.join("cpp"))
+            .flag("/std:c++20")
+            .flag("/EHsc")
+            .flag("/W0")
+            .define("NDEBUG", None)
+            .define("NOMINMAX", None)
+            .define("_CRT_SECURE_NO_WARNINGS", None);
+        let mut yoga_sources = Vec::new();
+        collect_cpp(&yoga_dir, &mut yoga_sources);
+        yoga_sources.sort(); // deterministic object order
+        if yoga_sources.is_empty() {
+            panic!("no .cpp sources under {} — vendored yoga is missing", yoga_dir.display());
+        }
+        yoga.files(&yoga_sources).compile("redjs_yoga");
     }
-    yoga.files(&yoga_sources).compile("redjs_yoga");
 
     println!("cargo:rustc-link-search=native={}", lib.display());
 

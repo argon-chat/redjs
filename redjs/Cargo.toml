@@ -70,7 +70,7 @@ redcss = { path = "../../redcss", optional = true }
 # dep regardless of features, so `../../redcss` must exist on disk even with
 # `css-host` off — a stub crate at that path satisfies it.
 [features]
-default = ["audio", "physics", "mesh", "css-host"]
+default = ["audio", "physics", "mesh", "css-host", "yoga-host"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
 # RedPhysics2D / RedPhysics3D host classes (Rapier).
@@ -79,8 +79,15 @@ physics = ["dep:rapier2d", "dep:rapier3d"]
 mesh = ["dep:meshopt"]
 # RedCss host class over the in-house redcss parser.
 css-host = ["dep:redcss"]
+# RedYoga host class over the vendored Yoga C++ (build.rs skips the yoga
+# compile — and the vendored-sources requirement — when this is off).
+yoga-host = []
 
-# Audio examples cannot compile without the audio feature.
+# Examples that cannot compile without their host-class feature.
+[[example]]
+name = "yoga_conformance"
+required-features = ["yoga-host"]
+
 [[example]]
 name = "audio"
 required-features = ["audio"]

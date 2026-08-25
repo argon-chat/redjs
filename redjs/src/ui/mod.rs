@@ -21,6 +21,7 @@
 
 #[cfg(feature = "css-host")]
 pub mod css;
+#[cfg(feature = "yoga-host")]
 pub mod yoga;
 
 use core::ffi::c_void;
@@ -29,7 +30,10 @@ use core::ffi::c_void;
 /// `webapi::install`, next to `crate::physics::install` / `crate::mesh::install`
 /// (idempotence rides each class's own per-global state map).
 pub unsafe fn install(g: *mut c_void) {
+    #[cfg(feature = "yoga-host")]
     yoga::install(g);
     #[cfg(feature = "css-host")]
     css::install(g);
+    #[cfg(not(any(feature = "yoga-host", feature = "css-host")))]
+    let _ = g;
 }
