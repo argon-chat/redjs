@@ -117,11 +117,16 @@ mod tests {
         assert!(json.contains("\"pseudo\":[\"hover\"]"), "{json}");
         assert!(json.contains("\"spec\":[0,0,3,0]"), "{json}");
         assert!(json.contains("\"v\":\"red\""), "{json}");
-        assert!(json.contains("\"imp\":true"), "{json}");
+        assert!(json.contains("\"important\":true"), "{json}");
+        // declarations now carry a TYPED patch next to the raw value
+        assert!(json.contains("\"p\":{\"color\":[1,0,0,1]}"), "{json}");
     }
 
+    /// `@media` bodies are not dropped and do not leak as unconditional rules:
+    /// they surface as ordinary rules tagged with `"conds"` indices into the
+    /// sheet-level `"conditions"` table (media evaluation is the consumer's job).
     #[test]
-    fn an_at_rule_body_does_not_leak_through_the_host_class() {
+    fn media_rule_bodies_are_condition_tagged() {
         let ctx = Context::new();
         unsafe {
             crate::ffi::redjs_webshim_install(ctx.raw(), core::ptr::null(), 0, core::ptr::null(), 0);
@@ -131,7 +136,8 @@ mod tests {
             .unwrap();
         let json = ctx.to_rust_string(v).unwrap();
         assert!(json.contains("\"classes\":[\"b\"]"), "{json}");
-        assert!(!json.contains("\"classes\":[\"a\"]"), "@media body leaked: {json}");
-        assert!(json.contains("\"name\":\"media\""), "{json}");
+        assert!(json.contains("\"classes\":[\"a\"]"), "{json}");
+        assert!(json.contains("\"conds\":[0]"), "media rule not condition-tagged: {json}");
+        assert!(json.contains("\"conditions\":[{"), "conditions table missing: {json}");
     }
 }
