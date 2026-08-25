@@ -17,8 +17,9 @@
 //! Blob, URL / URLSearchParams, Headers / Request / Response / fetch (over a
 //! real HTTP/1.1 + TLS client, see [`http`]),
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
-//! window (+ host hooks), UIEvent / MouseEvent / PointerEvent / DragEvent /
-//! DataTransfer, DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, the
+//! window (+ host hooks), UIEvent / MouseEvent / KeyboardEvent / WheelEvent /
+//! FocusEvent / InputEvent / PointerEvent / DragEvent / DataTransfer,
+//! DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, the
 //! Streams queueing cores and the gzip/deflate codec, and the alert / confirm /
 //! prompt host hooks. Only genuinely dumb stubs remain in the embedded
 //! `bootstrap.js` (console fmt, atob/btoa, crypto, OffscreenCanvas-2D over
