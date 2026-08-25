@@ -13,3 +13,9 @@ lib/
 
 # Rust build output
 redjs/target/
+
+# .NET build output (was covered by the monorepo root .gitignore before the
+# submodule split — the standalone repo must ignore it itself)
+csharp/**/bin/
+csharp/**/obj/
+csharp/codegen/target/
