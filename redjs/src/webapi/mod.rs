@@ -35,6 +35,7 @@
 //! `compression::install`, because `CompressionStream` wraps `RedZip`.
 
 pub mod abort;
+#[cfg(feature = "audio")]
 pub mod audio;
 pub mod blob;
 pub mod clone;
@@ -48,9 +49,11 @@ pub mod formdata;
 pub mod fsutil;
 pub mod geometry;
 pub mod headers;
+#[cfg(feature = "audio")]
 pub mod hrtf;
 pub mod http;
 pub mod image;
+#[cfg(feature = "audio")]
 pub mod mediadevices;
 pub mod path2d;
 pub mod platform;
@@ -254,14 +257,19 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     }
     uievents::install(g, ev_proto);
     clone::install(g);
-    audio::install(g);
-    // After audio: `navigator.mediaDevices` only ever hands out ids that
-    // `AudioContext.setSinkId` can select, so the two belong together.
-    mediadevices::install(g, et_proto);
+    #[cfg(feature = "audio")]
+    {
+        audio::install(g);
+        // After audio: `navigator.mediaDevices` only ever hands out ids that
+        // `AudioContext.setSinkId` can select, so the two belong together.
+        mediadevices::install(g, et_proto);
+    }
     abort::install(g, et_proto);
     platform::install(g, et_proto);
+    #[cfg(feature = "physics")]
     crate::physics::install(g);
     crate::ui::install(g);
+    #[cfg(feature = "mesh")]
     crate::mesh::install(g);
 
     // The dumb-stub remainder.

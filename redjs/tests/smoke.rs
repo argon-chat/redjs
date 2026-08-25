@@ -57,12 +57,18 @@ fn conformance() {
     webapi_fetch_images_dom(&ctx);
     sec("webapi_platform");
     webapi_platform(&ctx);
-    sec("webapi_audio");
-    webapi_audio(&ctx);
+    #[cfg(feature = "audio")]
+    {
+        sec("webapi_audio");
+        webapi_audio(&ctx);
+    }
     sec("webapi_platform2");
     webapi_platform2(&ctx);
-    sec("native_meshopt");
-    native_meshopt(&ctx);
+    #[cfg(feature = "mesh")]
+    {
+        sec("native_meshopt");
+        native_meshopt(&ctx);
+    }
 
     println!("redjs conformance: all sections passed");
 }
@@ -160,6 +166,7 @@ fn webapi_platform2(ctx: &Context) {
 /// Web Audio over Firewheel: graph construction, params + automation,
 /// buffers, decodeAudioData. Headless-safe: if no audio device exists the
 /// stream just doesn't run — the graph/param/buffer API still must work.
+#[cfg(feature = "audio")]
 fn webapi_audio(ctx: &Context) {
     unsafe {
         // Classes + graph + params (no device required).
@@ -354,6 +361,7 @@ fn webapi_platform(ctx: &Context) {
 /// `RedMesh` — native meshopt decode into JS-owned buffers, the .rmesh runtime
 /// path for the native player (`.refactor/RMESH-FORMAT-DESIGN.md` §5). Sources
 /// are encoded here with the same meshopt build the global decodes with.
+#[cfg(feature = "mesh")]
 fn native_meshopt(ctx: &Context) {
     install_webapi(ctx);
 

@@ -513,6 +513,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         }
     }
 
+    #[cfg(feature = "audio")]
     if flags & PUMP_TIMERS != 0 {
         // Web Audio upkeep: firewheel graph update, AudioParam timelines,
         // scheduled starts/stops, `onended` dispatch.
