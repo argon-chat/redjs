@@ -56,7 +56,11 @@ pub mod http;
 pub mod image;
 #[cfg(feature = "audio")]
 pub mod mediadevices;
+#[cfg(feature = "audio")]
+pub mod osc;
 pub mod path2d;
+#[cfg(feature = "audio")]
+pub mod pcm;
 pub mod platform;
 pub mod request;
 pub mod streams;

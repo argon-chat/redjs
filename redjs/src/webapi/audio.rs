@@ -14,14 +14,17 @@
 //! | `BiquadFilterNode`       | `SvfNode<2>`                                 |
 //! | `AudioBufferSourceNode`  | `SamplerNode`                                |
 //! | `AudioBuffer`            | planar `f32` `SampleResource`                |
+//! | `OscillatorNode`         | `OscNode` (webapi/osc.rs): PolyBLEP-limited  |
+//! | `RedStreamSourceNode`    | `StreamWriterNode` (webapi/pcm.rs) — ours     |
 //! | `decodeAudioData`        | symphonium (resampled to the stream rate)    |
 //! | `currentTime`            | the audio-stream sample clock (seconds)      |
 //!
 //! `AudioParam` automation (`setValueAtTime`/`linearRampToValueAtTime`/
-//! `setTargetAtTime`) is evaluated on every pump tick (once per frame) and
-//! forwarded as Firewheel param events; the nodes' built-in ~15 ms smoothers
-//! turn the per-frame steps into artifact-free ramps. Ends of playback are
-//! detected from the sampler's shared playback state and fire `onended`.
+//! `exponentialRampToValueAtTime`/`setTargetAtTime`) is evaluated on every pump
+//! tick (once per frame) and forwarded as Firewheel param events; the nodes'
+//! built-in ~15 ms smoothers turn the per-frame steps into artifact-free ramps.
+//! Ends of playback are detected from the sampler's shared playback state and
+//! fire `onended`.
 //!
 //! Known deviations (documented, deliberate for v1):
 //! - `createView`-style object identity rules aside, `suspend()` mutes the
@@ -32,7 +35,14 @@
 //!   getters serve true time-domain data and a Blackman-windowed radix-2 FFT
 //!   with spec smoothing. Deviations: `fftSize` caps at 4096 (spec: 32768) and
 //!   reads may tear across a processing-block boundary (fine for meters).
-//! - `exponentialRampToValueAtTime` falls back to a linear ramp.
+//! - Scheduling (`start`/`stop`, automation) lands on the pump tick at or after
+//!   the requested time, not on the exact sample.
+//! - No `OfflineAudioContext`, `AudioWorklet`, `ConvolverNode`, `DelayNode`,
+//!   `WaveShaperNode`, `DynamicsCompressorNode`, `ChannelSplitter`/`Merger`, or
+//!   `PeriodicWave`. Each is absent rather than stubbed, so
+//!   `typeof ctx.createDelay === 'function'` tells the truth.
+//! - `createMediaElementSource` is a silent pass-through that says so — see
+//!   `ctx_create_media_element_source`.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -56,8 +66,15 @@ use firewheel::{
     FirewheelContext, Volume,
 };
 
+use firewheel::nodes::stream::{
+    writer::{StreamWriterConfig, StreamWriterNode, StreamWriterState},
+    ResamplingChannelConfig,
+};
+
 use super::hrtf::{HrtfDatabase, WebPannerConfig, WebPannerNode};
 use super::mediadevices;
+use super::osc::{OscNode, OscShared, Wave};
+use super::pcm::{self, PcmStreamConfig};
 use super::util::*;
 use crate::glue;
 
@@ -77,6 +94,7 @@ const P_INERT: u8 = 9; // detune / … — stored, no effect
 const P_ORIENT_X: u8 = 10; // PannerNode.orientationX (cone direction)
 const P_ORIENT_Y: u8 = 11;
 const P_ORIENT_Z: u8 = 12;
+const P_DETUNE: u8 = 13; // OscillatorNode.detune (cents) — a REAL detune, unlike P_INERT
 const P_L_POS_X: u8 = 100; // AudioListener.positionX (param.node = engine handle)
 const P_L_POS_Y: u8 = 101;
 const P_L_POS_Z: u8 = 102;
@@ -133,13 +151,18 @@ impl SampleResource for SharedSample {
 enum Tl {
     Set { t: f64, v: f64 },
     Lin { t: f64, v: f64 },
+    /// `exponentialRampToValueAtTime` — a real geometric ramp, not a linear
+    /// stand-in. It matters for exactly the thing it is used for: a gain fade
+    /// that sounds even to the ear is exponential in amplitude, and a linear
+    /// substitute is audibly back-loaded.
+    Exp { t: f64, v: f64 },
     Target { t: f64, v: f64, tau: f64 },
 }
 
 impl Tl {
     fn time(&self) -> f64 {
         match *self {
-            Tl::Set { t, .. } | Tl::Lin { t, .. } | Tl::Target { t, .. } => t,
+            Tl::Set { t, .. } | Tl::Lin { t, .. } | Tl::Exp { t, .. } | Tl::Target { t, .. } => t,
         }
     }
 }
@@ -173,6 +196,22 @@ impl Timeline {
                         let t0 = cur_t.max(0.0);
                         let k = if t > t0 { ((now - t0) / (t - t0)).clamp(0.0, 1.0) } else { 1.0 };
                         return (cur + (v - cur) * k, false);
+                    }
+                }
+                Tl::Exp { t, v } => {
+                    if t <= now {
+                        cur = v;
+                        cur_t = t;
+                    } else {
+                        let t0 = cur_t.max(0.0);
+                        let k = if t > t0 { ((now - t0) / (t - t0)).clamp(0.0, 1.0) } else { 1.0 };
+                        // v(t) = v0 · (v1/v0)^k. Defined only for a same-signed
+                        // pair of non-zero endpoints; the spec leaves the rest
+                        // undefined and every browser degrades to linear rather
+                        // than producing a NaN, so we do too.
+                        let ok = (cur > 0.0 && v > 0.0) || (cur < 0.0 && v < 0.0);
+                        let val = if ok { cur * (v / cur).powf(k) } else { cur + (v - cur) * k };
+                        return (val, false);
                     }
                 }
                 Tl::Target { t, v, tau } => {
@@ -362,6 +401,11 @@ enum Params {
         /// Smoothed magnitude spectrum (spec `smoothingTimeConstant`), sized on first use.
         smooth: Vec<f32>,
     },
+    /// OscillatorNode: params shared with the audio thread (webapi/osc.rs).
+    Osc(ArcGc<OscShared>),
+    /// RedStreamSourceNode: the graph end of a streaming-PCM push (webapi/pcm.rs).
+    /// The producer end lives in `pcm`'s own registry, keyed by the node handle.
+    PcmStream(PcmStreamConfig),
     /// Generic no-op nodes: audio passes through untouched.
     Passthrough,
 }
@@ -378,6 +422,11 @@ struct NodeRec {
     engine: u64,
     id: NodeID,
     params: Params,
+    /// Channel widths of the Firewheel node, mirrored here so `connect` can
+    /// build a port list Firewheel will accept without reaching into the graph.
+    /// Everything is stereo except `RedStreamSourceNode`.
+    out_ch: u32,
+    in_ch: u32,
     /// Outgoing connections (dst node handles) for `disconnect()`.
     outs: Vec<u64>,
     /// PannerNode world position.
@@ -403,10 +452,21 @@ struct NodeRec {
 
 impl NodeRec {
     fn new(engine: u64, id: NodeID, params: Params) -> Self {
+        let (in_ch, out_ch) = match &params {
+            // The producer's interleave width IS the node's output width, and
+            // a source node has no inputs.
+            Params::PcmStream(cfg) => (0, cfg.channels),
+            // The oscillator is a source too, but renders dual mono so it wires
+            // like everything else.
+            Params::Osc(_) => (0, 2),
+            _ => (2, 2),
+        };
         Self {
             engine,
             id,
             params,
+            out_ch,
+            in_ch,
             outs: Vec::new(),
             pos: [0.0; 3],
             orient: [1.0, 0.0, 0.0],
@@ -609,6 +669,8 @@ pub struct AudioClasses {
     biquad: Class,
     analyser: Class,
     source: Class,
+    osc: Class,
+    stream_src: Class,
     dest: Class,
     listener: Class,
     param: Class,
@@ -802,6 +864,10 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
                 s.speed = v.max(0.0);
                 queue_diff(&mut eng.fw, rec.id, &baseline, &**s);
             }
+            // Oscillator params are plain atomic stores — no event round-trip,
+            // and readable back by `param_current` for `.value`.
+            (Params::Osc(sh), P_FREQ) => sh.set_frequency(v as f32),
+            (Params::Osc(sh), P_DETUNE) => sh.set_detune(v as f32),
             (Params::Spatial(_), P_POS_X..=P_POS_Z) => {
                 rec.pos[(kind - P_POS_X) as usize] = v as f32;
                 update_spatial(eng, rec);
@@ -815,8 +881,16 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
     }
 }
 
-/// Push the sampler's full state and start playback.
+/// Start a scheduled source: the sampler pushes its full state, the oscillator
+/// opens its gate. Both are driven by `src_start` / the pump's `pending_start`.
 fn do_start(eng: &mut Engine, rec: &mut NodeRec, offset: f64) {
+    if let Params::Osc(sh) = &rec.params {
+        // `offset` is meaningless for an oscillator (the spec's `start(when)`
+        // takes no offset), so it is ignored rather than misinterpreted.
+        alog!("osc start node={:?} freq={}", rec.id, sh.frequency());
+        sh.start();
+        return;
+    }
     let Params::Sampler(s) = &mut rec.params else { return };
     alog!(
         "do_start node={:?} buffer_frames={:?} loop={} speed={} offset={offset}",
@@ -842,6 +916,10 @@ fn do_start(eng: &mut Engine, rec: &mut NodeRec, offset: f64) {
 }
 
 fn do_stop(eng: &mut Engine, rec: &mut NodeRec) {
+    if let Params::Osc(sh) = &rec.params {
+        sh.stop();
+        return;
+    }
     let Params::Sampler(s) = &mut rec.params else { return };
     let baseline = (**s).clone();
     s.stop();
@@ -874,12 +952,49 @@ unsafe fn slots_of(g: *mut c_void, obj: u64) -> u64 {
     get_a(g, obj, classes(g).s_audio)
 }
 
+/// Open the producer→processor channel of a `StreamWriterNode` and publish the
+/// producer half in `pcm`'s registry under `handle`.
+///
+/// Runs at node-creation time, on the JS thread, because it is the only moment
+/// the `FirewheelContext` and the node's custom state are both reachable. After
+/// this returns, pushes never touch the graph again (see webapi/pcm.rs).
+fn open_pcm_channel(eng: &mut Engine, id: NodeID, handle: u64, cfg: PcmStreamConfig) -> bool {
+    let (Some(in_rate), Some(out_rate)) =
+        (NonZeroU32::new(cfg.sample_rate), NonZeroU32::new(eng.sample_rate))
+    else {
+        return false;
+    };
+    let chan = ResamplingChannelConfig {
+        latency_seconds: cfg.latency_seconds,
+        capacity_seconds: cfg.capacity_seconds,
+        ..Default::default()
+    };
+    let (ev, producer) = {
+        let Some(st) = eng.fw.node_state_mut::<StreamWriterState>(id) else { return false };
+        let Ok(ev) = st.start_stream(in_rate, out_rate, chan) else { return false };
+        // The clone shares the producer `Arc` and the atomics with the state
+        // the node owns, so either side closing the stream closes it for both.
+        // That is the intent: `close()` from JS and the node's own death must
+        // both leave a native pusher holding a handle that reports NotReady
+        // rather than a dangling one.
+        (ev, st.clone())
+    };
+    eng.fw.queue_event_for(id, NodeEventType::custom(ev));
+    pcm::register(handle, producer, cfg);
+    true
+}
+
 /// Allocates a node in the graph + registry. Returns the new handle.
 fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
     let eng = gl.engines.get_mut(&engine)?;
     if eng.state == ST_CLOSED {
         return None;
     }
+    // Taken before the graph node exists: `Params::PcmStream` publishes its
+    // producer under this handle, and JS hands the same number to the native
+    // side as `streamId`.
+    let handle = gl.next;
+    gl.next += 1;
     let id = match &params {
         Params::Gain(p) => eng.fw.add_node(*p, None),
         Params::Pan(p) => eng.fw.add_node(*p, None),
@@ -892,11 +1007,31 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
         Params::Svf(p) => eng.fw.add_node((**p).clone(), None),
         Params::Sampler(s) => eng.fw.add_node((**s).clone(), Some(SamplerConfig::default())),
         Params::Analyser { ring, .. } => eng.fw.add_node(MonitorNode { ring: ArcGc::clone(ring) }, None),
+        Params::Osc(sh) => eng.fw.add_node(OscNode { shared: ArcGc::clone(sh) }, None),
+        Params::PcmStream(cfg) => {
+            let ch = firewheel::channel_config::NonZeroChannelCount::new(cfg.channels as u32)
+                .unwrap_or(firewheel::channel_config::NonZeroChannelCount::STEREO);
+            eng.fw.add_node(
+                StreamWriterNode,
+                Some(StreamWriterConfig { channels: ch, check_for_silence: true }),
+            )
+        }
         Params::Passthrough => eng.fw.add_node(VolumeNode::default(), None),
         Params::Dest => eng.master,
     };
-    let handle = gl.next;
-    gl.next += 1;
+
+    // Streaming PCM needs a second step the other nodes do not: opening the
+    // producer→processor channel, and publishing the producer half under
+    // `handle` so a native thread can find it (webapi/pcm.rs).
+    if let Params::PcmStream(cfg) = &params {
+        if !open_pcm_channel(eng, id, handle, *cfg) {
+            // The channel could not be opened (no output stream yet, or the
+            // node state vanished). Keep the node — it renders silence — but
+            // say so, because "connected and mute" is otherwise indetectable.
+            alog!("RedStreamSourceNode {handle}: no producer channel (running={})", eng.running);
+        }
+    }
+
     gl.nodes.insert(handle, NodeRec::new(engine, id, params));
     Some(handle)
 }
@@ -906,6 +1041,27 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 const STEREO_PORTS: &[(u32, u32)] = &[(0, 0), (1, 1)];
+
+/// The port pairs to wire between a source with `src_out` output channels and a
+/// destination with `dst_in` input channels.
+///
+/// Everything in this graph is stereo except `RedStreamSourceNode`, which is as
+/// wide as the producer's frames. Firewheel's `connect` refuses the WHOLE call
+/// if any port index is out of range, so a fixed `[(0,0),(1,1)]` would make a
+/// mono stream source connect to nothing at all — silently, since the result is
+/// discarded. Deriving the pairs also gets the spec's mono up-mix right: a
+/// 1-channel source feeds BOTH inputs of a stereo destination (centre), not
+/// just the left one.
+fn ports_between(src_out: u32, dst_in: u32) -> &'static [(u32, u32)] {
+    match (src_out.max(1).min(2), dst_in.max(1).min(2)) {
+        // Mono → stereo: the spec's up-mix, one source port into both inputs.
+        (1, 2) => &[(0, 0), (0, 1)],
+        // Anything → mono: port 0 only. A true down-mix would need a summing
+        // node; nothing in this graph has a mono input today.
+        (_, 1) => &[(0, 0)],
+        _ => STEREO_PORTS,
+    }
+}
 
 unsafe extern "sysv64" fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
@@ -925,8 +1081,13 @@ unsafe extern "sysv64" fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "AudioNode.connect: nodes belong to different AudioContexts");
     }
     let (sid, did, engine) = (sr.id, dr.id, sr.engine);
+    let ports = ports_between(sr.out_ch, dr.in_ch);
     if let Some(eng) = gl.engines.get_mut(&engine) {
-        let _ = eng.fw.connect(sid, did, STEREO_PORTS, true);
+        if let Err(e) = eng.fw.connect(sid, did, ports, true) {
+            // Loud, because the symptom of a dropped edge is silence with a
+            // graph that looks correctly wired from JS.
+            eprintln!("[audio] connect failed ({e:?}) — {sid:?} → {did:?} on ports {ports:?}");
+        }
     }
     gl.nodes.get_mut(&src).unwrap().outs.push(dst);
     dst_v
@@ -943,6 +1104,7 @@ unsafe extern "sysv64" fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u6
     let Some(sr) = gl.nodes.get_mut(&src) else { return UNDEF };
     let sid = sr.id;
     let engine = sr.engine;
+    let src_ch = sr.out_ch;
     let removed: Vec<u64> = match only {
         Some(d) => {
             sr.outs.retain(|&o| o != d);
@@ -953,7 +1115,8 @@ unsafe extern "sysv64" fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u6
     if let Some(eng) = gl.engines.get_mut(&engine) {
         for d in removed {
             if let Some(dr) = gl.nodes.get(&d) {
-                let _ = eng.fw.disconnect(sid, dr.id, STEREO_PORTS);
+                // Same pairs `connect` used, or the edges do not match.
+                let _ = eng.fw.disconnect(sid, dr.id, ports_between(src_ch, dr.in_ch));
             }
         }
     }
@@ -992,6 +1155,8 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
         (Params::Svf(p), P_FREQ) => p.cutoff_hz as f64,
         (Params::Svf(p), P_Q) => p.q_factor as f64,
         (Params::Sampler(s), P_RATE) => s.speed,
+        (Params::Osc(sh), P_FREQ) => sh.frequency() as f64,
+        (Params::Osc(sh), P_DETUNE) => sh.detune() as f64,
         (Params::Spatial(_), P_POS_X..=P_POS_Z) => rec.pos[(kind - P_POS_X) as usize] as f64,
         (Params::Spatial(_), P_ORIENT_X..=P_ORIENT_Z) => rec.orient[(kind - P_ORIENT_X) as usize] as f64,
         _ => fallback,
@@ -1049,9 +1214,8 @@ unsafe extern "sysv64" fn param_linear_ramp(g: *mut c_void, cf: *mut c_void) -> 
     param_schedule(g, cf, |v, t| Tl::Lin { t, v })
 }
 
-/// exponentialRampToValueAtTime — approximated linearly (see module docs).
 unsafe extern "sysv64" fn param_exp_ramp(g: *mut c_void, cf: *mut c_void) -> u64 {
-    param_schedule(g, cf, |v, t| Tl::Lin { t, v })
+    param_schedule(g, cf, |v, t| Tl::Exp { t, v })
 }
 
 unsafe extern "sysv64" fn param_set_target(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -1235,18 +1399,23 @@ unsafe extern "sysv64" fn src_set_onended(g: *mut c_void, cf: *mut c_void) -> u6
     UNDEF
 }
 
+/// `AudioScheduledSourceNode.start(when[, offset])` — shared by
+/// `AudioBufferSourceNode` and `OscillatorNode`; `do_start` dispatches on the
+/// node's `Params` (`offset` is ignored for an oscillator, which has none).
 unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     let when = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
     let offset = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0);
     let this = cf_this(cf);
     let Some(handle) = this_node_handle(g, cf) else {
-        return throw_type_error(g, "AudioBufferSourceNode.start on wrong this");
+        return throw_type_error(g, "AudioScheduledSourceNode.start on wrong this");
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
     let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
     if rec.started {
-        return throw_error(g, 0, "AudioBufferSourceNode.start: already started");
+        // Spec: InvalidStateError. A source is start-once, restarting it means
+        // creating another one — cheap, by design.
+        return throw_error(g, 0, "InvalidStateError: start() has already been called on this source");
     }
     rec.started = true;
     // Spec: a playing source is kept alive even without JS references.
@@ -1264,7 +1433,7 @@ unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe extern "sysv64" fn src_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
     let when = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
     let Some(handle) = this_node_handle(g, cf) else {
-        return throw_type_error(g, "AudioBufferSourceNode.stop on wrong this");
+        return throw_type_error(g, "AudioScheduledSourceNode.stop on wrong this");
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
@@ -1277,6 +1446,124 @@ unsafe extern "sysv64" fn src_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
         rec.pending_stop = Some(when);
     }
     UNDEF
+}
+
+// ---------------------------------------------------------------------------
+// OscillatorNode.type
+// ---------------------------------------------------------------------------
+
+unsafe extern "sysv64" fn osc_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "OscillatorNode.type on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    let name = match gl.nodes.get(&handle).map(|r| &r.params) {
+        Some(Params::Osc(sh)) => sh.wave().name(),
+        _ => return throw_type_error(g, "OscillatorNode.type on a node that is not an oscillator"),
+    };
+    drop(gl);
+    js_string(g, name)
+}
+
+unsafe extern "sysv64" fn osc_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let raw = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "OscillatorNode.type on wrong this");
+    };
+    let Some(w) = Wave::from_name(&raw) else {
+        // Named, not silently coerced: a `'custom'` assignment that quietly
+        // kept playing a sine would be a sound bug, and there is no
+        // `createPeriodicWave` on this runtime to make it real.
+        return throw_type_error(
+            g,
+            &format!(
+                "OscillatorNode.type: '{raw}' is not one of 'sine' | 'square' | 'sawtooth' | \
+                 'triangle'. 'custom' needs createPeriodicWave(), which this runtime does not \
+                 implement — synthesize the waveform into an AudioBuffer instead."
+            ),
+        );
+    };
+    let mut gl = glob().lock().unwrap();
+    match gl.nodes.get_mut(&handle).map(|r| &r.params) {
+        Some(Params::Osc(sh)) => sh.set_wave(w),
+        _ => return throw_type_error(g, "OscillatorNode.type on a node that is not an oscillator"),
+    }
+    UNDEF
+}
+
+// ---------------------------------------------------------------------------
+// RedStreamSourceNode (webapi/pcm.rs) — the streaming-PCM seam
+// ---------------------------------------------------------------------------
+
+/// The `pcm::PcmSink` for `this`, or `None` if the node is not a stream source
+/// or has been closed.
+unsafe fn this_sink(g: *mut c_void, cf: *mut c_void) -> Option<pcm::PcmSink> {
+    pcm::sink(this_node_handle(g, cf)?)
+}
+
+/// `node.push(Float32Array)` — the JS-side counterpart of `PcmSink::push_interleaved`.
+///
+/// Present mostly so the seam is testable and demoable without writing native
+/// code; the production producer is native and never crosses the VM lock.
+/// Returns the number of frames accepted (0 when the graph is not consuming).
+unsafe extern "sysv64" fn stream_push(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let src = cf_arg(cf, 0);
+    let Some(sink) = this_sink(g, cf) else {
+        // A closed node accepting pushes silently would look identical to a
+        // working one that is muted. Say which it is.
+        return throw_error(g, 0, "RedStreamSourceNode.push: the stream is closed");
+    };
+    let mut ta = crate::ffi::RjsTaInfo::default();
+    if glue::rjs_typedarray_info(g, src, &mut ta) != 0 || ta.data.is_null() || ta.kind != 8 {
+        return throw_type_error(g, "RedStreamSourceNode.push: expected an interleaved Float32Array");
+    }
+    let data = core::slice::from_raw_parts(ta.data as *const f32, ta.length as usize);
+    let frames = data.len() / sink.channels().max(1) as usize;
+    let accepted = match sink.push_interleaved(data) {
+        pcm::PushOutcome::Ok | pcm::PushOutcome::UnderflowCorrected { .. } => frames,
+        pcm::PushOutcome::Overflow { frames_pushed } => frames_pushed,
+        pcm::PushOutcome::NotReady => 0,
+    };
+    enc_f64(accepted as f64)
+}
+
+/// `node.close()` — retire the producer. The node keeps its place in the graph
+/// (and renders silence) until it is disconnected and collected; only the push
+/// side goes away, so a native producer still holding a `PcmSink` starts
+/// getting `NotReady` instead of writing into a stream nobody reads.
+unsafe extern "sysv64" fn stream_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if let Some(h) = this_node_handle(g, cf) {
+        pcm::unregister(h);
+    }
+    UNDEF
+}
+
+/// Seconds of audio buffered ahead of the device; `null` when not streaming.
+unsafe extern "sysv64" fn stream_get_queued(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_sink(g, cf).and_then(|s| s.occupied_seconds()) {
+        Some(v) => enc_f64(v),
+        None => NULL,
+    }
+}
+
+unsafe extern "sysv64" fn stream_get_available(g: *mut c_void, cf: *mut c_void) -> u64 {
+    enc_f64(this_sink(g, cf).map(|s| s.available_frames()).unwrap_or(0) as f64)
+}
+
+/// Read-AND-CLEAR, exactly like the native side: reading tells you whether it
+/// happened since your last read, so a meter cannot latch on forever.
+unsafe extern "sysv64" fn stream_get_underflowed(g: *mut c_void, cf: *mut c_void) -> u64 {
+    enc_bool(this_sink(g, cf).map(|s| s.underflowed()).unwrap_or(false))
+}
+
+unsafe extern "sysv64" fn stream_get_overflowed(g: *mut c_void, cf: *mut c_void) -> u64 {
+    enc_bool(this_sink(g, cf).map(|s| s.overflowed()).unwrap_or(false))
+}
+
+/// Is the graph actually pulling frames? False while the context has no output
+/// stream, or before the processor's first block.
+unsafe extern "sysv64" fn stream_get_ready(g: *mut c_void, cf: *mut c_void) -> u64 {
+    enc_bool(this_sink(g, cf).map(|s| s.is_ready()).unwrap_or(false))
 }
 
 // ---------------------------------------------------------------------------
@@ -1616,6 +1903,9 @@ slot_getter!(get_slot_up_y, "upY");
 slot_getter!(get_slot_up_z, "upZ");
 slot_getter!(get_slot_destination, "destination");
 slot_getter!(get_slot_listener, "listener");
+slot_getter!(get_slot_stream_id, "streamId");
+slot_getter!(get_slot_stream_rate, "sampleRate");
+slot_getter!(get_slot_stream_channels, "channelCount");
 
 // ---------------------------------------------------------------------------
 // AudioContext
@@ -1949,11 +2239,95 @@ unsafe extern "sysv64" fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -
     ctx_create_node(g, cf, params, c.analyser.proto, &[])
 }
 
-/// createMediaElementSource: no media elements in the player — a silent
-/// pass-through keeps callers alive instead of crashing.
+/// `createMediaElementSource` — a SILENT pass-through, and it says so.
+///
+/// This is the one node on this host that cannot be made real by writing more
+/// DSP: on both embedders that have media elements at all, `<video>`/`<audio>`
+/// decode *and play out* inside the platform's own media pipeline (Media
+/// Foundation's `IMFMediaEngine` on Windows), which owns its own output stream
+/// and never hands the graph a sample. Routing it here would mean re-decoding
+/// the file a second time, out of sync with the picture.
+///
+/// It still returns a connectable node — `try { ctx.createMediaElementSource(el) }`
+/// is the standard capability probe and throwing would break callers that then
+/// fall back correctly — but a one-shot advisory names the situation, because
+/// the failure it replaces (a graph that is connected and simply mute) has no
+/// other symptom.
 unsafe extern "sysv64" fn ctx_create_media_element_source(g: *mut c_void, cf: *mut c_void) -> u64 {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        eprintln!(
+            "[audio] advisory: createMediaElementSource() returns a SILENT pass-through on this \
+             runtime. A <video>/<audio> element decodes and plays out through the platform media \
+             engine, not through the Web Audio graph, so its samples never reach this node — \
+             anything connected downstream (analyser, gain, panner) will see nothing but zeros. \
+             For audio you want in the graph, fetch the bytes and use decodeAudioData() + \
+             AudioBufferSourceNode, or push PCM through createRedStreamSource()."
+        );
+    });
     let c = classes(g);
     ctx_create_node(g, cf, Params::Passthrough, c.node_base.proto, &[])
+}
+
+/// `createOscillator()` — the spec's tone generator (webapi/osc.rs).
+unsafe extern "sysv64" fn ctx_create_oscillator(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let c = classes(g);
+    let shared = ArcGc::new(OscShared::default());
+    let obj = ctx_create_node(
+        g,
+        cf,
+        Params::Osc(shared),
+        c.osc.proto,
+        &[("frequency", P_FREQ, 440.0), ("detune", P_DETUNE, 0.0)],
+    );
+    if is_cell(obj) {
+        define(g, slots_of(g, obj), "onended", NULL, 0);
+    }
+    obj
+}
+
+/// `createRedStreamSource(options)` — NOT a browser API, and named so you can
+/// tell at a glance.
+///
+/// The browser's equivalent seam is `createMediaStreamSource(stream)`, which
+/// presumes a `MediaStream` the engine pulls from. This runtime has no
+/// `MediaStream` (see webapi/mediadevices.rs) and the producers that need this
+/// — a WebRTC track, a native decoder — already hold decoded `f32` frames and
+/// want to push. Calling that `createMediaStreamSource` would be a different
+/// API wearing a standard name; see webapi/pcm.rs for the contract.
+///
+/// `options`: `{ sampleRate?, channelCount?, latencySeconds?, capacitySeconds? }`.
+unsafe extern "sysv64" fn ctx_create_red_stream_source(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let c = classes(g);
+    let opts = cf_arg(cf, 0);
+    let num = |name: &str, dflt: f64| -> f64 {
+        if is_cell(opts) {
+            dec_f64(get(g, opts, name)).filter(|v| v.is_finite()).unwrap_or(dflt)
+        } else {
+            dflt
+        }
+    };
+    let d = PcmStreamConfig::default();
+    let cfg = PcmStreamConfig {
+        sample_rate: num("sampleRate", d.sample_rate as f64) as u32,
+        channels: num("channelCount", d.channels as f64) as u32,
+        latency_seconds: num("latencySeconds", d.latency_seconds),
+        capacity_seconds: num("capacitySeconds", d.capacity_seconds),
+    }
+    .sanitized();
+
+    let obj = ctx_create_node(g, cf, Params::PcmStream(cfg), c.stream_src.proto, &[]);
+    if is_cell(obj) {
+        // The id a native producer looks the sink up by — the node handle,
+        // which is also what `pcm::register` filed the producer under.
+        if let Some(h) = host_data::<NodeHandle>(g, c.node_cls, obj).map(|x| x.0) {
+            let slots = slots_of(g, obj);
+            define(g, slots, "streamId", enc_f64(h as f64), 0);
+            define(g, slots, "sampleRate", enc_f64(cfg.sample_rate as f64), 0);
+            define(g, slots, "channelCount", enc_f64(cfg.channels as f64), 0);
+        }
+    }
+    obj
 }
 
 unsafe extern "sysv64" fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -1985,6 +2359,25 @@ unsafe extern "sysv64" fn ctx_create_buffer(g: *mut c_void, cf: *mut c_void) -> 
 
 // ---- decodeAudioData -------------------------------------------------------
 
+/// The formats this build can actually decode, for the error message. A
+/// rejection that only says "unsupported" sends the caller to look for a bug in
+/// their file; one that names the list sends them to re-encode it.
+pub fn supported_decode_formats() -> &'static [&'static str] {
+    // Kept in sync with the symphonium features in Cargo.toml by hand — there
+    // is no way to enumerate a dependency's enabled features at run time.
+    #[cfg(feature = "audio-codecs-extra")]
+    {
+        &[
+            "WAV/RIFF (PCM, IEEE float)", "AIFF", "CAF", "FLAC", "MP3", "OGG/Vorbis", "MP4/M4A (AAC-LC)",
+            "MKV", "ALAC", "ADPCM",
+        ]
+    }
+    #[cfg(not(feature = "audio-codecs-extra"))]
+    {
+        &["WAV/RIFF (PCM, IEEE float)", "FLAC", "MP3", "OGG/Vorbis"]
+    }
+}
+
 pub(crate) fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<PlanarBuffer, String> {
     static LOADER: OnceLock<Mutex<symphonium::SymphoniumLoader>> = OnceLock::new();
     let loader = LOADER.get_or_init(|| Mutex::new(symphonium::SymphoniumLoader::new()));
@@ -1997,7 +2390,14 @@ pub(crate) fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<P
             symphonium::ResampleQuality::default(),
             None,
         )
-        .map_err(|e| format!("decodeAudioData: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "EncodingError: decodeAudioData could not decode this data ({e}). \
+                 Decodable here: {}. Not decodable in any build: Opus, HE-AAC/AAC+ (the AAC-LC \
+                 core decodes, SBR/PS do not), and anything DRM-protected.",
+                supported_decode_formats().join(", ")
+            )
+        })?;
     let frames = decoded.frames();
     let mut data = Vec::with_capacity(decoded.channels());
     for ch in 0..decoded.channels() {
@@ -2089,11 +2489,22 @@ pub unsafe fn pump(g: *mut c_void) {
         for h in dead_list {
             if let Some(mut eng) = gl.engines.remove(&h) {
                 eng.fw.stop_stream();
+                // Retire this context's streaming-PCM producers BEFORE the node
+                // records go, or a native pusher keeps a handle whose graph
+                // side no longer exists.
+                for (nh, r) in gl.nodes.iter() {
+                    if r.engine == h && matches!(r.params, Params::PcmStream(_)) {
+                        pcm::unregister(*nh);
+                    }
+                }
                 gl.nodes.retain(|_, r| r.engine != h);
                 gl.timelines.retain(|(n, _), _| *n != h);
                 continue;
             }
             if let Some(rec) = gl.nodes.remove(&h) {
+                if matches!(rec.params, Params::PcmStream(_)) {
+                    pcm::unregister(h);
+                }
                 if !matches!(rec.params, Params::Dest) {
                     if let Some(eng) = gl.engines.get_mut(&rec.engine) {
                         let _ = eng.fw.remove_node(rec.id);
@@ -2170,6 +2581,34 @@ pub unsafe fn pump(g: *mut c_void) {
                         if rec.saw_playing && st.stopped() {
                             rec.ended = true;
                             alog!("source ended node={:?}", rec.id);
+                            if rec.js_obj != 0 {
+                                ended.push(rec.js_obj);
+                                rec.js_obj = 0;
+                            }
+                        }
+                    }
+                }
+                if rec.started && !rec.ended {
+                    if let Params::Osc(sh) = &rec.params {
+                        // With a live stream the processor raises `finished`
+                        // when its fade-out completes. WITHOUT one the
+                        // processor never runs at all, so `stop()` having been
+                        // called IS the end — otherwise `onended` would simply
+                        // never fire on a machine with no output device, and
+                        // code that awaits it would hang rather than degrade.
+                        // `saw_playing` is what keeps a not-yet-due scheduled
+                        // start from reading as an end.
+                        if sh.is_playing() {
+                            rec.saw_playing = true;
+                        }
+                        let done = if eng.running {
+                            sh.is_finished()
+                        } else {
+                            rec.saw_playing && !sh.is_playing()
+                        };
+                        if done {
+                            rec.ended = true;
+                            alog!("oscillator ended node={:?}", rec.id);
                             if rec.js_obj != 0 {
                                 ended.push(rec.js_obj);
                                 rec.js_obj = 0;
@@ -2374,6 +2813,38 @@ pub unsafe fn install(g: *mut c_void) {
         ],
     });
 
+    // `start`/`stop`/`onended` are the AudioScheduledSourceNode surface, shared
+    // verbatim with the sampler — `src_start`/`src_stop` dispatch on the node's
+    // `Params`, so one implementation drives both.
+    let osc = define_class(g, &ClassSpec {
+        name: "OscillatorNode",
+        arity: 0,
+        construct: None,
+        parent_proto: node_base.proto,
+        methods: &[("start", 1, src_start), ("stop", 1, src_stop)],
+        getters: &[("frequency", get_slot_frequency), ("detune", get_slot_detune)],
+        accessors: &[("type", osc_get_type, osc_set_type), ("onended", src_get_onended, src_set_onended)],
+    });
+
+    let stream_src = define_class(g, &ClassSpec {
+        name: "RedStreamSourceNode",
+        arity: 0,
+        construct: None,
+        parent_proto: node_base.proto,
+        methods: &[("push", 1, stream_push), ("close", 0, stream_close)],
+        getters: &[
+            ("streamId", get_slot_stream_id),
+            ("sampleRate", get_slot_stream_rate),
+            ("channelCount", get_slot_stream_channels),
+            ("queuedSeconds", stream_get_queued),
+            ("availableFrames", stream_get_available),
+            ("underflowed", stream_get_underflowed),
+            ("overflowed", stream_get_overflowed),
+            ("ready", stream_get_ready),
+        ],
+        accessors: &[],
+    });
+
     let ctx = define_class(g, &ClassSpec {
         name: "AudioContext",
         arity: 0,
@@ -2386,8 +2857,11 @@ pub unsafe fn install(g: *mut c_void) {
             ("createBiquadFilter", 0, ctx_create_biquad),
             ("createAnalyser", 0, ctx_create_analyser),
             ("createBufferSource", 0, ctx_create_buffer_source),
+            ("createOscillator", 0, ctx_create_oscillator),
             ("createBuffer", 3, ctx_create_buffer),
             ("createMediaElementSource", 1, ctx_create_media_element_source),
+            // Non-standard by name on purpose — see ctx_create_red_stream_source.
+            ("createRedStreamSource", 1, ctx_create_red_stream_source),
             ("decodeAudioData", 1, ctx_decode_audio_data),
             ("setSinkId", 1, ctx_set_sink_id),
             ("resume", 0, ctx_resume),
@@ -2424,6 +2898,8 @@ pub unsafe fn install(g: *mut c_void) {
         biquad,
         analyser,
         source,
+        osc,
+        stream_src,
         dest,
         listener,
         param,
@@ -2449,8 +2925,21 @@ mod jsc_tests {
                    e => {{ globalThis.__out = 'ERROR: ' + ((e && e.message) || e); }}); 'started'"
             ),
         );
+        // Microtasks alone are not enough for everything under test:
+        // `decodeAudioData` settles from a NATIVE task (`web::schedule_native`)
+        // that only runs on a real pump, so a decode would read `<pending>`
+        // forever. Pump the scheduler, then drain, until it settles.
         for _ in 0..64 {
-            c.drain_microtasks();
+            unsafe {
+                crate::web::pump(
+                    c.raw(),
+                    crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                    core::ptr::null_mut(),
+                )
+            };
+            if s(c, "globalThis.__out") != "<pending>" {
+                break;
+            }
         }
         s(c, "globalThis.__out")
     }
@@ -2576,5 +3065,475 @@ mod jsc_tests {
         );
         assert!(got.starts_with("ok:"), "{got}");
         eprintln!("[setSinkId] round-tripped {} real output device(s)", &got[3..]);
+    }
+
+    // -----------------------------------------------------------------------
+    // OscillatorNode
+    // -----------------------------------------------------------------------
+
+    /// Run the audio pump for roughly `ms`, so the audio thread gets to render
+    /// some blocks. Returns whether the context's clock actually advanced —
+    /// i.e. whether there is a real output stream. Every signal assertion below
+    /// is conditional on that, so the suite is green on a machine with no sound
+    /// card AND meaningful on one with.
+    fn pump_for(c: &Context, ms: u64) -> bool {
+        let before = s(c, "globalThis.__ctx.currentTime");
+        for _ in 0..(ms / 10).max(1) {
+            unsafe { super::pump(c.raw()) };
+            c.drain_microtasks();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        unsafe { super::pump(c.raw()) };
+        c.drain_microtasks();
+        let after = s(c, "globalThis.__ctx.currentTime");
+        before != after && after != "0"
+    }
+
+    /// RMS of an analyser's time-domain window, as JS sees it.
+    fn analyser_rms(c: &Context, which: &str) -> f64 {
+        s(
+            c,
+            &format!(
+                "(() => {{ const b = new Float32Array(1024); {which}.getFloatTimeDomainData(b);
+                   let acc = 0; for (const v of b) acc += v * v; return Math.sqrt(acc / b.length); }})()"
+            ),
+        )
+        .parse()
+        .unwrap_or(f64::NAN)
+    }
+
+    #[test]
+    fn an_oscillator_exists_and_has_the_spec_shape() {
+        let c = ctx();
+        ok(&c, "typeof AudioContext.prototype.createOscillator === 'function'");
+        ok(
+            &c,
+            "{ const a = new AudioContext(); const o = a.createOscillator();
+             const r = o instanceof OscillatorNode
+                    && o instanceof AudioNode
+                    && o.type === 'sine'
+                    && o.frequency instanceof AudioParam
+                    && o.detune instanceof AudioParam
+                    && o.frequency.value === 440
+                    && o.detune.value === 0
+                    && typeof o.start === 'function'
+                    && typeof o.stop === 'function'
+                    && typeof o.connect === 'function';
+             a.close(); r }",
+        );
+    }
+
+    #[test]
+    fn the_four_waveforms_round_trip_and_custom_is_refused_by_name() {
+        let c = ctx();
+        ok(
+            &c,
+            "{ const a = new AudioContext(); const o = a.createOscillator();
+               let r = true;
+               for (const t of ['square','sawtooth','triangle','sine']) { o.type = t; r = r && o.type === t; }
+               a.close(); r }",
+        );
+        // 'custom' silently behaving as a sine would be an inaudible bug.
+        let msg = throws(
+            &c,
+            "{ const a = new AudioContext(); const o = a.createOscillator();
+               try { o.type = 'custom'; } finally { a.close(); } }",
+        );
+        assert!(msg.contains("custom"), "{msg}");
+        assert!(msg.contains("createPeriodicWave"), "the refusal must name what is missing: {msg}");
+        let msg = throws(
+            &c,
+            "{ const a = new AudioContext(); const o = a.createOscillator();
+               try { o.type = 'Sine'; } finally { a.close(); } }",
+        );
+        assert!(msg.contains("'Sine'"), "{msg}");
+    }
+
+    #[test]
+    fn an_oscillator_starts_once() {
+        let c = ctx();
+        let msg = throws(
+            &c,
+            "{ const a = new AudioContext(); const o = a.createOscillator(); o.start();
+               try { o.start(); } finally { a.close(); } }",
+        );
+        assert!(msg.contains("InvalidStateError"), "{msg}");
+    }
+
+    #[test]
+    fn a_muted_gain_silences_the_output_but_not_the_pre_gain_tap() {
+        // The demo's graph, and the only honest way to test audio on a machine
+        // somebody is using: an analyser taps the oscillator BEFORE a gain
+        // pinned at 0, a second analyser taps after it. If `gain.value = 0`
+        // were a no-op — or the analyser a stub returning zeros — exactly one
+        // of these two assertions would fail.
+        let c = ctx();
+        s(
+            &c,
+            "globalThis.__ctx = new AudioContext();
+             const a = globalThis.__ctx;
+             globalThis.__pre = a.createAnalyser();
+             globalThis.__post = a.createAnalyser();
+             const g = a.createGain(); g.gain.value = 0;
+             const o = a.createOscillator(); o.type = 'square'; o.frequency.value = 330;
+             o.connect(__pre); __pre.connect(g); g.connect(__post); __post.connect(a.destination);
+             o.start(); globalThis.__osc = o; 'wired'",
+        );
+        let live = pump_for(&c, 300);
+        let (pre, post) = (analyser_rms(&c, "__pre"), analyser_rms(&c, "__post"));
+        assert!(pre.is_finite() && post.is_finite(), "analyser returned {pre} / {post}");
+        if !live {
+            eprintln!("[oscillator] no output stream on this machine — signal assertions skipped");
+            s(&c, "__ctx.close(); 'closed'");
+            return;
+        }
+        // A full-scale square through a unity path: RMS ~1. Anything above a
+        // tenth proves signal, and proves it is not the analyser's zero-fill.
+        assert!(pre > 0.1, "the oscillator produced no signal at the pre-gain tap (RMS {pre})");
+        assert!(post < 1e-3, "gain 0 did not silence the signal: post-gain RMS {post}");
+
+        s(&c, "__osc.stop(); 'stopped'");
+        pump_for(&c, 100);
+        assert!(analyser_rms(&c, "__pre") < 1e-3, "stop() left the oscillator running");
+        s(&c, "__ctx.close(); 'closed'");
+    }
+
+    // -----------------------------------------------------------------------
+    // RedStreamSourceNode (streaming PCM)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_stream_source_is_a_connectable_node_with_an_id() {
+        let c = ctx();
+        ok(&c, "typeof AudioContext.prototype.createRedStreamSource === 'function'");
+        ok(
+            &c,
+            "{ const a = new AudioContext();
+             const n = a.createRedStreamSource({ sampleRate: 24000, channelCount: 1 });
+             const r = n instanceof RedStreamSourceNode
+                    && n instanceof AudioNode
+                    && typeof n.streamId === 'number' && n.streamId >= 0
+                    && n.sampleRate === 24000
+                    && n.channelCount === 1
+                    && typeof n.push === 'function'
+                    && typeof n.close === 'function'
+                    && n.connect(a.destination) === a.destination;
+             a.close(); r }",
+        );
+    }
+
+    #[test]
+    fn stream_options_are_clamped_rather_than_trusted() {
+        // A producer that asks for 999 channels at 1 Hz with no buffer is a bug
+        // upstream; building an unusable channel out of it is a crash here.
+        let c = ctx();
+        ok(
+            &c,
+            "{ const a = new AudioContext();
+               const n = a.createRedStreamSource({ sampleRate: 1, channelCount: 999, latencySeconds: 0 });
+               const r = n.sampleRate >= 4000 && n.channelCount <= 16;
+               a.close(); r }",
+        );
+        // No options at all is the common case and must not throw.
+        ok(
+            &c,
+            "{ const a = new AudioContext(); const n = a.createRedStreamSource();
+               const r = n.channelCount === 2 && n.sampleRate === 48000; a.close(); r }",
+        );
+    }
+
+    #[test]
+    fn pushing_the_wrong_thing_is_refused_by_name() {
+        let c = ctx();
+        for arg in ["", "42", "'frames'", "new Uint8Array(8)", "[0.1, 0.2]"] {
+            let msg = throws(
+                &c,
+                &format!(
+                    "{{ const a = new AudioContext(); const n = a.createRedStreamSource();
+                       try {{ n.push({arg}); }} finally {{ a.close(); }} }}"
+                ),
+            );
+            assert!(msg.contains("Float32Array"), "push({arg}): {msg}");
+        }
+    }
+
+    #[test]
+    fn a_closed_stream_refuses_pushes_instead_of_swallowing_them() {
+        // The failure this prevents: a producer that keeps pushing into a dead
+        // node forever, hearing nothing and being told nothing.
+        let c = ctx();
+        ok(
+            &c,
+            "{ const a = new AudioContext();
+               const n = a.createRedStreamSource({ channelCount: 1 });
+               const ok1 = typeof n.push(new Float32Array(128)) === 'number';
+               n.close();
+               let refused = false;
+               try { n.push(new Float32Array(128)); } catch (e) { refused = /closed/.test(e.message); }
+               a.close(); ok1 && refused }",
+        );
+    }
+
+    #[test]
+    fn a_stream_source_carries_pushed_pcm_into_the_graph() {
+        // The LiveKit seam, end to end and inaudible: push a tone as raw PCM,
+        // read it back off an analyser, keep the output at gain 0.
+        let c = ctx();
+        s(
+            &c,
+            "globalThis.__ctx = new AudioContext();
+             const a = globalThis.__ctx;
+             globalThis.__an = a.createAnalyser(); __an.fftSize = 2048;
+             const mute = a.createGain(); mute.gain.value = 0;
+             globalThis.__n = a.createRedStreamSource({ sampleRate: 48000, channelCount: 1, latencySeconds: 0.05 });
+             __n.connect(__an); __an.connect(mute); mute.connect(a.destination);
+             globalThis.__blk = new Float32Array(960);   // 20 ms
+             globalThis.__ph = 0;
+             globalThis.__fill = () => {
+               for (let i = 0; i < __blk.length; i++) { __blk[i] = Math.sin(__ph); __ph += 2 * Math.PI * 440 / 48000; }
+               return __n.push(__blk);
+             };
+             'wired'",
+        );
+
+        // Prime the channel, then keep it fed across the pump ticks.
+        let mut accepted_total = 0f64;
+        for _ in 0..40 {
+            accepted_total += s(&c, "__fill()").parse::<f64>().unwrap_or(0.0);
+            unsafe { super::pump(c.raw()) };
+            c.drain_microtasks();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let live = s(&c, "__ctx.currentTime") != "0";
+        let rms = analyser_rms(&c, "__an");
+
+        if !live {
+            // Headless: the processor never runs, so the channel never starts
+            // and every push is correctly refused. That IS the contract.
+            eprintln!("[stream] no output stream — pushed {accepted_total} frames, playout not asserted");
+            s(&c, "__ctx.close(); 'closed'");
+            return;
+        }
+        assert!(accepted_total > 0.0, "the stream accepted no frames at all");
+        assert!(rms > 0.1, "pushed PCM never reached the analyser (RMS {rms})");
+        s(&c, "__ctx.close(); 'closed'");
+    }
+
+    // -----------------------------------------------------------------------
+    // createMediaElementSource honesty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn create_media_element_source_still_returns_a_connectable_node() {
+        // It must NOT throw — `try { ctx.createMediaElementSource(el) } catch`
+        // is the standard capability probe, and code that falls back on the
+        // throw would take the wrong branch. The advisory on stderr is where
+        // the honesty lives; see the function's doc comment.
+        let c = ctx();
+        ok(
+            &c,
+            "{ const a = new AudioContext();
+               const n = a.createMediaElementSource({});
+               const r = n instanceof AudioNode && n.connect(a.destination) === a.destination;
+               a.close(); r }",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // decodeAudioData
+    // -----------------------------------------------------------------------
+
+    /// A minimal 16-bit PCM WAV: `frames` samples of a full-scale square at
+    /// `rate`, mono. Built here rather than checked in so the test explains its
+    /// own fixture.
+    fn wav_fixture(rate: u32, frames: u32) -> Vec<u8> {
+        let data_len = frames * 2;
+        let mut v = Vec::with_capacity(44 + data_len as usize);
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data_len).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+        v.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        v.extend_from_slice(&1u16.to_le_bytes()); // mono
+        v.extend_from_slice(&rate.to_le_bytes());
+        v.extend_from_slice(&(rate * 2).to_le_bytes()); // byte rate
+        v.extend_from_slice(&2u16.to_le_bytes()); // block align
+        v.extend_from_slice(&16u16.to_le_bytes()); // bits
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data_len.to_le_bytes());
+        // 100-frame period square wave — real content, trivially verifiable.
+        for i in 0..frames {
+            let smp: i16 = if (i / 50) % 2 == 0 { 24_000 } else { -24_000 };
+            v.extend_from_slice(&smp.to_le_bytes());
+        }
+        v
+    }
+
+    fn as_js_bytes(v: &[u8]) -> String {
+        v.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+    }
+
+    #[test]
+    fn decode_audio_data_decodes_a_wav_and_the_samples_are_real() {
+        let c = ctx();
+        let wav = wav_fixture(48_000, 4_800);
+        s(&c, &format!("globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'", as_js_bytes(&wav)));
+
+        let got = run(
+            &c,
+            "const a = new AudioContext();
+             const buf = await a.decodeAudioData(__wav);
+             const ch = buf.getChannelData(0);
+             let peak = 0, energy = 0;
+             for (const v of ch) { peak = Math.max(peak, Math.abs(v)); energy += v * v; }
+             const rms = Math.sqrt(energy / ch.length);
+             a.close();
+             return JSON.stringify({
+               ch: buf.numberOfChannels, rate: buf.sampleRate,
+               peak: Math.round(peak * 1000) / 1000, rms: Math.round(rms * 1000) / 1000,
+             });",
+        );
+        assert!(!got.starts_with("ERROR"), "{got}");
+        // 24000/32768 = 0.732, and a square wave's RMS equals its peak — which
+        // a decoder that returned zeros, or halved the amplitude, would fail.
+        assert!(got.contains(r#""ch":1"#), "{got}");
+        assert!(got.contains(r#""peak":0.732"#), "decoded amplitude is wrong: {got}");
+        assert!(got.contains(r#""rms":0.732"#), "a decoded square must have RMS == peak: {got}");
+    }
+
+    #[test]
+    fn an_undecodable_blob_rejects_by_naming_what_would_work() {
+        // "Unsupported" alone sends the caller looking for a bug in their file.
+        let c = ctx();
+        let got = run(
+            &c,
+            "const a = new AudioContext();
+             try { await a.decodeAudioData(new Uint8Array([1,2,3,4,5,6,7,8,9,10]).buffer); return 'resolved'; }
+             finally { a.close(); }",
+        );
+        assert!(got.starts_with("ERROR"), "garbage decoded?! {got}");
+        assert!(got.contains("EncodingError"), "{got}");
+        assert!(got.contains("WAV"), "the rejection must list what IS decodable: {got}");
+        assert!(got.contains("Opus"), "the rejection must name the notable absences: {got}");
+    }
+
+    #[test]
+    fn a_decoded_buffer_plays_through_a_buffer_source() {
+        // AudioBuffer → AudioBufferSourceNode → analyser, output muted.
+        let c = ctx();
+        let wav = wav_fixture(48_000, 48_000);
+        s(&c, &format!("globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'", as_js_bytes(&wav)));
+        let started = run(
+            &c,
+            "globalThis.__ctx = new AudioContext();
+             const a = globalThis.__ctx;
+             globalThis.__an = a.createAnalyser(); __an.fftSize = 2048;
+             const mute = a.createGain(); mute.gain.value = 0;
+             const buf = await a.decodeAudioData(__wav);
+             const src = a.createBufferSource();
+             src.buffer = buf; src.loop = true;
+             src.connect(__an); __an.connect(mute); mute.connect(a.destination);
+             src.start();
+             return 'started';",
+        );
+        assert_eq!(started, "started", "{started}");
+        let live = pump_for(&c, 300);
+        let rms = analyser_rms(&c, "__an");
+        if !live {
+            eprintln!("[buffer source] no output stream — playout not asserted");
+            s(&c, "__ctx.close(); 'closed'");
+            return;
+        }
+        assert!(rms > 0.1, "the decoded buffer never reached the analyser (RMS {rms})");
+        s(&c, "__ctx.close(); 'closed'");
+    }
+
+    // -----------------------------------------------------------------------
+    // suspend / resume
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suspend_and_resume_round_trip_the_state() {
+        let c = ctx();
+        assert_eq!(
+            run(
+                &c,
+                "const a = new AudioContext();
+                 const s0 = a.state;
+                 await a.suspend(); const s1 = a.state;
+                 await a.resume();  const s2 = a.state;
+                 await a.close();   const s3 = a.state;
+                 return JSON.stringify([s0, s1, s2, s3]);"
+            ),
+            r#"["running","suspended","running","closed"]"#
+        );
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::{Timeline, Tl};
+
+    /// `Timeline::eval` is the whole of `AudioParam` automation, and it is pure
+    /// arithmetic — so it is testable without a JS context or an audio device.
+    fn tl(start: f64, evs: Vec<Tl>) -> Timeline {
+        Timeline { evs, start_v: start }
+    }
+
+    #[test]
+    fn a_linear_ramp_is_linear() {
+        let t = tl(0.0, vec![Tl::Set { t: 0.0, v: 0.0 }, Tl::Lin { t: 1.0, v: 1.0 }]);
+        for (now, want) in [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75)] {
+            let (v, done) = t.eval(now);
+            assert!((v - want).abs() < 1e-6, "at {now}: {v}, want {want}");
+            assert!(!done);
+        }
+        assert_eq!(t.eval(1.0), (1.0, true));
+    }
+
+    #[test]
+    fn an_exponential_ramp_is_exponential_and_not_a_line() {
+        // The bug this pins: `exponentialRampToValueAtTime` used to schedule a
+        // LINEAR event. Both curves share their endpoints, so only the middle
+        // tells them apart — at the halfway point an exponential 0.001→1 ramp
+        // is at sqrt(0.001) ≈ 0.0316, a line is at ~0.5.
+        let t = tl(0.001, vec![Tl::Set { t: 0.0, v: 0.001 }, Tl::Exp { t: 1.0, v: 1.0 }]);
+        let (v, _) = t.eval(0.5);
+        let want = 0.001f64 * (1.0f64 / 0.001).powf(0.5);
+        assert!((v - want).abs() < 1e-6, "midpoint {v}, want {want}");
+        assert!(v < 0.05, "an exponential ramp must not be halfway up at halfway: {v}");
+
+        // Endpoints still land exactly.
+        assert!((t.eval(0.0).0 - 0.001).abs() < 1e-9);
+        assert_eq!(t.eval(1.0), (1.0, true));
+    }
+
+    #[test]
+    fn an_exponential_ramp_through_zero_degrades_to_linear_instead_of_nan() {
+        // The spec leaves 0 and sign changes undefined; a NaN escaping into a
+        // gain param is silence-or-worse, so this must be a defined value.
+        for (from, to) in [(0.0, 1.0), (1.0, 0.0), (-1.0, 1.0)] {
+            let t = tl(from, vec![Tl::Set { t: 0.0, v: from }, Tl::Exp { t: 1.0, v: to }]);
+            let (v, _) = t.eval(0.5);
+            assert!(v.is_finite(), "{from} → {to} produced {v}");
+            assert!((v - (from + (to - from) * 0.5)).abs() < 1e-6, "{from} → {to}: {v}");
+        }
+    }
+
+    #[test]
+    fn set_target_decays_toward_its_target_and_reports_done() {
+        let t = tl(1.0, vec![Tl::Target { t: 0.0, v: 0.0, tau: 0.1 }]);
+        let (early, done_early) = t.eval(0.05);
+        assert!(early > 0.5 && early < 1.0, "{early}");
+        assert!(!done_early);
+        let (late, done_late) = t.eval(2.0);
+        assert!(late.abs() < 1e-3, "{late}");
+        assert!(done_late, "a settled setTargetAtTime must retire its timeline");
+    }
+
+    #[test]
+    fn a_future_event_holds_the_current_value() {
+        let t = tl(0.25, vec![Tl::Set { t: 10.0, v: 1.0 }]);
+        assert_eq!(t.eval(0.0), (0.25, false));
     }
 }

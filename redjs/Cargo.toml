@@ -28,7 +28,13 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Audio: the native Web Audio implementation (webapi/audio.rs) maps the
 # WebAudio node graph onto Firewheel's; symphonium (the same decoder firewheel
 # uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the game formats.
-firewheel = { version = "0.10", features = ["spatial_basic_node", "svf_node"], optional = true }
+# `stream_nodes` = StreamWriterNode, the producer end of `RedStreamSourceNode`
+# (webapi/pcm.rs) — how a native decoder pushes PCM into a running graph.
+firewheel = { version = "0.10", features = [
+    "spatial_basic_node",
+    "svf_node",
+    "stream_nodes",
+], optional = true }
 symphonium = { version = "0.7", default-features = false, features = ["resampler", "wav", "pcm", "flac", "mp3", "ogg", "vorbis"], optional = true }
 # 2D physics: native Rapier for the player (webapi-adjacent host class RedPhysics2D;
 # see .refactor/PHYSICS-NATIVE-DESIGN.md). simd-stable only — no rayon `parallel`
@@ -73,6 +79,27 @@ redcss = { path = "../../redcss", optional = true }
 default = ["audio", "physics", "mesh", "css-host", "yoga-host"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
+# decodeAudioData beyond the game formats: AAC-LC + the MP4/M4A, CAF, MKV and
+# AIFF containers, ALAC and ADPCM. OFF by default because it is ~10 extra
+# symphonia crates that a game shipping its own .ogg/.wav assets never touches;
+# ON for an app runtime, where "whatever the user's file is" is the actual
+# input. Purely additive — with this off, `decodeAudioData` behaves exactly as
+# it did before the flag existed, and it names the formats it does have when it
+# rejects (webapi/audio.rs `decode_bytes`).
+#
+# NOT covered even with this on: HE-AAC/AAC+ (symphonia decodes the AAC-LC core
+# and ignores SBR/PS, so a 32 kbit/s HE-AAC stream decodes dull and half-rate),
+# Opus, and anything DRM'd.
+audio-codecs-extra = [
+    "audio",
+    "symphonium?/aac",
+    "symphonium?/isomp4",
+    "symphonium?/alac",
+    "symphonium?/adpcm",
+    "symphonium?/aiff",
+    "symphonium?/caf",
+    "symphonium?/mkv",
+]
 # RedPhysics2D / RedPhysics3D host classes (Rapier).
 physics = ["dep:rapier2d", "dep:rapier3d"]
 # RedMesh (.rmesh meshopt decode).
