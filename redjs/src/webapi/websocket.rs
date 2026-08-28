@@ -814,14 +814,17 @@ fn run_loop(sh: &Arc<Shared>, stream: &mut http::Stream, prefix: Vec<u8>) -> Loo
             }
         }
 
-        // -- 3. a local abort (close() while CONNECTING, or teardown) ------
+        // -- 3. a local abort ----------------------------------------------
+        // Reachable through one race: `close()` read CONNECTING (and so took
+        // the "fail the connection" branch) in the instant after this thread
+        // had already published OPEN.
         if sh.cancel.is_aborted() {
             let _ = stream.tcp().shutdown(Shutdown::Both);
             return LoopEnd {
                 code: 1006,
                 reason: String::new(),
                 clean: false,
-                failure: Some("the connection was closed before the handshake completed".into()),
+                failure: Some("the connection was cut locally before the closing handshake".into()),
             };
         }
 
