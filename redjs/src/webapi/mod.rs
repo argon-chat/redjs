@@ -59,6 +59,7 @@ pub mod mediadevices;
 #[cfg(feature = "audio")]
 pub mod osc;
 pub mod path2d;
+pub mod permissions;
 #[cfg(feature = "audio")]
 pub mod pcm;
 pub mod platform;
@@ -270,6 +271,10 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         mediadevices::install(g, et_proto);
     }
     abort::install(g, et_proto);
+    // `navigator.permissions` answers from whatever `PermissionHost` the
+    // embedder installed (possibly none, possibly not yet) — the hook is read
+    // per call, so install order here is free.
+    permissions::install(g, et_proto);
     platform::install(g, et_proto);
     #[cfg(feature = "physics")]
     crate::physics::install(g);

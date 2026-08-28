@@ -513,6 +513,12 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         }
     }
 
+    if flags & PUMP_TIMERS != 0 {
+        // Permission `change` delivery. One `drain_changes()` call, and nothing
+        // at all unless a host is installed and reports a subscription.
+        crate::webapi::permissions::pump(g);
+    }
+
     #[cfg(feature = "audio")]
     if flags & PUMP_TIMERS != 0 {
         // Web Audio upkeep: firewheel graph update, AudioParam timelines,
