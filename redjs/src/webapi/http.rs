@@ -69,7 +69,7 @@ const MAX_CHUNK: u64 = MAX_BODY as u64;
 /// Socket timeout slice. Bounds how long an abort can take to be noticed, and
 /// is the unit `io_timeout` is spent in. Short enough to feel instant, long
 /// enough not to spin.
-const POLL: Duration = Duration::from_millis(200);
+pub(crate) const POLL: Duration = Duration::from_millis(200);
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -583,9 +583,29 @@ fn strip_sensitive(headers: &mut Vec<(String, String)>) {
 // Transport
 // ---------------------------------------------------------------------------
 
-enum Stream {
+/// The connected socket, plaintext or TLS.
+///
+/// `pub(crate)` because [`super::websocket`] borrows this whole transport: a
+/// WebSocket *is* an HTTP/1.1 request whose 101 response hands the socket over
+/// to a different framing. Reusing the connect + TLS + cancellation path here
+/// is what keeps `wss:` on exactly the trust story `https:` already has
+/// (platform TLS, no bundled roots, no second crypto stack — see the module
+/// header) instead of introducing a second one.
+pub(crate) enum Stream {
     Plain(TcpStream),
     Tls(Box<native_tls::TlsStream<TcpStream>>),
+}
+
+impl Stream {
+    /// The TCP socket underneath, for timeout changes and `shutdown`. Reading
+    /// or writing it directly on a TLS connection would corrupt the session;
+    /// callers use it for socket *options* only.
+    pub(crate) fn tcp(&self) -> &TcpStream {
+        match self {
+            Stream::Plain(s) => s,
+            Stream::Tls(s) => s.get_ref(),
+        }
+    }
 }
 
 impl Read for Stream {
@@ -617,7 +637,7 @@ impl Write for Stream {
 /// Everything downstream (`read_head`, the body readers) is written against
 /// `impl Read`, so wrapping here makes every read in this module cancellable
 /// without any of them knowing about it.
-struct Cancellable<'a> {
+pub(crate) struct Cancellable<'a> {
     inner: Stream,
     cancel: &'a Cancel,
     /// Total time spent with no bytes moving. Reset by progress.
@@ -626,6 +646,16 @@ struct Cancellable<'a> {
 }
 
 impl<'a> Cancellable<'a> {
+    pub(crate) fn new(inner: Stream, cancel: &'a Cancel, budget: Duration) -> Self {
+        Cancellable { inner, cancel, stalled: Duration::ZERO, budget }
+    }
+
+    /// Hands the socket back after the head has been read — the WebSocket
+    /// upgrade continues on it with a different framing.
+    pub(crate) fn into_inner(self) -> Stream {
+        self.inner
+    }
+
     fn aborted() -> std::io::Error {
         std::io::Error::new(std::io::ErrorKind::Interrupted, "the request was aborted")
     }
@@ -688,7 +718,7 @@ impl Write for Cancellable<'_> {
     }
 }
 
-fn connect(u: &url::Url, connect_timeout: Duration, cancel: &Cancel) -> Result<Stream, HttpError> {
+pub(crate) fn connect(u: &url::Url, connect_timeout: Duration, cancel: &Cancel) -> Result<Stream, HttpError> {
     let host = u.host_str().ok_or_else(|| HttpError::refused(format!("URL has no host: {u}")))?;
     let port = u
         .port_or_known_default()
@@ -828,7 +858,7 @@ pub fn serialize_request(
     Ok(out)
 }
 
-fn read_head<R: Read>(r: &mut R, cancel: &Cancel) -> Result<(Head, Vec<u8>), HttpError> {
+pub(crate) fn read_head<R: Read>(r: &mut R, cancel: &Cancel) -> Result<(Head, Vec<u8>), HttpError> {
     let mut acc: Vec<u8> = Vec::with_capacity(2048);
     let mut buf = [0u8; 8 * 1024];
     loop {

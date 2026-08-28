@@ -69,6 +69,7 @@ pub mod textcodec;
 pub mod uievents;
 pub mod url;
 pub mod util;
+pub mod websocket;
 pub mod xmlser;
 
 use core::ffi::c_void;
@@ -275,6 +276,11 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // embedder installed (possibly none, possibly not yet) — the hook is read
     // per call, so install order here is free.
     permissions::install(g, et_proto);
+    // `WebSocket` is a real EventTarget and `MessageEvent`/`CloseEvent` are
+    // real `Event` subclasses, so this needs both prototypes — and therefore
+    // must follow `events::install`. Nothing connects at install time; the
+    // first socket is the first `new WebSocket(...)`.
+    websocket::install(g, ev_proto, et_proto);
     platform::install(g, et_proto);
     #[cfg(feature = "physics")]
     crate::physics::install(g);

@@ -517,6 +517,10 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         // Permission `change` delivery. One `drain_changes()` call, and nothing
         // at all unless a host is installed and reports a subscription.
         crate::webapi::permissions::pump(g);
+        // WebSocket delivery: open/message/error/close events parsed off-thread
+        // and dispatched here, on the thread that owns the VM. One relaxed
+        // atomic read when no socket is connected.
+        crate::webapi::websocket::pump(g);
     }
 
     #[cfg(feature = "audio")]
