@@ -25,6 +25,12 @@
 //! `bootstrap.js` (console fmt, atob/btoa, crypto, OffscreenCanvas-2D over
 //! native pixels, silent Web Audio, misc instanceof brands).
 //!
+//! Two more surfaces are behind cargo features, because an embedder that has
+//! no answer for them should not ship a global that lies: `localStorage` /
+//! `sessionStorage` / `StorageEvent` (`storages`, see [`storage`]) and
+//! `navigator.clipboard` (`clipboard`, see [`clipboard`]). Both read through a
+//! host trait declared here, exactly as [`permissions`] does.
+//!
 //! One more embedded script, `streams.js`, is NOT a stub: it is the
 //! promise-shaped surface of the Streams classes over the Rust state machine in
 //! [`streams`]. See that module's header for what is in Rust, what stayed in JS,
@@ -39,6 +45,8 @@ pub mod abort;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod blob;
+#[cfg(feature = "clipboard")]
+pub mod clipboard;
 pub mod clone;
 pub mod compression;
 pub mod crypto;
@@ -64,6 +72,8 @@ pub mod permissions;
 pub mod pcm;
 pub mod platform;
 pub mod request;
+#[cfg(feature = "storages")]
+pub mod storage;
 pub mod streams;
 pub mod textcodec;
 pub mod uievents;
@@ -281,6 +291,20 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // must follow `events::install`. Nothing connects at install time; the
     // first socket is the first `new WebSocket(...)`.
     websocket::install(g, ev_proto, et_proto);
+    // `navigator.clipboard` answers from whatever `ClipboardHost` the embedder
+    // installed. AFTER `dom::install`, because it also lands `execCommand` on
+    // `document`; the hook itself is read per call, so nothing else orders it.
+    #[cfg(feature = "clipboard")]
+    clipboard::install(g, et_proto);
+    // `localStorage` / `sessionStorage` + `StorageEvent`, over whatever
+    // `StorageHost` the embedder installed. Needs `Event.prototype`
+    // (StorageEvent subclasses it) and evaluates its own small script, so it is
+    // fatal like `streams::install_surface`: a context whose `localStorage` is
+    // the raw un-proxied object would silently lose named-property access.
+    #[cfg(feature = "storages")]
+    if storage::install(g, ev_proto) != 0 {
+        return 1;
+    }
     platform::install(g, et_proto);
     #[cfg(feature = "physics")]
     crate::physics::install(g);

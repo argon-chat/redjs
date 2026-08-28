@@ -110,6 +110,29 @@ css-host = ["dep:redcss"]
 # compile — and the vendored-sources requirement — when this is off).
 yoga-host = []
 
+# ---------------------------------------------------------------------------
+# Web platform surfaces that need something only the EMBEDDER has.
+#
+# Both are OFF by default, and that is not a judgement about how useful they
+# are — it is the only setting that keeps this crate's default build byte-for-
+# byte what it was before they existed. Turning a global ON by default changes
+# what `typeof localStorage` answers in every consumer, including a game that
+# ships its own storage layer and feature-detects around ours. An embedder that
+# wants them says so; vue-native does, in crates/vn-runtime/Cargo.toml.
+#
+# Neither pulls a single new dependency: both are pure JSC wiring plus a trait
+# the embedder implements.
+
+# `localStorage` / `sessionStorage` / `Storage` / `StorageEvent`, over
+# `webapi::storage::StorageHost`. Without a host installed the API is present
+# and in-memory-only, and says so once — see that module's header.
+storages = []
+# `navigator.clipboard` (+ the inert `document.execCommand`), over
+# `webapi::clipboard::ClipboardHost`. An embedder that already owns the OS
+# clipboard for its own text fields implements the trait over that same handle
+# rather than opening a second one.
+clipboard = []
+
 # Examples that cannot compile without their host-class feature.
 [[example]]
 name = "yoga_conformance"

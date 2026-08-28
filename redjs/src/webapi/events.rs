@@ -15,9 +15,49 @@
 //! phase AT_TARGET, `capture` only participates in listener identity.
 
 use core::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, RwLock};
 
 use super::util::*;
 use crate::glue;
+
+// ---------------------------------------------------------------------------
+// "somebody is listening for X" — the advisory seam
+// ---------------------------------------------------------------------------
+
+/// Set once a hook exists, so the common case (none) is a relaxed load rather
+/// than a lock on a path Vue walks for every element it patches.
+static ANY_HOOK: AtomicBool = AtomicBool::new(false);
+
+fn hooks() -> &'static RwLock<Vec<fn(&str)>> {
+    static H: OnceLock<RwLock<Vec<fn(&str)>>> = OnceLock::new();
+    H.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Registers `f` to be told the type of every listener added, anywhere.
+///
+/// Exists for one reason: a module that knows this runtime never fires some
+/// event needs to say so, and the only moment worth saying it is when an
+/// application actually listens for that event. An advisory printed at install
+/// would fire for every app including the ones that never touch the API; a
+/// silent no-op would be exactly the divergence-without-a-word this project
+/// refuses. See [`crate::webapi::storage`]'s `storage` advisory.
+///
+/// Process-global and never removed — hooks are registered at install by
+/// modules that live as long as the process.
+pub fn on_listener_added(f: fn(&str)) {
+    hooks().write().unwrap().push(f);
+    ANY_HOOK.store(true, Ordering::Relaxed);
+}
+
+fn note_listener_added(ty: &str) {
+    if !ANY_HOOK.load(Ordering::Relaxed) {
+        return;
+    }
+    for f in hooks().read().unwrap().iter() {
+        f(ty);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Event
@@ -221,6 +261,7 @@ pub unsafe extern "sysv64" fn add_event_listener(g: *mut c_void, cf: *mut c_void
     }
     let st = state(g);
     let type_str = read_string(g, ty).unwrap_or_default();
+    note_listener_added(&type_str);
     let list = listeners_of(g, target, true);
     let n = array_len(g, list);
     // Spec: suppress duplicate (type, callback, capture) registrations.
