@@ -1133,6 +1133,20 @@ unsafe fn throw_named(g: *mut c_void, name: &str, msg: &str) -> u64 {
     UNDEF
 }
 
+/// `close(optional [Clamp] unsigned short code, ...)`.
+///
+/// `[Clamp]`, not the default modulo wrap, and this distinction is load-bearing:
+/// Rust's `as u16` truncates, so `close(70000)` would come out as **4464** — a
+/// value inside the application range that the check below would happily accept
+/// and put on the wire. Clamping makes it 65535, which is refused by name, which
+/// is what a browser does.
+fn clamp_close_code(n: f64) -> u16 {
+    if n.is_nan() {
+        return 0;
+    }
+    n.round().clamp(0.0, 65535.0) as u16
+}
+
 /// `protocols` argument: a single string, or a sequence of strings.
 unsafe fn read_protocols(g: *mut c_void, v: u64) -> Vec<String> {
     if v == UNDEF || v == NULL {
@@ -1333,7 +1347,7 @@ unsafe extern "sysv64" fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe extern "sysv64" fn ws_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     let code_arg = cf_arg(cf, 0);
     let reason_arg = cf_arg(cf, 1);
-    let code = if code_arg == UNDEF { 1000u16 } else { read_number(g, code_arg) as i64 as u16 };
+    let code = if code_arg == UNDEF { 1000u16 } else { clamp_close_code(read_number(g, code_arg)) };
     if code_arg != UNDEF && code != 1000 && !(3000..=4999).contains(&code) {
         return throw_named(
             g,
@@ -1882,6 +1896,18 @@ mod tests {
     }
 
     #[test]
+    fn a_close_code_is_clamped_rather_than_truncated() {
+        // The one that matters: `70000 as u16` truncates to 4464, which is
+        // INSIDE the application range and would be accepted and sent.
+        assert_eq!(clamp_close_code(70_000.0), 65535);
+        assert_eq!(clamp_close_code(-1.0), 0);
+        assert_eq!(clamp_close_code(f64::NAN), 0);
+        assert_eq!(clamp_close_code(f64::INFINITY), 65535);
+        assert_eq!(clamp_close_code(1000.0), 1000);
+        assert_eq!(clamp_close_code(4999.4), 4999);
+    }
+
+    #[test]
     fn subprotocol_names_must_be_tokens_and_unique() {
         assert!(validate_protocols(&["ion".into(), "cbor.v1".into()]).is_ok());
         assert!(validate_protocols(&["with space".into()]).is_err());
@@ -2346,13 +2372,16 @@ mod jsc_tests {
                  const names = []; \
                  try {{ ws.close(1001); }} catch (e) {{ names.push(e.name); }} \
                  try {{ ws.close(2999); }} catch (e) {{ names.push(e.name); }} \
+                 try {{ ws.close(70000); }} catch (e) {{ names.push(e.name); }} \
                  try {{ ws.close(1000, 'x'.repeat(124)); }} catch (e) {{ names.push(e.name); }} \
                  ws.close(1000, 'ok'); \
                  const e = await closed(ws); \
                  return names.join(',') + '|' + e.code;"
             ),
         );
-        assert_eq!(out, "InvalidAccessError,InvalidAccessError,SyntaxError|1000");
+        // 70000 clamps to 65535 and is refused; truncating it to 4464 would
+        // have put a plausible wrong code on the wire.
+        assert_eq!(out, "InvalidAccessError,InvalidAccessError,InvalidAccessError,SyntaxError|1000");
     }
 
     #[test]
