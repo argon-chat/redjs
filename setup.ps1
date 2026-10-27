@@ -1,54 +1,159 @@
-# Fetches and unpacks the Bun WebKit (JavaScriptCore) Windows prebuilt that
-# redjs builds against. Idempotent: skips work when already present.
+# Fetches and unpacks the native inputs redjs builds against, at the versions
+# pinned in pins.txt:
 #
-# Version is PINNED — the C++ glue is compiled against these exact internal
-# headers, and the CallFrame/JSValue layout export makes ABI drift loud, but
-# bumping the prebuilt still requires re-running the redjs test suite.
+#   prebuilt/bun-webkit/   the Bun WebKit (JavaScriptCore) Windows prebuilt —
+#                          internal headers + static libs (~0.85 GB extracted)
+#   redjs/cpp/mimalloc/    oven-sh/mimalloc sources (src/, include/, LICENSE),
+#                          compiled by redjs/build.rs — this JSC build calls the
+#                          EMBEDDER's mimalloc
+#
+# Both are git-ignored. Idempotent: what is already on disk at the pinned
+# version is left alone. What is on disk at ANY OTHER version is replaced — a
+# checkout that pulls a new pin and re-runs this script never keeps building
+# against the old engine (and redjs/build.rs refuses to, if it is not re-run).
+#
+# The prebuilt identifies itself (`BUN_WEBKIT_VERSION` in
+# include/cmakeconfig.h); that, not the directory name, is what is compared.
 #
 # Proxy: pass -Proxy or set ZIG_PROXY in the repo .env (same var the Zig
 # toolchain setup uses; HTTP proxy, not SOCKS).
+#
+# Works on Windows PowerShell 5.1 and PowerShell 7.
 param(
     [string] $Proxy = '',
-    # Use an already-downloaded tarball instead of fetching.
-    [string] $Tarball = ''
+    # Use an already-downloaded WebKit tarball instead of fetching it. It is
+    # held to the same sha256 as a download.
+    [string] $Tarball = '',
+    # Re-extract both even when the versions on disk already match.
+    [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
-
-$PINNED = 'autobuild-c9ad5813fd23bd8b98b0738abc3d037ec716aa92'
-$ASSET = 'bun-webkit-windows-amd64.tar.gz' # NOT the -lto asset: ThinLTO bitcode won't link with link.exe
-$URL = "https://github.com/oven-sh/WebKit/releases/download/$PINNED/$ASSET"
-
 $root = $PSScriptRoot
-$dest = Join-Path $root 'prebuilt/bun-webkit'
 
-if (Test-Path (Join-Path $dest 'lib/JavaScriptCore.lib')) {
-    Write-Host "[jscore] prebuilt already present: $dest"
+# --- pins.txt ----------------------------------------------------------------
+
+function Read-Pins([string] $path) {
+    $pins = @{}
+    foreach ($raw in Get-Content -LiteralPath $path) {
+        $line = ($raw -replace '#.*$', '').Trim()
+        if (-not $line) { continue }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 1) { throw "pins.txt: cannot parse line: $raw" }
+        $pins[$line.Substring(0, $eq).Trim()] = $line.Substring($eq + 1).Trim()
+    }
+    foreach ($k in 'webkit.tag', 'webkit.version', 'webkit.asset', 'webkit.sha256', 'mimalloc.commit', 'mimalloc.tree-sha256') {
+        if (-not $pins.ContainsKey($k)) { throw "pins.txt: missing '$k'" }
+    }
+    return $pins
+}
+
+$pins = Read-Pins (Join-Path $root 'pins.txt')
+
+if (-not $Proxy) {
+    $envFile = Join-Path $root '../../.env'
+    if (Test-Path $envFile) {
+        $m = Select-String -Path $envFile -Pattern '^ZIG_PROXY=(.+)$' | Select-Object -First 1
+        if ($m) { $Proxy = $m.Matches[0].Groups[1].Value }
+    }
+}
+
+function Get-Url([string] $url, [string] $outFile) {
+    Write-Host "[jscore] downloading $url"
+    $iwr = @{ Uri = $url; OutFile = $outFile; UseBasicParsing = $true }
+    if ($Proxy) { $iwr.Proxy = $Proxy }
+    # Windows PowerShell 5.1's progress bar slows Invoke-WebRequest ~10x.
+    $old = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try { Invoke-WebRequest @iwr } finally { $ProgressPreference = $old }
+}
+
+function Assert-Sha256([string] $file, [string] $want) {
+    $have = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
+    if ($have -ne $want.ToLowerInvariant()) {
+        throw "sha256 mismatch for ${file}:`n  pinned: $want`n  file:   $have`nRefusing to use it."
+    }
+}
+
+# sha256 of "<sha256>  <relative/path>\n" per file, ordinal path order — the
+# `sha256sum` manifest of a tree. See the mimalloc.tree-sha256 note in pins.txt.
+function Get-TreeSha256([string] $dir) {
+    $base = (Resolve-Path -LiteralPath $dir).Path.TrimEnd('\', '/')
+    $rel = @(Get-ChildItem -LiteralPath $base -Recurse -File -Force | ForEach-Object {
+            $_.FullName.Substring($base.Length + 1).Replace('\', '/')
+        })
+    [Array]::Sort($rel, [StringComparer]::Ordinal)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($r in $rel) {
+        $h = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $base $r)).Hash.ToLowerInvariant()
+        [void]$sb.Append("$h  $r`n")
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return (-join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })) }
+    finally { $sha.Dispose() }
+}
+
+function Remove-Tree([string] $dir) {
+    if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
+}
+
+# --- 1. the bun-webkit prebuilt ------------------------------------------------
+
+function Get-WebKitVersion([string] $dir) {
+    $cfg = Join-Path $dir 'include/cmakeconfig.h'
+    if (-not (Test-Path -LiteralPath $cfg)) { return $null }
+    $m = Select-String -LiteralPath $cfg -Pattern '^#define BUN_WEBKIT_VERSION "([0-9a-f]+)"' | Select-Object -First 1
+    if (-not $m) { return '(no BUN_WEBKIT_VERSION)' }
+    return $m.Matches[0].Groups[1].Value
+}
+
+$dest = Join-Path $root 'prebuilt/bun-webkit'
+$want = $pins['webkit.version']
+$have = Get-WebKitVersion $dest
+$complete = Test-Path -LiteralPath (Join-Path $dest 'lib/JavaScriptCore.lib')
+
+if (-not $Force -and $have -eq $want -and $complete) {
+    Write-Host "[jscore] prebuilt present at the pin ($want): $dest"
 }
 else {
+    if ($have -and $have -ne $want) {
+        Write-Host "[jscore] prebuilt on disk is $have, pins.txt says $want — replacing it"
+    }
     $tar = $Tarball
+    $downloaded = $false
     if (-not $tar) {
-        if (-not $Proxy) {
-            $envFile = Join-Path $root '../../.env'
-            if (Test-Path $envFile) {
-                $line = Select-String -Path $envFile -Pattern '^ZIG_PROXY=(.+)$' | Select-Object -First 1
-                if ($line) { $Proxy = $line.Matches[0].Groups[1].Value }
-            }
-        }
-        $tar = Join-Path $env:TEMP $ASSET
-        Write-Host "[jscore] downloading $URL"
-        $args = @{ Uri = $URL; OutFile = $tar }
-        if ($Proxy) { $args.Proxy = $Proxy }
-        Invoke-WebRequest @args
+        $tar = Join-Path $env:TEMP ("redjs-" + $pins['webkit.asset'])
+        Get-Url "https://github.com/oven-sh/WebKit/releases/download/$($pins['webkit.tag'])/$($pins['webkit.asset'])" $tar
+        $downloaded = $true
     }
+    Assert-Sha256 $tar $pins['webkit.sha256']
 
-    Write-Host "[jscore] extracting to $dest"
-    New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
-    # The tarball root is `bun-webkit/`; extract into prebuilt/.
-    tar -xzf $tar -C (Split-Path $dest)
-    if (-not (Test-Path (Join-Path $dest 'lib/JavaScriptCore.lib'))) {
-        throw "extraction did not produce $dest/lib/JavaScriptCore.lib"
+    # Extract BESIDE the live directory and swap it in only once the result is
+    # verified: an interrupted extraction must not leave a half tree whose
+    # cmakeconfig.h already names the new pin. The old tree is removed whole
+    # rather than overwritten, because a header the new engine deleted would
+    # otherwise stay on the include path.
+    $prebuilt = Split-Path $dest
+    $staging = Join-Path $prebuilt ".staging-$PID"
+    Remove-Tree $staging
+    New-Item -ItemType Directory -Force $staging | Out-Null
+    Write-Host "[jscore] extracting $tar"
+    # bin/ (jsc.exe, the LLInt extractors and ~0.7 GB of their PDBs) is not
+    # used by anything that builds or links redjs; skip it.
+    tar -xzf $tar -C $staging --exclude 'bun-webkit/bin'
+    if ($LASTEXITCODE -ne 0) { throw "tar failed ($LASTEXITCODE) on $tar" }
+    $fresh = Join-Path $staging 'bun-webkit'
+    $got = Get-WebKitVersion $fresh
+    if ($got -ne $want) { throw "the tarball is $got, not the pinned $want" }
+    if (-not (Test-Path -LiteralPath (Join-Path $fresh 'lib/JavaScriptCore.lib'))) {
+        throw "extraction did not produce lib/JavaScriptCore.lib"
     }
+    Remove-Tree $dest
+    Move-Item -LiteralPath $fresh -Destination $dest
+    Remove-Tree $staging
+    if ($downloaded) { Remove-Item -LiteralPath $tar -Force }
+    Write-Host "[jscore] prebuilt $want -> $dest"
 }
 
 # The prebuilt archive is missing wtf/PlatformEnableWin.h (referenced by
@@ -56,5 +161,40 @@ else {
 # the include path, so nothing to patch — just verify it's there.
 $compat = Join-Path $root 'redjs/cpp/compat/wtf/PlatformEnableWin.h'
 if (-not (Test-Path $compat)) { throw "missing vendored header: $compat" }
+
+# --- 2. mimalloc ------------------------------------------------------------------
+
+$mi = Join-Path $root 'redjs/cpp/mimalloc'
+$stamp = Join-Path $mi '.redjs-pin'
+$commit = $pins['mimalloc.commit']
+$miHave = $null
+if (Test-Path -LiteralPath $stamp) { $miHave = (Get-Content -LiteralPath $stamp -Raw).Trim() }
+
+if (-not $Force -and $miHave -eq $commit -and (Test-Path -LiteralPath (Join-Path $mi 'src/static.c'))) {
+    Write-Host "[jscore] mimalloc present at the pin ($commit): $mi"
+}
+else {
+    if ($miHave -and $miHave -ne $commit) {
+        Write-Host "[jscore] mimalloc on disk is $miHave, pins.txt says $commit — replacing it"
+    }
+    $miTar = Join-Path $env:TEMP "redjs-mimalloc-$commit.tar.gz"
+    Get-Url "https://github.com/oven-sh/mimalloc/archive/$commit.tar.gz" $miTar
+    $miStaging = Join-Path (Split-Path $mi) ".mimalloc-staging-$PID"
+    Remove-Tree $miStaging
+    New-Item -ItemType Directory -Force $miStaging | Out-Null
+    $top = "mimalloc-$commit"
+    tar -xzf $miTar -C $miStaging --strip-components=1 "$top/src" "$top/include" "$top/LICENSE"
+    if ($LASTEXITCODE -ne 0) { throw "tar failed ($LASTEXITCODE) on $miTar" }
+    $tree = Get-TreeSha256 $miStaging
+    if ($tree -ne $pins['mimalloc.tree-sha256']) {
+        throw "mimalloc tree sha256 mismatch:`n  pinned: $($pins['mimalloc.tree-sha256'])`n  tree:   $tree`nRefusing to use it."
+    }
+    Remove-Tree $mi
+    Move-Item -LiteralPath $miStaging -Destination $mi
+    # Written LAST, after the hash: build.rs trusts the stamp.
+    Set-Content -LiteralPath $stamp -Value $commit -NoNewline -Encoding ascii
+    Remove-Item -LiteralPath $miTar -Force
+    Write-Host "[jscore] mimalloc $commit -> $mi"
+}
 
 Write-Host "[jscore] setup complete. Next: ./build.ps1"

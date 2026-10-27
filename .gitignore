@@ -7,6 +7,10 @@ prebuilt/
 # result ships inside the player.
 redjs/cpp/yoga/
 
+# oven-sh/mimalloc sources (fetched by setup.ps1 at the commit pinned in pins.txt, tree-hash
+# verified). Same reasoning as yoga; the MIT notice ships inside the fetched tree (LICENSE).
+redjs/cpp/mimalloc/
+
 # Built artifacts (produced by build.ps1; consumers link these)
 runtimes/
 lib/

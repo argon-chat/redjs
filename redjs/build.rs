@@ -17,17 +17,28 @@
 //!    static lib for the `RedYoga` host class. Plain portable C++20: it must
 //!    NOT see the WebKit cmakeconfig force-include.
 //!
-//! 4. Links the WebKit static libs. They are linked with the `-bundle`
+//! 4. Compiles oven-sh/mimalloc (`cpp/mimalloc`, fetched by setup.ps1). This
+//!    JSC build (`USE_MIMALLOC 1`, `USE_EXTERNAL_MIMALLOC 1`) allocates
+//!    through `mi_*` and leaves the allocator to the embedder, the way Bun
+//!    links its own. It is a normal (bundled) static lib, so it lands INSIDE
+//!    the thin redjs.lib and a NativeAOT consumer gets it without listing it.
+//!
+//! 5. Links the WebKit static libs. They are linked with the `-bundle`
 //!    modifier so the `staticlib` artifact (redjs.lib for NativeAOT) stays
 //!    thin — the consuming link (ILC) must also pass the WebKit libs. The
 //!    `cdylib` artifact (redjs.dll) is always fully self-contained.
+//!
+//! Before any of it, the prebuilt and the mimalloc tree are checked against
+//! `../pins.txt`: a mismatch is a build error with the command that fixes it,
+//! because linking whatever happens to be on disk is how a checkout keeps the
+//! OLD engine after pulling a new pin.
 //!
 //! Prebuilt location: `BUN_WEBKIT_DIR` env or `../prebuilt/bun-webkit`.
 
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Number of pre-compiled host-function trampolines. Each registered C# host
 /// function consumes one slot for the lifetime of the process.
@@ -45,13 +56,11 @@ fn main() {
     let lib = webkit.join("lib");
     let inc = webkit.join("include");
 
-    if !lib.join("JavaScriptCore.lib").exists() {
-        println!(
-            "cargo:warning=JavaScriptCore.lib not found under {}. Run packages/jscore/setup.ps1 \
-             (or set BUN_WEBKIT_DIR).",
-            lib.display()
-        );
-    }
+    let pins_path = manifest.parent().unwrap().join("pins.txt");
+    let pins = read_pins(&pins_path);
+    check_prebuilt(&webkit, &pins);
+    let mimalloc = manifest.join("cpp").join("mimalloc");
+    check_mimalloc(&mimalloc, &pins);
 
     // --- C++ glue against WebKit internal headers -------------------------
     // Flags mirror how the prebuilt itself was produced (proven in
@@ -113,6 +122,51 @@ fn main() {
         yoga.files(&yoga_sources).compile("redjs_yoga");
     }
 
+    // --- mimalloc (JSC's allocator; the embedder provides it) --------------
+    // Mirrors Bun's scripts/build/deps/mimalloc.ts (bun-v1.4.4) for Windows:
+    // the single unity TU `src/static.c`, compiled AS C++ (`/TP` — cc-rs
+    // picks the language from the extension, and Bun builds it as C++ because
+    // the C++ code that uses mimalloc's types must agree with it on layout),
+    // no malloc override (Bun: on Windows the static CRT's own
+    // `_expand`/`_msize`/`free` collide with alloc-override.c), and these
+    // defines, none of which is optional:
+    //
+    //   MI_STATIC_LIB            the static-library symbol visibility.
+    //   MI_SKIP_COLLECT_ON_EXIT  no heap walk at exit.
+    //   MI_NO_PROCESS_DETACH     no mi_process_done at all: it tears down locks
+    //                            and TLS while other static destructors may
+    //                            still free().
+    //   MI_FREE_USE_PAGEMAP      LOAD-BEARING. Without it page metadata sits at
+    //                            256 MiB boundaries, every arena must start on
+    //                            one, and mi_manage_os_memory_ex refuses JSC's
+    //                            structure heap whenever its reservation is
+    //                            256 MiB or less — an abort at startup.
+    //   MI_BUILD_RELEASE         release mimalloc in every profile: it is a
+    //                            dependency we do not debug, and a debug-profile
+    //                            host must not run a differently-checked
+    //                            allocator under the same JSC (MI_DEBUG=2
+    //                            otherwise, since nothing here defines NDEBUG).
+    //
+    // `MI_CMAKE_BUILD_TYPE` only labels mimalloc's verbose banner.
+    //
+    // It is NOT the Rust global allocator: Rust keeps the system heap, mimalloc
+    // serves JSC (and whatever JSC hands out) only.
+    cc::Build::new()
+        .cpp(true)
+        .compiler("clang-cl")
+        .static_crt(true)
+        .file(mimalloc.join("src").join("static.c"))
+        .include(mimalloc.join("include"))
+        .flag("/TP")
+        .flag("-w")
+        .define("MI_STATIC_LIB", None)
+        .define("MI_SKIP_COLLECT_ON_EXIT", "1")
+        .define("MI_NO_PROCESS_DETACH", "1")
+        .define("MI_FREE_USE_PAGEMAP", "1")
+        .define("MI_BUILD_RELEASE", None)
+        .define("MI_CMAKE_BUILD_TYPE", "release")
+        .compile("redjs_mimalloc");
+
     println!("cargo:rustc-link-search=native={}", lib.display());
 
     // WebKit static libs. `-bundle`: not embedded into the staticlib artifact
@@ -122,13 +176,28 @@ fn main() {
         println!("cargo:rustc-link-lib=static:-bundle={l}");
     }
 
-    // Windows system libs WebKit pulls in.
+    // Windows system libs WebKit pulls in. `ntdll`: the JIT/LLInt unwind-info
+    // registration (`RtlAddGrowableFunctionTable`) — glue.cpp also carries it
+    // as a /DEFAULTLIB directive for hand-written consumer links.
     for l in [
         "user32", "ole32", "oleaut32", "advapi32", "shell32", "shlwapi", "winmm", "bcrypt",
-        "dbghelp", "userenv", "ws2_32", "synchronization", "usp10", "rpcrt4", "crypt32",
+        "dbghelp", "userenv", "ws2_32", "synchronization", "usp10", "rpcrt4", "crypt32", "ntdll",
     ] {
         println!("cargo:rustc-link-lib=dylib={l}");
     }
+
+    // No identical-COMDAT folding in the images THIS package links (redjs.dll,
+    // the conformance suite, the examples). rustc passes `/OPT:REF,ICF` to
+    // link.exe for every optimized MSVC build, and JSC tells constructors from
+    // non-constructors by comparing native function POINTERS — fold two
+    // identical bodies and one of them changes behaviour (Bun hit exactly
+    // this: `BigInt` became "not a constructor"; WebKit itself links
+    // /OPT:NOICF). The last /OPT wins in link.exe, and `-C link-arg` lands
+    // after rustc's own. This does not reach a consumer's binary — cargo
+    // scopes link args to the package that prints them — so an embedder that
+    // links its own executable (vue-native's vn-app) says the same thing in
+    // its own build script.
+    println!("cargo:rustc-link-arg=/OPT:NOICF");
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cpp/glue.cpp");
@@ -136,7 +205,87 @@ fn main() {
     // Directory form: cargo walks it recursively, so headers and any future
     // .cpp under cpp/yoga/ are covered without listing them.
     println!("cargo:rerun-if-changed=cpp/yoga");
+    // setup.ps1 rewrites the stamp only after a verified fetch, so it stands
+    // for the whole mimalloc tree.
+    println!("cargo:rerun-if-changed={}", mimalloc.join(".redjs-pin").display());
+    println!("cargo:rerun-if-changed={}", pins_path.display());
+    println!("cargo:rerun-if-changed={}", inc.join("cmakeconfig.h").display());
     println!("cargo:rerun-if-env-changed=BUN_WEBKIT_DIR");
+}
+
+/// `pins.txt`: `key = value` lines, `#` comments. See that file.
+fn read_pins(path: &Path) -> Vec<(String, String)> {
+    let text = fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e} — it pins the prebuilt redjs builds against", path.display()));
+    text.lines()
+        .filter_map(|raw| {
+            let line = raw.split('#').next().unwrap().trim();
+            let (k, v) = line.split_once('=')?;
+            Some((k.trim().to_owned(), v.trim().to_owned()))
+        })
+        .collect()
+}
+
+fn pin<'a>(pins: &'a [(String, String)], key: &str) -> &'a str {
+    pins.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+        .unwrap_or_else(|| panic!("pins.txt has no `{key}`"))
+}
+
+/// The prebuilt names its own build in `include/cmakeconfig.h`
+/// (`#define BUN_WEBKIT_VERSION "<sha>"`); that is compared, not a directory
+/// name or a stamp, so a tarball extracted by hand is held to the pin too.
+fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
+    let want = pin(pins, "webkit.version");
+    let cfg = webkit.join("include").join("cmakeconfig.h");
+    let fix = "Run vendor/redjs/setup.ps1 (packages/jscore/setup.ps1 in PEWPEW): it fetches the pinned \
+               prebuilt and REPLACES one at any other version. Or point BUN_WEBKIT_DIR at an \
+               extraction of the pinned tarball.";
+    let Ok(text) = fs::read_to_string(&cfg) else {
+        panic!(
+            "\n\nno bun-webkit prebuilt at {} (missing include/cmakeconfig.h).\n{fix}\n\
+             pins.txt wants {want}.\n",
+            webkit.display()
+        );
+    };
+    let have = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("#define BUN_WEBKIT_VERSION "))
+        .map(|v| v.trim().trim_matches('"').to_owned());
+    match have {
+        Some(have) if have == want => {}
+        have => panic!(
+            "\n\nthe bun-webkit prebuilt at {} is {}, but redjs pins {want} (pins.txt).\n\
+             Building would compile the glue against one engine's internal headers and link\n\
+             whatever is on disk — refusing.\n{fix}\n",
+            webkit.display(),
+            have.as_deref().unwrap_or("unidentified (no BUN_WEBKIT_VERSION)"),
+        ),
+    }
+    if !webkit.join("lib").join("JavaScriptCore.lib").is_file() {
+        panic!(
+            "\n\n{} names the pinned build but has no lib/JavaScriptCore.lib — an interrupted \
+             extraction?\n{fix}\n",
+            webkit.display()
+        );
+    }
+}
+
+/// setup.ps1 writes `cpp/mimalloc/.redjs-pin` (the commit) only after the
+/// extracted tree's sha256 matched pins.txt.
+fn check_mimalloc(dir: &Path, pins: &[(String, String)]) {
+    let want = pin(pins, "mimalloc.commit");
+    let have = fs::read_to_string(dir.join(".redjs-pin")).ok().map(|s| s.trim().to_owned());
+    if have.as_deref() != Some(want) || !dir.join("src").join("static.c").is_file() {
+        panic!(
+            "\n\nmimalloc sources at {} are {}, but redjs pins oven-sh/mimalloc@{want} (pins.txt).\n\
+             This JSC build allocates through the embedder's mimalloc, so redjs compiles it.\n\
+             Run vendor/redjs/setup.ps1 (packages/jscore/setup.ps1 in PEWPEW) to fetch it.\n",
+            dir.display(),
+            have.as_deref().unwrap_or("missing"),
+        );
+    }
 }
 
 /// Collects every `.cpp` under `dir`, recursively.

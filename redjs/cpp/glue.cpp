@@ -50,6 +50,15 @@
 #include <JavaScriptCore/VM.h>
 #include <wtf/NakedPtr.h>
 #include <wtf/text/WTFString.h>
+#include <unicode/udata.h>
+
+// JSC registers unwind info for its JIT pool, LLInt and vmEntry with
+// `RtlAddGrowableFunctionTable` (oven-sh/WebKit #315/#442), which lives in
+// ntdll.lib. build.rs puts ntdll on the list for every cargo link; this
+// directive puts it in the objects, so a consumer that links the THIN
+// redjs.lib by hand (the player's NativeAOT csproj) gets it without having to
+// learn that it changed.
+#pragma comment(lib, "ntdll")
 
 using namespace JSC;
 
@@ -186,18 +195,24 @@ extern "C" void rjs_layout(RjsLayout* out)
 // The bun-webkit static ICU expects the common data to be handed over
 // explicitly (u_init otherwise fails with U_FILE_ACCESS_ERROR and every
 // Intl/toLocale* API breaks). Same wiring Bun does at startup.
-extern "C" const char icudt73_dat[];
-extern "C" void udata_setCommonData_73(const void* data, int32_t* err);
+//
+// Version-agnostic on purpose: ICU renames every export by its major version
+// (`udata_setCommonData` is `udata_setCommonData_78` at link time) and names
+// the data blob the same way (`icudt78_dat`). Both names come from the
+// prebuilt's own headers — <unicode/udata.h> carries the renaming and
+// U_ICUDATA_ENTRY_POINT expands to the blob's symbol — so an ICU bump in the
+// prebuilt is a recompile, not an edit.
+extern "C" const char U_ICUDATA_ENTRY_POINT[];
 
 extern "C" int32_t rjs_init(const char* options)
 {
     static bool icuReady = false;
     if (!icuReady) {
         icuReady = true;
-        int32_t err = 0;
-        udata_setCommonData_73(icudt73_dat, &err);
-        if (err > 0)
-            fprintf(stderr, "[redjs] udata_setCommonData failed: %d\n", err);
+        UErrorCode err = U_ZERO_ERROR;
+        udata_setCommonData(U_ICUDATA_ENTRY_POINT, &err);
+        if (U_FAILURE(err))
+            fprintf(stderr, "[redjs] udata_setCommonData failed: %s (%d)\n", u_errorName(err), static_cast<int>(err));
     }
     JSC::initialize();
     if (options && *options) {
