@@ -8,17 +8,24 @@ This is the engine seam that replaces ClearScript/V8 in
 Why (measured in `battle_test/`, see its RESULTS.md): ClearScript's managed
 marshaling costs ~100× on host calls. JSC via its *internal* binding path does
 a js→host call in **2.2 ns** (ties SpiderMonkey, 4× faster than V8) on top of
-the best-in-class JIT (fastest compute/fib of every engine tested), and Bun is
-about to land shared-memory multithreading in it.
+the best-in-class JIT (fastest compute/fib of every engine tested).
+
+(This line used to add that Bun was "about to land shared-memory
+multithreading" in JSC. It is not: oven-sh/WebKit#249 has had no commit since
+2026-06-20, says it "may never merge", lists Windows as "Not started", and no
+`useJSThreads` option exists in any prebuilt. One VM per thread, under its lock,
+is the model — see *Threading & locks*.)
 
 ```
 packages/jscore/
-├─ setup.ps1                  # fetch/unpack the pinned bun-webkit prebuilt (~1.1 GB, gitignored)
+├─ pins.txt                   # ★ the prebuilt + mimalloc versions (and hashes) — the ONE place they live
+├─ setup.ps1                  # fetch/verify/unpack what pins.txt names (gitignored; replaces a stale copy)
 ├─ build.ps1 [-Test]          # cargo build --release + artifact layout (+ conformance suite)
-├─ prebuilt/bun-webkit/       # include/ (internal headers!) + lib/ (static libs)
+├─ prebuilt/bun-webkit/       # include/ (internal headers!) + lib/ (static libs), ~0.85 GB
 ├─ redjs/                     # the Rust crate
-│  ├─ build.rs                #   trampoline codegen + clang-cl glue build + link
+│  ├─ build.rs                #   pin check + trampoline codegen + clang-cl glue/mimalloc build + link
 │  ├─ cpp/glue.cpp            #   JSC internal-API layer (extern "C" rjs_*)
+│  ├─ cpp/mimalloc/           #   oven-sh/mimalloc sources (fetched; JSC allocates through it)
 │  ├─ cpp/compat/wtf/…        #   header missing from the prebuilt archive
 │  ├─ src/ffi.rs              #   ★ the exported redjs_* C ABI (csbindgen input)
 │  ├─ src/api.rs              #   safe Rust API (Context/Value/HostArgs)
@@ -42,8 +49,8 @@ packages/jscore/
 ## Quick start
 
 ```powershell
-./setup.ps1          # once: fetch prebuilt (or -Tarball path\to\bun-webkit-windows-amd64.tar.gz)
-./build.ps1 -Test    # build + run the 14-section conformance suite
+./setup.ps1          # fetch prebuilt + mimalloc at the pins (or -Tarball path\to\bun-webkit-windows-amd64.tar.gz)
+./build.ps1 -Test    # build + run the conformance suite
 
 cd csharp/RedJs.Smoke
 dotnet run -c Release                                          # C# smoke, JIT via redjs.dll
@@ -51,8 +58,18 @@ dotnet publish -r win-x64 -c Release -p:PublishAot=true -p:RedJsRid=win-x64
 ./bin/Release/net10.0/win-x64/native/RedJs.Smoke.exe           # C# smoke, static-linked AOT
 ```
 
-Requires stable Rust and `clang-cl` (LLVM) on PATH. Everything is verified on
-this exact pinned prebuilt: `autobuild-c9ad5813fd23bd8b98b0738abc3d037ec716aa92`.
+Requires stable Rust, `clang-cl` (LLVM) on PATH and an MSVC toolset ≥ 14.44
+(the prebuilt's objects need `__std_fs_equivalent`). Everything is verified on
+the prebuilt `pins.txt` names — since m24 (2026-10) **`autobuild-d6375c72`**,
+the one Bun v1.4.4 ships (upstream 323797@main, ICU 78.3, mimalloc instead of
+libpas, a nehalem CPU floor instead of haswell — no AVX2 required).
+
+**Re-run `./setup.ps1` after pulling a pin change.** It compares what is on
+disk with `pins.txt` (the prebuilt names itself: `BUN_WEBKIT_VERSION` in
+`include/cmakeconfig.h`) and replaces a stale copy; `redjs/build.rs` refuses to
+build against anything else, so a checkout that skipped it gets a build error
+naming the fix rather than a link of the old engine. `BUN_WEBKIT_DIR` points
+the build at a prebuilt elsewhere; it is held to the same pin.
 
 **Measured js→C# host-call boundary** (2M-call hot loop, arg decode + result
 encode included): **8.9 ns/call NativeAOT**, 11.2 ns/call Release JIT. The
@@ -119,8 +136,8 @@ pass fewer args than arity — bounds-check against argc.
 One context = one VM; use it from one thread at a time. Every ABI call takes
 the VM's recursive API lock; batch a frame's calls under `redjs_lock` /
 `redjs_unlock` to make the inner locks free. Host callbacks already run
-locked. (JSC multi-threading lands with Bun's shared-memory work; the
-lock-per-context model stays correct.)
+locked. There is no shared-memory JS threading to wait for (see the note at
+the top); parallel JS means more contexts, each on its own thread.
 
 ### Microtasks
 
@@ -315,8 +332,29 @@ NativeAOT — in the AOT root csproj (RedPew.Player.csproj):
   <LinkerArg Include="ws2_32.lib" />
   <LinkerArg Include="rpcrt4.lib" />
   <LinkerArg Include="crypt32.lib" />
+  <!-- since d6375c72: JSC registers unwind info for its JIT code (RtlAddGrowableFunctionTable).
+       redjs.lib's glue object also carries /DEFAULTLIB:ntdll.lib, so a csproj without
+       this line still links. -->
+  <LinkerArg Include="ntdll.lib" />
 </ItemGroup>
+
+<!-- No identical-COMDAT folding: ILC adds /OPT:REF /OPT:ICF to every non-Debug link, and
+     JSC tells a constructor from a non-constructor by comparing native function pointers,
+     so folding can turn a real constructor into "not a constructor" (Bun shipped exactly
+     that for BigInt; WebKit links /OPT:NOICF). ILC adds its flags inside the
+     SetupOSSpecificProps target, AFTER static items — a plain LinkerArg would lose. -->
+<Target Name="RedJsNoIcf" AfterTargets="SetupOSSpecificProps" Condition="'$(PublishAot)' == 'true'">
+  <ItemGroup>
+    <LinkerArg Remove="/OPT:ICF" />
+    <LinkerArg Include="/OPT:NOICF" />
+  </ItemGroup>
+</Target>
 ```
+
+mimalloc needs no line here: `build.rs` compiles it into `redjs.lib` itself.
+The library names are unchanged by the m24 bump (`bmalloc.lib` now holds ~7 KB
+of code — libpas is gone — but it is still part of the prebuilt and stays on
+the list).
 
 This exact wiring is proven by `csharp/RedJs.Smoke` (publishes and passes all
 50 checks as a 42 MB standalone exe — JSC statically linked, no dll shipped).

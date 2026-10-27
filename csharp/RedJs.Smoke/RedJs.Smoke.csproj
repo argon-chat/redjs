@@ -40,6 +40,24 @@
     <LinkerArg Include="ws2_32.lib" />
     <LinkerArg Include="rpcrt4.lib" />
     <LinkerArg Include="crypt32.lib" />
+    <!-- RtlAddGrowableFunctionTable: JSC's JIT/LLInt unwind info (prebuilt d6375c72+).
+         redjs.lib's glue object also carries /DEFAULTLIB:ntdll.lib, so an older csproj
+         without this line still links; this keeps the list honest. -->
+    <LinkerArg Include="ntdll.lib" />
   </ItemGroup>
+
+  <!-- No identical-COMDAT folding in the NativeAOT link. ILC's Windows targets add
+       /OPT:REF /OPT:ICF for every non-Debug publish, and JSC tells constructors from
+       non-constructors by comparing native function pointers — folding can make a real
+       constructor report "not a constructor" (Bun shipped that bug for BigInt; WebKit links
+       /OPT:NOICF). ILC adds its flags INSIDE the SetupOSSpecificProps target, after this
+       file's static items, so a plain <LinkerArg Include="/OPT:NOICF"/> would come first and
+       lose; this swaps the item once that target has run. Verified in obj/…/link.rsp. -->
+  <Target Name="RedJsNoIcf" AfterTargets="SetupOSSpecificProps" Condition="'$(PublishAot)' == 'true'">
+    <ItemGroup>
+      <LinkerArg Remove="/OPT:ICF" />
+      <LinkerArg Include="/OPT:NOICF" />
+    </ItemGroup>
+  </Target>
 
 </Project>

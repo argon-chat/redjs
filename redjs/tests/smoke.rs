@@ -47,6 +47,8 @@ fn conformance() {
     gc_and_stats(&ctx);
     sec("host_function_throw");
     host_function_throw(&ctx);
+    sec("engine_surface");
+    engine_surface(&ctx);
     sec("web_scheduler");
     web_scheduler(&ctx);
     sec("webapi_events");
@@ -1394,6 +1396,280 @@ fn gc_and_stats(ctx: &Context) {
     assert!(s1.object_count > 0);
 
     unsafe { ffi::redjs_report_extra_memory(ctx.raw(), 1024 * 1024) };
+}
+
+/// What a prebuilt bump can change underneath every consumer without touching
+/// the ABI — each check here is something a bump has changed, or a hazard a
+/// link setting can introduce (added with the d6375c72 bump, m24):
+///
+/// * ICU data, including the display-name items the bun-webkit ICU stores as
+///   zstd frames (`icu.rs`): a German region name, a French language name, a
+///   Japanese currency name only resolve if the decompress hook is linked.
+/// * `Temporal` — on by default upstream since 2026-07 (316742@main), so its
+///   presence is part of what `typeof` answers in every app.
+/// * Constructor identity, the `/OPT:ICF` canary. JSC decides "is this a
+///   constructor" by comparing native function POINTERS against
+///   `callHostFunctionAsConstructor`; a link that folds identical functions can
+///   make a real constructor (Bun: `BigInt`) report "not a constructor".
+///   build.rs links this binary `/OPT:NOICF`; this is what notices if a link
+///   ever stops doing so.
+/// * Stack walks through host functions: JS-level (`Error.stack` across a
+///   host fn) and NATIVE — `RtlCaptureStackBackTrace` from inside a host fn
+///   must unwind through the JIT/LLInt frames back to this file's frames. That
+///   needs the unwind info the prebuilt registers for its JIT pool, LLInt and
+///   vmEntry (oven-sh/WebKit #315/#442); crash dumps and debuggers depend on it.
+fn engine_surface(ctx: &Context) {
+    // The zstd hook is only kept in a link when something references it
+    // strongly; `redjs_init` is what does (see ffi.rs). Every consumer boots
+    // through it, so this suite does too (idempotent after Context::new).
+    assert_eq!(unsafe { ffi::redjs_init(core::ptr::null()) }, 0);
+
+    let s = |src: &str| -> String {
+        let v = ctx.eval_named(src, "engine/surface.js").unwrap_or_else(|e| match e {
+            Error::Exception(x) => panic!("{src}\n  threw: {:?}", ctx.error_info(x)),
+            e => panic!("{src}: {e:?}"),
+        });
+        ctx.to_rust_string(v).unwrap()
+    };
+
+    // --- ICU (78 in d6375c72) + the zstd display names -------------------
+    let icu = s(r#"JSON.stringify([
+        new Intl.DisplayNames(['de'], { type: 'region' }).of('US'),
+        new Intl.DisplayNames(['fr'], { type: 'language' }).of('de'),
+        new Intl.DisplayNames(['ja'], { type: 'currency' }).of('USD'),
+        (1234567.891).toLocaleString('de-DE'),
+        new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' })
+            .format(new Date(Date.UTC(2020, 0, 15))),
+        new Intl.DateTimeFormat('ru-RU', { timeZone: 'UTC', month: 'long', day: 'numeric' })
+            .format(new Date(Date.UTC(2020, 0, 15))),
+        new Intl.PluralRules('ar').select(3),
+        new Intl.Collator('de').compare('ä', 'z') < 0,
+        [...new Intl.Segmenter('en', { granularity: 'word' }).segment('Hello, world')].filter((x) => x.isWordLike).length,
+        typeof Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ])"#);
+    assert_eq!(
+        icu,
+        r#"["Vereinigte Staaten","allemand","米ドル","1.234.567,891","January 15, 2020","15 января","few",true,2,"string"]"#,
+        "ICU data / zstd display names"
+    );
+
+    // --- Temporal ----------------------------------------------------------
+    assert_eq!(
+        s("typeof Temporal === 'object' ? Temporal.PlainDate.from('2020-01-15').add({ days: 20 }).toString() : typeof Temporal"),
+        "2020-02-04"
+    );
+
+    // --- constructor identity (the ICF canary) -----------------------------
+    // Expected = the spec (and every browser). `isCtor` is IsConstructor():
+    // Reflect.construct throws iff `newTarget` has no [[Construct]], without
+    // ever calling it. BigInt and Symbol ARE constructors per spec — `new`
+    // on them throws, `extends` does not.
+    let ctor = s(r#"(() => {
+        const isCtor = (f) => { try { Reflect.construct(String, [], f); return true; } catch { return false; } };
+        const at = (p) => p.split('.').reduce((o, k) => (o == null ? undefined : o[k]), globalThis);
+        const bad = [];
+        const CTORS = [
+            'Object', 'Function', 'Array', 'Number', 'Boolean', 'String', 'Symbol', 'BigInt', 'Date', 'RegExp',
+            'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError',
+            'URIError', 'ArrayBuffer', 'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array',
+            'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array',
+            'BigUint64Array', 'Map', 'Set', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry', 'Promise',
+            'Proxy', 'Iterator', 'Intl.Collator', 'Intl.DateTimeFormat', 'Intl.NumberFormat', 'Intl.PluralRules',
+            'Intl.RelativeTimeFormat', 'Intl.ListFormat', 'Intl.Locale', 'Intl.DisplayNames', 'Intl.Segmenter',
+            'WebAssembly.Module', 'WebAssembly.Instance', 'WebAssembly.Memory', 'WebAssembly.Table',
+            'WebAssembly.Global', 'WebAssembly.CompileError', 'WebAssembly.LinkError', 'WebAssembly.RuntimeError',
+            'Temporal.Instant', 'Temporal.PlainDate', 'Temporal.PlainTime', 'Temporal.PlainDateTime',
+            'Temporal.ZonedDateTime', 'Temporal.Duration',
+        ];
+        const NOT_CTORS = [
+            'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'encodeURIComponent', 'decodeURI', 'escape', 'eval',
+            'Math.max', 'JSON.parse', 'Reflect.apply', 'Object.keys', 'Array.prototype.map', 'Symbol.for',
+            'Promise.resolve', 'Function.prototype', 'Atomics.add', 'BigInt.asIntN', 'Array.from',
+        ];
+        for (const p of CTORS) if (typeof at(p) !== 'function' || !isCtor(at(p))) bad.push(p + ' should be a constructor');
+        for (const p of NOT_CTORS) if (typeof at(p) !== 'function' || isCtor(at(p))) bad.push(p + ' should not be a constructor');
+        const throwsType = (f) => { try { f(); return false; } catch (e) { return e instanceof TypeError; } };
+        if (BigInt(1) !== 1n) bad.push('BigInt(1) !== 1n');
+        if (!throwsType(() => new BigInt(1))) bad.push('new BigInt(1) did not throw a TypeError');
+        if (typeof Symbol('x') !== 'symbol') bad.push('Symbol() is not a symbol');
+        if (!throwsType(() => new Symbol())) bad.push('new Symbol() did not throw a TypeError');
+        try { class B extends BigInt {} } catch (e) { bad.push('class extends BigInt threw: ' + e); }
+        if (!throwsType(() => Map())) bad.push('Map() without new did not throw');
+        if (!(Intl.DateTimeFormat() instanceof Intl.DateTimeFormat)) bad.push('Intl.DateTimeFormat() is not callable');
+        if (!throwsType(() => new Iterator())) bad.push('new Iterator() did not throw');
+        return bad.length ? bad.join('; ') : 'ok';
+    })()"#);
+    assert_eq!(ctor, "ok", "constructor identity");
+
+    // --- stack traces through a host function --------------------------------
+    // JS → host fn → JS callback → throw: both JS sides are in Error.stack.
+    let f = ctx
+        .function("hostInvoke", 1, |g, cf| unsafe {
+            let args = HostArgs::new(cf);
+            let mut out = 0u64;
+            let rc = redjs::glue::rjs_call(g, args.arg(0).0, Value::undefined().0, core::ptr::null(), 0, &mut out);
+            if rc != 0 {
+                ffi::redjs_throw(g, out);
+                return Value::undefined().0;
+            }
+            out
+        })
+        .unwrap();
+    ctx.global_set("hostInvoke", f).unwrap();
+    let stack = s(r#"(() => {
+        function inner() { throw new Error('deep'); }
+        function outer() { return hostInvoke(function middle() { return inner(); }); }
+        try { outer(); return 'no throw'; } catch (e) { return String(e.stack); }
+    })()"#);
+    for frame in ["inner", "middle", "outer", "engine/surface.js"] {
+        assert!(stack.contains(frame), "{frame} missing from a stack that crossed a host fn:\n{stack}");
+    }
+
+    // Native: walk from inside a host fn back out through JSC to here, once
+    // from interpreted code and once from a hot (JIT-compiled) loop.
+    native_unwind_through_js(ctx, "hostWalk(true)");
+    native_unwind_through_js(ctx, "for (let i = 0; i < 50000; i++) hostWalk(i === 49999)");
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn RtlCaptureContext(context: *mut X64Context);
+    fn RtlLookupFunctionEntry(pc: u64, image_base: *mut u64, history: *mut c_void) -> *mut c_void;
+    fn RtlVirtualUnwind(
+        handler_type: u32,
+        image_base: u64,
+        pc: u64,
+        function_entry: *mut c_void,
+        context: *mut X64Context,
+        handler_data: *mut *mut c_void,
+        establisher_frame: *mut u64,
+        context_pointers: *mut c_void,
+    ) -> *mut c_void;
+}
+
+/// The x64 `CONTEXT` record (1232 bytes, 16-aligned), read by offset: Rsp at
+/// 0x98, Rip at 0xF8.
+#[repr(C, align(16))]
+struct X64Context([u8; 0x4d0]);
+
+impl X64Context {
+    fn get(&self, at: usize) -> u64 {
+        u64::from_le_bytes(self.0[at..at + 8].try_into().unwrap())
+    }
+    fn set(&mut self, at: usize, v: u64) {
+        self.0[at..at + 8].copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// The program counters of this thread's stack, walked the way SEH dispatch
+/// and std's backtraces walk it: `RtlLookupFunctionEntry` (which consults the
+/// DYNAMIC function tables JSC registers for its JIT pool, LLInt and vmEntry)
+/// + `RtlVirtualUnwind`.
+///
+/// Deliberately NOT `RtlCaptureStackBackTrace`: measured on d6375c72, it stops
+/// at the first JIT frame (5 frames from inside a host fn, against 30+ from
+/// this walker), because ntdll's frame-chain walk skips dynamic function
+/// tables. A tool that uses it — some profilers, `_CrtDumpMemoryLeaks`-style
+/// allocation stacks — will not see past JS on any prebuilt.
+#[inline(never)]
+fn capture_stack() -> Vec<usize> {
+    const RSP: usize = 0x98;
+    const RIP: usize = 0xf8;
+    let mut cx = X64Context([0; 0x4d0]);
+    let mut frames = Vec::new();
+    unsafe {
+        RtlCaptureContext(&mut cx);
+        while cx.get(RIP) != 0 && frames.len() < 256 {
+            let pc = cx.get(RIP);
+            frames.push(pc as usize);
+            let mut base = 0u64;
+            let entry = RtlLookupFunctionEntry(pc, &mut base, core::ptr::null_mut());
+            if entry.is_null() {
+                // A leaf: the return address is at [rsp].
+                let rsp = cx.get(RSP);
+                cx.set(RIP, *(rsp as *const u64));
+                cx.set(RSP, rsp + 8);
+            } else {
+                let mut data = core::ptr::null_mut();
+                let mut frame = 0u64;
+                RtlVirtualUnwind(0, base, pc, entry, &mut cx, &mut data, &mut frame, core::ptr::null_mut());
+            }
+        }
+    }
+    frames
+}
+
+/// `outside` = this function's own stack; `inside` = the stack seen from a
+/// host fn that `src` calls. Frames 0 and 1 of `outside` are PCs inside
+/// capture_stack and this function; everything from 2 up (our callers, the
+/// test harness, the thread start) must be the TAIL of `inside` — i.e. the
+/// unwinder got through every JSC frame in between.
+#[inline(never)]
+fn native_unwind_through_js(ctx: &Context, src: &str) {
+    thread_local! {
+        static INSIDE: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let f = ctx
+        .function("hostWalk", 1, |_g, cf| {
+            let args = unsafe { HostArgs::new(cf) };
+            if args.arg(0).as_bool() == Some(true) {
+                let frames = capture_stack();
+                INSIDE.with(|i| *i.borrow_mut() = frames);
+            }
+            Value::undefined().0
+        })
+        .unwrap();
+    ctx.global_set("hostWalk", f).unwrap();
+    INSIDE.with(|i| i.borrow_mut().clear());
+    let outside = capture_stack();
+    ctx.eval_named(src, "engine/unwind.js").unwrap();
+    let inside = INSIDE.with(|i| i.borrow().clone());
+    assert!(outside.len() >= 4, "the reference walk itself is too short: {outside:x?}");
+    let tail = &outside[2..];
+    assert!(
+        inside.len() > tail.len() && inside.ends_with(tail),
+        "a native stack walk from a host fn did not get back through JSC ({src}):\n  inside  {} frames\n  outside {} frames, expected as its tail",
+        inside.len(),
+        outside.len(),
+    );
+}
+
+/// A child of `small_structure_heap_boots`; a no-op unless that test spawned
+/// this binary to run it.
+#[test]
+fn child_small_structure_heap() {
+    if std::env::var_os("REDJS_SMOKE_CHILD").is_none() {
+        return;
+    }
+    let ctx = Context::new();
+    let v = ctx
+        .eval("const a = []; for (let i = 0; i < 20000; i++) a.push({ ['k' + (i % 997)]: i, n: i }); a.length")
+        .unwrap();
+    assert_eq!(v.as_number(), Some(20000.0));
+    println!("child: small structure heap ok");
+}
+
+/// The mimalloc define that is not optional: with the structure heap's
+/// reservation at 256 MiB (`JSC_structureHeapSizeInKB`, read by
+/// `JSC::initialize`), mimalloc built without `MI_FREE_USE_PAGEMAP` refuses
+/// JSC's arena (`mi_manage_os_memory_ex`) and the process aborts at startup.
+/// Bun hit it under `ulimit -v`; build.rs has the define, this keeps it there.
+/// Out of process, because the reservation is per process.
+#[test]
+fn small_structure_heap_boots() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "child_small_structure_heap", "--nocapture", "--test-threads=1"])
+        .env("REDJS_SMOKE_CHILD", "1")
+        .env("JSC_structureHeapSizeInKB", "262144")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("child: small structure heap ok"),
+        "a JSC with a 256 MiB structure heap did not boot: {:?}\n{stdout}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr),
+    );
 }
 
 fn host_function_throw(ctx: &Context) {
