@@ -192,6 +192,15 @@ internal static unsafe class Program
         var caught = _ctx.Eval("(() => { try { hostThrow(); return 'bad'; } catch (e) { return e instanceof TypeError ? e.message : 'wrong'; } })()");
         Check(_ctx.GetString(caught) == "host says no", "C# throw -> JS catch");
         Check(_ctx.Eval("1+1").AsInt32 == 2, "VM clean after host throw");
+
+        // The /OPT:ICF canary (RedJsNoIcf in the csproj). JSC decides IsConstructor by comparing
+        // native function pointers; a link that folds identical functions turns BigInt and Symbol
+        // into non-constructors (measured in vue-native's release exe, m24). Spec and browsers:
+        // both ARE constructors — `new` on them throws, `extends` does not.
+        var notFolded = _ctx.Eval(
+            "(() => { const c = (f) => { try { Reflect.construct(String, [], f); return true; } catch { return false; } };" +
+            " try { class B extends BigInt {} } catch { return false; } return c(BigInt) && c(Symbol) && !c(parseInt); })()");
+        Check(notFolded.AsBoolean, "BigInt/Symbol are constructors (no identical-code folding in this link)");
     }
 
     private static void TypedArrays()

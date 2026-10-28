@@ -41,7 +41,7 @@ packages/jscore/
 │  │  ├─ JsCallFrame.cs       #   zero-FFI host-call args (ref struct over the frame)
 │  │  ├─ JsContext.cs         #   the ClearScript-replacement surface
 │  │  └─ NativeLibraryResolver.cs
-│  └─ RedJs.Smoke/            # ★ C# conformance smoke (50 checks) — JIT and AOT
+│  └─ RedJs.Smoke/            # ★ C# conformance smoke (63 checks) — JIT and AOT
 ├─ runtimes/win-x64/native/redjs.dll   # built: self-contained, for JIT/debug DllImport
 └─ lib/win-x64/redjs.lib               # built: THIN static lib for NativeAOT
 ```
@@ -72,7 +72,9 @@ naming the fix rather than a link of the old engine. `BUN_WEBKIT_DIR` points
 the build at a prebuilt elsewhere; it is held to the same pin.
 
 **Measured js→C# host-call boundary** (2M-call hot loop, arg decode + result
-encode included): **8.9 ns/call NativeAOT**, 11.2 ns/call Release JIT. The
+encode included): **8.9 ns/call NativeAOT**, 11.2 ns/call Release JIT
+(re-run on d6375c72, m24: 7.0 ns/call NativeAOT, 7.2 and 11.4 ns/call JIT in
+two runs — read it as "no regression", not as a speed-up). The
 ~7 ns over the raw Rust trampoline (2.2 ns) is .NET's reverse-P/Invoke
 transition — already at parity with V8's raw C++ boundary, versus the ~µs-class
 ClearScript marshaling this replaces.
@@ -357,7 +359,8 @@ of code — libpas is gone — but it is still part of the prebuilt and stays on
 the list).
 
 This exact wiring is proven by `csharp/RedJs.Smoke` (publishes and passes all
-50 checks as a 42 MB standalone exe — JSC statically linked, no dll shipped).
+63 checks as a 55 MB standalone exe on d6375c72 — JSC statically linked, no dll
+shipped; it was 50 checks and 42 MB on the libpas engine).
 WebKit libs are `/MT`; NativeAOT's link accepts the mix (both smoke paths run).
 
 ## C# codegen plan (next step)
@@ -380,26 +383,49 @@ Same pipeline as miniaudio (`csharp/codegen` with csbindgen), but richer:
 
 - **`redjs_context_release` fastfail-crashes** in this prebuilt's VM teardown
   (inherited from the fork; Bun never tears down its main VM either). Create
-  the context once and keep it for the process lifetime.
+  the context once and keep it for the process lifetime. Re-tested on
+  d6375c72 (m24): unchanged — `0xC0000409` on the first release, even for a
+  bare context with nothing installed.
 - **Float16Array/DataView** can be introspected (`typedarray_info`) but not
   created through the C API enum.
 - **No module loader / dynamic `import()`** (classic scripts only) and **no
   remote inspector** yet — both need a custom `JSGlobalObject`/method-table
   layer (v2).
-- **Memory (tuned, verdict: a non-problem)**: the ~162 MB private per VM is
-  **address-space RESERVATION** (JIT fixed-VM pool + gigacage + bmalloc
-  arenas), fixed at context creation and **unmoved by every runtime option**
-  (`forceMiniVMMode`, `jitMemoryReservationSize`, `useGigacage`, `forceRAMSize`,
-  JIT-tier toggles — all measured via a staged WS/private probe). Only
-  `useJIT=false` lowers it, which defeats the purpose. **Working set (real
-  RAM) is the honest number: ~12 MB at boot, ~22–24 MB after a GC even
-  post-heavy-workload.** bmalloc's scavenger returns free pages to the OS on
-  its own after ~4 s idle (48 → 22 MB WS observed); `redjs_release_memory`
-  (C# `JsContext.ReleaseMemory` — 2 full GCs + scavenge) forces it immediately
-  for loading screens / window-minimize (the player calls it on blur).
+- **Memory — re-measured on d6375c72 (mimalloc), m24.** One VM, `redjs_init`
+  + context + `redjs_web_install`, `K32GetProcessMemoryInfo`:
+
+  | stage | working set | private |
+  |---|---:|---:|
+  | boot | **15.4 MB** | **35.5 MB** |
+  | 20 × 20k objects/strings/closures + a Map live | 124.0 MB | 162.4 MB |
+  | garbage dropped, full sync GC (`redjs_gc(0)`) | 124.2 MB | 163.4 MB |
+  | `redjs_release_memory` | **48.4 MB** | 79.4 MB |
+  | a second workload, then 8 s idle, no call | 49.7 MB (flat from +1 s) | 87.8 MB |
+
+  **What changed with the allocator:** a GC frees objects but the pages stay
+  resident, and **nothing returns them on its own while the thread is idle** —
+  bmalloc's scavenger thread used to (48 → 22 MB after ~4 s); mimalloc gives
+  pages back on allocator activity or when asked. So `redjs_release_memory`
+  (C# `JsContext.ReleaseMemory` — 2 full GCs + scavenge; the scavenge now
+  reaches mimalloc through bmalloc's shim, `mi_collect`) is no longer an
+  accelerator but **the** way to shed a workload's peak: call it on loading
+  screens, blur and minimize (the player already does on blur). JSC's own
+  helper threads call `mi_on_thread_idle` when they park; the thread that runs
+  JS is the embedder's, and nothing calls it there yet — wiring it into the
+  pump's idle path is a follow-up, not done.
+
+  The pre-m24 note, measured on the libpas engine (c9ad5813/2a51deeb) with a
+  different staged probe, for the record: ~162 MB private per VM, explained as
+  address-space reservation (JIT pool + gigacage + bmalloc arenas) and unmoved
+  by every runtime option; ~12 MB WS at boot, ~22–24 MB after a GC. The old
+  engine was not re-run with the probe above, so the two sets are not a
+  like-for-like comparison.
 - The internal-header dependency means **prebuilt bumps are a real upgrade
-  task**: re-run `build.ps1 -Test`; the layout export + conformance suite are
-  the tripwires. This is the same commitment Bun makes — it's the price of
+  task**: edit `pins.txt`, run `setup.ps1`, re-run `build.ps1 -Test`; the
+  layout export + conformance suite are the tripwires (its `engine_surface`
+  section and `small_structure_heap_boots` test cover what the m24 bump
+  changed: ICU + the zstd display names, Temporal, constructor identity under
+  the link flags, native unwinding through JIT frames, mimalloc's pagemap). This is the same commitment Bun makes — it's the price of
   the 2 ns boundary.
 - battle_test keeps its own copy of the prebuilt (its bench predates this
   package); the canonical location is now `packages/jscore/prebuilt`.

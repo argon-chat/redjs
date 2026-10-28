@@ -120,6 +120,13 @@ fn main() {
             panic!("no .cpp sources under {} — vendored yoga is missing", yoga_dir.display());
         }
         yoga.files(&yoga_sources).compile("redjs_yoga");
+        // Directory form: cargo walks it recursively, so headers and any future
+        // .cpp under cpp/yoga/ are covered without listing them. ONLY with the
+        // feature on: a rerun-if-changed path that does not exist is "always
+        // stale" to cargo, and in a checkout without the vendored yoga
+        // (vue-native) that re-ran this script — and recompiled redjs and every
+        // crate above it — on every single build.
+        println!("cargo:rerun-if-changed=cpp/yoga");
     }
 
     // --- mimalloc (JSC's allocator; the embedder provides it) --------------
@@ -202,9 +209,6 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cpp/glue.cpp");
     println!("cargo:rerun-if-changed=cpp/compat/wtf/PlatformEnableWin.h");
-    // Directory form: cargo walks it recursively, so headers and any future
-    // .cpp under cpp/yoga/ are covered without listing them.
-    println!("cargo:rerun-if-changed=cpp/yoga");
     // setup.ps1 rewrites the stamp only after a verified fetch, so it stands
     // for the whole mimalloc tree.
     println!("cargo:rerun-if-changed={}", mimalloc.join(".redjs-pin").display());
