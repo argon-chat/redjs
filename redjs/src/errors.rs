@@ -9,8 +9,8 @@
 //! left to catch it. The kind is not on the ABI yet — the host handler still
 //! takes two arguments — but every reporter already carries one, so the
 //! `redjs_set_error_handler(ctx, exc, kind)` collapse sketched in
-//! `.refactor/DESKTOP-DEVTOOLS-DESIGN.md` §6.5 is a signature change here plus
-//! routing the listener guard in, not a redesign.
+//! `.refactor/DESKTOP-DEVTOOLS-DESIGN.md` §6.5 is a signature change here, not
+//! a redesign. Listener throws are routed in (`webapi::events`).
 //!
 //! **Unhandled promise rejections.** JSC has always had the hook — this build
 //! exports `JSGlobalContextSetUnhandledRejectionCallback` (public C API,
@@ -42,9 +42,11 @@ use crate::glue;
 pub enum ErrKind {
     /// Thrown by a callback the host pumped (timer, rAF, idle).
     PumpCallback = 1,
-    /// Thrown by an `EventTarget` listener (the dispatch guard swallows it so
-    /// one bad handler can't abort a dispatch). Not routed here yet — that is
-    /// in `webapi/events.rs`.
+    /// Thrown by an `EventTarget` listener or `on*` handler. Dispatch catches
+    /// it so one bad listener cannot abort the rest (DOM "inner invoke":
+    /// report the exception, keep going), reports it here — HTML's "report
+    /// the exception" — and tells its caller a listener threw
+    /// (`webapi::events::DispatchOutcome::listener_threw`).
     Listener = 2,
     /// A promise rejected with nothing attached to observe it.
     UnhandledRejection = 3,

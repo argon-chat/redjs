@@ -207,7 +207,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let s_iter_target = atom_priv(g, "redjs#iterTarget");
     let a_type = atom(g, "type");
     let a_cb = atom(g, "callback");
-    let a_once = atom(g, "once");
+    let a_flags = atom(g, "flags");
     let a_handle_event = atom(g, "handleEvent");
 
     // JSON.parse for Response.json.
@@ -235,7 +235,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         s_iter_target,
         a_type,
         a_cb,
-        a_once,
+        a_flags,
         a_handle_event,
         event: Class { ctor: UNDEF, proto: UNDEF },
         custom_event: Class { ctor: UNDEF, proto: UNDEF },

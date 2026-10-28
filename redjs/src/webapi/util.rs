@@ -525,7 +525,7 @@ pub struct WebState {
     // Common public atoms (hot in dispatch).
     pub a_type: *mut c_void,
     pub a_cb: *mut c_void,
-    pub a_once: *mut c_void,
+    pub a_flags: *mut c_void, // listener entry: once/capture/passive/removed bits
     pub a_handle_event: *mut c_void,
 
     // Protected classes.

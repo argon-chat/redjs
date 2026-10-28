@@ -7,7 +7,7 @@
 //! - [`capi`]: raw externs into JSC's stable C API (the subset we use).
 //! - [`trampoline`]: the SysV→MS host-function trampoline pool (C# entry).
 //! - [`errors`]: the one funnel for exceptions no JS code will ever see —
-//!   pumped-callback throws and unhandled promise rejections.
+//!   pumped-callback throws, listener throws and unhandled promise rejections.
 //! - [`context`]: a monotonic, never-reused id per context, and the one list
 //!   of per-context registries cleared when an address stops meaning its
 //!   context.

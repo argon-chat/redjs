@@ -52,8 +52,8 @@ unsafe fn new_signal(g: *mut c_void, aborted: bool, reason: u64) -> u64 {
     sig
 }
 
-/// Flips a signal to aborted and fires the `abort` event. No-op if already
-/// aborted (spec).
+/// Flips a signal to aborted, runs its abort algorithms, then fires the
+/// `abort` event. No-op if already aborted (spec).
 pub unsafe fn abort_signal(g: *mut c_void, sig: u64, reason: u64) {
     let slots = slots_of(g, sig);
     if !is_cell(slots) || get(g, slots, "aborted") == 0x7 {
@@ -62,8 +62,54 @@ pub unsafe fn abort_signal(g: *mut c_void, sig: u64, reason: u64) {
     let reason = if reason == UNDEF { default_reason(g, "AbortError", "signal is aborted without reason") } else { reason };
     define(g, slots, "aborted", enc_bool(true), 0);
     define(g, slots, "reason", reason, 0);
+    // DOM "signal abort" step: the abort algorithms run BEFORE `abort` fires,
+    // and the list is emptied. Today's only algorithm: remove an event
+    // listener that was added with `{ signal }`.
+    let removals = get(g, slots, "removals");
+    if is_cell(removals) {
+        define(g, slots, "removals", UNDEF, 0);
+        let n = array_len(g, removals);
+        let mut i = 0;
+        while i + 1 < n {
+            events::remove_entry(g, get_i(g, removals, i), get_i(g, removals, i + 1));
+            i += 2;
+        }
+    }
     let ev = events::new_trusted_event(g, "abort");
     events::dispatch(g, sig, ev);
+}
+
+/// Is `v` an AbortSignal (not merely an object inheriting its prototype)?
+pub unsafe fn is_signal(g: *mut c_void, v: u64) -> bool {
+    if !is_cell(v) || registry().lock().unwrap().get(&(g as usize)).is_none() {
+        return false;
+    }
+    let slots = slots_of(g, v);
+    // Controllers carry the same slot, holding { signal } instead.
+    is_cell(slots) && get(g, slots, "aborted") != UNDEF
+}
+
+pub unsafe fn is_aborted(g: *mut c_void, sig: u64) -> bool {
+    let slots = slots_of(g, sig);
+    is_cell(slots) && get(g, slots, "aborted") == 0x7
+}
+
+/// Adds "remove `entry` from `target`'s listeners" to `sig`'s abort algorithms
+/// (DOM "add an event listener" step 6). Held as `[target, entry]` pairs in
+/// the signal's own slot bag, so they live exactly as long as the signal.
+pub unsafe fn on_abort_remove_listener(g: *mut c_void, sig: u64, target: u64, entry: u64) {
+    let slots = slots_of(g, sig);
+    if !is_cell(slots) {
+        return;
+    }
+    let mut removals = get(g, slots, "removals");
+    if !is_cell(removals) {
+        removals = new_array(g);
+        define(g, slots, "removals", removals, 0);
+    }
+    let n = array_len(g, removals);
+    set_i(g, removals, n, target);
+    set_i(g, removals, n + 1, entry);
 }
 
 /// Spec: "a new `AbortError` / `TimeoutError` DOMException".

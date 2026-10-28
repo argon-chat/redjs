@@ -507,7 +507,7 @@ fn bridge_class() -> capi::JSClassRef {
 
 /// The `abort` listener. A listener OBJECT rather than a function, because a
 /// native function value cannot carry the `Arc<Cancel>`; DOM listeners may be
-/// objects with `handleEvent` (and `events::invoke_listener` honours that).
+/// objects with `handleEvent` (and `events::call_listener` honours that).
 unsafe extern "sysv64" fn bridge_handle_event(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(d) = host_data::<BridgeData>(g, bridge_class(), cf_this(cf)) {
         d.cancel.abort();

@@ -250,7 +250,8 @@ pub unsafe fn set_visibility(g: *mut c_void, hidden: bool) {
 pub unsafe fn dom_content_loaded(g: *mut c_void) {
     let st = state(g);
     define(g, st.document, "readyState", js_string(g, "interactive"), 0);
-    let ev = events::new_trusted_event(g, "DOMContentLoaded");
+    // HTML fires DOMContentLoaded with bubbles: true, so it reaches window.
+    let ev = events::new_trusted_event_with(g, "DOMContentLoaded", true, false);
     events::dispatch(g, st.document, ev);
     define(g, st.document, "readyState", js_string(g, "complete"), 0);
     let ev = events::new_trusted_event(g, "load");
