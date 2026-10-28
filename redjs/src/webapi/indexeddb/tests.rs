@@ -222,7 +222,7 @@ fn file_values_snapshot_into_the_store() {
     let r = run(
         &c,
         "const open = indexedDB.open('t-file', 1);
-         open.onupgradeneeded = () => { open.result.createObjectStore('s', { keyPath: 'f.name' }).createIndex('lm', 'f.lastModified'); };
+         open.onupgradeneeded = () => { { const s = open.result.createObjectStore('s', { keyPath: 'f.name' }); s.createIndex('lm', 'f.lastModified'); s.createIndex('lmd', 'f.lastModifiedDate'); } };
          const db = await req(open);
          let tx = db.transaction('s', 'readwrite');
          tx.objectStore('s').put({ f: picked });
@@ -242,10 +242,12 @@ fn file_values_snapshot_into_the_store() {
          tx = db.transaction('s');
          const v = await req(tx.objectStore('s').get('idb.txt'));
          const byLm = await req(tx.objectStore('s').index('lm').count(picked.lastModified));
+         // Chromium's extra identifier: a Date key.
+         const byLmd = await req(tx.objectStore('s').index('lmd').count(new Date(picked.lastModified)));
          db.close();
-         return [threw, v.f instanceof File, v.f.name, v.f.type, await v.f.text(), byLm].join();",
+         return [threw, v.f instanceof File, v.f.name, v.f.type, await v.f.text(), byLm, byLmd].join();",
     );
-    assert_eq!(r, "NotReadableError,true,idb.txt,text/plain,picked bytes,1");
+    assert_eq!(r, "NotReadableError,true,idb.txt,text/plain,picked bytes,1,1");
 }
 
 #[test]

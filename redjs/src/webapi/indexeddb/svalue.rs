@@ -448,6 +448,8 @@ impl<'a> Parsed<'a> {
 pub enum Val {
     Node(usize),
     Num(f64),
+    /// A File's `lastModifiedDate`: a Date made by the getter, never stored.
+    Date(f64),
     Str(Vec<u16>),
     List(Vec<Val>),
 }
@@ -458,6 +460,11 @@ const TYPE: &[u16] = &[0x74, 0x79, 0x70, 0x65];
 /// A File's own special identifiers (IndexedDB §7.5): `name`, `lastModified`.
 const NAME: &[u16] = &[0x6e, 0x61, 0x6d, 0x65];
 const LAST_MODIFIED: &[u16] = &[0x6c, 0x61, 0x73, 0x74, 0x4d, 0x6f, 0x64, 0x69, 0x66, 0x69, 0x65, 0x64];
+/// `lastModifiedDate`: not in the IndexedDB spec, but Chromium's key-path
+/// evaluator answers it (a Date key), as its File has the attribute.
+const LAST_MODIFIED_DATE: &[u16] = &[
+    0x6c, 0x61, 0x73, 0x74, 0x4d, 0x6f, 0x64, 0x69, 0x66, 0x69, 0x65, 0x64, 0x44, 0x61, 0x74, 0x65,
+];
 
 impl Parsed<'_> {
     /// `None` = failure.
@@ -482,7 +489,7 @@ impl Parsed<'_> {
         for ident in path.split(|&c| c == b'.' as u16) {
             v = match v {
                 Val::Str(s) if ident == LENGTH => Val::Num(s.len() as f64),
-                Val::Num(_) | Val::Str(_) | Val::List(_) => return None,
+                Val::Num(_) | Val::Date(_) | Val::Str(_) | Val::List(_) => return None,
                 Val::Node(i) => {
                     let i = self.resolve(i);
                     match &self.nodes[i] {
@@ -493,6 +500,7 @@ impl Parsed<'_> {
                         Node::Blob { mime, .. } if ident == TYPE => Val::Str(mime.clone()),
                         Node::Blob { file: Some((name, _)), .. } if ident == NAME => Val::Str(name.clone()),
                         Node::Blob { file: Some((_, lm)), .. } if ident == LAST_MODIFIED => Val::Num(*lm),
+                        Node::Blob { file: Some((_, lm)), .. } if ident == LAST_MODIFIED_DATE => Val::Date(*lm),
                         Node::Obj { props, .. } | Node::Arr { props, .. } | Node::Error { props } => {
                             let c = self.own(props, ident)?;
                             if matches!(self.nodes[self.resolve(c)], Node::Undefined) {
@@ -520,6 +528,7 @@ impl Parsed<'_> {
         }
         match v {
             Val::Num(d) => (!d.is_nan()).then_some(Key::Number(*d)),
+            Val::Date(d) => (!d.is_nan()).then_some(Key::Date(*d)),
             Val::Str(s) => Some(Key::String(s.clone())),
             Val::List(items) => {
                 let mut keys = Vec::with_capacity(items.len());
@@ -866,6 +875,7 @@ mod tests {
         let kp = |s: &str| KeyPath::String(u(s));
         assert_eq!(p.extract(&kp("f.name")), Ok(Some(Key::String(u("n.txt")))));
         assert_eq!(p.extract(&kp("f.lastModified")), Ok(Some(Key::Number(7.0))));
+        assert_eq!(p.extract(&kp("f.lastModifiedDate")), Ok(Some(Key::Date(7.0))), "Chromium's extra identifier");
         assert_eq!(p.extract(&kp("f.size")), Ok(Some(Key::Number(2.0))));
         assert_eq!(p.extract(&kp("f.type")), Ok(Some(Key::String(u("t/x")))));
         // The FileList's child was consumed as ONE value: what follows is read.

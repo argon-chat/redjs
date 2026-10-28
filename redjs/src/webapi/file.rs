@@ -49,6 +49,8 @@ struct FileClasses {
     s_items: *mut c_void,
     /// `Object.defineProperty` as installed (the index properties).
     define_property: u64,
+    /// `Date` as installed (`lastModifiedDate`).
+    date: u64,
 }
 
 unsafe impl Send for FileClasses {}
@@ -155,6 +157,27 @@ unsafe extern "sysv64" fn get_last_modified(g: *mut c_void, cf: *mut c_void) -> 
     match file_data(g, cf_this(cf)) {
         Some((_, m)) => enc_f64(m.last_modified),
         None => throw_type_error(g, "File.prototype.lastModified called on a non-File"),
+    }
+}
+
+/// `lastModifiedDate`: not in the File API any more, but Chromium and Safari
+/// still ship it, and older upload libraries read it. A new Date each time, as
+/// in Chromium (`file.lastModifiedDate !== file.lastModifiedDate`).
+unsafe extern "sysv64" fn get_last_modified_date(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some((_, m)) = file_data(g, cf_this(cf)) else {
+        return throw_type_error(g, "File.prototype.lastModifiedDate called on a non-File");
+    };
+    let lm = m.last_modified;
+    let Some(c) = classes(g) else { return UNDEF };
+    let arg = [enc_f64(lm)];
+    let mut out = UNDEF;
+    match glue::rjs_construct(g, c.date, arg.as_ptr(), 1, &mut out) {
+        0 => out,
+        1 => {
+            glue::rjs_throw(g, out);
+            UNDEF
+        }
+        _ => throw_type_error(g, "File.prototype.lastModifiedDate: Date is not a constructor"),
     }
 }
 
@@ -344,7 +367,12 @@ pub unsafe fn install(g: *mut c_void) {
         construct: Some(file_construct),
         parent_proto: st.blob.proto,
         methods: &[],
-        getters: &[("name", get_name), ("lastModified", get_last_modified), ("webkitRelativePath", get_relative_path)],
+        getters: &[
+            ("name", get_name),
+            ("lastModified", get_last_modified),
+            ("lastModifiedDate", get_last_modified_date),
+            ("webkitRelativePath", get_relative_path),
+        ],
         accessors: &[],
     });
     // `Object.getPrototypeOf(File) === Blob`, as for every derived interface.
@@ -386,8 +414,11 @@ pub unsafe fn install(g: *mut c_void) {
 
     let define_property = get(g, get(g, global, "Object"), "defineProperty");
     crate::ffi::redjs_protect(g, define_property);
+    let date = get(g, global, "Date");
+    crate::ffi::redjs_protect(g, date);
     let s_items = atom_priv(g, "redjs#filelist");
-    let boxed: &'static FileClasses = Box::leak(Box::new(FileClasses { file, file_cls, list, list_cls, s_items, define_property }));
+    let boxed: &'static FileClasses =
+        Box::leak(Box::new(FileClasses { file, file_cls, list, list_cls, s_items, define_property, date }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 
@@ -556,6 +587,23 @@ mod jsc_tests {
         );
         ok(&c, "(() => { globalThis.rej = null; f.arrayBuffer().catch(e => { rej = e; }); return true; })()");
         assert_eq!(run(&c, "await new Promise(r => setTimeout(r, 5)); return rej instanceof DOMException && rej.code === 0;"), "true");
+    }
+
+    /// Chromium's and Safari's `lastModifiedDate` (m25 review, finding 10).
+    #[test]
+    fn last_modified_date_is_a_new_date_each_time() {
+        let c = ctx();
+        ok(&c, "(() => { const f = new File([], 'x', { lastModified: 1234 }); const d = f.lastModifiedDate; \
+                 return d instanceof Date && d.getTime() === 1234 && d !== f.lastModifiedDate; })()");
+        // Shaped like its sibling attributes.
+        ok(&c, "(() => { const d = Object.getOwnPropertyDescriptor(File.prototype, 'lastModifiedDate'); \
+                 const s = Object.getOwnPropertyDescriptor(File.prototype, 'lastModified'); \
+                 return typeof d.get === 'function' && d.set === undefined && d.enumerable === s.enumerable \
+                   && d.configurable === s.configurable; })()");
+        // A page that replaces Date later still gets a real Date.
+        ok(&c, "(() => { const D = Date; globalThis.Date = function () {}; try { return new File([], 'x').lastModifiedDate instanceof D; } \
+                 finally { globalThis.Date = D; } })()");
+        assert!(throws(&c, "Object.getOwnPropertyDescriptor(File.prototype, 'lastModifiedDate').get.call(new Blob([]))").contains("non-File"));
     }
 
     /// Pumps the way a window's frame does (one pump, then the rest of the
