@@ -1059,9 +1059,9 @@ unsafe extern "sysv64" fn item_get_as_string(g: *mut c_void, cf: *mut c_void) ->
     crate::ffi::redjs_protect(g, cb);
     let task = AsString { callback: cb, data };
     let id = crate::context::id_of(g);
-    crate::web::schedule_native(
+    // A task of its own, delivered within the pump's budget (blob's inbox).
+    super::blob::queue_task(
         g,
-        0.0,
         Box::new(move |g| unsafe {
             let task = task;
             if crate::context::id_of(g) != id {

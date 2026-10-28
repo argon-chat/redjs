@@ -558,6 +558,69 @@ mod jsc_tests {
         assert_eq!(run(&c, "await new Promise(r => setTimeout(r, 5)); return rej instanceof DOMException && rej.code === 0;"), "true");
     }
 
+    /// Pumps the way a window's frame does (one pump, then the rest of the
+    /// frame, here 1 ms) until `globalThis.__done`; how many pumps it took.
+    fn pumps_until_done(c: &crate::api::Context) -> u32 {
+        let mut pumps = 0u32;
+        loop {
+            unsafe {
+                crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+            }
+            pumps += 1;
+            if s(c, "String(globalThis.__done)") == "true" || pumps >= 5000 {
+                return pumps;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// An awaited chain of path-backed reads is delivered inside one pump's
+    /// budget, the way IndexedDB's results are, instead of one hop per pump
+    /// (= per frame in vue-native). m25 review, finding 3.
+    #[test]
+    fn awaited_path_backed_reads_do_not_cost_a_pump_each() {
+        let c = file_ctx();
+        let t = TempFile::new("chain.bin", &[7u8; 4096]);
+        t.expose(&c, "picked");
+        // 200 awaited slice reads: the chunked-read idiom A-F2 recommends.
+        s(&c, "globalThis.__done = false; (async () => { let n = 0; \
+                 for (let i = 0; i < 200; i++) n += (await picked.slice(i, i + 8).arrayBuffer()).byteLength; \
+                 globalThis.__n = n; globalThis.__done = true; })(); 0");
+        let slices = pumps_until_done(&c);
+        // 100 Files, one awaited text() each: `for (const f of files) await f.text()`.
+        unsafe {
+            let g = c.raw();
+            let arr = crate::webapi::util::new_array(g);
+            for i in 0..100u32 {
+                let f = super::file_from_path(g, &t.0, "").unwrap();
+                crate::webapi::util::set_i(g, arr, i, f);
+            }
+            crate::webapi::util::define(g, crate::glue::rjs_global(g), "files", arr, 0);
+        }
+        s(&c, "globalThis.__done = false; (async () => { let n = 0; \
+                 for (const f of files) n += (await f.text()).length; \
+                 globalThis.__n = n; globalThis.__done = true; })(); 0");
+        let texts = pumps_until_done(&c);
+        // 50 awaited fetch()es of a path-backed blob: URL.
+        s(&c, "globalThis.__done = false; (async () => { const u = URL.createObjectURL(picked); let n = 0; \
+                 for (let i = 0; i < 50; i++) n += (await (await fetch(u)).arrayBuffer()).byteLength; \
+                 globalThis.__n = n; globalThis.__done = true; })(); 0");
+        let fetches = pumps_until_done(&c);
+        // getAsString's callback is a queued task too, delivered the same way.
+        s(&c, "globalThis.__done = false; (async () => { const dt = new DataTransfer(); dt.items.add('ab', 'text/plain'); \
+                 const it = dt.items[0]; let n = 0; \
+                 for (let i = 0; i < 50; i++) n += (await new Promise(r => it.getAsString(r))).length; \
+                 globalThis.__m = n; globalThis.__done = true; })(); 0");
+        let strings = pumps_until_done(&c);
+        eprintln!(
+            "awaited path-backed reads: 200 slices -> {slices} pumps, 100 files -> {texts} pumps, \
+             50 blob: fetches -> {fetches} pumps; 50 getAsString -> {strings} pumps"
+        );
+        assert_eq!(s(&c, "String(__n)"), "204800");
+        assert_eq!(s(&c, "String(__m)"), "100");
+        assert!(slices <= 50 && texts <= 25 && fetches <= 13 && strings <= 13, "{slices} / {texts} / {fetches} / {strings} pumps");
+    }
+
     #[test]
     fn reads_beyond_the_cap_queue_rather_than_fail() {
         let c = file_ctx();

@@ -33,6 +33,7 @@
 use core::ffi::c_void;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -305,29 +306,201 @@ impl Ctx {
 /// What a read thread hands back to the JS thread.
 pub type ReadDone = Box<dyn FnOnce(*mut c_void, Result<Vec<u8>, ReadError>) + Send>;
 
-/// Reads `range` off the JS thread and runs `done` ON it, from the pump
-/// (`web::schedule_native`, the hand-off fetch and image decoding use).
+/// Reads `range` off the JS thread and runs `done` ON it, from the pump,
+/// through the context's [inbox](Inbox): inside the pump's delivery budget,
+/// so an awaited chain of reads does not wait a pump (a frame) per read.
 ///
 /// A read can outlive its context, and the address can be handed to a new
 /// one in the meantime; `done` carries values protected in the OLD heap, so
-/// it is dropped unrun unless the context at that address is still the one
-/// that asked ([`crate::context::ContextId`]).
+/// it is dropped unrun, and its bytes freed, once that context is gone.
 pub(crate) fn read_async(g: *mut c_void, range: Range, done: ReadDone) {
     let ctx = Ctx(g);
-    let id = crate::context::id_of(g);
+    let inbox = inbox(g);
+    if let Some(i) = &inbox {
+        i.expect();
+    }
     submit(Box::new(move || {
         // A read that panics is a failed read, and its caller still hears so.
         let r = std::panic::catch_unwind(|| range.read()).unwrap_or(Err(ReadError::NotReadable));
-        crate::web::schedule_native(
-            ctx.ptr(),
-            0.0,
-            Box::new(move |g| {
-                if crate::context::id_of(g) == id {
-                    done(g, r);
-                }
-            }),
-        );
+        match inbox {
+            Some(i) => i.push(Box::new(move |g| done(g, r))),
+            // A context that was never registered has no id to guard with:
+            // the plain native queue, and only while it is still unregistered.
+            None => crate::web::schedule_native(
+                ctx.ptr(),
+                0.0,
+                Box::new(move |g| {
+                    if crate::context::id_of(g).is_none() {
+                        done(g, r);
+                    }
+                }),
+            ),
+        }
     }));
+}
+
+/// Runs `task` on the JS thread as a task of its own (never synchronously),
+/// through the same inbox: in this pump's delivery phase if that has not run
+/// yet, else in the next pump's. `getAsString`'s callback and an `<img>`
+/// load of in-memory bytes go this way.
+pub(crate) fn queue_task(g: *mut c_void, task: Task) {
+    match inbox(g) {
+        Some(i) => {
+            i.expect();
+            i.push(task);
+        }
+        None => crate::web::schedule_native(g, 0.0, task),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Delivery: back on the JS thread, inside the pump's budget
+// ---------------------------------------------------------------------------
+//
+// A read's result goes into its context's inbox, and the read thread wakes
+// the context (`web::wake`). The inbox is a PUMP SOURCE (`web::PumpSource`),
+// the seam IndexedDB delivers through. While a read is outstanding the pump
+// keeps delivering, and waits on the waker, within its one bounded budget.
+// Measured by `awaited_path_backed_reads_do_not_cost_a_pump_each`: 200
+// awaited slice reads took 201 pumps through `web::schedule_native`, which a
+// pump drains only once, at its start.
+//
+// The price is IndexedDB's too: while a long read is in flight, each pump
+// spends up to its budget waiting for it.
+
+/// One task for the JS thread.
+pub type Task = Box<dyn FnOnce(*mut c_void) + Send>;
+
+/// A context's deliveries. Keyed by address in [`inboxes`], made with the
+/// context's id, and retired at its teardown; a read thread holds its own
+/// `Arc`, so a late result lands in a retired inbox and is dropped, never in
+/// a newer context that took the address.
+struct Inbox {
+    id: crate::context::ContextId,
+    /// Tasks promised and not yet run: reads in flight plus queued results.
+    pending: AtomicUsize,
+    /// Of those, the ones in `q`.
+    queued: AtomicUsize,
+    q: Mutex<VecDeque<Task>>,
+    /// Set under `q`'s lock by [`retire`].
+    gone: AtomicBool,
+}
+
+/// Every inbox's `pending`, summed: with nothing outstanding anywhere, the
+/// pump source costs one atomic load.
+static PENDING: AtomicUsize = AtomicUsize::new(0);
+
+impl Inbox {
+    /// One more task will come.
+    fn expect(&self) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        PENDING.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Hands a promised task over, from any thread. Dropped unrun when the
+    /// context is gone.
+    fn push(&self, task: Task) {
+        let mut q = self.q.lock().unwrap();
+        if self.gone.load(Ordering::Acquire) {
+            drop(q);
+            drop(task);
+            return;
+        }
+        q.push_back(task);
+        self.queued.fetch_add(1, Ordering::AcqRel);
+        drop(q);
+        crate::web::wake(self.id);
+    }
+}
+
+fn inboxes() -> &'static Mutex<HashMap<usize, Arc<Inbox>>> {
+    static I: OnceLock<Mutex<HashMap<usize, Arc<Inbox>>>> = OnceLock::new();
+    I.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `g`'s inbox, made on first use; `None` for a context nobody registered.
+fn inbox(g: *mut c_void) -> Option<Arc<Inbox>> {
+    let id = crate::context::id_of(g)?;
+    let (inbox, stale) = {
+        let mut m = inboxes().lock().unwrap();
+        match m.get(&(g as usize)) {
+            Some(i) if i.id == id => return Some(Arc::clone(i)),
+            _ => {
+                let fresh = Arc::new(Inbox {
+                    id,
+                    pending: AtomicUsize::new(0),
+                    queued: AtomicUsize::new(0),
+                    q: Mutex::new(VecDeque::new()),
+                    gone: AtomicBool::new(false),
+                });
+                (Arc::clone(&fresh), m.insert(g as usize, fresh))
+            }
+        }
+    };
+    if let Some(old) = stale {
+        retire(&old);
+    }
+    Some(inbox)
+}
+
+fn lookup(g: *mut c_void) -> Option<Arc<Inbox>> {
+    inboxes().lock().unwrap().get(&(g as usize)).cloned()
+}
+
+/// The context is gone: what is queued is dropped (and its bytes freed), and
+/// what is still in flight will be dropped when it lands.
+fn retire(i: &Inbox) {
+    let dropped = {
+        let mut q = i.q.lock().unwrap();
+        i.gone.store(true, Ordering::Release);
+        i.queued.store(0, Ordering::Release);
+        PENDING.fetch_sub(i.pending.swap(0, Ordering::AcqRel), Ordering::AcqRel);
+        std::mem::take(&mut *q)
+    };
+    drop(dropped);
+}
+
+unsafe fn src_inflight(g: *mut c_void) -> bool {
+    PENDING.load(Ordering::Acquire) != 0 && lookup(g).is_some_and(|i| i.pending.load(Ordering::Acquire) != 0)
+}
+
+unsafe fn src_ready(g: *mut c_void) -> bool {
+    PENDING.load(Ordering::Acquire) != 0 && lookup(g).is_some_and(|i| i.queued.load(Ordering::Acquire) != 0)
+}
+
+/// Runs what is queued, one task each with a checkpoint after it, within the
+/// pump's budget (0 = only what was queued when it started).
+unsafe fn src_drain(g: *mut c_void) -> usize {
+    if PENDING.load(Ordering::Acquire) == 0 {
+        return 0;
+    }
+    let Some(inbox) = lookup(g) else { return 0 };
+    if inbox.queued.load(Ordering::Acquire) == 0 {
+        return 0;
+    }
+    if crate::context::id_of(g) != Some(inbox.id) {
+        retire(&inbox);
+        return 0;
+    }
+    // Microtasks left by earlier tasks run before this one: HTML's order.
+    crate::web::checkpoint(g);
+    let budget_us = crate::web::pump_budget_us();
+    let cap = if budget_us == 0 { inbox.queued.load(Ordering::Acquire) } else { usize::MAX };
+    let start = std::time::Instant::now();
+    let mut n = 0usize;
+    while n < cap {
+        let Some(task) = inbox.q.lock().unwrap().pop_front() else { break };
+        inbox.queued.fetch_sub(1, Ordering::AcqRel);
+        inbox.pending.fetch_sub(1, Ordering::AcqRel);
+        PENDING.fetch_sub(1, Ordering::AcqRel);
+        task(g);
+        crate::web::checkpoint(g);
+        n += 1;
+        if budget_us != 0 && start.elapsed() >= std::time::Duration::from_micros(budget_us as u64) {
+            break;
+        }
+    }
+    n
 }
 
 // ---------------------------------------------------------------------------
@@ -408,9 +581,20 @@ fn registry() -> &'static Mutex<HashMap<usize, BlobState>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The values here were protected in a heap that no longer exists.
+/// The values here were protected in a heap that no longer exists. The
+/// context's inbox is retired too: a read that finishes later drops its
+/// result instead of parking it (and its bytes) where nothing will run it.
 pub(crate) fn forget(gone: crate::context::Gone) {
     registry().lock().unwrap().remove(&gone.key);
+    let inbox = inboxes().lock().unwrap().remove(&gone.key);
+    if let Some(i) = inbox {
+        retire(&i);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn has_inbox_work(g: *mut c_void) -> bool {
+    lookup(g).is_some_and(|i| i.pending.load(Ordering::Acquire) != 0 || i.queued.load(Ordering::Acquire) != 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +1047,7 @@ pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class) {
     let bytes_fn = keep(get(g, class.proto, "bytes"));
     let slice_fn = keep(get(g, class.proto, "slice"));
     registry().lock().unwrap().insert(g as usize, BlobState { bytes_fn, slice_fn, stream_factory: UNDEF });
+    crate::web::register_pump_source(crate::web::PumpSource { inflight: src_inflight, ready: src_ready, drain: src_drain });
     (cls, class)
 }
 
@@ -1001,6 +1186,47 @@ mod tests {
 mod jsc_tests {
     use crate::webapi::file::testing::*;
     use crate::webapi::testing::*;
+
+    /// A read still running when its context goes away: its result is dropped
+    /// (and its buffer freed) when it lands. It used to re-create the dead
+    /// context's scheduler entry and park there forever. m25 review, finding 5.
+    #[test]
+    fn a_read_that_finishes_after_teardown_is_dropped_not_parked() {
+        use std::sync::{mpsc, Arc, Mutex};
+        let c = file_ctx();
+        let t = TempFile::new("late.bin", &[1u8; 1 << 16]);
+        t.expose(&c, "f");
+        let g = c.raw();
+        // Occupy every read thread, so the read below finishes after the teardown.
+        let (release, gate) = mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(gate));
+        for _ in 0..super::MAX_READS_IN_FLIGHT {
+            let gate = Arc::clone(&gate);
+            super::submit(Box::new(move || {
+                let _ = gate.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10));
+            }));
+        }
+        s(&c, "f.arrayBuffer().then(() => { globalThis.late = 1; }); 0");
+        assert!(super::has_inbox_work(g), "the read is outstanding");
+        // The teardown, as the context registry runs it for a recycled address.
+        let before = crate::context::id_of(g).unwrap();
+        let after = unsafe { crate::context::register(g) };
+        assert_ne!(before, after);
+        assert!(!crate::web::has_scheduler(g));
+        for _ in 0..super::MAX_READS_IN_FLIGHT {
+            let _ = release.send(());
+        }
+        // Wait for the pool to have run the read: a job queued after it is
+        // taken no sooner, and then the read itself has had time to land.
+        let (tx, rx) = mpsc::channel();
+        super::submit(Box::new(move || {
+            let _ = tx.send(());
+        }));
+        rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!crate::web::has_scheduler(g), "nothing re-created the dead context's queue");
+        assert!(!super::has_inbox_work(g), "nothing is waiting for the new context either");
+    }
 
     #[test]
     fn parts_convert_as_a_webidl_sequence() {
