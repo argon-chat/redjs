@@ -4,7 +4,7 @@
 //!
 //! IndexedDB evaluates key paths on the CLONE of a value (§4.6 of the design,
 //! WPT `clone-before-keypath-eval`), and the clone is plain data: own data
-//! properties, arrays, strings, Blobs. So the evaluator reads the bytes the
+//! properties, arrays, strings, Blobs and Files. So the evaluator reads the bytes the
 //! client is about to send anyway, and the server — which computes every
 //! index key — reads the very same bytes. No user code can run, so evaluation
 //! cannot throw, and both sides always agree.
@@ -39,7 +39,8 @@ enum Node {
     Date(f64),
     Buffer { start: usize, len: usize },
     View { kind: u8, off: u64, len1: u64, buf: usize },
-    Blob { mime: Vec<u16>, size: u64 },
+    /// A Blob, or a File when `file` is `(name, lastModified)`.
+    Blob { mime: Vec<u16>, size: u64, file: Option<(Vec<u16>, f64)> },
     StrObj(Vec<u16>),
     /// An Error's own data properties (message / stack / cause).
     Error { props: Vec<(PKey, usize)> },
@@ -72,7 +73,8 @@ enum Kind {
 struct Frame {
     node: usize,
     kind: Kind,
-    left: u8,
+    /// `Fixed` only: a FileList's children number up to 2^32.
+    left: u32,
     key: Option<PKey>,
 }
 
@@ -354,13 +356,27 @@ impl<'a> Parsed<'a> {
                 let idx = self.object(Node::View { kind, off, len1, buf: usize::MAX }, at);
                 Some((idx, Some(Frame { node: idx, kind: Kind::Fixed, left: 1, key: None })))
             }
-            tag::BLOB => {
+            tag::BLOB | tag::FILE => {
                 let idx = self.object(Node::Other, at);
                 let mime = r.string()?;
                 let n = r.varint()?;
                 r.skip(usize::try_from(n).ok()?)?;
-                self.nodes[idx] = Node::Blob { mime, size: n };
+                let file = if t == tag::FILE {
+                    let name = r.string()?;
+                    let last_modified = r.f64()?;
+                    r.string()?; // webkitRelativePath: no key path reads it
+                    Some((name, last_modified))
+                } else {
+                    None
+                };
+                self.nodes[idx] = Node::Blob { mime, size: n, file };
                 Some((idx, None))
+            }
+            tag::FILE_LIST => {
+                let idx = self.object(Node::Other, at);
+                let n = u32::try_from(r.varint()?).ok()?;
+                let frame = (n > 0).then_some(Frame { node: idx, kind: Kind::Fixed, left: n, key: None });
+                Some((idx, frame))
             }
             tag::IMAGE_DATA => {
                 let idx = self.object(Node::Other, at);
@@ -439,6 +455,9 @@ pub enum Val {
 const LENGTH: &[u16] = &[0x6c, 0x65, 0x6e, 0x67, 0x74, 0x68];
 const SIZE: &[u16] = &[0x73, 0x69, 0x7a, 0x65];
 const TYPE: &[u16] = &[0x74, 0x79, 0x70, 0x65];
+/// A File's own special identifiers (IndexedDB §7.5): `name`, `lastModified`.
+const NAME: &[u16] = &[0x6e, 0x61, 0x6d, 0x65];
+const LAST_MODIFIED: &[u16] = &[0x6c, 0x61, 0x73, 0x74, 0x4d, 0x6f, 0x64, 0x69, 0x66, 0x69, 0x65, 0x64];
 
 impl Parsed<'_> {
     /// `None` = failure.
@@ -472,6 +491,8 @@ impl Parsed<'_> {
                         Node::Arr { len, .. } if ident == LENGTH => Val::Num(*len as f64),
                         Node::Blob { size, .. } if ident == SIZE => Val::Num(*size as f64),
                         Node::Blob { mime, .. } if ident == TYPE => Val::Str(mime.clone()),
+                        Node::Blob { file: Some((name, _)), .. } if ident == NAME => Val::Str(name.clone()),
+                        Node::Blob { file: Some((_, lm)), .. } if ident == LAST_MODIFIED => Val::Num(*lm),
                         Node::Obj { props, .. } | Node::Arr { props, .. } | Node::Error { props } => {
                             let c = self.own(props, ident)?;
                             if matches!(self.nodes[self.resolve(c)], Node::Undefined) {
@@ -818,6 +839,49 @@ mod tests {
         assert!(p.can_inject(&u("q.r.s")));
         assert!(p.can_inject(&u("a.c")));
         assert!(!p.can_inject(&u("s.x")), "cannot inject into a string");
+    }
+
+    #[test]
+    fn a_file_answers_name_and_last_modified_and_a_file_list_parses() {
+        // { f: File("ab", name "n.txt", lastModified 7, type "t/x"), l: FileList[ ref→1 ] }
+        let mut b = hdr();
+        b.push(tag::OBJECT); // id 0
+        name(&mut b, "f");
+        b.push(tag::FILE); // id 1
+        name(&mut b, "t/x");
+        put_varint(&mut b, 2);
+        b.extend(b"ab");
+        name(&mut b, "n.txt");
+        b.extend(7f64.to_le_bytes());
+        name(&mut b, "");
+        name(&mut b, "l");
+        b.push(tag::FILE_LIST); // id 2
+        put_varint(&mut b, 1);
+        b.push(tag::OBJECT_REF);
+        put_varint(&mut b, 1);
+        name(&mut b, "after");
+        b.extend(number_bytes(3.0));
+        b.push(tag::END);
+        let p = Parsed::parse(&b).expect("parses");
+        let kp = |s: &str| KeyPath::String(u(s));
+        assert_eq!(p.extract(&kp("f.name")), Ok(Some(Key::String(u("n.txt")))));
+        assert_eq!(p.extract(&kp("f.lastModified")), Ok(Some(Key::Number(7.0))));
+        assert_eq!(p.extract(&kp("f.size")), Ok(Some(Key::Number(2.0))));
+        assert_eq!(p.extract(&kp("f.type")), Ok(Some(Key::String(u("t/x")))));
+        // The FileList's child was consumed as ONE value: what follows is read.
+        assert_eq!(p.extract(&kp("after")), Ok(Some(Key::Number(3.0))));
+        assert_eq!(p.extract(&kp("l.length")), Err(()), "IndexedDB names no FileList identifier");
+    }
+
+    #[test]
+    fn a_blob_has_no_file_identifiers() {
+        let mut b = hdr();
+        b.push(tag::BLOB);
+        name(&mut b, "");
+        put_varint(&mut b, 0);
+        let p = Parsed::parse(&b).expect("parses");
+        assert_eq!(p.extract(&KeyPath::String(u("name"))), Err(()));
+        assert_eq!(p.extract(&KeyPath::String(u("size"))), Ok(Some(Key::Number(0.0))));
     }
 
     #[test]

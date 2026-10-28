@@ -16,7 +16,8 @@
 //! Native here: DOMException / QuotaExceededError (every "throw an `X`
 //! DOMException" in this tree is a real one — see [`domexception`]),
 //! Event / CustomEvent / EventTarget, TextEncoder / TextDecoder,
-//! Blob, URL / URLSearchParams, Headers / Request / Response / fetch (over a
+//! Blob / File / FileList (in memory or path-backed, see [`blob`] and
+//! [`file`]), URL / URLSearchParams, Headers / Request / Response / fetch (over a
 //! real HTTP/1.1 + TLS client, see [`http`]),
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
 //! window (+ host hooks), UIEvent / MouseEvent / KeyboardEvent / WheelEvent /
@@ -61,6 +62,7 @@ pub mod dom;
 pub mod domexception;
 pub mod events;
 pub mod fetch;
+pub mod file;
 pub mod formdata;
 pub mod fsutil;
 pub mod geometry;
@@ -168,7 +170,9 @@ unsafe extern "sysv64" fn print(g: *mut c_void, cf: *mut c_void) -> u64 {
 pub(crate) fn forget(gone: crate::context::Gone) {
     util::forget_state(gone);
     abort::forget(gone);
+    blob::forget(gone);
     domexception::forget(gone);
+    file::forget(gone);
     #[cfg(feature = "audio")]
     {
         audio::forget(gone);
@@ -289,6 +293,8 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let (blob_cls, blob) = blob::install(g);
     (*st_mut).blob_class = blob_cls;
     (*st_mut).blob = blob;
+    // File.prototype chains to Blob.prototype, so the Blob class must exist.
+    file::install(g);
 
     let (url_cls, url, usp_cls, usp, usp_iter_cls, usp_iter_proto) = url::install(g);
     (*st_mut).url_class = url_cls;
@@ -326,6 +332,8 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     if streams::install_surface(g) != 0 {
         return 1;
     }
+    // `Blob.prototype.stream` builds on the ReadableStream that just appeared.
+    blob::install_stream(g);
     uievents::install(g, ev_proto);
     // After streams (it captures their prototypes) and before any user
     // script: the Map/Set/Error/ArrayBuffer intrinsics it reads through are

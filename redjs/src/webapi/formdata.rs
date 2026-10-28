@@ -20,10 +20,11 @@
 //!   controls — so a form argument is REFUSED by name rather than silently
 //!   producing an empty FormData, which would look like a form that submitted
 //!   nothing.
-//! - The spec wraps a bare `Blob` in a `File` named `"blob"` ("create an
-//!   entry"). There is no `File` class in this runtime, so the Blob is stored
-//!   as-is and the file name travels beside it in the entry; the name reappears
-//!   in the multipart encoding, which is the only place it is observable.
+//!
+//! "Create an entry" is the spec's: a bare `Blob` becomes a new `File` named
+//! `"blob"`, a filename makes a new `File` of that name over the same bytes,
+//! and only a `File` appended WITHOUT a filename comes back as the identical
+//! object. A path-backed File is read when the body is encoded (A-F2).
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -258,22 +259,39 @@ unsafe fn values_of(g: *mut c_void, this: u64, create: bool) -> u64 {
     arr
 }
 
-/// Spec §"create an entry": a Blob value becomes a file entry (named `"blob"`
-/// unless a filename was given); anything else is stringified.
+/// Spec §"create an entry": a value that is not a `File` becomes a new File
+/// over the same bytes named `"blob"`; with a filename, the value becomes a
+/// new File of that name over the same bytes (a File keeps its type,
+/// `lastModified` and path backing — Chromium's `File::Clone`); a File with
+/// no filename is stored as itself. Anything else is stringified.
 unsafe fn make_entry_value(
     g: *mut c_void,
     this: u64,
     value: u64,
     filename_arg: u64,
 ) -> Result<EntryValue, String> {
-    let st = state(g);
-    if host_data::<blob::BlobData>(g, st.blob_class, value).is_some() {
-        let mime = read_string(g, get(g, value, "type")).unwrap_or_default();
-        let filename = if filename_arg == UNDEF {
-            "blob".to_string()
-        } else {
-            read_string(g, filename_arg).unwrap_or_default()
+    if let Some(b) = blob::data_of(g, value) {
+        let named = (filename_arg != UNDEF).then(|| read_string(g, filename_arg).unwrap_or_default());
+        let value = match (&b.file, named) {
+            (Some(_), None) => value,
+            (meta, named) => {
+                let file = match meta {
+                    Some(m) => blob::FileMeta { name: named.unwrap_or_default(), ..m.clone() },
+                    None => blob::FileMeta {
+                        name: named.unwrap_or_else(|| "blob".to_string()),
+                        last_modified: super::file::now_ms(),
+                        relative_path: String::new(),
+                        backed: false,
+                    },
+                };
+                let data = blob::BlobData { source: b.source.clone(), offset: b.offset, len: b.len, mime: b.mime.clone(), file: Some(file) };
+                super::file::from_data(g, data)
+            }
         };
+        let Some(b) = blob::data_of(g, value) else {
+            return Err("FormData: the File could not be created".into());
+        };
+        let (mime, filename) = (b.mime.clone(), b.file.as_ref().map(|m| m.name.clone()).unwrap_or_default());
         let arr = values_of(g, this, true);
         let Some(d) = host_data::<FormDataData>(g, classes(g).cls, this) else {
             return Err("FormData: lost its entry list".into());
@@ -492,18 +510,31 @@ unsafe extern "sysv64" fn iter_next(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// The encoded body of a `FormData` value, plus the `Content-Type` it needs.
 /// `None` when `v` is not a FormData. Used by `Response`'s BodyInit handling.
-pub unsafe fn encode_body(g: *mut c_void, v: u64) -> Option<(Vec<u8>, String)> {
+/// `Some(Err)` when a path-backed File in it can no longer be read — a
+/// browser fails that request too, rather than sending a part it could not
+/// read.
+pub unsafe fn encode_body(g: *mut c_void, v: u64) -> Option<Result<(Vec<u8>, String), String>> {
     let c = classes(g);
     let list = host_data::<FormDataData>(g, c.cls, v)?.list.clone();
     let arr = values_of(g, v, false);
     let boundary = make_boundary();
+    let mut failed: Option<blob::ReadError> = None;
     let bytes = encode_multipart(&list, &boundary, |slot| {
-        if !is_cell(arr) {
+        if !is_cell(arr) || failed.is_some() {
             return None;
         }
-        blob::bytes_of(g, get_i(g, arr, slot))
+        match blob::bytes_of(g, get_i(g, arr, slot), "FormData (a multipart body)")? {
+            Ok(b) => Some(b),
+            Err(e) => {
+                failed = Some(e);
+                None
+            }
+        }
     });
-    Some((bytes, format!("multipart/form-data; boundary={boundary}")))
+    if let Some(e) = failed {
+        return Some(Err(blob::sync_read_failed("FormData (a multipart body)", e)));
+    }
+    Some(Ok((bytes, format!("multipart/form-data; boundary={boundary}"))))
 }
 
 pub unsafe fn install(g: *mut c_void) {
@@ -702,14 +733,34 @@ mod jsc_tests {
     }
 
     #[test]
-    fn a_blob_value_comes_back_as_the_same_object() {
+    fn a_file_without_a_filename_comes_back_as_the_same_object() {
         // The identity the spec requires, and the reason blobs are held in a JS
         // array rather than copied into Rust.
         let c = ctx();
         ok(
             &c,
-            "(() => { const b = new Blob(['hi']); const f = new FormData(); \
-              f.append('file', b, 'a.txt'); return f.get('file') === b; })()",
+            "(() => { const x = new File(['hi'], 'a.txt'); const f = new FormData(); \
+              f.append('file', x); return f.get('file') === x; })()",
+        );
+    }
+
+    #[test]
+    fn a_blob_or_a_renamed_file_becomes_a_new_file_over_the_same_bytes() {
+        // XHR §5 "create an entry", steps 3.1 and 3.2 — what Chromium does too.
+        let c = ctx();
+        ok(
+            &c,
+            "(() => { const b = new Blob(['hi'], { type: 'text/plain' }); const f = new FormData(); \
+              f.append('a', b); f.append('b', b, 'named.txt'); \
+              const x = f.get('a'), y = f.get('b'); \
+              return x instanceof File && x !== b && x.name === 'blob' && x.type === 'text/plain' && x.size === 2 \
+                  && y instanceof File && y.name === 'named.txt' && typeof x.lastModified === 'number'; })()",
+        );
+        ok(
+            &c,
+            "(() => { const x = new File(['hey'], 'orig.txt', { type: 'text/x', lastModified: 42 }); const f = new FormData(); \
+              f.set('k', x, 'renamed.txt'); const y = f.get('k'); \
+              return y !== x && y.name === 'renamed.txt' && y.type === 'text/x' && y.lastModified === 42 && y.size === 3; })()",
         );
     }
 

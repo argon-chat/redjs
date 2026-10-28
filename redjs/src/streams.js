@@ -901,24 +901,7 @@
     Object.defineProperty(g, name, { value: exports[name], writable: true, configurable: true });
   }
 
-  // `Blob.prototype.stream` threw "not supported in the player" because there
-  // was no ReadableStream to return. There is now (File API §"stream").
-  if (typeof g.Blob === 'function') {
-    Object.defineProperty(g.Blob.prototype, 'stream', {
-      value: function stream() {
-        const blob = this;
-        let sent = false;
-        return new ReadableStream({
-          async pull(controller) {
-            if (sent) return;
-            sent = true;
-            controller.enqueue(await blob.bytes());
-            controller.close();
-          },
-        });
-      },
-      writable: true,
-      configurable: true,
-    });
-  }
+  // `Blob.prototype.stream` is native (webapi/blob.rs): 64 KiB chunks, and a
+  // path-backed File read off the JS thread. It builds its stream from a
+  // factory made right after this script runs.
 })(globalThis);

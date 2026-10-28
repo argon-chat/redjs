@@ -209,6 +209,45 @@ fn blob_values_round_trip() {
     assert_eq!(r, "true,5,text/x,hello");
 }
 
+/// A path-backed File is snapshotted into the store when it is put (as a
+/// browser's IndexedDB does): it comes back as a File, with its name, type
+/// and bytes, whatever happens to the file later — and a file that changed
+/// since it was picked fails the put() itself with NotReadableError.
+#[test]
+fn file_values_snapshot_into_the_store() {
+    use crate::webapi::file::testing::TempFile;
+    let c = ctx();
+    let t = TempFile::new("idb.txt", b"picked bytes");
+    t.expose(&c, "picked");
+    let r = run(
+        &c,
+        "const open = indexedDB.open('t-file', 1);
+         open.onupgradeneeded = () => { open.result.createObjectStore('s', { keyPath: 'f.name' }).createIndex('lm', 'f.lastModified'); };
+         const db = await req(open);
+         let tx = db.transaction('s', 'readwrite');
+         tx.objectStore('s').put({ f: picked });
+         await done(tx);
+         globalThis.__db = db;
+         return 'stored';",
+    );
+    assert_eq!(r, "stored");
+    std::fs::write(&t.0, b"changed afterwards").unwrap();
+    let r = run(
+        &c,
+        "const db = globalThis.__db;
+         let tx = db.transaction('s', 'readwrite');
+         let threw = 'no';
+         try { tx.objectStore('s').put({ f: picked }); } catch (e) { threw = e.name; }
+         await done(tx);
+         tx = db.transaction('s');
+         const v = await req(tx.objectStore('s').get('idb.txt'));
+         const byLm = await req(tx.objectStore('s').index('lm').count(picked.lastModified));
+         db.close();
+         return [threw, v.f instanceof File, v.f.name, v.f.type, await v.f.text(), byLm].join();",
+    );
+    assert_eq!(r, "NotReadableError,true,idb.txt,text/plain,picked bytes,1");
+}
+
 #[test]
 fn storage_manager() {
     let c = ctx();

@@ -1321,7 +1321,16 @@ unsafe extern "sysv64" fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     let payload: (u8, Vec<u8>) = if glue::rjs_kind(g, arg) == 5 {
         (OP_TEXT, read_string(g, arg).unwrap_or_default().into_bytes())
     } else if host_data::<blob::BlobData>(g, st.blob_class, arg).is_some() {
-        (OP_BINARY, blob::bytes_of(g, arg).unwrap_or_default())
+        // A browser reads a Blob payload asynchronously and fails the
+        // connection if the read fails; this runtime reads it now (A-F2), so
+        // the failure is thrown from send() instead (DESKTOP.md D-F17).
+        match blob::bytes_of(g, arg, "WebSocket.send").unwrap_or(Ok(Vec::new())) {
+            Ok(b) => (OP_BINARY, b),
+            Err(e) => {
+                blob::sync_read_failed("WebSocket.send", e);
+                return super::domexception::throw(g, e.name(), e.message());
+            }
+        }
     } else if let Some(b) = bufferish(g, arg) {
         (OP_BINARY, b.to_vec())
     } else {

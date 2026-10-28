@@ -62,8 +62,8 @@
 //! | 0x21 | resizable ArrayBuffer    | varint n, varint max, n bytes                        |
 //! | 0x22 | view                     | u8 kind, varint byteOffset, varint length+1 (0 = length-tracking), buffer value |
 //! | 0x30 | Blob (inline)            | string type, varint n, n bytes                       |
-//! | 0x31 | File                     | reserved                                             |
-//! | 0x32 | FileList                 | reserved                                             |
+//! | 0x31 | File (inline)            | string type, varint n, n bytes, string name, f64 lastModified, string webkitRelativePath |
+//! | 0x32 | FileList                 | varint n, n File values (0x31 or 0x45)               |
 //! | 0x33 | ImageData                | varint w, varint h, u8 colorSpace (0 srgb), data value |
 //! | 0x34 | DOMPoint(ReadOnly)       | u8 read-only, 4 × f64 (x y z w)                      |
 //! | 0x35 | DOMRect(ReadOnly)        | reserved                                             |
@@ -76,7 +76,7 @@
 //! | 0x42 | ImageBitmap              | varint attachment                                    |
 //! | 0x43 | Blob by reference        | varint attachment                                    |
 //! | 0x44 | SharedArrayBuffer        | reserved — varint attachment                         |
-//! | 0x45 | File by reference        | reserved — varint attachment                         |
+//! | 0x45 | File by reference        | varint attachment                                    |
 //! | 0x46–0x4F | —                   | reserved (attachments)                               |
 //!
 //! Error names: 0 Error, 1 EvalError, 2 RangeError, 3 ReferenceError,
@@ -91,10 +91,18 @@
 //! reader caches by index).
 //!
 //! **Attachments.** Indices run over the transfer list first (in its order),
-//! then the extras: Blobs by reference (the bytes are an `Arc`, never copied)
-//! and ImageBitmap copies. Storage bytes have no attachment table, so
-//! [`deserialize_storage`] rejects every 0x4x tag; a Blob written for storage
-//! goes inline (0x30), an ImageBitmap is a DataCloneError (HTML: `forStorage`).
+//! then the extras: Blobs and Files by reference (the bytes are an `Arc` or a
+//! path, never copied or read) and ImageBitmap copies. Storage bytes have no
+//! attachment table, so [`deserialize_storage`] rejects every 0x4x tag; a Blob
+//! or File written for storage goes inline (0x30 / 0x31), an ImageBitmap is a
+//! DataCloneError (HTML: `forStorage`).
+//!
+//! **Path-backed Blobs for storage.** Inline means the bytes: a File the host
+//! made from disk is READ when it is serialized for storage — the snapshot a
+//! browser's IndexedDB takes too — under the same snapshot rule as any other
+//! read, so a file that changed since it was picked fails the serialization
+//! with `NotReadableError` (IndexedDB's `put()` throws it). The stored copy
+//! is then independent of the file. The read is synchronous (A-F2).
 //!
 //! # Transfer
 //!
@@ -216,8 +224,11 @@ pub enum Attachment {
     TransferredBuffer { bytes: Vec<u8>, max_byte_length: Option<u64> },
     /// An ImageBitmap's pixels (moved when transferred, copied when not).
     Bitmap { width: u32, height: u32, rgba: Vec<u8> },
-    /// A Blob, by reference: the same immutable bytes, shared.
-    BlobRef { bytes: Arc<Vec<u8>>, offset: usize, len: usize, mime: String },
+    /// A Blob, by reference: the same immutable source (bytes or a path),
+    /// shared — nothing is read.
+    BlobRef { range: super::blob::Range, mime: String },
+    /// A File, by reference: as `BlobRef`, plus what makes it a File.
+    FileRef { range: super::blob::Range, mime: String, file: super::blob::FileMeta },
 }
 
 /// The output of [`serialize`]: no JSC value anywhere, hence `Send`.
@@ -973,7 +984,7 @@ impl Enc {
                 self.put(tag::END);
                 Ok(())
             }
-            brand::OTHER => self.host_object(v),
+            brand::OTHER => self.host_object(v, depth),
             brand::FUNCTION => Err(dce(g, "A function could not be cloned.")),
             brand::PROXY => Err(dce(g, "A Proxy could not be cloned.")),
             brand::PROMISE => Err(dce(g, "A Promise could not be cloned.")),
@@ -1174,19 +1185,49 @@ impl Enc {
     }
 
     /// C-API host objects: the serializable platform classes, or refused.
-    unsafe fn host_object(&mut self, v: u64) -> R {
+    unsafe fn host_object(&mut self, v: u64, depth: u32) -> R {
         let g = self.g;
         if let Some(b) = super::blob::data_of(g, v) {
+            let (range, mime, file) = (b.range(), b.mime.clone(), b.file.clone());
             if self.for_storage {
-                let (mime, bytes) = (b.mime.clone(), b.slice_bytes());
+                // Inline: the bytes now — read under the snapshot rule if the
+                // Blob is path-backed (see the module docs).
+                let bytes: std::borrow::Cow<[u8]> = match range.in_memory() {
+                    Some(b) => std::borrow::Cow::Borrowed(b),
+                    None => {
+                        if matches!(range.source, super::blob::Source::Disk(_)) && range.len > super::blob::SYNC_READ_ADVISORY_BYTES {
+                            super::blob::advise_sync_read("IndexedDB (a value written for storage)", range.len);
+                        }
+                        match range.read() {
+                            Ok(b) => std::borrow::Cow::Owned(b),
+                            Err(e) => return Err(e.to_js(g)),
+                        }
+                    }
+                };
                 self.memo(v);
-                self.put(tag::BLOB);
+                self.put(if file.is_some() { tag::FILE } else { tag::BLOB });
                 self.rust_string(&mime);
                 self.varint(bytes.len() as u64);
-                self.out.extend_from_slice(bytes);
+                self.out.extend_from_slice(&bytes);
+                if let Some(f) = file {
+                    self.rust_string(&f.name);
+                    self.f64(f.last_modified);
+                    self.rust_string(&f.relative_path);
+                }
             } else {
-                let a = Attachment::BlobRef { bytes: Arc::clone(&b.bytes), offset: b.offset, len: b.len, mime: b.mime.clone() };
-                self.extra(v, tag::BLOB_REF, a);
+                match file {
+                    Some(file) => self.extra(v, tag::FILE_REF, Attachment::FileRef { range, mime, file }),
+                    None => self.extra(v, tag::BLOB_REF, Attachment::BlobRef { range, mime }),
+                }
+            }
+            return Ok(());
+        }
+        if let Some(files) = super::file::file_list_items(g, v) {
+            self.memo(v);
+            self.put(tag::FILE_LIST);
+            self.varint(files.len() as u64);
+            for f in files {
+                self.value(f, depth + 1)?;
             }
             return Ok(());
         }
@@ -1419,7 +1460,7 @@ impl<'a> Dec<'a> {
                     _ => self.bad(),
                 }
             }
-            tag::TRANSFERRED_BUFFER | tag::IMAGE_BITMAP | tag::BLOB_REF => self.attachment(t),
+            tag::TRANSFERRED_BUFFER | tag::IMAGE_BITMAP | tag::BLOB_REF | tag::FILE_REF => self.attachment(t),
             _ => {
                 if !self.stack.ok(depth) {
                     return Err(stack_overflow(self.g));
@@ -1605,6 +1646,51 @@ impl<'a> Dec<'a> {
                 self.memo(b);
                 Ok(b)
             }
+            tag::FILE => {
+                let slot = self.reserve();
+                let mime = self.rust_string()?;
+                let n = self.varint()?;
+                let bytes = self.bytes(n)?.to_vec();
+                let name = self.rust_string()?;
+                let last_modified = self.f64()?;
+                let relative_path = self.rust_string()?;
+                // `long long` milliseconds: anything else was never written.
+                if !last_modified.is_finite() || last_modified.trunc() != last_modified {
+                    return self.bad();
+                }
+                let len = bytes.len() as u64;
+                let data = super::blob::BlobData {
+                    source: super::blob::Source::Memory(Arc::new(bytes)),
+                    offset: 0,
+                    len,
+                    mime,
+                    file: Some(super::blob::FileMeta { name, last_modified, relative_path, backed: false }),
+                };
+                let f = super::file::from_data(g, data);
+                if !is_cell(f) {
+                    return self.bad();
+                }
+                self.fill(slot, f);
+                Ok(f)
+            }
+            tag::FILE_LIST => {
+                let slot = self.reserve();
+                let n = self.varint()?;
+                let mut files = Vec::with_capacity(n.min((self.buf.len() - self.pos) as u64) as usize);
+                for _ in 0..n {
+                    let f = self.value(depth + 1)?;
+                    if !super::file::is_file(g, f) {
+                        return self.bad();
+                    }
+                    files.push(f);
+                }
+                let list = super::file::create_file_list(g, &files);
+                if !is_cell(list) {
+                    return self.bad();
+                }
+                self.fill(slot, list);
+                Ok(list)
+            }
             tag::IMAGE_DATA => {
                 let w = self.u32v()?;
                 let h = self.u32v()?;
@@ -1699,11 +1785,23 @@ impl<'a> Dec<'a> {
                 }
                 super::image::create_bitmap(g, super::image::BitmapData { width, height, rgba })
             }
-            (tag::BLOB_REF, Some(Attachment::BlobRef { bytes, offset, len, mime })) => {
-                if !matches!(offset.checked_add(len), Some(end) if end <= bytes.len()) {
+            (tag::BLOB_REF, Some(Attachment::BlobRef { range, mime })) => {
+                if !range.fits() {
                     return self.bad();
                 }
-                super::blob::from_data(g, super::blob::BlobData { bytes, offset, len, mime })
+                let data = super::blob::BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: None };
+                super::blob::from_data(g, data)
+            }
+            (tag::FILE_REF, Some(Attachment::FileRef { range, mime, file })) => {
+                if !range.fits() {
+                    return self.bad();
+                }
+                let data = super::blob::BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: Some(file) };
+                let f = super::file::from_data(g, data);
+                if !is_cell(f) {
+                    return self.bad();
+                }
+                f
             }
             _ => return self.bad(),
         };

@@ -486,11 +486,13 @@ pub unsafe fn extract_body(g: *mut c_void, v: u64) -> Result<Option<(Vec<u8>, Op
     }
     // FormData first: it is the one BodyInit whose Content-Type the caller
     // cannot write itself (the multipart boundary is generated per body).
-    if let Some((bytes, ct)) = formdata::encode_body(g, v) {
+    if let Some(r) = formdata::encode_body(g, v) {
+        let (bytes, ct) = r?;
         return Ok(Some((bytes, Some(ct))));
     }
-    if let Some(bytes) = blob::bytes_of(g, v) {
-        let t = read_string(g, get(g, v, "type")).unwrap_or_default();
+    if let Some(r) = blob::bytes_of(g, v, "a fetch/Request/Response body") {
+        let bytes = r.map_err(|e| blob::sync_read_failed("a fetch/Request/Response body", e))?;
+        let t = blob::data_of(g, v).map(|b| b.mime.clone()).unwrap_or_default();
         return Ok(Some((bytes, (!t.is_empty()).then_some(t))));
     }
     let st = state(g);

@@ -250,7 +250,8 @@ unsafe fn acquire_pixels(g: *mut c_void, source: u64) -> Result<BitmapData, Stri
         return Ok(BitmapData { width: w, height: h, rgba: px });
     }
     // Blob.
-    if let Some(bytes) = super::blob::bytes_of(g, source) {
+    if let Some(r) = super::blob::bytes_of(g, source, "createImageBitmap") {
+        let bytes = r.map_err(|e| super::blob::sync_read_failed("createImageBitmap", e))?;
         return decode_rgba(&bytes).ok_or_else(|| "createImageBitmap: image decode failed".to_string());
     }
     // BufferSource.
