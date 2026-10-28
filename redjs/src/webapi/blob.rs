@@ -200,6 +200,61 @@ impl Range {
             Source::Unreadable(e) => Err(*e),
         }
     }
+
+    /// Writes the bytes into `out` on THIS thread without holding them all
+    /// in memory: a memory window in one write, a file range streamed in
+    /// pieces under the same snapshot check [`Range::read`] makes. A host
+    /// that copies a picked file somewhere (vue-native's
+    /// `FileSystemWritableFileStream.write(file)`, `<a download>`) uses it
+    /// on its own worker, so a large file is neither read on the UI thread
+    /// nor loaded whole. On any error `out` may hold part of the bytes.
+    pub fn copy_into(&self, out: &mut dyn std::io::Write) -> Result<(), CopyError> {
+        match &self.source {
+            Source::Memory(_) => {
+                let b = self.in_memory().ok_or(CopyError::Read(ReadError::NotReadable))?;
+                out.write_all(b).map_err(CopyError::Write)
+            }
+            Source::Disk(f) => copy_disk(f, self.offset, self.len, out),
+            Source::Unreadable(e) => Err(CopyError::Read(*e)),
+        }
+    }
+}
+
+/// Why [`Range::copy_into`] stopped: the source could not be read (the File
+/// API's errors), or the destination refused the bytes (the caller's own
+/// I/O error, untouched, so it can map a full disk to its own name).
+#[derive(Debug)]
+pub enum CopyError {
+    Read(ReadError),
+    Write(std::io::Error),
+}
+
+/// [`read_disk`]'s snapshot check, then the range in 64 KiB pieces. A file
+/// that ends before the range does is `NotReadable`, as a short read is.
+fn copy_disk(f: &DiskFile, offset: u64, len: u64, out: &mut dyn std::io::Write) -> Result<(), CopyError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let read = |e: std::io::Error| CopyError::Read(io_error(e));
+    let mut file = std::fs::File::open(&f.path).map_err(read)?;
+    let meta = file.metadata().map_err(read)?;
+    if meta.is_dir() || meta.len() != f.size || meta.modified().ok() != f.mtime {
+        return Err(CopyError::Read(ReadError::NotReadable));
+    }
+    if offset.checked_add(len).is_none_or(|end| end > f.size) {
+        return Err(CopyError::Read(ReadError::NotReadable));
+    }
+    file.seek(SeekFrom::Start(offset)).map_err(read)?;
+    let mut left = len;
+    let mut buf = vec![0u8; 64 << 10];
+    while left > 0 {
+        let want = left.min(buf.len() as u64) as usize;
+        let n = file.read(&mut buf[..want]).map_err(read)?;
+        if n == 0 {
+            return Err(CopyError::Read(ReadError::NotReadable));
+        }
+        out.write_all(&buf[..n]).map_err(CopyError::Write)?;
+        left -= n as u64;
+    }
+    Ok(())
 }
 
 fn io_error(e: std::io::Error) -> ReadError {
@@ -1156,9 +1211,61 @@ pub unsafe fn bytes_of(g: *mut c_void, v: u64, consumer: &str) -> Option<Result<
     Some(r.read())
 }
 
+/// The source and window of a Blob (or File) value, with nothing read: for a
+/// host consumer that does the I/O itself, off this thread. The [`Range`] is
+/// `Send`; [`Range::copy_into`] and [`Range::read`] apply the snapshot rule
+/// to a path-backed one. `None` = not a Blob.
+///
+/// # Safety
+/// `g` must be a live context with the web API installed, on its thread.
+pub unsafe fn range_of(g: *mut c_void, v: u64) -> Option<Range> {
+    let st = state(g);
+    host_data::<BlobData>(g, st.blob_class, v).map(|b| b.range())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_streams_a_file_range_under_the_snapshot_rule() {
+        let dir = std::env::temp_dir().join(format!("redjs-copy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("copy.bin");
+        // Larger than one 64 KiB piece, so the loop runs more than once.
+        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&p, &bytes).unwrap();
+        let m = std::fs::metadata(&p).unwrap();
+        let disk = Arc::new(DiskFile { path: p.clone(), size: m.len(), mtime: m.modified().ok() });
+        let r = Range { source: Source::Disk(disk.clone()), offset: 70_000, len: 100_000 };
+        let mut out = Vec::new();
+        r.copy_into(&mut out).unwrap();
+        assert_eq!(out, &bytes[70_000..170_000]);
+        let mem = Range { source: Source::Memory(Arc::new(b"hello".to_vec())), offset: 1, len: 3 };
+        let mut out = Vec::new();
+        mem.copy_into(&mut out).unwrap();
+        assert_eq!(out, b"ell");
+        // The file changed since the snapshot: the copy refuses, as a read does.
+        std::fs::write(&p, b"changed").unwrap();
+        assert!(matches!(r.copy_into(&mut Vec::new()), Err(CopyError::Read(ReadError::NotReadable))));
+        std::fs::remove_file(&p).unwrap();
+        assert!(matches!(r.copy_into(&mut Vec::new()), Err(CopyError::Read(ReadError::NotFound))));
+        let _ = std::fs::remove_dir(&dir);
+        // A destination that refuses is the caller's own error, untouched.
+        struct Full;
+        impl std::io::Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from_raw_os_error(112))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        match mem.copy_into(&mut Full) {
+            Err(CopyError::Write(e)) => assert_eq!(e.raw_os_error(), Some(112)),
+            other => panic!("expected the write error, got {other:?}"),
+        }
+    }
 
     /// More panicking jobs than there are read threads, then an ordinary one:
     /// it still runs. Before, each panic took its thread's slot for good, and
@@ -1219,6 +1326,30 @@ mod tests {
 mod jsc_tests {
     use crate::webapi::file::testing::*;
     use crate::webapi::testing::*;
+
+    /// `range_of` hands a host the window a Blob value names: a slice of a
+    /// picked File is the file's range, a script Blob is its memory, and
+    /// anything else is `None`.
+    #[test]
+    fn range_of_names_the_window_without_reading() {
+        let c = file_ctx();
+        let t = TempFile::new("range.bin", b"0123456789");
+        t.expose(&c, "picked");
+        s(&c, "globalThis.part = picked.slice(2, 6); globalThis.mem = new Blob(['abc']); 0");
+        let g = c.raw();
+        let global = unsafe { crate::glue::rjs_global(g) };
+        let get = |name: &str| unsafe { crate::webapi::util::get(g, global, name) };
+        let part = unsafe { super::range_of(g, get("part")) }.expect("a slice is a Blob");
+        assert!(matches!(&part.source, super::Source::Disk(f) if f.path == t.0));
+        assert_eq!((part.offset, part.len), (2, 4));
+        let mut out = Vec::new();
+        part.copy_into(&mut out).unwrap();
+        assert_eq!(out, b"2345");
+        let mem = unsafe { super::range_of(g, get("mem")) }.unwrap();
+        assert_eq!(mem.in_memory(), Some(&b"abc"[..]));
+        s(&c, "globalThis.notBlob = {}; 0");
+        assert!(unsafe { super::range_of(g, get("notBlob")) }.is_none());
+    }
 
     /// A read still running when its context goes away: its result is dropped
     /// (and its buffer freed) when it lands. It used to re-create the dead
