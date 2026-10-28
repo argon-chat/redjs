@@ -96,6 +96,25 @@ pub(crate) fn schedule_native(g: *mut c_void, delay_ms: f64, task: NativeTask) {
     reg.entry(g as usize).or_default().native.push((deadline, task));
 }
 
+/// [`schedule_native`] from ANOTHER thread, for the context `id` that asked.
+/// The task is dropped unrun when the context at `g` is no longer `id`: torn
+/// down (its scheduler entry is gone and must not be re-created, or the task
+/// and whatever it owns would be parked there for good) or replaced by a
+/// newer one at the same address (whose heap the task's values are not in).
+/// The check runs under the registry lock, so a teardown cannot slip between
+/// it and the push. `id: None` (a context nobody registered) behaves like
+/// [`schedule_native`].
+pub(crate) fn schedule_native_from(g: *mut c_void, id: Option<crate::context::ContextId>, delay_ms: f64, task: NativeTask) {
+    let deadline = now_ms() + delay_ms.max(0.0);
+    let mut reg = registry().lock().unwrap();
+    if id.is_some() && crate::context::id_of(g) != id {
+        drop(reg);
+        drop(task);
+        return;
+    }
+    reg.entry(g as usize).or_default().native.push((deadline, task));
+}
+
 fn registry() -> &'static Mutex<HashMap<usize, Scheduler>> {
     static REG: OnceLock<Mutex<HashMap<usize, Scheduler>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
@@ -1140,5 +1159,33 @@ mod checkpoint_tests {
             }
             assert_eq!(s(&c, "log.join()"), expect, "flags {flags}");
         }
+    }
+}
+
+#[cfg(test)]
+mod native_from_tests {
+    use super::*;
+
+    /// A result from another thread for a context that is gone is dropped,
+    /// and the gone context's queue is not re-created (m25 review, finding 5;
+    /// fetch's network delivery). For the live context it is queued as before.
+    #[test]
+    fn a_late_native_task_reaches_only_the_context_that_asked() {
+        let c = crate::webapi::testing::ctx();
+        let g = c.raw();
+        unsafe { install(g) };
+        let old = crate::context::id_of(g);
+        assert!(old.is_some());
+        schedule_native_from(g, old, 0.0, Box::new(|_| {}));
+        assert!(has_scheduler(g), "the live context gets it");
+        let new = unsafe { crate::context::register(g) };
+        assert_ne!(Some(new), old);
+        assert!(!has_scheduler(g));
+        // Dropping the task is observable: it owns this, and lets go of it.
+        let owned = std::sync::Arc::new(());
+        let held = std::sync::Arc::clone(&owned);
+        schedule_native_from(g, old, 0.0, Box::new(move |_| drop(held)));
+        assert!(!has_scheduler(g), "nothing re-created for the old context");
+        assert_eq!(std::sync::Arc::strong_count(&owned), 1, "the task was dropped, not parked");
     }
 }

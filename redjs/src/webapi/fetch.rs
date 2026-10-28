@@ -658,6 +658,7 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
     };
 
     let ctx = Ctx(g);
+    let id = crate::context::id_of(g);
     let signal = plan.signal;
     let worker_cancel = Arc::clone(&cancel);
     INFLIGHT.fetch_add(1, Ordering::SeqCst);
@@ -665,8 +666,11 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
         let result = http::send(&req, &worker_cancel);
         let delivery = Delivery { resolve, reject, signal, bridge, cancel: worker_cancel, result };
         INFLIGHT.fetch_sub(1, Ordering::SeqCst);
-        // Back onto the JS thread: the pump runs this with the VM lock held.
-        crate::web::schedule_native(ctx.ptr(), 0.0, Box::new(move |g| unsafe { settle(g, delivery) }));
+        // Back onto the JS thread: the pump runs this with the VM lock held,
+        // and only in the context that asked. `resolve`/`reject` are values
+        // of THAT heap; a newer context at the same address must never call
+        // them, and a torn-down one must not get its queue back.
+        crate::web::schedule_native_from(ctx.ptr(), id, 0.0, Box::new(move |g| unsafe { settle(g, delivery) }));
     });
 
     if let Err(e) = spawned {
