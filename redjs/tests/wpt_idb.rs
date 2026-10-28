@@ -12,6 +12,11 @@
 //!   — the gate tier: every vendored file.
 //! - `REDJS_WPT_ONLY=<substring>` — only matching files, either tier.
 //! - `REDJS_WPT_REPORT=<path>` — a per-file summary written there.
+//! - `REDJS_IDB_BACKEND=memory|sqlite|both` — which backend the files run on.
+//!   The default is `both` in a build with `indexeddb-sqlite` (every file
+//!   twice: the memory backend, then SQLite ENCRYPTED in a fresh temp folder
+//!   per file), `memory` without it. The expectations are the same for both:
+//!   a backend may not change what a test observes.
 //!
 //! In the child: `document` is deleted before testharness loads (so it picks
 //! `ShellTestEnvironment`), `location` names the file, the `// META: script=`
@@ -136,11 +141,32 @@ fn limit_for(file: &str) -> Duration {
     }
 }
 
-fn run_child(file: &str) -> FileOutcome {
+/// A per-child database folder, removed when the child is done.
+struct ChildDir(Option<PathBuf>);
+
+impl Drop for ChildDir {
+    fn drop(&mut self) {
+        if let Some(d) = &self.0 {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+}
+
+fn run_child(file: &str, backend: &str) -> FileOutcome {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
     let start = Instant::now();
     let exe = std::env::current_exe().expect("current exe");
-    let mut child = Command::new(exe)
-        .env("REDJS_WPT_CHILD", file)
+    let dir = ChildDir((backend != "memory").then(|| {
+        std::env::temp_dir().join(format!("redjs-wpt-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)))
+    }));
+    let mut cmd = Command::new(exe);
+    cmd.env("REDJS_WPT_CHILD", file).env("REDJS_IDB_BACKEND", backend);
+    if let Some(d) = &dir.0 {
+        let _ = std::fs::remove_dir_all(d);
+        cmd.env("REDJS_IDB_DIR", d);
+    }
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -221,18 +247,61 @@ fn parent(gate: bool) -> i32 {
     }
     let exp = expectations();
     let tier = if gate { "gate" } else { "smoke" };
-    let started = Instant::now();
+    let default_backends = if cfg!(feature = "indexeddb-sqlite") { "both" } else { "memory" };
+    let want = std::env::var("REDJS_IDB_BACKEND").unwrap_or_else(|_| default_backends.into());
+    let backends: Vec<&str> = match want.as_str() {
+        "both" => vec!["memory", "sqlite"],
+        "sqlite" => vec!["sqlite"],
+        _ => vec!["memory"],
+    };
+    if backends.contains(&"sqlite") && !cfg!(feature = "indexeddb-sqlite") {
+        eprintln!("[wpt] REDJS_IDB_BACKEND=sqlite needs --features indexeddb-sqlite");
+        return 1;
+    }
     let mut problems: Vec<String> = Vec::new();
     let mut report = String::new();
+    for backend in backends {
+        let before = problems.len();
+        run_tier(&files, &exp, tier, backend, &mut problems, &mut report);
+        for p in &mut problems[before..] {
+            *p = format!("[{backend}] {p}");
+        }
+    }
+    if let Ok(p) = std::env::var("REDJS_WPT_REPORT") {
+        let mut r = report.clone();
+        if !problems.is_empty() {
+            r.push_str("\nUnexpected:\n");
+            for p in &problems {
+                r.push_str(p);
+                r.push('\n');
+            }
+        }
+        let _ = std::fs::write(p, r);
+    }
+    if problems.is_empty() {
+        eprintln!("[wpt] every result matches expectations.txt");
+        0
+    } else {
+        eprintln!("[wpt] {} unexpected result(s):", problems.len());
+        for p in &problems {
+            eprintln!("  {p}");
+        }
+        1
+    }
+}
+
+fn run_tier(files: &[String], exp: &Expect, tier: &str, backend: &str, problems: &mut Vec<String>, report: &mut String) {
+    let started = Instant::now();
     let (mut total, mut passed, mut files_run) = (0usize, 0usize, 0usize);
     let mut per_status: BTreeMap<&str, usize> = BTreeMap::new();
-    for f in &files {
+    report.push_str(&format!("# backend: {backend}\n"));
+    for f in files {
         if exp.skip.contains(f) {
             report.push_str(&format!("{f}\tSKIP\n"));
             continue;
         }
         files_run += 1;
-        let o = run_child(f);
+        let o = run_child(f, backend);
         let p = o.tests.iter().filter(|t| t.0 == 0).count();
         total += o.tests.len();
         passed += p;
@@ -264,37 +333,16 @@ fn parent(gate: bool) -> i32 {
                 eprintln!("[wpt] note: stale expectation (no such subtest ran): {ef} :: {en}");
             }
         }
-        eprintln!("[wpt] {f}: {p}/{} ({:.1}s)", o.tests.len(), o.secs);
+        eprintln!("[wpt] [{backend}] {f}: {p}/{} ({:.1}s)", o.tests.len(), o.secs);
     }
     let summary = format!(
-        "WPT IndexedDB {tier}: {files_run} files, {passed}/{total} subtests pass ({:.1}%), {:.1}s; {per_status:?}",
+        "WPT IndexedDB {tier} on {backend}: {files_run} files, {passed}/{total} subtests pass ({:.1}%), {:.1}s; {per_status:?}",
         if total > 0 { 100.0 * passed as f64 / total as f64 } else { 0.0 },
         started.elapsed().as_secs_f64()
     );
     eprintln!("{summary}");
     report.push_str(&summary);
     report.push('\n');
-    if let Ok(p) = std::env::var("REDJS_WPT_REPORT") {
-        let mut r = report.clone();
-        if !problems.is_empty() {
-            r.push_str("\nUnexpected:\n");
-            for p in &problems {
-                r.push_str(p);
-                r.push('\n');
-            }
-        }
-        let _ = std::fs::write(p, r);
-    }
-    if problems.is_empty() {
-        eprintln!("[wpt] every result matches expectations.txt");
-        0
-    } else {
-        eprintln!("[wpt] {} unexpected result(s):", problems.len());
-        for p in &problems {
-            eprintln!("  {p}");
-        }
-        1
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +381,16 @@ fn child(file: &str) {
     let file_dir = path.parent().unwrap().to_path_buf();
     let src = std::fs::read_to_string(&path).expect("read the test file");
     let limit = limit_for(file);
+    if std::env::var("REDJS_IDB_BACKEND").as_deref() == Ok("sqlite") {
+        // SQLite, encrypted, in the folder the parent made for this file:
+        // the persistence AND the page codec under every subtest.
+        #[cfg(feature = "indexeddb-sqlite")]
+        {
+            use redjs::webapi::indexeddb::{set_backend_factory, sqlite, IdbEncryption};
+            let dir = PathBuf::from(std::env::var("REDJS_IDB_DIR").expect("REDJS_IDB_DIR"));
+            set_backend_factory(sqlite::factory(dir, IdbEncryption::Encrypted([0x42; 32]), 1 << 30));
+        }
+    }
     let ctx = Context::new();
     let g = ctx.raw();
     // Timers / rAF / performance first: the web API install expects them.

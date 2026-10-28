@@ -10,6 +10,12 @@
 //!
 //! Database names are unique per test: the server is process-wide and the
 //! tests run in parallel.
+//!
+//! **Both backends.** The process runs on the memory backend. With
+//! `indexeddb-sqlite`, `every_scenario_again_on_sqlite` re-runs this same
+//! binary twice more — `REDJS_IDB_BACKEND=sqlite` (plaintext) and
+//! `sqlite-encrypted` — each in a fresh folder, and fails if any scenario
+//! does. The benchmark prints its numbers in all three.
 
 use std::time::{Duration, Instant};
 
@@ -19,12 +25,34 @@ use redjs::ffi;
 /// vue-native's frame: PUMP_TIMERS | PUMP_RAF | PUMP_MICROTASKS.
 const FRAME: u32 = 1 | 2 | 4;
 
+/// The backend this process runs on, chosen once, before the first use.
+fn backend() -> &'static str {
+    static B: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    B.get_or_init(|| {
+        let want = std::env::var("REDJS_IDB_BACKEND").unwrap_or_else(|_| "memory".into());
+        #[cfg(feature = "indexeddb-sqlite")]
+        if want.starts_with("sqlite") {
+            use redjs::webapi::indexeddb::{set_backend_factory, sqlite, IdbEncryption};
+            let dir = std::path::PathBuf::from(std::env::var("REDJS_IDB_DIR").expect("REDJS_IDB_DIR"));
+            let enc = if want == "sqlite-encrypted" { IdbEncryption::Encrypted([0x24; 32]) } else { IdbEncryption::Plaintext };
+            set_backend_factory(sqlite::factory(dir, enc, 1 << 30));
+        }
+        want
+    })
+}
+
 fn lib(path: &str) -> String {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("libs").join(path);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
 fn ctx(libs: &[&str]) -> Context {
+    backend();
+    // The per-pump delivery budget the benchmark runs under (default: the
+    // pump's 4 ms) — how the budget policy is measured.
+    if let Some(us) = std::env::var("REDJS_IDB_BUDGET_US").ok().and_then(|v| v.parse().ok()) {
+        ffi::redjs_idb_set_budget_us(us);
+    }
     let c = Context::new();
     unsafe {
         ffi::redjs_web_install(c.raw());
@@ -48,6 +76,19 @@ struct Run {
     out: String,
     pumps: u32,
     ms: f64,
+    /// The longest single pump, and the time spent inside pumps overall: what
+    /// the frame thread paid (the rest of each "frame" is the 1 ms sleep).
+    pump_max_ms: f64,
+    pump_total_ms: f64,
+}
+
+impl Run {
+    fn line(&self) -> String {
+        format!(
+            "{} pumps, {:.1} ms wall, {:.1} ms in pumps, longest pump {:.2} ms",
+            self.pumps, self.ms, self.pump_total_ms, self.pump_max_ms
+        )
+    }
 }
 
 /// Runs an async body as vue-native would: one pump per ~frame (a 1 ms sleep
@@ -64,9 +105,14 @@ fn run(c: &Context, body: &str) -> Run {
     let start = Instant::now();
     let deadline = start + Duration::from_secs(60);
     let mut pumps = 0;
+    let (mut pump_max_ms, mut pump_total_ms) = (0f64, 0f64);
     unsafe { ffi::redjs_lock(c.raw()) };
     let out = loop {
+        let t = Instant::now();
         unsafe { ffi::redjs_pump(c.raw(), FRAME, core::ptr::null_mut()) };
+        let d = t.elapsed().as_secs_f64() * 1000.0;
+        pump_max_ms = pump_max_ms.max(d);
+        pump_total_ms += d;
         pumps += 1;
         let r = eval(c, "String(globalThis.__r)", "poll.js");
         if r != "undefined" {
@@ -78,7 +124,7 @@ fn run(c: &Context, body: &str) -> Run {
         std::thread::sleep(Duration::from_millis(1));
     };
     unsafe { ffi::redjs_unlock(c.raw()) };
-    Run { out, pumps, ms: start.elapsed().as_secs_f64() * 1000.0 }
+    Run { out, pumps, ms: start.elapsed().as_secs_f64() * 1000.0, pump_max_ms, pump_total_ms }
 }
 
 fn expect(r: &Run, want: &str) {
@@ -142,7 +188,7 @@ fn dexie_schema_bulk_queries_transactions() {
          return [count, between === wantBetween, tagged === wantTagged, after, bulk, fresh, byLast === wantByLast, verno,
                  names.includes(name), exists].join('|');",
     );
-    eprintln!("[bench] Dexie bulkPut(10 000): {} ms (scenario {:.0} ms, {} pumps)", eval(&c, "Math.round(globalThis.__bulk)", "b.js"), r.ms, r.pumps);
+    eprintln!("[bench:{}] Dexie bulkPut(10 000): {} ms (scenario: {})", backend(), eval(&c, "Math.round(globalThis.__bulk)", "b.js"), r.line());
     expect(&r, "10000|true|true|1000|BulkError:1|2|true|2|true|false");
 }
 
@@ -369,7 +415,7 @@ fn bench_sequential_gets_take_few_pumps() {
          globalThis.__ms = performance.now() - t0;
          return String(sum);",
     );
-    eprintln!("[bench] 1000 sequential awaited gets, a transaction each: {} pumps, {:.1} ms", r.pumps, r.ms);
+    eprintln!("[bench:{}] 1000 sequential awaited gets, a transaction each: {}", backend(), r.line());
     expect(&r, "499500");
     assert!(r.pumps <= 30, "1000 sequential gets took {} pumps (guard: <= 30)", r.pumps);
 
@@ -382,7 +428,7 @@ fn bench_sequential_gets_take_few_pumps() {
          for (let i = 0; i < 1000; i++) sum += (await get(i)).i;
          return String(sum);",
     );
-    eprintln!("[bench] 1000 sequential awaited gets, one transaction: {} pumps, {:.1} ms", r.pumps, r.ms);
+    eprintln!("[bench:{}] 1000 sequential awaited gets, one transaction: {}", backend(), r.line());
     expect(&r, "499500");
     assert!(r.pumps <= 30, "1000 sequential gets in one transaction took {} pumps (guard: <= 30)", r.pumps);
 
@@ -394,7 +440,7 @@ fn bench_sequential_gets_take_few_pumps() {
          await new Promise((res) => { qs[qs.length - 1].onsuccess = res; });
          return String(qs.reduce((a, q) => a + q.result.i, 0));",
     );
-    eprintln!("[bench] 1000 pipelined gets (one listener): {} pumps, {:.1} ms", r.pumps, r.ms);
+    eprintln!("[bench:{}] 1000 pipelined gets (one listener): {}", backend(), r.line());
     expect(&r, "499500");
 
     // 10 000 puts in one readwrite transaction (no listeners but the last).
@@ -406,7 +452,7 @@ fn bench_sequential_gets_take_few_pumps() {
          await new Promise((res, rej) => { tx.oncomplete = res; tx.onabort = () => rej(tx.error); });
          return 'ok';",
     );
-    eprintln!("[bench] 10 000 puts in one transaction: {} pumps, {:.1} ms", r.pumps, r.ms);
+    eprintln!("[bench:{}] 10 000 puts in one transaction: {}", backend(), r.line());
     expect(&r, "ok");
 
     // getAll over 11 000 records.
@@ -416,6 +462,61 @@ fn bench_sequential_gets_take_few_pumps() {
          const all = await new Promise((res) => { q.onsuccess = () => res(q.result); });
          return String(all.length);",
     );
-    eprintln!("[bench] getAll() of 11 000 records: {} pumps, {:.1} ms", r.pumps, r.ms);
+    eprintln!("[bench:{}] getAll() of 11 000 records: {}", backend(), r.line());
     expect(&r, "11000");
+}
+
+/// P2: what a COMMIT costs once it is a real disk write — relaxed (WAL, no
+/// fsync) and strict (the WAL fsynced before `complete`) — and what the frame
+/// thread pays while one is in flight (the longest pump).
+#[test]
+fn bench_awaited_commits() {
+    let c = ctx(&[]);
+    setup_bench(&c, "bench-commit", 10);
+    for durability in ["relaxed", "strict"] {
+        let r = run(
+            &c,
+            &format!(
+                "let n = 0;
+                 for (let i = 0; i < 200; i++) {{
+                   const tx = benchDb.transaction('s', 'readwrite', {{ durability: '{durability}' }});
+                   tx.objectStore('s').put({{ i, payload: 'c'.repeat(64) }}, 'c' + i);
+                   await new Promise((res, rej) => {{ tx.oncomplete = res; tx.onabort = () => rej(tx.error); }});
+                   n++;
+                 }}
+                 return String(n);"
+            ),
+        );
+        eprintln!("[bench:{}] 200 sequential awaited readwrite transactions, {durability}: {}", backend(), r.line());
+        expect(&r, "200");
+    }
+}
+
+/// The same scenarios, the same binary, on SQLite — plaintext, then
+/// encrypted — each in a fresh folder that is removed afterwards.
+#[cfg(feature = "indexeddb-sqlite")]
+#[test]
+fn every_scenario_again_on_sqlite() {
+    if std::env::var("REDJS_IDB_BACKEND").is_ok() {
+        return; // the child itself
+    }
+    let exe = std::env::current_exe().unwrap();
+    for variant in ["sqlite", "sqlite-encrypted"] {
+        let dir = std::env::temp_dir().join(format!("redjs-idb-libs-{}-{variant}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = std::process::Command::new(&exe)
+            .env("REDJS_IDB_BACKEND", variant)
+            .env("REDJS_IDB_DIR", &dir)
+            // One at a time: the server is one thread per process, and a
+            // Dexie bulkPut next door would be measured as the benchmark's.
+            .args(["--skip", "every_scenario_again_on_sqlite", "--nocapture", "--test-threads=1"])
+            .output()
+            .expect("spawn the sqlite pass");
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        for l in text.lines().filter(|l| l.starts_with("[bench") || l.starts_with("test ") || l.starts_with("test result")) {
+            eprintln!("  [{variant}] {l}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.status.success(), "the {variant} pass failed:\n{text}");
+    }
 }

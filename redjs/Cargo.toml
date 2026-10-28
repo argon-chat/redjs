@@ -162,6 +162,12 @@ required-features = ["indexeddb"]
 name = "idb_libs"
 required-features = ["indexeddb"]
 
+# A process killed mid-transaction leaves the SQLite database at its last
+# committed state (it spawns itself as the child it kills).
+[[test]]
+name = "idb_crash"
+required-features = ["indexeddb-sqlite"]
+
 # Examples that cannot compile without their host-class feature.
 [[example]]
 name = "yoga_conformance"
