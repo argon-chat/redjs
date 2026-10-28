@@ -149,6 +149,11 @@ name = "wpt_idb"
 harness = false
 required-features = ["indexeddb"]
 
+# Dexie / idb / idb-keyval / localForage, vendored unmodified in tests/libs/.
+[[test]]
+name = "idb_libs"
+required-features = ["indexeddb"]
+
 # Examples that cannot compile without their host-class feature.
 [[example]]
 name = "yoga_conformance"
