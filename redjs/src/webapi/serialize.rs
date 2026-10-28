@@ -679,9 +679,22 @@ struct Enc {
     stack: StackGuard,
 }
 
+/// V8's text for the same failure (`DataCloneErrorOutOfMemory`).
+const OUT_OF_MEMORY: &str = "Data cannot be cloned, out of memory.";
+
 impl Enc {
     fn put(&mut self, b: u8) {
         self.out.push(b);
+    }
+
+    /// Room for `n` more bytes, or a DataCloneError: a value too large to
+    /// serialize (a multi-GB ArrayBuffer, a picked video put into IndexedDB)
+    /// is an exception, never an out-of-memory abort of the process.
+    unsafe fn reserve(&mut self, n: u64) -> R {
+        match usize::try_from(n) {
+            Ok(n) if self.out.try_reserve(n).is_ok() => Ok(()),
+            _ => Err(dce(self.g, OUT_OF_MEMORY)),
+        }
     }
 
     fn varint(&mut self, mut v: u64) {
@@ -940,6 +953,7 @@ impl Enc {
                     self.varint(n);
                 }
                 if n > 0 && !info.data.is_null() {
+                    self.reserve(n)?;
                     self.out.extend_from_slice(core::slice::from_raw_parts(info.data as *const u8, n as usize));
                 }
                 Ok(())
@@ -1190,25 +1204,22 @@ impl Enc {
         if let Some(b) = super::blob::data_of(g, v) {
             let (range, mime, file) = (b.range(), b.mime.clone(), b.file.clone());
             if self.for_storage {
-                // Inline: the bytes now — read under the snapshot rule if the
-                // Blob is path-backed (see the module docs).
-                let bytes: std::borrow::Cow<[u8]> = match range.in_memory() {
-                    Some(b) => std::borrow::Cow::Borrowed(b),
-                    None => {
-                        if matches!(range.source, super::blob::Source::Disk(_)) && range.len > super::blob::SYNC_READ_ADVISORY_BYTES {
-                            super::blob::advise_sync_read("IndexedDB (a value written for storage)", range.len);
-                        }
-                        match range.read() {
-                            Ok(b) => std::borrow::Cow::Owned(b),
-                            Err(e) => return Err(e.to_js(g)),
-                        }
-                    }
-                };
+                // Inline: the bytes now, read straight into the output, under
+                // the snapshot rule if the Blob is path-backed (see the module
+                // docs). Room for them first: too large is a DataCloneError.
+                if matches!(range.source, super::blob::Source::Disk(_)) && range.len > super::blob::SYNC_READ_ADVISORY_BYTES {
+                    super::blob::advise_sync_read("IndexedDB (a value written for storage)", range.len);
+                }
                 self.memo(v);
                 self.put(if file.is_some() { tag::FILE } else { tag::BLOB });
                 self.rust_string(&mime);
-                self.varint(bytes.len() as u64);
-                self.out.extend_from_slice(&bytes);
+                self.varint(range.len);
+                self.reserve(range.len)?;
+                match range.read_into(&mut self.out) {
+                    Ok(()) => {}
+                    Err(super::blob::ReadError::OutOfMemory) => return Err(dce(g, OUT_OF_MEMORY)),
+                    Err(e) => return Err(e.to_js(g)),
+                }
                 if let Some(f) = file {
                     self.rust_string(&f.name);
                     self.f64(f.last_modified);

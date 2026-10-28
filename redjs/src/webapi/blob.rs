@@ -55,20 +55,27 @@ pub struct DiskFile {
     pub mtime: Option<SystemTime>,
 }
 
-/// Why a read failed — the two File API errors a read can end in.
+/// Why a read failed — the two File API errors a read can end in, plus the
+/// one that is really neither.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadError {
     /// The file is gone.
     NotFound,
     /// It changed since the `File` was made, or cannot be opened or read.
     NotReadable,
+    /// The buffer for the bytes could not be allocated. A READ reports it as
+    /// `NotReadableError`, which is what Chromium's FileReaderLoader does
+    /// when its ArrayBuffer cannot be made; a consumer with a better word
+    /// for it says that instead (the serializer: DataCloneError, out of
+    /// memory).
+    OutOfMemory,
 }
 
 impl ReadError {
     pub fn name(self) -> &'static str {
         match self {
             ReadError::NotFound => "NotFoundError",
-            ReadError::NotReadable => "NotReadableError",
+            ReadError::NotReadable | ReadError::OutOfMemory => "NotReadableError",
         }
     }
 
@@ -76,7 +83,7 @@ impl ReadError {
     pub fn message(self) -> &'static str {
         match self {
             ReadError::NotFound => "A requested file or directory could not be found at the time an operation was processed.",
-            ReadError::NotReadable => {
+            ReadError::NotReadable | ReadError::OutOfMemory => {
                 "The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired."
             }
         }
@@ -172,9 +179,24 @@ impl Range {
     /// Reads the bytes on THIS thread: a copy of a memory window, or the
     /// snapshot check and the read of a file range.
     pub fn read(&self) -> Result<Vec<u8>, ReadError> {
+        let mut out = Vec::new();
+        self.read_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// [`Range::read`], appending to `out` (the serializer writes a stored
+    /// File straight into its buffer, with no second copy). A buffer that
+    /// cannot grow is [`ReadError::OutOfMemory`], never an abort; on any
+    /// error `out` may hold part of the bytes.
+    pub fn read_into(&self, out: &mut Vec<u8>) -> Result<(), ReadError> {
         match &self.source {
-            Source::Memory(_) => self.in_memory().map(<[u8]>::to_vec).ok_or(ReadError::NotReadable),
-            Source::Disk(f) => read_disk(f, self.offset, self.len),
+            Source::Memory(_) => {
+                let b = self.in_memory().ok_or(ReadError::NotReadable)?;
+                out.try_reserve_exact(b.len()).map_err(|_| ReadError::OutOfMemory)?;
+                out.extend_from_slice(b);
+                Ok(())
+            }
+            Source::Disk(f) => read_disk(f, self.offset, self.len, out),
             Source::Unreadable(e) => Err(*e),
         }
     }
@@ -190,7 +212,7 @@ fn io_error(e: std::io::Error) -> ReadError {
 /// The snapshot check, then the read. The open shares read, write and delete
 /// (std's default on Windows), so a reader never blocks the app that owns the
 /// file.
-fn read_disk(f: &DiskFile, offset: u64, len: u64) -> Result<Vec<u8>, ReadError> {
+fn read_disk(f: &DiskFile, offset: u64, len: u64, out: &mut Vec<u8>) -> Result<(), ReadError> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(&f.path).map_err(io_error)?;
     let meta = file.metadata().map_err(io_error)?;
@@ -200,14 +222,15 @@ fn read_disk(f: &DiskFile, offset: u64, len: u64) -> Result<Vec<u8>, ReadError> 
     if offset.checked_add(len).is_none_or(|end| end > f.size) {
         return Err(ReadError::NotReadable);
     }
-    let mut out: Vec<u8> = Vec::new();
-    out.try_reserve_exact(len as usize).map_err(|_| ReadError::NotReadable)?;
+    let len = usize::try_from(len).map_err(|_| ReadError::OutOfMemory)?;
+    out.try_reserve_exact(len).map_err(|_| ReadError::OutOfMemory)?;
+    let at = out.len();
     file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
-    file.take(len).read_to_end(&mut out).map_err(io_error)?;
-    if out.len() as u64 != len {
+    file.take(len as u64).read_to_end(out).map_err(io_error)?;
+    if out.len() - at != len {
         return Err(ReadError::NotReadable);
     }
-    Ok(out)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

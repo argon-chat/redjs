@@ -752,6 +752,25 @@ mod jsc_tests {
         }
     }
 
+    /// A File too large to hold in memory, written for storage, is a
+    /// DataCloneError (V8's "out of memory" text) and the process lives. It was
+    /// an allocation abort (m25 review, finding 6). The File claims 4 EiB, so
+    /// the room for it is refused before anything is read.
+    #[test]
+    fn a_file_too_large_to_store_is_a_data_clone_error_not_an_abort() {
+        use crate::webapi::serialize::{serialize, Options};
+        let c = file_ctx();
+        let t = TempFile::new("huge.bin", b"tiny really");
+        unsafe {
+            let g = c.raw();
+            let (_, mtime) = super::snapshot(&t.0).unwrap();
+            let f = super::create_file(g, &t.0, "huge.bin", None, 1u64 << 62, mtime, "");
+            let e = serialize(g, f, &Options { for_storage: true, transfer: &[] }).unwrap_err();
+            crate::webapi::util::define(g, crate::glue::rjs_global(g), "err", e, 0);
+        }
+        ok(&c, "err instanceof DOMException && err.name === 'DataCloneError' && err.message === 'Data cannot be cloned, out of memory.'");
+    }
+
     #[test]
     fn a_large_synchronous_read_says_so_once() {
         let c = file_ctx();
