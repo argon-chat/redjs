@@ -1,0 +1,3 @@
+# Vendored upstream files: keep the exact bytes (the README's sha256s), never
+# convert line endings on checkout.
+* -text
