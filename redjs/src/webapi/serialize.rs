@@ -347,6 +347,55 @@ fn intrinsics(g: *mut c_void) -> Option<&'static Intrinsics> {
 
 pub(crate) fn forget(gone: crate::context::Gone) {
     registry().lock().unwrap().remove(&gone.key);
+    refused().lock().unwrap().remove(&gone.key);
+}
+
+// ---------------------------------------------------------------------------
+// Platform objects a host implements in script, which are not [Serializable]
+// ---------------------------------------------------------------------------
+//
+// A host that implements a platform interface as a script class (vue-native's
+// File System Access handles and its FileReader) makes ORDINARY objects, and
+// the algorithm would clone them as plain objects: `{}` from a
+// FileSystemFileHandle, with no error. HTML says a platform object that is not
+// [Serializable] is a DataCloneError. So the host names the prototype, and
+// the error names the interface, with Blink's words ("FileReader object could
+// not be cloned.").
+
+/// Per context: `(prototype, interface name)`, the prototypes protected.
+fn refused() -> &'static Mutex<HashMap<usize, Vec<(u64, String)>>> {
+    static R: OnceLock<Mutex<HashMap<usize, Vec<(u64, String)>>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Has any context marked a prototype? Every plain object pays one relaxed
+/// load for this check until one has.
+static ANY_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks `proto` as the prototype of a platform interface this runtime cannot
+/// serialize. Serializing a value whose prototype chain reaches it fails with
+/// DataCloneError "`<interface>` object could not be cloned.", for
+/// `structuredClone`, `postMessage` and IndexedDB alike.
+///
+/// # Safety
+/// `g` must be a live context with the web API installed, on its thread.
+pub unsafe fn refuse_platform_prototype(g: *mut c_void, proto: u64, interface: &str) {
+    if !is_cell(proto) {
+        return;
+    }
+    crate::ffi::redjs_protect(g, proto);
+    refused().lock().unwrap().entry(g as usize).or_default().push((proto, interface.to_string()));
+    ANY_REFUSED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// The interface `v` is an instance of, if a host refused it.
+unsafe fn refused_interface(g: *mut c_void, v: u64) -> Option<String> {
+    if !ANY_REFUSED.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    // Copied out, so the walk below runs with no lock held.
+    let list = refused().lock().unwrap().get(&(g as usize))?.clone();
+    list.into_iter().find(|&(p, _)| proto_chain_has(g, v, p)).map(|(_, name)| name)
 }
 
 pub unsafe fn install(g: *mut c_void) {
@@ -992,6 +1041,9 @@ impl Enc {
                 None => Err(dce(g, "This platform object could not be cloned.")),
             },
             brand::PLAIN => {
+                if let Some(interface) = refused_interface(g, v) {
+                    return Err(dce(g, &format!("{interface} object could not be cloned.")));
+                }
                 self.memo(v);
                 self.put(tag::OBJECT);
                 self.props(v, depth)?;
@@ -1856,6 +1908,28 @@ mod tests {
     /// `name/code` of what `src` throws, through JS so the DOMException is real.
     fn thrown(c: &crate::api::Context, src: &str) -> String {
         s(c, &format!("(() => {{ try {{ {src}; return 'no throw'; }} catch (e) {{ return (e instanceof DOMException ? 'DOMException:' : '') + e.name + '/' + (e.code ?? '-'); }} }})()"))
+    }
+
+    /// A host's script-defined platform class (vue-native's FileReader, its
+    /// file handles) is refused by name, a subclass of it too, and every
+    /// other plain object still clones.
+    #[test]
+    fn a_refused_platform_prototype_is_a_data_clone_error() {
+        let c = ctx();
+        s(&c, "globalThis.Reader = class Reader {}; globalThis.Sub = class extends Reader {}; 0");
+        unsafe {
+            let g = c.raw();
+            let reader = get(g, glue::rjs_global(g), "Reader");
+            super::refuse_platform_prototype(g, get(g, reader, "prototype"), "FileReader");
+        }
+        assert_eq!(thrown(&c, "structuredClone(new Reader())"), "DOMException:DataCloneError/25");
+        assert_eq!(thrown(&c, "structuredClone({ inner: [new Sub()] })"), "DOMException:DataCloneError/25");
+        assert_eq!(
+            s(&c, "(() => { try { structuredClone(new Reader()); } catch (e) { return e.message; } })()"),
+            "FileReader object could not be cloned."
+        );
+        ok(&c, "(() => { const r = structuredClone({ a: 1, b: { c: [2] } }); return r.a === 1 && r.b.c[0] === 2; })()");
+        ok(&c, "(() => { class Other {} return Object.getPrototypeOf(structuredClone(new Other())) === Object.prototype; })()");
     }
 
     #[test]
