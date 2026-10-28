@@ -188,6 +188,8 @@ pub enum ToClient {
     Aborted { tx: TxId, err: Option<Fail> },
     Deleted { req: ReqId, old: u64 },
     DatabaseList { req: ReqId, list: Vec<(Vec<u16>, u64)> },
+    /// `databases()` could not be answered (another instance holds the folder).
+    DatabasesFailed { req: ReqId, err: Fail },
     Estimate { req: ReqId, usage: u64, quota: u64 },
     /// The backend lost the database under a live connection (I/O failure,
     /// corruption, the file gone): `close` fires at the IDBDatabase. Never
@@ -306,14 +308,20 @@ pub fn send(m: ToServer) {
 }
 
 fn run(rx: Receiver<ToServer>, make: Option<BackendFactory>) {
-    let backend = match make {
+    let backend: Box<dyn Backend> = match make {
         Some(f) => f(),
-        None => {
-            // P1: memory only. The host (if any) still sets the quota; its
-            // folder and key are the SQLite backend's (P2).
-            let quota = super::host().map(|h| h.quota_bytes(0)).unwrap_or(super::DEFAULT_QUOTA);
-            Box::new(super::memory::MemoryBackend::new(quota))
-        }
+        None => match super::host() {
+            // A host says where the bytes live: SQLite in its folder, with
+            // its key — or, if it cannot say, a backend that refuses every
+            // open with the reason. Never a silent memory fallback.
+            #[cfg(feature = "indexeddb-sqlite")]
+            Some(h) => super::sqlite::from_host(h),
+            // A build without the SQLite backend: memory, at the host's quota.
+            #[cfg(not(feature = "indexeddb-sqlite"))]
+            Some(h) => Box::new(super::memory::MemoryBackend::new(h.quota_bytes(0))),
+            // No host: memory only, and the advisory below says so.
+            None => Box::new(super::memory::MemoryBackend::new(super::DEFAULT_QUOTA)),
+        },
     };
     super::latch(backend.describe());
     if !backend.persistent() {
@@ -425,18 +433,32 @@ impl Server {
                 // The COMMITTED version: a database mid-upgrade reports the
                 // version it had, and one whose first upgrade is still running
                 // has not been created yet (WPT get-databases).
-                let list = match self.backend.databases() {
-                    Ok(l) => l
-                        .into_iter()
-                        .map(|(n, v)| match self.dbs.get(&n).and_then(|e| e.active.as_ref()) {
-                            Some(Active::Upgrading { old, .. }) => (n, *old),
-                            _ => (n, v),
-                        })
-                        .filter(|(_, v)| *v > 0)
-                        .collect(),
-                    Err(_) => Vec::new(),
-                };
-                deliver(ctx, ToClient::DatabaseList { req, list });
+                match self.backend.databases() {
+                    Ok(l) => {
+                        let list = l
+                            .into_iter()
+                            .map(|(n, v)| match self.dbs.get(&n).and_then(|e| e.active.as_ref()) {
+                                Some(Active::Upgrading { old, .. }) => (n, *old),
+                                _ => (n, v),
+                            })
+                            .filter(|(_, v)| *v > 0)
+                            .collect();
+                        deliver(ctx, ToClient::DatabaseList { req, list });
+                    }
+                    // Another instance holds the folder (IDB-D3), or the
+                    // host's folder is unusable: the promise rejects, as an
+                    // open() would — never an empty list that looks true.
+                    Err(e) => {
+                        let err = match e {
+                            BackendError::Locked(d) => {
+                                super::advise_folder_locked(&d);
+                                Fail::new("UnknownError", format!("The databases are open in another instance of the app ({d})."))
+                            }
+                            other => from_backend(other),
+                        };
+                        deliver(ctx, ToClient::DatabasesFailed { req, err });
+                    }
+                }
             }
             ToServer::Estimate { ctx, req } => {
                 let (usage, quota) = (self.backend.usage(), self.backend.quota());

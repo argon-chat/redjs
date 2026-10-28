@@ -19,10 +19,17 @@
 //!
 //! # Backends
 //!
-//! P1 ships the memory backend ([`memory`]): nothing survives a restart, and
-//! the first use says so once. The SQLite backend (P2) drops in behind the
-//! same trait; [`IndexedDbHost`] is the seam its folder and key come through,
-//! and [`set_backend_factory`] is how a test (or P2) picks one.
+//! - **SQLite** ([`sqlite`], feature `indexeddb-sqlite`, m25 P2): one file per
+//!   database in the folder an installed [`IndexedDbHost`] names, encrypted
+//!   at rest when the host hands over a key. This is what runs whenever a host
+//!   is installed (vue-native: `vn-storage`), or a C# embedder called
+//!   `redjs_idb_configure`.
+//! - **Memory** ([`memory`]): no host installed (or a build without the
+//!   SQLite feature). Nothing survives a restart, and the first use says so
+//!   once. It is also the conformance reference both are tested against.
+//!
+//! [`set_backend_factory`] overrides the choice (tests, the WPT runner's
+//! `REDJS_IDB_BACKEND=sqlite`).
 //!
 //! # Divergences (§5.6), each named where it lives
 //!
@@ -44,6 +51,8 @@ pub mod key;
 pub mod keypath;
 pub mod memory;
 pub mod server;
+#[cfg(feature = "indexeddb-sqlite")]
+pub mod sqlite;
 mod store;
 pub mod svalue;
 
@@ -104,6 +113,44 @@ pub trait IndexedDbHost: Send + Sync {
 }
 
 static HOST: RwLock<Option<&'static dyn IndexedDbHost>> = RwLock::new(None);
+
+/// The host `redjs_idb_configure` installs: a folder, an optional raw key the
+/// embedder protects itself (PEWPEW: .NET `ProtectedData`), a quota.
+struct ConfiguredHost {
+    folder: std::path::PathBuf,
+    key: Option<[u8; 32]>,
+    quota: u64,
+}
+
+impl IndexedDbHost for ConfiguredHost {
+    fn folder(&self) -> Result<std::path::PathBuf, String> {
+        Ok(self.folder.clone())
+    }
+    fn encryption(&self) -> Result<IdbEncryption, String> {
+        Ok(match self.key {
+            Some(k) => IdbEncryption::Encrypted(k),
+            None => IdbEncryption::Plaintext,
+        })
+    }
+    fn quota_bytes(&self, _usage: u64) -> u64 {
+        self.quota
+    }
+    fn describe(&self) -> String {
+        self.folder.display().to_string()
+    }
+}
+
+/// Configures IndexedDB on disk without a Rust host (the C ABI's
+/// `redjs_idb_configure`). Only before the first IndexedDB use: after it the
+/// configuration is latched and this is refused.
+pub fn configure(folder: std::path::PathBuf, key: Option<[u8; 32]>, quota: u64) -> Result<(), String> {
+    if server::started() {
+        return Err("IndexedDB is already in use; its folder and key were latched at the first use".into());
+    }
+    let quota = if quota == 0 { DEFAULT_QUOTA } else { quota };
+    set_host(Box::leak(Box::new(ConfiguredHost { folder, key, quota })));
+    Ok(())
+}
 
 /// Installs the storage host. Effective for the process if called before the
 /// first IndexedDB use; after it, [`config_changed`] says what happens.
@@ -170,12 +217,14 @@ pub fn advisories() -> Vec<String> {
 }
 
 pub(crate) fn advise_memory_only(desc: &str) {
+    let why = if cfg!(feature = "indexeddb-sqlite") {
+        "no storage host is installed (IndexedDbHost / redjs_idb_configure)"
+    } else {
+        "this build has no persistent backend (the `indexeddb-sqlite` feature is off)"
+    };
     advise(
         "memory-only",
-        format!(
-            "IndexedDB: no persistent backend in this build — databases live in {desc}. This run is IN MEMORY ONLY: \
-             nothing survives a restart (persistence lands with the SQLite backend)."
-        ),
+        format!("IndexedDB: {why} — databases live in {desc}. This run is IN MEMORY ONLY: nothing survives a restart."),
     );
 }
 
@@ -186,6 +235,16 @@ pub(crate) fn advise_locked(name: &[u16], detail: &str) {
         format!(
             "IndexedDB: database \"{n}\" is open in another instance of the app ({detail}); open() fails with \
              UnknownError. Give the second instance its own storage folder (VN_APP_NAME=…)."
+        ),
+    );
+}
+
+pub(crate) fn advise_folder_locked(detail: &str) {
+    advise(
+        "locked-folder",
+        format!(
+            "IndexedDB: the storage folder is in use by another instance of the app ({detail}); databases() and \
+             open() fail with UnknownError. Give the second instance its own storage folder (VN_APP_NAME=…)."
         ),
     );
 }

@@ -788,6 +788,14 @@ unsafe fn deliver(g: *mut c_void, m: ToClient) {
                 unprotect(g, rej);
             }
         }
+        ToClient::DatabasesFailed { req, err } => {
+            if let Some((res, rej)) = take_promise(g, req) {
+                let e = dom(g, &err);
+                let _ = call(g, rej, UNDEF, &[e]);
+                unprotect(g, res);
+                unprotect(g, rej);
+            }
+        }
         ToClient::Estimate { req, usage, quota } => {
             let p = take_promise(g, req);
             if let Some((res, rej)) = p {

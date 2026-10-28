@@ -538,6 +538,16 @@ pub fn register_pump_source(src: PumpSource) {
 }
 
 /// Default per-pump delivery budget: 4 ms (m25 indexeddb-design §3.3).
+///
+/// What the budget buys, measured on both backends (m25 P2,
+/// tests/idb_libs.rs with `REDJS_IDB_BUDGET_US`): for reads and relaxed
+/// commits the time spent inside pumps is the same at any budget (~23-30 ms
+/// per 1000 awaited gets) — the budget only decides how many frames that work
+/// is spread over (6 at 4 ms, 12 at 2 ms, 24 at 1 ms, 1000 at 0). For strict
+/// commits most of it is waiting on the fsync. An embedder that knows its
+/// display rate should scale the budget with the frame (vue-native: a quarter
+/// of the refresh interval, capped here) — the wall-clock latency of a chain
+/// then stays the same at 60 and 144 Hz, and so does the frame's share.
 pub const DEFAULT_PUMP_BUDGET_US: u32 = 4000;
 static PUMP_BUDGET_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(DEFAULT_PUMP_BUDGET_US);
 

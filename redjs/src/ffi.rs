@@ -941,6 +941,44 @@ pub extern "C" fn redjs_idb_shutdown(timeout_ms: u32) -> i32 {
     }
 }
 
+/// Puts IndexedDB ON DISK for an embedder with no Rust host (PEWPEW's C#):
+/// `folder_utf8[..len]` holds one SQLite file per database, encrypted at rest
+/// under `key32` (32 raw bytes the embedder keeps safe, e.g. with .NET
+/// `ProtectedData`) or plaintext when it is null; `quota_bytes` 0 = 1 GiB.
+/// Process-wide, BEFORE the first script touches `indexedDB`: returns 0 on
+/// success, 1 once IndexedDB is already in use (the configuration is latched
+/// at the first use), 2 for a bad argument, 3 in a build without
+/// `indexeddb-sqlite`. Call `redjs_idb_shutdown` at exit.
+///
+/// # Safety
+/// `folder_utf8` must point at `len` readable bytes; `key32` at 32 or be null.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_idb_configure(folder_utf8: *const u8, len: usize, key32: *const u8, quota_bytes: u64) -> i32 {
+    #[cfg(feature = "indexeddb-sqlite")]
+    {
+        if folder_utf8.is_null() || len == 0 {
+            return 2;
+        }
+        let Ok(folder) = std::str::from_utf8(std::slice::from_raw_parts(folder_utf8, len)) else { return 2 };
+        let key = if key32.is_null() {
+            None
+        } else {
+            let mut k = [0u8; 32];
+            k.copy_from_slice(std::slice::from_raw_parts(key32, 32));
+            Some(k)
+        };
+        match crate::webapi::indexeddb::configure(std::path::PathBuf::from(folder), key, quota_bytes) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
+    }
+    #[cfg(not(feature = "indexeddb-sqlite"))]
+    {
+        let _ = (folder_utf8, len, key32, quota_bytes);
+        3
+    }
+}
+
 /// Registers (or clears, with null) the host CONTENT PROVIDER for fetch/Image
 /// local reads (W-HIVE). `read_fn` is
 /// `int32_t (const uint8_t* path_utf8, size_t path_len, void (*sink)(void* ctx, const uint8_t* ptr, size_t len), void* sink_ctx)`
