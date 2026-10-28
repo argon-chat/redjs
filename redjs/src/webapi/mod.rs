@@ -21,7 +21,8 @@
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
 //! window (+ host hooks), UIEvent / MouseEvent / KeyboardEvent / WheelEvent /
 //! FocusEvent / InputEvent / PointerEvent / DragEvent / DataTransfer,
-//! DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, `structuredClone`
+//! `navigator` (a real Navigator whose `userAgent` the embedder sets, see
+//! [`navigator`]), DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, `structuredClone`
 //! over a byte-level structured serializer (see [`serialize`]), the
 //! Streams queueing cores and the gzip/deflate codec, and the alert / confirm /
 //! prompt host hooks. Only genuinely dumb stubs remain in the embedded
@@ -67,6 +68,7 @@ pub mod http;
 pub mod image;
 #[cfg(feature = "audio")]
 pub mod mediadevices;
+pub mod navigator;
 #[cfg(feature = "audio")]
 pub mod osc;
 pub mod path2d;
@@ -173,6 +175,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     fsutil::forget(gone);
     geometry::forget(gone);
     headers::forget(gone);
+    navigator::forget(gone);
     path2d::forget(gone);
     permissions::forget(gone);
     platform::forget(gone);
@@ -321,6 +324,9 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // captured here, so a later override of `Map.prototype.entries` cannot
     // reach into a clone.
     serialize::install(g);
+    // Before mediadevices / permissions / clipboard: each of them attaches to
+    // whatever `navigator` exists, and it should be the real Navigator.
+    navigator::install(g);
     #[cfg(feature = "audio")]
     {
         audio::install(g);

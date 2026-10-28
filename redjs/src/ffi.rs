@@ -900,6 +900,20 @@ pub unsafe extern "C" fn redjs_webshim_install(
     crate::webapi::install(ctx, &scripts, &assets)
 }
 
+/// Sets what `navigator.userAgent` reports (UTF-16), for every context in the
+/// process, from the next read on — before or after install. `appVersion` and
+/// `platform` follow it. A null `ua` restores the default,
+/// `Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0`.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_navigator_set_user_agent(ua: *const u16, len: usize) {
+    if ua.is_null() {
+        crate::webapi::navigator::set_user_agent(None);
+        return;
+    }
+    let s = String::from_utf16_lossy(core::slice::from_raw_parts(ua, len));
+    crate::webapi::navigator::set_user_agent(Some(&s));
+}
+
 /// Registers (or clears, with null) the host CONTENT PROVIDER for fetch/Image
 /// local reads (W-HIVE). `read_fn` is
 /// `int32_t (const uint8_t* path_utf8, size_t path_len, void (*sink)(void* ctx, const uint8_t* ptr, size_t len), void* sink_ctx)`
