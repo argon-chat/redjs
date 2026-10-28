@@ -31,10 +31,10 @@ fail idb-binary-key-detached.any.js :: Detached TypedArrays must throw DataError
 
 # ---------------------------------------------------------------------------
 # Reading a Blob back is done through APIs redjs does not have: FileReader
-# (nested-cloning-common.js), XMLHttpRequest, blob: URLs for fetch. The Blob
-# round trip itself passes everywhere else (blob-valid-*, value, nested-cloning
-# without blobs) — what fails is the helper reading it.
-fail blob-composite-blob-reads.any.js :: Composite Blob Handling: Many blobs: fetch-blob-url
+# (nested-cloning-common.js), XMLHttpRequest. The Blob round trip itself passes
+# everywhere else (blob-valid-*, value, nested-cloning without blobs, and
+# blob-composite-blob-reads' fetch-blob-url since blob: URLs landed) — what
+# fails is the helper reading it.
 fail blob-contenttype.any.js :: Ensure that content type round trips when reading blob data
 fail nested-cloning-basic.any.js :: blob
 fail nested-cloning-large-multiple.any.js :: multiple requests of objects with blobs and large typed arrays
@@ -51,11 +51,6 @@ fail nested-cloning-small.any.js :: blob array
 fail nested-cloning-small.any.js :: blob array with key generator
 fail nested-cloning-small.any.js :: array of blobs and small typed arrays
 fail nested-cloning-small.any.js :: array of blobs and small typed arrays with key generator
-
-# ---------------------------------------------------------------------------
-# `new File(...)` at top level: File is not implemented (P3, design §4.14), so
-# the file throws before registering any test.
-harness keypath-special-identifiers.any.js
 
 # ---------------------------------------------------------------------------
 # JSC's Array.prototype.join detects cycles (so do V8 and SpiderMonkey): the
