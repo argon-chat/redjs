@@ -24,11 +24,12 @@
 //! # The synchronous consumers (A-F2)
 //!
 //! A fetch/Request/Response body, FormData's multipart encoding,
-//! `createImageBitmap`, `WebSocket.send`, a value serialized for storage
-//! (IndexedDB) and a multi-part `new Blob([file, …])` take the bytes NOW,
-//! through [`bytes_of`]. On a path-backed Blob that is a read on the UI
-//! thread; past 16 MiB it says so once per consumer, naming `stream()`.
-//! Making the fetch body async is phase 2 of the design.
+//! `WebSocket.send`, a value serialized for storage (IndexedDB) and a
+//! multi-part `new Blob([file, …])` take the bytes NOW, through
+//! [`bytes_of`]. On a path-backed Blob that is a read on the UI thread;
+//! past 16 MiB it says so once per consumer, naming `stream()`. Making the
+//! fetch body async is phase 2 of the design. (`createImageBitmap` and an
+//! `Image`'s `src` read a path-backed Blob asynchronously, like `text()`.)
 
 use core::ffi::c_void;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -146,6 +147,15 @@ impl Range {
                 b.get(o..o.checked_add(n)?)
             }
             _ => None,
+        }
+    }
+
+    /// The bytes of a memory window, where they are (no copy); the failure
+    /// of an Unreadable one. A Disk range is not in memory: read it.
+    pub fn read_in_place(&self) -> Result<&[u8], ReadError> {
+        match &self.source {
+            Source::Unreadable(e) => Err(*e),
+            _ => self.in_memory().ok_or(ReadError::NotReadable),
         }
     }
 

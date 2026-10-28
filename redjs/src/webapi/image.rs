@@ -4,9 +4,16 @@
 //! upload path reads them zero-copy via `redjs_image_pixels`.
 //!
 //! HTMLImageElement extends EventTarget (real prototype chain, real events):
-//! setting `src` decodes on the next pump tick (spec: loading is async) and
-//! fires `load`/`error` through the native dispatch (which also honors the
+//! setting `src` decodes on a later task (spec: loading is async) and fires
+//! `load`/`error` through the native dispatch (which also honors the
 //! onload/onerror handler properties).
+//!
+//! A `blob:` URL — `src` or a `createImageBitmap` string — resolves through
+//! the context's blob URL store, as `fetch()` resolves it: bytes in memory
+//! are decoded where they are, a path-backed Blob is read on the blob read
+//! threads under the snapshot rule, and an unknown or revoked URL is an
+//! `error` (a rejection). `createImageBitmap(file)` of a path-backed File
+//! reads it the same way rather than on the UI thread.
 
 use core::ffi::c_void;
 
@@ -135,35 +142,104 @@ unsafe extern "sysv64" fn image_set_src(g: *mut c_void, cf: *mut c_void) -> u64 
     }
     define(g, this, "complete", FALSE, 0);
 
-    // Spec: loading is async — decode on the next pump tick, then dispatch
+    // Spec: loading is async — decode on a later task, then dispatch
     // load/error through the real EventTarget machinery.
     crate::ffi::redjs_protect(g, this);
+    if is_blob_url(&src) {
+        // A blob: URL is resolved through this context's store, as fetch()
+        // resolves it: a path-backed one is read off the JS thread under the
+        // snapshot rule, an unknown or revoked one is an `error`.
+        let failed = src.clone();
+        blob_bytes(
+            g,
+            &src,
+            Box::new(move |g, r| unsafe {
+                let decoded = match r {
+                    Ok(bytes) => decode_rgba(bytes),
+                    Err(why) => {
+                        eprintln!("[js:image] failed to load '{failed}': {why}");
+                        None
+                    }
+                };
+                finish_load(g, this, &failed, decoded);
+            }),
+        );
+        return UNDEF;
+    }
     crate::web::schedule_native(g, 0.0, Box::new(move |g| {
-        let st = state(g);
         let fetched = fsutil::fetch_url(g, &src);
         let decoded = if fetched.ok { decode_rgba(&fetched.bytes) } else { None };
-        match decoded {
-            Some(data) => {
-                define(g, this, "width", enc_i32(data.width as i32), 0);
-                define(g, this, "height", enc_i32(data.height as i32), 0);
-                define(g, this, "naturalWidth", enc_i32(data.width as i32), 0);
-                define(g, this, "naturalHeight", enc_i32(data.height as i32), 0);
-                let bmp = create_bitmap(g, data);
-                glue::rjs_define(g, this, st.s_image, bmp, 0);
-                define(g, this, "complete", TRUE, 0);
-                let ev = events::new_trusted_event(g, "load");
-                events::dispatch(g, this, ev);
-            }
-            None => {
-                define(g, this, "complete", TRUE, 0);
-                eprintln!("[js:image] failed to load '{src}'");
-                let ev = events::new_trusted_event(g, "error");
-                events::dispatch(g, this, ev);
-            }
-        }
-        crate::ffi::redjs_unprotect(g, this);
+        finish_load(g, this, &src, decoded);
     }));
     UNDEF
+}
+
+/// The end of an `<img>` load: the bitmap and `load`, or `error`. Unprotects
+/// the element the setter protected.
+unsafe fn finish_load(g: *mut c_void, this: u64, src: &str, decoded: Option<BitmapData>) {
+    let st = state(g);
+    match decoded {
+        Some(data) => {
+            define(g, this, "width", enc_i32(data.width as i32), 0);
+            define(g, this, "height", enc_i32(data.height as i32), 0);
+            define(g, this, "naturalWidth", enc_i32(data.width as i32), 0);
+            define(g, this, "naturalHeight", enc_i32(data.height as i32), 0);
+            let bmp = create_bitmap(g, data);
+            glue::rjs_define(g, this, st.s_image, bmp, 0);
+            define(g, this, "complete", TRUE, 0);
+            let ev = events::new_trusted_event(g, "load");
+            events::dispatch(g, this, ev);
+        }
+        None => {
+            define(g, this, "complete", TRUE, 0);
+            eprintln!("[js:image] failed to load '{src}'");
+            let ev = events::new_trusted_event(g, "error");
+            events::dispatch(g, this, ev);
+        }
+    }
+    crate::ffi::redjs_unprotect(g, this);
+}
+
+fn is_blob_url(s: &str) -> bool {
+    s.len() >= 5 && s.as_bytes()[..5].eq_ignore_ascii_case(b"blob:")
+}
+
+/// What a blob: load hands back on the JS thread: the bytes, or why not.
+type BlobBytes = Box<dyn FnOnce(*mut c_void, Result<&[u8], String>) + Send>;
+
+/// The bytes a blob: URL names, delivered to `done` as a task of its own on
+/// the JS thread (never synchronously). Memory is used where it is, with no
+/// copy; a path-backed Blob is read on the blob read threads under the
+/// snapshot rule (`blob::read_async`).
+unsafe fn blob_bytes(g: *mut c_void, url: &str, done: BlobBytes) {
+    let Some(entry) = super::url::lookup(g, url) else {
+        super::blob::queue_task(
+            g,
+            Box::new(move |g| {
+                done(g, Err("it is not in the blob URL store (it was revoked, or never created in this context)".into()))
+            }),
+        );
+        return;
+    };
+    let range = entry.range;
+    if matches!(range.source, super::blob::Source::Disk(_)) {
+        super::blob::read_async(
+            g,
+            range,
+            Box::new(move |g, r| match r {
+                Ok(bytes) => done(g, Ok(&bytes)),
+                Err(e) => done(g, Err(format!("{}: {}", e.name(), e.message()))),
+            }),
+        );
+        return;
+    }
+    super::blob::queue_task(
+        g,
+        Box::new(move |g| match range.read_in_place() {
+            Ok(bytes) => done(g, Ok(bytes)),
+            Err(e) => done(g, Err(format!("{}: {}", e.name(), e.message()))),
+        }),
+    );
 }
 
 unsafe extern "sysv64" fn image_decode_method(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -231,6 +307,64 @@ unsafe extern "sysv64" fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -
         }
         _ => None,
     };
+
+    // A path-backed Blob and a blob: URL settle later: the bytes are read off
+    // the JS thread (or looked up in the store), then decoded here.
+    let deferred: Option<Box<dyn FnOnce(*mut c_void, BlobBytes)>> = match super::blob::data_of(g, source) {
+        Some(b) if matches!(b.source, super::blob::Source::Disk(_)) => {
+            let range = b.range();
+            Some(Box::new(move |g, done: BlobBytes| {
+                super::blob::read_async(
+                    g,
+                    range,
+                    Box::new(move |g, r| match r {
+                        Ok(bytes) => done(g, Ok(&bytes)),
+                        Err(e) => done(g, Err(format!("{}: {}", e.name(), e.message()))),
+                    }),
+                )
+            }))
+        }
+        Some(_) => None,
+        None if glue::rjs_kind(g, source) == 5 => {
+            let s = read_string(g, source).unwrap_or_default();
+            is_blob_url(&s).then(|| Box::new(move |g, done: BlobBytes| unsafe { blob_bytes(g, &s, done) }) as Box<dyn FnOnce(*mut c_void, BlobBytes)>)
+        }
+        None => None,
+    };
+    if let Some(start) = deferred {
+        let (mut res, mut rej, mut p) = (0u64, 0u64, 0u64);
+        if crate::ffi::redjs_promise_create(g, &mut res, &mut rej, &mut p) != 0 {
+            return UNDEF;
+        }
+        crate::ffi::redjs_protect(g, res);
+        crate::ffi::redjs_protect(g, rej);
+        start(
+            g,
+            Box::new(move |g, r| unsafe {
+                let decoded = match r {
+                    Ok(bytes) => decode_rgba(bytes).ok_or_else(|| "createImageBitmap: image decode failed".to_string()),
+                    Err(why) => Err(format!("createImageBitmap: the source could not be read ({why})")),
+                };
+                match decoded {
+                    Ok(full) => {
+                        let data = match region {
+                            Some((sx, sy, sw, sh)) => crop(&full, sx, sy, sw, sh),
+                            None => full,
+                        };
+                        let bmp = create_bitmap(g, data);
+                        let _ = call(g, res, UNDEF, &[bmp]);
+                    }
+                    Err(msg) => {
+                        let err = super::fetch::make_error(g, super::fetch::TYPE_ERR, "", &msg);
+                        let _ = call(g, rej, UNDEF, &[err]);
+                    }
+                }
+                crate::ffi::redjs_unprotect(g, res);
+                crate::ffi::redjs_unprotect(g, rej);
+            }),
+        );
+        return p;
+    }
 
     let full = match acquire_pixels(g, source) {
         Ok(d) => d,
@@ -324,4 +458,78 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (crate::capi::
     define(g, glue::rjs_global(g), "__rjs_sourcePixels", sp, 2);
 
     (bitmap_cls, bitmap, image)
+}
+
+#[cfg(test)]
+mod jsc_tests {
+    use crate::webapi::file::testing::*;
+    use crate::webapi::testing::*;
+
+    /// A 3×2 PNG, encoded here so the test carries no binary fixture.
+    fn png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    const LOAD: &str = "const load = (src) => new Promise(r => { const i = new Image(); \
+        i.onload = () => r([\x27load\x27, i.naturalWidth, i.naturalHeight, i.complete].join()); \
+        i.onerror = () => r(\x27error\x27); i.src = src; });";
+
+    /// `new Image().src = URL.createObjectURL(blob)` fires `load` (m25 review,
+    /// finding 1: it went through the local-file loader, which has no blob:
+    /// arm, and always fired `error`) — in memory and path-backed, with the
+    /// snapshot rule, and `error` for a revoked URL.
+    #[test]
+    fn an_image_loads_a_blob_url_from_memory_or_from_a_picked_file() {
+        let c = file_ctx();
+        let bytes = png();
+        let t = TempFile::new("pic.png", &bytes);
+        t.expose(&c, "picked");
+        unsafe {
+            let g = c.raw();
+            let proto = crate::webapi::util::get(g, crate::webapi::util::get(g, crate::glue::rjs_global(g), "Blob"), "prototype");
+            let b = crate::webapi::blob::create(g, proto, bytes.clone(), "image/png".into());
+            crate::webapi::util::define(g, crate::glue::rjs_global(g), "mem", b, 0);
+        }
+        assert_eq!(run(&c, &format!("{LOAD} return await load(URL.createObjectURL(mem));")), "load,3,2,true");
+        assert_eq!(run(&c, &format!("{LOAD} return await load(URL.createObjectURL(picked));")), "load,3,2,true");
+        assert_eq!(run(&c, &format!("{LOAD} return await load(URL.createObjectURL(picked.slice(0, 10)));")), "error");
+        assert_eq!(
+            run(&c, &format!("{LOAD} const u = URL.createObjectURL(mem); URL.revokeObjectURL(u); return await load(u);")),
+            "error"
+        );
+        // The load is a task of its own, never synchronous.
+        ok(&c, "(() => { const i = new Image(); globalThis.fired = false; i.onload = () => { fired = true; }; \
+                 i.src = URL.createObjectURL(mem); return fired === false && i.complete === false; })()");
+        // A file that changed since it was picked fails, as text() does.
+        s(&c, "globalThis.u = URL.createObjectURL(picked); 0");
+        std::fs::write(&t.0, b"no longer the picked file").unwrap();
+        assert_eq!(run(&c, &format!("{LOAD} return await load(u);")), "error");
+    }
+
+    #[test]
+    fn create_image_bitmap_takes_a_picked_file_and_a_blob_url() {
+        let c = file_ctx();
+        let t = TempFile::new("pic.png", &png());
+        t.expose(&c, "picked");
+        assert_eq!(run(&c, "const b = await createImageBitmap(picked); return [b.width, b.height].join();"), "3,2");
+        assert_eq!(run(&c, "const b = await createImageBitmap(picked, 1, 0, 2, 2); return [b.width, b.height].join();"), "2,2");
+        assert_eq!(
+            run(&c, "const b = await createImageBitmap(URL.createObjectURL(picked)); return [b.width, b.height].join();"),
+            "3,2"
+        );
+        assert!(run(&c, "const u = URL.createObjectURL(picked); URL.revokeObjectURL(u); await createImageBitmap(u);")
+            .starts_with("ERROR: TypeError"));
+        // The bitmap of a loaded <img> (the canvas-thumbnail idiom).
+        assert_eq!(
+            run(&c, &format!("{LOAD} const i = new Image(); await new Promise(r => {{ i.onload = r; i.src = URL.createObjectURL(picked); }}); \
+                 const b = await createImageBitmap(i); return [b.width, b.height].join();")),
+            "3,2"
+        );
+        std::fs::write(&t.0, b"changed").unwrap();
+        let r = run(&c, "await createImageBitmap(picked);");
+        assert!(r.starts_with("ERROR: TypeError") && r.contains("NotReadableError"), "{r}");
+    }
 }
