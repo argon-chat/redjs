@@ -107,6 +107,9 @@ fn registry() -> &'static Mutex<HashMap<usize, Scheduler>> {
 pub(crate) fn forget(gone: crate::context::Gone) {
     let dropped = registry().lock().unwrap().remove(&gone.key);
     drop(dropped); // outside the lock: native tasks may own Arcs with Drop impls
+    // Wakers are keyed by id, so a late `wake` for this id finds nothing.
+    let w = wakers().lock().unwrap().remove(&gone.id.0);
+    drop(w);
 }
 
 #[cfg(test)]
@@ -413,12 +416,315 @@ pub use crate::ffi::RjsPumpStats;
 
 unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64], flags: u32) {
     let mut out = 0u64;
+    let per_task = flags & PUMP_CHECKPOINT_PER_TASK != 0;
+    // Without a checkpoint per task, this callback's microtasks — and the
+    // "cleanup Indexed Database transactions" step — run at the end of the
+    // pump, not at the end of this callback. Modules that care (IndexedDB's
+    // IDB-D1 advisory) can ask.
+    let prev = COALESCED_CALLBACK.with(|c| c.replace(!per_task));
     let rc = glue::rjs_call(g, cb, ENC_UNDEFINED, args.as_ptr(), args.len() as u32, &mut out);
+    COALESCED_CALLBACK.with(|c| c.set(prev));
     if rc == 1 {
         crate::errors::report(g, out, crate::errors::ErrKind::PumpCallback);
     }
-    if flags & PUMP_CHECKPOINT_PER_TASK != 0 {
+    if per_task {
         checkpoint(g);
+    }
+}
+
+thread_local! {
+    /// Set while a timer / rAF / idle callback runs in a pump that checkpoints
+    /// only once at its end (no `PUMP_CHECKPOINT_PER_TASK`).
+    static COALESCED_CALLBACK: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Is a pumped timer, rAF or idle callback running right now whose microtask
+/// checkpoint is coalesced into the end of the pump (the window's shape, see
+/// [`PUMP_CHECKPOINT_PER_TASK`])? IndexedDB reads it to name its one timing
+/// divergence (IDB-D1) when a transaction is created there.
+pub fn in_coalesced_callback() -> bool {
+    COALESCED_CALLBACK.with(|c| c.get())
+}
+
+// ---------------------------------------------------------------------------
+// Waking a context, and the one bounded delivery wait per pump
+// ---------------------------------------------------------------------------
+//
+// Work produced on other threads (the IndexedDB server's results today, a
+// worker's messages next) lands in a per-context inbox and is delivered on the
+// context's own thread by a PUMP SOURCE. Two things are shared by every source,
+// on purpose (m25 workers-design §3.14.3):
+//
+// - ONE WAKER per context, keyed by `ContextId` (never by address): a producer
+//   pushes, then calls [`wake`]. A worker loop blocked in its wait, or a window
+//   pump inside its bounded wait, returns at once.
+// - ONE BUDGET per pump: while any source still has work in flight, the pump
+//   keeps delivering — and, when nothing is ready, waits on the waker — until
+//   the budget is spent. A browser runs tasks continuously between frames; a
+//   pump that only looked once per frame would cost an awaited IndexedDB
+//   request a whole frame per hop (`for … await store.get()` over 1000 ids:
+//   ~6 s at 165 Hz instead of ~0.1 s). The budget bounds what the frame pays.
+
+/// A context's waker. Waiting is done only by the context's own thread.
+pub struct Waker {
+    sys: wake_sys::Event,
+}
+
+impl Waker {
+    fn new() -> Waker {
+        Waker { sys: wake_sys::Event::new() }
+    }
+
+    /// Wakes the waiter (or the next wait, if nobody is waiting yet).
+    pub fn wake(&self) {
+        self.sys.set();
+    }
+
+    /// Waits until woken or until `timeout` elapses; `true` = woken. The
+    /// deadline is honoured to well under a millisecond on Windows (a
+    /// high-resolution waitable timer, not a condvar's 15.6 ms tick).
+    pub fn wait(&self, timeout: std::time::Duration) -> bool {
+        self.sys.wait(timeout)
+    }
+}
+
+fn wakers() -> &'static Mutex<HashMap<u64, std::sync::Arc<Waker>>> {
+    static W: OnceLock<Mutex<HashMap<u64, std::sync::Arc<Waker>>>> = OnceLock::new();
+    W.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The waker of context `id`, created on first ask.
+pub fn waker(id: crate::context::ContextId) -> std::sync::Arc<Waker> {
+    wakers().lock().unwrap().entry(id.0).or_insert_with(|| std::sync::Arc::new(Waker::new())).clone()
+}
+
+/// Wakes context `id` from any thread. A no-op for an id that never asked
+/// for a waker (nobody can be waiting on it).
+pub fn wake(id: crate::context::ContextId) {
+    let w = wakers().lock().unwrap().get(&id.0).cloned();
+    if let Some(w) = w {
+        w.wake();
+    }
+}
+
+/// A producer of results for a context, delivered inside the pump's budget.
+#[derive(Clone, Copy)]
+pub struct PumpSource {
+    /// Can a result still arrive for `g` — is anything this source started
+    /// still outstanding? `false` lets the pump skip the wait altogether.
+    pub inflight: unsafe fn(*mut c_void) -> bool,
+    /// Is something already queued for `g` (cheap; polled while spinning)?
+    pub ready: unsafe fn(*mut c_void) -> bool,
+    /// Deliver what is queued for `g`, each item one task (it checkpoints
+    /// after each). Returns how many tasks ran.
+    pub drain: unsafe fn(*mut c_void) -> usize,
+}
+
+static ANY_SOURCE: AtomicBool = AtomicBool::new(false);
+
+fn sources() -> &'static RwLock<Vec<PumpSource>> {
+    static S: OnceLock<RwLock<Vec<PumpSource>>> = OnceLock::new();
+    S.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Registers a pump source, process-wide and for good (a module registers at
+/// install; the same `drain` twice is a no-op).
+pub fn register_pump_source(src: PumpSource) {
+    let mut s = sources().write().unwrap();
+    if !s.iter().any(|x| x.drain as usize == src.drain as usize) {
+        s.push(src);
+    }
+    ANY_SOURCE.store(true, Ordering::Release);
+}
+
+/// Default per-pump delivery budget: 4 ms (m25 indexeddb-design §3.3).
+pub const DEFAULT_PUMP_BUDGET_US: u32 = 4000;
+static PUMP_BUDGET_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(DEFAULT_PUMP_BUDGET_US);
+
+/// Sets the per-pump delivery budget, process-wide. 0 = deliver what is
+/// already queued and never wait (a worker loop's setting: its own wait on the
+/// same waker covers latency).
+pub fn set_pump_budget_us(us: u32) {
+    PUMP_BUDGET_US.store(us, Ordering::Relaxed);
+}
+
+pub fn pump_budget_us() -> u32 {
+    PUMP_BUDGET_US.load(Ordering::Relaxed)
+}
+
+/// How long the pump spins on `ready` before blocking on the waker: a thread
+/// hop through the OS costs ~10-50 µs, a result that is already on its way
+/// usually lands sooner.
+const SPIN: std::time::Duration = std::time::Duration::from_micros(20);
+
+/// Every source, within one budget. Cheap when nothing is in flight: one
+/// relaxed load per source.
+unsafe fn drain_sources(g: *mut c_void) {
+    if !ANY_SOURCE.load(Ordering::Acquire) {
+        return;
+    }
+    let srcs: Vec<PumpSource> = sources().read().unwrap().clone();
+    let busy = |srcs: &[PumpSource]| srcs.iter().any(|s| (s.inflight)(g) || (s.ready)(g));
+    if !busy(&srcs) {
+        return;
+    }
+    let start = Instant::now();
+    let deadline = start + std::time::Duration::from_micros(pump_budget_us() as u64);
+    let waker = crate::context::id_of(g).map(waker);
+    loop {
+        let mut ran = 0usize;
+        for s in &srcs {
+            ran += (s.drain)(g);
+        }
+        let now = Instant::now();
+        if now >= deadline || !srcs.iter().any(|s| (s.inflight)(g)) {
+            break;
+        }
+        if ran > 0 || srcs.iter().any(|s| (s.ready)(g)) {
+            continue;
+        }
+        // Nothing ready, something in flight: spin briefly, then sleep on the
+        // waker until it fires or the budget is spent.
+        let spin_until = (now + SPIN).min(deadline);
+        let mut got = false;
+        while Instant::now() < spin_until {
+            if srcs.iter().any(|s| (s.ready)(g)) {
+                got = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if got {
+            continue;
+        }
+        let Some(w) = &waker else { break };
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        w.wait(deadline - now);
+    }
+}
+
+#[cfg(windows)]
+mod wake_sys {
+    //! An auto-reset event plus a high-resolution waitable timer: the wait
+    //! returns when the event is set or the timer fires, whichever is first.
+    //! Raw kernel32 declarations — no dependency.
+    use core::ffi::c_void;
+    use std::time::Duration;
+
+    type Handle = *mut c_void;
+    const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: u32 = 0x2;
+    const TIMER_ALL_ACCESS: u32 = 0x001F_0003;
+    const INFINITE: u32 = 0xFFFF_FFFF;
+    const WAIT_OBJECT_0: u32 = 0;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateEventW(attrs: *mut c_void, manual_reset: i32, initial: i32, name: *const u16) -> Handle;
+        fn SetEvent(h: Handle) -> i32;
+        fn CreateWaitableTimerExW(attrs: *mut c_void, name: *const u16, flags: u32, access: u32) -> Handle;
+        fn SetWaitableTimer(h: Handle, due: *const i64, period: i32, cb: *mut c_void, arg: *mut c_void, resume: i32) -> i32;
+        fn CancelWaitableTimer(h: Handle) -> i32;
+        fn WaitForMultipleObjects(n: u32, handles: *const Handle, wait_all: i32, ms: u32) -> u32;
+        fn WaitForSingleObject(h: Handle, ms: u32) -> u32;
+        fn CloseHandle(h: Handle) -> i32;
+    }
+
+    pub struct Event {
+        ev: Handle,
+        timer: Handle,
+    }
+
+    // Handles are process-global kernel objects; SetEvent is thread-safe, and
+    // only the owning context's thread ever waits (so the timer is never armed
+    // from two threads).
+    unsafe impl Send for Event {}
+    unsafe impl Sync for Event {}
+
+    impl Event {
+        pub fn new() -> Event {
+            unsafe {
+                let ev = CreateEventW(core::ptr::null_mut(), 0, 0, core::ptr::null());
+                let mut timer = CreateWaitableTimerExW(
+                    core::ptr::null_mut(),
+                    core::ptr::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS,
+                );
+                if timer.is_null() {
+                    // Before Windows 10 1803: a timer at the system tick.
+                    timer = CreateWaitableTimerExW(core::ptr::null_mut(), core::ptr::null(), 0, TIMER_ALL_ACCESS);
+                }
+                Event { ev, timer }
+            }
+        }
+
+        pub fn set(&self) {
+            unsafe {
+                SetEvent(self.ev);
+            }
+        }
+
+        pub fn wait(&self, timeout: Duration) -> bool {
+            unsafe {
+                if self.timer.is_null() {
+                    let ms = timeout.as_millis().clamp(1, (INFINITE - 1) as u128) as u32;
+                    return WaitForSingleObject(self.ev, ms) == WAIT_OBJECT_0;
+                }
+                // Relative due time, in 100 ns units, as a negative number.
+                let due: i64 = -((timeout.as_nanos() / 100).max(1) as i64);
+                SetWaitableTimer(self.timer, &due, 0, core::ptr::null_mut(), core::ptr::null_mut(), 0);
+                let hs = [self.ev, self.timer];
+                let r = WaitForMultipleObjects(2, hs.as_ptr(), 0, INFINITE);
+                CancelWaitableTimer(self.timer);
+                r == WAIT_OBJECT_0
+            }
+        }
+    }
+
+    impl Drop for Event {
+        fn drop(&mut self) {
+            unsafe {
+                if !self.ev.is_null() {
+                    CloseHandle(self.ev);
+                }
+                if !self.timer.is_null() {
+                    CloseHandle(self.timer);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod wake_sys {
+    use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
+
+    pub struct Event {
+        set: Mutex<bool>,
+        cv: Condvar,
+    }
+
+    impl Event {
+        pub fn new() -> Event {
+            Event { set: Mutex::new(false), cv: Condvar::new() }
+        }
+
+        pub fn set(&self) {
+            *self.set.lock().unwrap() = true;
+            self.cv.notify_one();
+        }
+
+        pub fn wait(&self, timeout: Duration) -> bool {
+            let g = self.set.lock().unwrap();
+            let (mut g, _) = self.cv.wait_timeout_while(g, timeout, |s| !*s).unwrap();
+            let woken = *g;
+            *g = false;
+            woken
+        }
     }
 }
 
@@ -652,6 +958,10 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         if per_task {
             checkpoint(g);
         }
+        // Results produced on other threads (IndexedDB), delivered — and
+        // waited for — within one bounded budget. One relaxed load when no
+        // source is registered or nothing is in flight.
+        drain_sources(g);
     }
 
     #[cfg(feature = "audio")]
