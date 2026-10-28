@@ -16,12 +16,25 @@ unsafe extern "sysv64" fn get_random_values(g: *mut c_void, cf: *mut c_void) -> 
     if glue::rjs_typedarray_info(g, view, &mut ta) != 0 {
         return throw_type_error(g, "crypto.getRandomValues: argument must be an integer typed array");
     }
-    // Spec: integer-typed arrays only (no Float32/64), quota 65536 bytes.
-    if matches!(ta.kind, 8 | 9 | 12) {
-        return throw_type_error(g, "crypto.getRandomValues: argument must be an integer typed array");
+    // Spec: integer-typed arrays only — a Float16/32/64Array or DataView is
+    // "a TypeMismatchError DOMException" (a non-view is the IDL TypeError
+    // above) — and at most 65536 bytes, past which "a QuotaExceededError".
+    if matches!(ta.kind, 8 | 9 | 12 | 13) {
+        return super::domexception::throw(
+            g,
+            "TypeMismatchError",
+            "Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView is of type \
+             float or a DataView, which is not an integer array type.",
+        );
     }
     if ta.byte_length > 65536 {
-        return throw_error(g, 0, "crypto.getRandomValues: requested more than 65536 bytes (QuotaExceededError)");
+        let msg = format!(
+            "Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length ({}) \
+             exceeds the number of bytes of entropy available via this API (65536).",
+            ta.byte_length
+        );
+        glue::rjs_throw(g, super::domexception::create_quota_exceeded(g, &msg, Some(65536.0), Some(ta.byte_length as f64)));
+        return UNDEF;
     }
     if ta.detached == 0 && !ta.data.is_null() && ta.byte_length > 0 {
         let buf = core::slice::from_raw_parts_mut(ta.data as *mut u8, ta.byte_length as usize);
@@ -58,7 +71,13 @@ unsafe extern "sysv64" fn subtle_digest(g: *mut c_void, cf: *mut c_void) -> u64 
         "SHA-256" => sha2::Sha256::digest(bytes).to_vec(),
         "SHA-384" => sha2::Sha384::digest(bytes).to_vec(),
         "SHA-512" => sha2::Sha512::digest(bytes).to_vec(),
-        other => return rejected_promise(g, 0, &format!("crypto.subtle.digest: unsupported algorithm \"{other}\" (NotSupportedError)")),
+        other => {
+            return super::domexception::rejected(
+                g,
+                "NotSupportedError",
+                &format!("crypto.subtle.digest: unsupported algorithm \"{other}\""),
+            )
+        }
     };
     // Spec returns an ArrayBuffer; build it as a fresh Uint8Array's buffer.
     let u8v = make_u8(g, &hash);

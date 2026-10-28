@@ -61,7 +61,8 @@ unsafe extern "sysv64" fn js_atob(g: *mut c_void, cf: *mut c_void) -> u64 {
             glue::rjs_string16(g, units.as_ptr(), units.len(), &mut out);
             out
         }
-        None => throw_error(g, 0, "atob: the string is not correctly encoded"),
+        // HTML: "throw an InvalidCharacterError DOMException".
+        None => super::domexception::throw(g, "InvalidCharacterError", "atob: the string is not correctly encoded"),
     }
 }
 
@@ -71,7 +72,11 @@ unsafe extern "sysv64" fn js_btoa(g: *mut c_void, cf: *mut c_void) -> u64 {
     for ch in input.chars() {
         let code = ch as u32;
         if code > 255 {
-            return throw_error(g, 0, "btoa: the string contains characters outside of the Latin1 range");
+            return super::domexception::throw(
+                g,
+                "InvalidCharacterError",
+                "btoa: the string contains characters outside of the Latin1 range",
+            );
         }
         bytes.push(code as u8);
     }
@@ -175,12 +180,13 @@ unsafe extern "sysv64" fn bc_post_message(g: *mut c_void, cf: *mut c_void) -> u6
         return throw_type_error(g, "BroadcastChannel.postMessage on wrong this");
     }
     if get(g, slots, "closed") == 0x7 {
-        return throw_error(g, 0, "BroadcastChannel.postMessage: channel is closed");
+        // Spec: "If this's closed flag is true, then throw an InvalidStateError".
+        return super::domexception::throw(g, "InvalidStateError", "BroadcastChannel.postMessage: channel is closed");
     }
     let name = read_string(g, get(g, slots, "name")).unwrap_or_default();
     let data = match clone::clone(g, cf_arg(cf, 0)) {
         Ok(v) => v,
-        Err(e) => return throw_error(g, 0, &e),
+        Err(e) => return super::domexception::throw(g, "DataCloneError", &e),
     };
     crate::ffi::redjs_protect(g, data);
 

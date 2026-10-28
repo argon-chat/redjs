@@ -13,7 +13,9 @@
 //! the native player at all, and deleting one because the folder looks like a
 //! polyfill directory would remove a working API, not a crutch.
 //!
-//! Native here: Event / CustomEvent / EventTarget, TextEncoder / TextDecoder,
+//! Native here: DOMException / QuotaExceededError (every "throw an `X`
+//! DOMException" in this tree is a real one — see [`domexception`]),
+//! Event / CustomEvent / EventTarget, TextEncoder / TextDecoder,
 //! Blob, URL / URLSearchParams, Headers / Request / Response / fetch (over a
 //! real HTTP/1.1 + TLS client, see [`http`]),
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
@@ -52,6 +54,7 @@ pub mod compression;
 pub mod crypto;
 pub mod dialogs;
 pub mod dom;
+pub mod domexception;
 pub mod events;
 pub mod fetch;
 pub mod formdata;
@@ -156,6 +159,7 @@ unsafe extern "sysv64" fn print(g: *mut c_void, cf: *mut c_void) -> u64 {
 pub(crate) fn forget(gone: crate::context::Gone) {
     util::forget_state(gone);
     abort::forget(gone);
+    domexception::forget(gone);
     #[cfg(feature = "audio")]
     {
         audio::forget(gone);
@@ -261,6 +265,11 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     (*st_mut).custom_event = custom_event;
     let et_proto = event_target.proto;
     (*st_mut).event_target = event_target;
+
+    // Before any class whose methods throw "an X DOMException": they resolve
+    // the prototype at throw time, but nothing here may throw a plain Error
+    // that a later install would have made a DOMException.
+    domexception::install(g);
 
     textcodec::install(g);
 

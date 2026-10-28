@@ -302,10 +302,16 @@ fn webapi_platform(ctx: &Context) {
         .unwrap();
     assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,36,true,true");
     assert_eq!(
-        ctx.eval("(() => { try { crypto.getRandomValues(new Float32Array(2)); return 'no'; } catch (e) { return e instanceof TypeError ? 'type' : 'other'; } })()")
+        // WebCrypto: a float view is a TypeMismatchError DOMException, too many
+        // bytes a QuotaExceededError, a non-view the IDL TypeError.
+        ctx.eval("(() => { const r = []; \
+             try { crypto.getRandomValues(new Float32Array(2)); r.push('no'); } catch (e) { r.push(e instanceof DOMException ? e.name : 'other'); } \
+             try { crypto.getRandomValues(new Uint8Array(65537)); r.push('no'); } catch (e) { r.push(e instanceof QuotaExceededError ? e.code + ':' + e.requested : 'other'); } \
+             try { crypto.getRandomValues({}); r.push('no'); } catch (e) { r.push(e instanceof TypeError ? 'type' : 'other'); } \
+             return r.join(); })()")
             .map(|v| ctx.to_rust_string(v).unwrap())
             .unwrap(),
-        "type"
+        "TypeMismatchError,22:65537,type"
     );
 
     // structuredClone: deep, cycle-safe, typed arrays, Map/Set/Date preserved.
@@ -321,7 +327,7 @@ fn webapi_platform(ctx: &Context) {
         .unwrap();
     assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,true,true,2.5,true,5,true,12345,true");
     assert_eq!(
-        ctx.eval("(() => { try { structuredClone({ f: () => 1 }); return 'no'; } catch (e) { return e.message.includes('DataCloneError') ? 'dce' : 'other'; } })()")
+        ctx.eval("(() => { try { structuredClone({ f: () => 1 }); return 'no'; } catch (e) { return e instanceof DOMException && e.name === 'DataCloneError' && e.code === 25 ? 'dce' : 'other'; } })()")
             .map(|v| ctx.to_rust_string(v).unwrap())
             .unwrap(),
         "dce"

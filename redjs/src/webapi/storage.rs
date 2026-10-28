@@ -42,14 +42,13 @@
 //! instances, and the answer is to give them different folders — see the
 //! embedder's documentation.
 //!
-//! # Divergence 2: `QuotaExceededError` is an `Error`, not a `DOMException`
+//! # (Closed) Divergence 2: `QuotaExceededError`
 //!
-//! There is no `DOMException` anywhere in redjs. `setItem` past the quota throws
-//! an `Error` whose `name` is `"QuotaExceededError"` and whose `code` is `22`,
-//! with Chrome's message text — so `catch (e) { if (e.name ===
-//! "QuotaExceededError") … }`, which is how essentially all real code checks,
-//! behaves identically. `e instanceof DOMException` does not, because the class
-//! does not exist to be an instance of.
+//! `setItem` past the quota throws a real `QuotaExceededError` — the WebIDL
+//! derived interface, so `e instanceof DOMException`, `e.name ===
+//! "QuotaExceededError"` and `e.code === 22` all hold, with Chrome's message
+//! text and `quota`/`requested` null (Web Storage does not report them). Before
+//! `webapi::domexception` existed this was an `Error` with that name.
 //!
 //! # Divergence 3: values round-trip through UTF-8
 //!
@@ -434,17 +433,11 @@ unsafe extern "sysv64" fn storage_clear(g: *mut c_void, cf: *mut c_void) -> u64 
     UNDEF
 }
 
-/// The `QuotaExceededError` a browser throws, minus the `DOMException` brand
-/// redjs does not have (module header, divergence 2).
+/// The `QuotaExceededError` a browser throws — the real derived interface
+/// (WebIDL `QuotaExceededError`), `quota`/`requested` null as Web Storage
+/// leaves them.
 unsafe fn throw_quota_exceeded(g: *mut c_void, msg: &str) -> u64 {
-    let m: Vec<u16> = msg.encode_utf16().collect();
-    let mut err = UNDEF;
-    if glue::rjs_error_create(g, 0, m.as_ptr(), m.len(), &mut err) != 0 {
-        return UNDEF;
-    }
-    define(g, err, "name", js_string(g, "QuotaExceededError"), 2);
-    define(g, err, "code", enc_i32(22), 2);
-    glue::rjs_throw(g, err);
+    glue::rjs_throw(g, super::domexception::create_quota_exceeded(g, msg, None, None));
     UNDEF
 }
 
@@ -971,9 +964,10 @@ mod jsc_tests {
             s(
                 &c,
                 "(() => { try { localStorage.setItem('b', 'x'.repeat(1000)); return 'no throw'; } \
-                  catch (e) { return e.name + '/' + e.code; } })()"
+                  catch (e) { return e.name + '/' + e.code + '/' + (e instanceof QuotaExceededError) \
+                    + '/' + (e instanceof DOMException) + '/' + e.quota; } })()"
             ),
-            "QuotaExceededError/22"
+            "QuotaExceededError/22/true/true/null"
         );
         // And what fits still fits.
         s(&c, "localStorage.setItem('small', 'ok')");

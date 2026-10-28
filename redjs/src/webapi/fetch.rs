@@ -528,7 +528,7 @@ unsafe fn signal_is_aborted(g: *mut c_void, signal: u64) -> bool {
 unsafe fn signal_reason(g: *mut c_void, signal: u64) -> u64 {
     let r = if is_cell(signal) { get(g, signal, "reason") } else { UNDEF };
     if r == UNDEF || r == NULL {
-        make_error(g, ERR, "AbortError", "The operation was aborted")
+        super::domexception::create(g, "AbortError", "The operation was aborted")
     } else {
         r
     }
@@ -591,7 +591,7 @@ unsafe fn settle(g: *mut c_void, d: Delivery) {
             // Browsers reject `fetch` with a TypeError for every network
             // failure; the message carries what actually went wrong.
             let err = match e.kind {
-                http::ErrorKind::Aborted => make_error(g, ERR, "AbortError", "The operation was aborted"),
+                http::ErrorKind::Aborted => super::domexception::create(g, "AbortError", "The operation was aborted"),
                 _ => make_error(g, TYPE_ERR, "", &format!("Failed to fetch {}", e.message)),
             };
             let _ = call(g, d.reject, UNDEF, &[err]);
@@ -1122,10 +1122,11 @@ mod jsc_tests {
                 "const ac = new AbortController(); \
                  const p = fetch('http://127.0.0.1:{port}/silent', {{ signal: ac.signal }}); \
                  setTimeout(() => ac.abort(), 200); \
-                 try {{ await p; return 'RESOLVED'; }} catch (e) {{ return e.name; }}"
+                 try {{ await p; return 'RESOLVED'; }} catch (e) {{ \
+                   return e instanceof DOMException ? e.name + '/' + e.code : 'not a DOMException: ' + e.name; }}"
             ),
         );
-        assert_eq!(out, "AbortError");
+        assert_eq!(out, "AbortError/20");
         assert!(started.elapsed() < Duration::from_secs(15), "abort did not cut the connection short");
     }
 

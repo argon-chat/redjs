@@ -4,7 +4,7 @@
 //! EventTarget), so `addEventListener('abort', …)`, `onabort` and `signal
 //! .aborted/.reason/.throwIfAborted()` all behave per spec. Statics:
 //! `AbortSignal.abort(reason)` and `AbortSignal.timeout(ms)` (fires through
-//! the native scheduler with a spec `TimeoutError`-named error).
+//! the native scheduler with a spec `TimeoutError` DOMException).
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -66,12 +66,9 @@ pub unsafe fn abort_signal(g: *mut c_void, sig: u64, reason: u64) {
     events::dispatch(g, sig, ev);
 }
 
+/// Spec: "a new `AbortError` / `TimeoutError` DOMException".
 unsafe fn default_reason(g: *mut c_void, name: &str, msg: &str) -> u64 {
-    let m: Vec<u16> = msg.encode_utf16().collect();
-    let mut err = UNDEF;
-    glue::rjs_error_create(g, 0, m.as_ptr(), m.len(), &mut err);
-    define(g, err, "name", js_string(g, name), 0);
-    err
+    super::domexception::create(g, name, msg)
 }
 
 unsafe fn this_signal_slots(g: *mut c_void, cf: *mut c_void) -> Option<u64> {

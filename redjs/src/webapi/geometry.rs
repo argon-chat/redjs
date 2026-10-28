@@ -762,11 +762,11 @@ unsafe extern "sysv64" fn op_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     match d.m.to_css() {
         Some(s) => js_string(g, &s),
         // Spec: "If one or more of m11 … m44 are a non-finite number, then
-        // throw an InvalidStateError". There is no DOMException here, so it is
-        // a TypeError carrying the spec's name verbatim.
-        None => throw_type_error(
+        // throw an InvalidStateError DOMException".
+        None => super::domexception::throw(
             g,
-            "InvalidStateError: DOMMatrix.toString on a matrix with non-finite components",
+            "InvalidStateError",
+            "DOMMatrix.toString on a matrix with non-finite components",
         ),
     }
 }
@@ -1101,6 +1101,16 @@ mod tests {
 #[cfg(test)]
 mod jsc_tests {
     use crate::webapi::testing::*;
+
+    #[test]
+    fn to_string_of_a_non_finite_matrix_is_an_invalid_state_error() {
+        let c = ctx();
+        ok(
+            &c,
+            "(() => { try { String(new DOMMatrix([NaN, 0, 0, 1, 0, 0])); return false; } \
+              catch (e) { return e instanceof DOMException && e.name === 'InvalidStateError'; } })()",
+        );
+    }
 
     #[test]
     fn the_prototype_chain_is_real() {

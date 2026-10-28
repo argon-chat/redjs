@@ -785,7 +785,7 @@ macro_rules! path_method {
             let r: Result<(), &'static str> = $body;
             match r {
                 Ok(()) => UNDEF,
-                Err(e) => throw_type_error($g, e),
+                Err(e) => throw_geometry_error($g, e),
             }
         }
     };
@@ -871,10 +871,20 @@ unsafe fn read_radii(g: *mut c_void, v: u64) -> Result<[(f64, f64); 4], String> 
     Ok([one(g, v); 4])
 }
 
+/// The geometry layer's refusals are spelled `"IndexSizeError: why"` — the
+/// spec's "throw an IndexSizeError DOMException" — and become exactly that.
+unsafe fn throw_geometry_error(g: *mut c_void, e: &str) -> u64 {
+    match e.strip_prefix("IndexSizeError: ") {
+        Some(why) => super::domexception::throw(g, "IndexSizeError", why),
+        None => throw_type_error(g, e),
+    }
+}
+
 unsafe extern "sysv64" fn m_round_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let radii = match read_radii(g, cf_arg(cf, 4)) {
         Ok(r) => r,
-        Err(e) => return throw_type_error(g, &e),
+        // Spec: a radii list of size other than 1–4 is a RangeError.
+        Err(e) => return throw_error(g, 2, &e),
     };
     let (x, y, w, h) = (
         arg_num(g, cf, 0, f64::NAN),
@@ -887,7 +897,7 @@ unsafe extern "sysv64" fn m_round_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     match data.p.round_rect(x, y, w, h, radii) {
         Ok(()) => UNDEF,
-        Err(e) => throw_type_error(g, e),
+        Err(e) => throw_geometry_error(g, e),
     }
 }
 
@@ -1239,7 +1249,15 @@ mod jsc_tests {
     #[test]
     fn a_negative_radius_throws_with_the_spec_error_name() {
         let c = ctx();
-        let msg = throws(&c, "new Path2D().arc(0,0,-1,0,1)");
-        assert!(msg.contains("IndexSizeError"), "{msg}");
+        ok(
+            &c,
+            "(() => { try { new Path2D().arc(0,0,-1,0,1); return false; } \
+              catch (e) { return e instanceof DOMException && e.name === 'IndexSizeError' && e.code === 1; } })()",
+        );
+        ok(
+            &c,
+            "(() => { try { new Path2D().roundRect(0,0,1,1,[1,2,3,4,5]); return false; } \
+              catch (e) { return e instanceof RangeError; } })()",
+        );
     }
 }

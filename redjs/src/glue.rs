@@ -13,6 +13,69 @@ pub const OK: i32 = 0;
 pub const EXCEPTION: i32 = 1;
 pub const BAD_ARG: i32 = 2;
 
+/// `rjs_brand` output. Internal (not part of the C ABI): only the serializer
+/// reads it. Field meanings per brand are in glue.cpp.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RjsBrandInfo {
+    pub brand: u32,
+    pub flags: u32,
+    pub ta_kind: u32,
+    pub reserved: u32,
+    pub byte_length: u64,
+    pub byte_offset: u64,
+    pub length: u64,
+    pub max_byte_length: u64,
+    pub number: f64,
+    pub data: *mut c_void,
+}
+
+impl Default for RjsBrandInfo {
+    fn default() -> Self {
+        RjsBrandInfo {
+            brand: 0,
+            flags: 0,
+            ta_kind: 0,
+            reserved: 0,
+            byte_length: 0,
+            byte_offset: 0,
+            length: 0,
+            max_byte_length: 0,
+            number: 0.0,
+            data: core::ptr::null_mut(),
+        }
+    }
+}
+
+pub mod brand {
+    pub const NONE: u32 = 0;
+    pub const PLAIN: u32 = 1;
+    pub const ARRAY: u32 = 2;
+    pub const FUNCTION: u32 = 3;
+    pub const PROXY: u32 = 4;
+    pub const DATE: u32 = 5;
+    pub const REGEXP: u32 = 6;
+    pub const MAP: u32 = 7;
+    pub const SET: u32 = 8;
+    pub const ERROR: u32 = 9;
+    pub const BOOLEAN_OBJECT: u32 = 10;
+    pub const NUMBER_OBJECT: u32 = 11;
+    pub const STRING_OBJECT: u32 = 12;
+    pub const BIGINT_OBJECT: u32 = 13;
+    pub const SYMBOL_OBJECT: u32 = 14;
+    pub const ARRAY_BUFFER: u32 = 15;
+    pub const SHARED_ARRAY_BUFFER: u32 = 16;
+    pub const VIEW: u32 = 17;
+    pub const PROMISE: u32 = 18;
+    pub const GLOBAL: u32 = 19;
+    pub const OTHER: u32 = 20;
+
+    pub const F_DETACHED: u32 = 1;
+    pub const F_RESIZABLE: u32 = 2;
+    pub const F_LENGTH_TRACKING: u32 = 4;
+    pub const F_REDJS_SLOT: u32 = 8;
+}
+
 extern "C" {
     pub fn rjs_layout(out: *mut RjsLayout);
     pub fn rjs_init(options: *const c_char) -> i32;
@@ -23,6 +86,21 @@ extern "C" {
     pub fn rjs_drain_microtasks(g: *mut c_void);
     /// 1 while any JS frame of this VM is on the stack, else 0.
     pub fn rjs_in_js(g: *mut c_void) -> i32;
+
+    // -- structured serialization support (glue.cpp, same section name) --------
+    /// Well-known symbol atom: 0 iterator, 1 toStringTag, 2 asyncIterator.
+    pub fn rjs_atom_wellknown(g: *mut c_void, which: u32) -> *mut c_void;
+    /// The engine's own type of `v` (`BRAND_*`), plus what the serializer needs.
+    pub fn rjs_brand(g: *mut c_void, v: u64, out: *mut RjsBrandInfo) -> u32;
+    pub fn rjs_wrapper_value(g: *mut c_void, v: u64, out: *mut u64) -> i32;
+    pub fn rjs_regexp_parts(g: *mut c_void, v: u64, pattern: *mut u64, flags: *mut u64) -> i32;
+    pub fn rjs_get_v(g: *mut c_void, obj: u64, key: u64, out: *mut u64) -> i32;
+    pub fn rjs_has_own_v(g: *mut c_void, obj: u64, key: u64, exc: *mut u64) -> i32;
+    pub fn rjs_define_v(g: *mut c_void, obj: u64, key: u64, val: u64) -> i32;
+    pub fn rjs_get_own_data(g: *mut c_void, obj: u64, atom: *mut c_void, out: *mut u64) -> i32;
+    pub fn rjs_string_latin1(g: *mut c_void, p: *const u8, len: usize, out: *mut u64) -> i32;
+    pub fn rjs_view_buffer(g: *mut c_void, v: u64, out: *mut u64) -> i32;
+    pub fn rjs_array_dense(g: *mut c_void, v: u64, len: *mut u32) -> i32;
     pub fn rjs_gc(g: *mut c_void, mode: i32);
     pub fn rjs_heap_stats(g: *mut c_void, out: *mut RjsHeapStats);
     pub fn rjs_report_extra_memory(g: *mut c_void, bytes: u64);
@@ -34,6 +112,8 @@ extern "C" {
 
     pub fn rjs_kind(g: *mut c_void, v: u64) -> u32;
     pub fn rjs_to_number(g: *mut c_void, v: u64, out: *mut f64) -> i32;
+    /// ToNumber whose exception comes back in `exc` (status 1).
+    pub fn rjs_to_number_x(g: *mut c_void, v: u64, out: *mut f64, exc: *mut u64) -> i32;
     pub fn rjs_to_string(g: *mut c_void, v: u64, out: *mut u64) -> i32;
     pub fn rjs_to_boolean(g: *mut c_void, v: u64) -> i32;
     pub fn rjs_strict_equals(g: *mut c_void, a: u64, b: u64) -> i32;

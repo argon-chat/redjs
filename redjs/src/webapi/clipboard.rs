@@ -115,22 +115,10 @@ fn advise_no_host() {
 // Rejections
 // ---------------------------------------------------------------------------
 
-/// A rejected promise carrying an `Error` with a DOM-ish `name`.
-///
-/// redjs has no `DOMException`, so `e instanceof DOMException` is unavailable;
-/// `e.name === "NotAllowedError"` — how real code actually branches — is not.
-/// Same compromise as `storage`'s `QuotaExceededError`.
+/// A promise rejected with a `name` DOMException — the spec's "reject p with
+/// a `NotAllowedError` DOMException".
 unsafe fn rejected_named(g: *mut c_void, name: &str, msg: &str) -> u64 {
-    let (mut res, mut rej, mut p) = (0u64, 0u64, 0u64);
-    if crate::ffi::redjs_promise_create(g, &mut res, &mut rej, &mut p) != 0 {
-        return UNDEF;
-    }
-    let m: Vec<u16> = msg.encode_utf16().collect();
-    let mut err = UNDEF;
-    glue::rjs_error_create(g, 0, m.as_ptr(), m.len(), &mut err);
-    define(g, err, "name", js_string(g, name), 2);
-    let _ = call(g, rej, UNDEF, &[err]);
-    p
+    super::domexception::rejected(g, name, msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -161,15 +149,15 @@ unsafe extern "sysv64" fn clipboard_read_text(g: *mut c_void, _cf: *mut c_void) 
 
 unsafe extern "sysv64" fn clipboard_write_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     // `data` is a `DOMString`, so it is ToString-coerced — `writeText(42)`
-    // writes "42" in a browser and writes "42" here.
-    let Some(text) = read_string(g, cf_arg(cf, 0)) else {
-        return rejected_named(
-            g,
-            "TypeError",
-            "Failed to execute 'writeText' on 'Clipboard': the argument could not be converted to \
-             a string.",
-        );
-    };
+    // writes "42" in a browser and writes "42" here. A conversion that throws
+    // (a Symbol, a throwing toString) rejects with WHAT it threw, as WebIDL
+    // does for a promise-returning operation.
+    let arg = cf_arg(cf, 0);
+    let mut sv = arg;
+    if glue::rjs_kind(g, arg) != 5 && glue::rjs_to_string(g, arg, &mut sv) != 0 {
+        return super::domexception::rejected_with(g, sv);
+    }
+    let text = read_string(g, sv).unwrap_or_default();
     match host() {
         None => {
             advise_no_host();
@@ -360,8 +348,8 @@ mod jsc_tests {
             &format!(
                 "globalThis.__out = '<pending>'; (async () => {{ {body} }})().then(\
                    v => {{ globalThis.__out = String(v); }}, \
-                   e => {{ globalThis.__out = 'ERROR: ' + e.name + ': ' + \
-                     ((e && e.message) || e); }}); 'started'"
+                   e => {{ globalThis.__out = 'ERROR: ' + (e instanceof DOMException ? '' : 'plain ') + \
+                     e.name + ': ' + ((e && e.message) || e); }}); 'started'"
             ),
         );
         for _ in 0..64 {
@@ -412,6 +400,9 @@ mod jsc_tests {
             "42"
         );
         assert_eq!(run(&c, "return await navigator.clipboard.writeText('');"), "undefined");
+        // A conversion that throws rejects with the TypeError itself.
+        let got = run(&c, "return await navigator.clipboard.writeText(Symbol('s'));");
+        assert!(got.starts_with("ERROR: plain TypeError"), "{got}");
     }
 
     #[test]

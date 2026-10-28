@@ -14,7 +14,7 @@ unsafe extern "sysv64" fn structured_clone(g: *mut c_void, cf: *mut c_void) -> u
     let mut seen: HashMap<u64, u64> = HashMap::new();
     match clone_value(g, v, &mut seen, 0) {
         Ok(c) => c,
-        Err(msg) => throw_type_error(g, &msg),
+        Err(msg) => super::domexception::throw(g, "DataCloneError", &msg),
     }
 }
 

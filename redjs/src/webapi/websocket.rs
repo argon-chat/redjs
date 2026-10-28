@@ -1130,18 +1130,10 @@ handler_accessor!(get_onclose, set_onclose, "onclose");
 // WebSocket
 // ---------------------------------------------------------------------------
 
+/// "Throw a `name` DOMException" (SyntaxError, InvalidStateError,
+/// InvalidAccessError — the spec's own names for each refusal).
 unsafe fn throw_named(g: *mut c_void, name: &str, msg: &str) -> u64 {
-    let m: Vec<u16> = msg.encode_utf16().collect();
-    let mut err = UNDEF;
-    // No DOMException in this runtime; the tree's convention (see fetch.rs) is
-    // a real Error whose `name` is the DOMException name the spec calls for, so
-    // `e.name === "InvalidStateError"` still works.
-    glue::rjs_error_create(g, 0, m.as_ptr(), m.len(), &mut err);
-    if is_cell(err) {
-        define(g, err, "name", js_string(g, name), 0);
-    }
-    glue::rjs_throw(g, err);
-    UNDEF
+    super::domexception::throw(g, name, msg)
 }
 
 /// `close(optional [Clamp] unsigned short code, ...)`.
@@ -2581,11 +2573,12 @@ mod jsc_tests {
             &c,
             &format!(
                 "const ws = new WebSocket('ws://127.0.0.1:{port}/'); \
-                 let name = 'NONE'; try {{ ws.send('x'); }} catch (e) {{ name = e.name; }} \
+                 let name = 'NONE'; try {{ ws.send('x'); }} catch (e) {{ \
+                   name = (e instanceof DOMException ? '' : 'plain ') + e.name + '/' + e.code; }} \
                  ws.close(); await closed(ws); return name;"
             ),
         );
-        assert_eq!(out, "InvalidStateError");
+        assert_eq!(out, "InvalidStateError/11");
     }
 
     #[test]
@@ -2727,9 +2720,10 @@ mod jsc_tests {
         let out = run(
             &c,
             "const s = new WebSocketStream('ws://127.0.0.1:1/'); \
-             try { await s.opened; return 'OPENED'; } catch (e) { return e.name; }",
+             try { await s.opened; return 'OPENED'; } catch (e) { \
+               return (e instanceof DOMException ? '' : 'plain ') + e.name + '/' + e.code; }",
         );
-        assert_eq!(out, "NetworkError");
+        assert_eq!(out, "NetworkError/19");
     }
 
     #[test]

@@ -130,6 +130,93 @@ pub unsafe fn read_number(g: *mut c_void, v: u64) -> f64 {
     out
 }
 
+// ---- conversions that PROPAGATE ------------------------------------------------
+//
+// `Err(())` from any of these means: the conversion threw, and that exception
+// is now pending in the VM again — the host function returns `UNDEF` and JS
+// sees exactly what a getter / `valueOf` / `toString` threw. The swallowing
+// helpers above stay for the many call sites whose spec text has no `?`.
+
+/// ToNumber, rethrowing what it threw.
+pub unsafe fn to_number(g: *mut c_void, v: u64) -> Result<f64, ()> {
+    if let Some(d) = dec_f64(v) {
+        return Ok(d);
+    }
+    let (mut d, mut exc) = (0.0f64, UNDEF);
+    if glue::rjs_to_number_x(g, v, &mut d, &mut exc) != 0 {
+        glue::rjs_throw(g, exc);
+        return Err(());
+    }
+    Ok(d)
+}
+
+/// ToString as a JS string value, rethrowing what it threw.
+pub unsafe fn to_js_string(g: *mut c_void, v: u64) -> Result<u64, ()> {
+    if glue::rjs_kind(g, v) == 5 {
+        return Ok(v);
+    }
+    let mut out = UNDEF;
+    if glue::rjs_to_string(g, v, &mut out) != 0 {
+        glue::rjs_throw(g, out);
+        return Err(());
+    }
+    Ok(out)
+}
+
+/// `? Get(obj, name)`: getters run, and what they throw is rethrown.
+pub unsafe fn try_get(g: *mut c_void, obj: u64, name: &str) -> Result<u64, ()> {
+    let a = atom(g, name);
+    let mut out = UNDEF;
+    let rc = glue::rjs_get(g, obj, a, &mut out);
+    glue::rjs_atom_free(g, a);
+    if rc != 0 {
+        glue::rjs_throw(g, out);
+        return Err(());
+    }
+    Ok(out)
+}
+
+/// A JS string's code units, copied out (lone surrogates survive — the
+/// lossy `read_string` would turn them into U+FFFD). `None` for a non-string.
+pub unsafe fn read_string16(g: *mut c_void, v: u64) -> Option<Vec<u16>> {
+    let mut info = crate::ffi::RjsStr::default();
+    if glue::rjs_string_info(g, v, &mut info) != 0 {
+        return None;
+    }
+    if info.len == 0 {
+        return Some(Vec::new());
+    }
+    Some(if info.is8bit != 0 {
+        core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize).iter().map(|&b| b as u16).collect()
+    } else {
+        core::slice::from_raw_parts(info.ptr as *const u16, info.len as usize).to_vec()
+    })
+}
+
+/// A JS string from UTF-16 code units (no validation: lone surrogates allowed).
+pub unsafe fn js_string16(g: *mut c_void, units: &[u16]) -> u64 {
+    let mut out = UNDEF;
+    glue::rjs_string16(g, units.as_ptr(), units.len(), &mut out);
+    out
+}
+
+/// WebIDL `[EnforceRange] unsigned long long`: ToNumber (propagating), then
+/// a TypeError for NaN/±Infinity or anything outside 0..=2^53-1, else the
+/// value truncated toward zero.
+pub unsafe fn enforce_range_u64(g: *mut c_void, v: u64, what: &str) -> Result<u64, ()> {
+    let d = to_number(g, v)?;
+    if !d.is_finite() {
+        throw_type_error(g, &format!("{what}: Value is not a finite number."));
+        return Err(());
+    }
+    let t = d.trunc();
+    if !(0.0..=9_007_199_254_740_991.0).contains(&t) {
+        throw_type_error(g, &format!("{what}: Value is outside the 'unsigned long long' value range."));
+        return Err(());
+    }
+    Ok(t as u64)
+}
+
 /// A numeric argument with a default for `undefined` — the shape almost every
 /// geometry/path method wants (`unrestricted double x = 0`).
 pub unsafe fn arg_num(g: *mut c_void, cf: *mut c_void, i: u32, default: f64) -> f64 {

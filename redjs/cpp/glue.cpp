@@ -400,6 +400,20 @@ extern "C" int32_t rjs_to_number(void* g, uint64_t v, double* out)
     return RJS_OK;
 }
 
+// ToNumber that hands back what it threw (rjs_to_number swallows it), for the
+// WebIDL conversions whose exceptions must reach the caller unchanged.
+extern "C" int32_t rjs_to_number_x(void* g, uint64_t v, double* out, uint64_t* exc)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    double d = JSValue::decode(v).toNumber(go);
+    if (takeException(vm, exc))
+        return RJS_EXCEPTION;
+    *out = d;
+    return RJS_OK;
+}
+
 extern "C" int32_t rjs_to_string(void* g, uint64_t v, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
@@ -640,7 +654,10 @@ extern "C" int32_t rjs_object_create(void* g, uint64_t proto, uint64_t* out)
     if (protoVal.isObject())
         o = constructEmptyObject(go, asObject(protoVal));
     else if (protoVal.isNull())
-        o = constructEmptyObject(go, static_cast<JSObject*>(nullptr));
+        // Object.create(null). The (globalObject, prototype) overload asks the
+        // structure cache for a prototype it then dereferences — a null one
+        // fastfails; the realm keeps a structure for exactly this.
+        o = constructEmptyObject(vm, go->nullPrototypeObjectStructure());
     else
         o = constructEmptyObject(go);
     *out = JSValue::encode(JSValue(o));
@@ -1004,6 +1021,372 @@ extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
     }
     *out = JSValue::encode(JSValue(arr));
     return RJS_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Structured serialization support (webapi/serialize.rs, webapi/domexception.rs)
+//
+// HTML's StructuredSerializeInternal branches on INTERNAL SLOTS ([[DateValue]],
+// [[RegExpMatcher]], [[MapData]], [[ErrorData]], [[ArrayBufferData]]…), which
+// no script can observe without side effects — `instanceof` and
+// `Object.prototype.toString` are both forgeable. These read the cell's own
+// type instead, so a brand is exactly what the engine says it is.
+// ---------------------------------------------------------------------------
+
+#include <JavaScriptCore/BigIntObject.h>
+#include <JavaScriptCore/BooleanObject.h>
+#include <JavaScriptCore/DateInstance.h>
+#include <JavaScriptCore/NumberObject.h>
+#include <JavaScriptCore/RegExpObject.h>
+#include <JavaScriptCore/StringObject.h>
+#include <JavaScriptCore/SymbolObject.h>
+#include <JavaScriptCore/YarrFlags.h>
+
+// Well-known symbols as atoms: 0 iterator, 1 toStringTag, 2 asyncIterator.
+extern "C" void* rjs_atom_wellknown(void* g, uint32_t which)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    switch (which) {
+    case 0: return new Identifier(vm.propertyNames->iteratorSymbol);
+    case 1: return new Identifier(vm.propertyNames->toStringTagSymbol);
+    case 2: return new Identifier(vm.propertyNames->asyncIteratorSymbol);
+    default: return nullptr;
+    }
+}
+
+// Stable brand ids (mirrored in glue.rs).
+enum RjsBrand : uint32_t {
+    RJS_BRAND_NONE = 0,       // not an object
+    RJS_BRAND_PLAIN = 1,      // ordinary JSFinalObject
+    RJS_BRAND_ARRAY = 2,
+    RJS_BRAND_FUNCTION = 3,
+    RJS_BRAND_PROXY = 4,
+    RJS_BRAND_DATE = 5,
+    RJS_BRAND_REGEXP = 6,
+    RJS_BRAND_MAP = 7,
+    RJS_BRAND_SET = 8,
+    RJS_BRAND_ERROR = 9,
+    RJS_BRAND_BOOLEAN_OBJECT = 10,
+    RJS_BRAND_NUMBER_OBJECT = 11,
+    RJS_BRAND_STRING_OBJECT = 12,
+    RJS_BRAND_BIGINT_OBJECT = 13,
+    RJS_BRAND_SYMBOL_OBJECT = 14,
+    RJS_BRAND_ARRAY_BUFFER = 15,
+    RJS_BRAND_SHARED_ARRAY_BUFFER = 16,
+    RJS_BRAND_VIEW = 17,      // typed array or DataView (taKind says which)
+    RJS_BRAND_PROMISE = 18,
+    RJS_BRAND_GLOBAL = 19,
+    RJS_BRAND_OTHER = 20,     // any other object with internal slots (WeakMap, generator, arguments, C-API object…)
+};
+
+enum : uint32_t {
+    RJS_BF_DETACHED = 1,
+    RJS_BF_RESIZABLE = 2,        // AB: resizable/growable; view: backed by one
+    RJS_BF_LENGTH_TRACKING = 4,  // view: length follows its buffer
+    RJS_BF_REDJS_SLOT = 8,       // carries a "redjs#…" private-name slot (a redjs platform object)
+};
+
+struct RjsBrandInfo {
+    uint32_t brand;
+    uint32_t flags;
+    uint32_t taKind;
+    uint32_t reserved;
+    uint64_t byteLength;    // ArrayBuffer
+    uint64_t byteOffset;    // view: [[ByteOffset]]
+    uint64_t length;        // view: [[ArrayLength]] (DataView: [[ByteLength]])
+    uint64_t maxByteLength; // resizable ArrayBuffer
+    double number;          // Date: [[DateValue]]
+    void* data;             // ArrayBuffer bytes (copy before any allocation)
+};
+
+namespace {
+
+// A redjs native class keeps its internal slots under private names minted by
+// rjs_atom_private as "redjs#…". Class private fields (`#x`) are private names
+// too, but their description never starts with "redjs#", and an ordinary
+// object that only has those is still an ordinary object to HTML.
+bool hasRedjsSlot(JSGlobalObject* go, JSObject* o)
+{
+    VM& vm = go->vm();
+    PropertyNameArrayBuilder names(vm, PropertyNameMode::Symbols, PrivateSymbolMode::Include);
+    o->methodTable()->getOwnPropertyNames(o, go, names, DontEnumPropertiesMode::Include);
+    if (takeException(vm, nullptr))
+        return false;
+    for (const auto& id : names) {
+        auto* uid = id.impl();
+        if (!uid || !uid->isSymbol() || !static_cast<SymbolImpl*>(uid)->isPrivate())
+            continue;
+        if (WTF::String(uid).startsWith("redjs#"_s))
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+extern "C" uint32_t rjs_brand(void* g, uint64_t v, RjsBrandInfo* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    *out = RjsBrandInfo {};
+    JSValue val = JSValue::decode(v);
+    if (!v || !val.isObject())
+        return out->brand = RJS_BRAND_NONE;
+    JSObject* o = asObject(val);
+    uint32_t b = RJS_BRAND_OTHER;
+    switch (o->type()) {
+    case ProxyObjectType: b = RJS_BRAND_PROXY; break;
+    case GlobalObjectType:
+    case GlobalProxyType: b = RJS_BRAND_GLOBAL; break;
+    case ArrayType:
+    case DerivedArrayType: b = RJS_BRAND_ARRAY; break;
+    case JSDateType:
+        b = RJS_BRAND_DATE;
+        out->number = downcast<DateInstance>(o)->internalNumber();
+        break;
+    case RegExpObjectType: b = RJS_BRAND_REGEXP; break;
+    case JSMapType: b = RJS_BRAND_MAP; break;
+    case JSSetType: b = RJS_BRAND_SET; break;
+    case ErrorInstanceType: b = RJS_BRAND_ERROR; break;
+    case BooleanObjectType: b = RJS_BRAND_BOOLEAN_OBJECT; break;
+    case NumberObjectType: b = RJS_BRAND_NUMBER_OBJECT; break;
+    case StringObjectType:
+    case DerivedStringObjectType: b = RJS_BRAND_STRING_OBJECT; break;
+    case JSPromiseType: b = RJS_BRAND_PROMISE; break;
+    case ArrayBufferType: {
+        ArrayBuffer* impl = downcast<JSArrayBuffer>(o)->impl();
+        b = (impl && impl->isShared()) ? RJS_BRAND_SHARED_ARRAY_BUFFER : RJS_BRAND_ARRAY_BUFFER;
+        if (!impl || impl->isDetached()) {
+            out->flags |= RJS_BF_DETACHED;
+            break;
+        }
+        out->data = impl->data();
+        out->byteLength = impl->byteLength();
+        if (impl->isResizableOrGrowableShared()) {
+            out->flags |= RJS_BF_RESIZABLE;
+            out->maxByteLength = impl->maxByteLength().value_or(impl->byteLength());
+        }
+        break;
+    }
+    case Int8ArrayType:
+    case Uint8ArrayType:
+    case Uint8ClampedArrayType:
+    case Int16ArrayType:
+    case Uint16ArrayType:
+    case Int32ArrayType:
+    case Uint32ArrayType:
+    case Float16ArrayType:
+    case Float32ArrayType:
+    case Float64ArrayType:
+    case BigInt64ArrayType:
+    case BigUint64ArrayType:
+    case DataViewType: {
+        auto* view = downcast<JSArrayBufferView>(o);
+        b = RJS_BRAND_VIEW;
+        out->taKind = mapTypedArrayType(typedArrayType(view->type()));
+        if (view->isDetached())
+            out->flags |= RJS_BF_DETACHED;
+        if (view->isResizableOrGrowableShared())
+            out->flags |= RJS_BF_RESIZABLE;
+        if (view->isAutoLength())
+            out->flags |= RJS_BF_LENGTH_TRACKING;
+        out->byteOffset = view->byteOffsetRaw();
+        out->length = view->lengthRaw();
+        break;
+    }
+    default:
+        if (dynamicDowncast<BigIntObject>(o))
+            b = RJS_BRAND_BIGINT_OBJECT;
+        else if (dynamicDowncast<SymbolObject>(o))
+            b = RJS_BRAND_SYMBOL_OBJECT;
+        else if (o->isCallable())
+            b = RJS_BRAND_FUNCTION;
+        else if (o->type() == FinalObjectType)
+            b = RJS_BRAND_PLAIN;
+        break;
+    }
+    if ((b == RJS_BRAND_PLAIN || b == RJS_BRAND_ERROR) && hasRedjsSlot(go, o))
+        out->flags |= RJS_BF_REDJS_SLOT;
+    out->brand = b;
+    return b;
+}
+
+// The primitive inside a Boolean/Number/String/BigInt/Symbol wrapper object.
+extern "C" int32_t rjs_wrapper_value(void* g, uint64_t v, uint64_t* out)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    JSValue w = JSValue::decode(v);
+    JSWrapperObject* wo = nullptr;
+    if (auto* x = dynamicDowncast<BooleanObject>(w))
+        wo = x;
+    else if (auto* x = dynamicDowncast<NumberObject>(w))
+        wo = x;
+    else if (auto* x = dynamicDowncast<StringObject>(w))
+        wo = x;
+    else if (auto* x = dynamicDowncast<BigIntObject>(w))
+        wo = x;
+    else if (auto* x = dynamicDowncast<SymbolObject>(w))
+        wo = x;
+    if (!wo)
+        return RJS_BAD_ARG;
+    *out = JSValue::encode(wo->internalValue());
+    return RJS_OK;
+}
+
+// [[OriginalSource]] and [[OriginalFlags]] of a RegExp, as JS strings.
+extern "C" int32_t rjs_regexp_parts(void* g, uint64_t v, uint64_t* pattern, uint64_t* flags)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    auto* r = dynamicDowncast<RegExpObject>(JSValue::decode(v));
+    if (!r)
+        return RJS_BAD_ARG;
+    RegExp* re = r->regExp();
+    *pattern = JSValue::encode(jsString(vm, re->pattern()));
+    auto fs = Yarr::flagsString(re->flags());
+    *flags = JSValue::encode(jsString(vm, WTF::String(fs.span())));
+    return RJS_OK;
+}
+
+// [[Get]] with a VALUE key (ToPropertyKey) — getters run, exceptions come back.
+extern "C" int32_t rjs_get_v(void* g, uint64_t obj, uint64_t key, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    Identifier pk = JSValue::decode(key).toPropertyKey(go);
+    if (takeException(vm, out))
+        return RJS_EXCEPTION;
+    JSValue r = JSValue::decode(obj).get(go, pk);
+    if (takeException(vm, out))
+        return RJS_EXCEPTION;
+    *out = JSValue::encode(r);
+    return RJS_OK;
+}
+
+// HasOwnProperty with a VALUE key: 1 / 0, -1 exception (in *exc), -2 not an object.
+extern "C" int32_t rjs_has_own_v(void* g, uint64_t obj, uint64_t key, uint64_t* exc)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return -2;
+    Identifier pk = JSValue::decode(key).toPropertyKey(go);
+    if (takeException(vm, exc))
+        return -1;
+    bool r = asObject(base)->hasOwnProperty(go, pk);
+    if (takeException(vm, exc))
+        return -1;
+    return r ? 1 : 0;
+}
+
+// CreateDataProperty with a VALUE key (index keys land as indices).
+extern "C" int32_t rjs_define_v(void* g, uint64_t obj, uint64_t key, uint64_t val)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return RJS_BAD_ARG;
+    Identifier pk = JSValue::decode(key).toPropertyKey(go);
+    if (takeException(vm, nullptr))
+        return RJS_EXCEPTION;
+    asObject(base)->putDirectMayBeIndex(go, pk, JSValue::decode(val));
+    if (takeException(vm, nullptr))
+        return RJS_EXCEPTION;
+    return RJS_OK;
+}
+
+// An OWN DATA property: 1 (+ value), 0 absent or an accessor, -1 exception.
+// HTML's Error serialization reads `message` this way ("if IsDataDescriptor").
+extern "C" int32_t rjs_get_own_data(void* g, uint64_t obj, void* atom, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return 0;
+    JSObject* o = asObject(base);
+    const Identifier& id = *static_cast<Identifier*>(atom);
+    PropertySlot slot(o, PropertySlot::InternalMethodType::GetOwnProperty);
+    bool has = o->methodTable()->getOwnPropertySlot(o, go, id, slot);
+    if (takeException(vm, out))
+        return -1;
+    if (!has || slot.isAccessor())
+        return 0;
+    JSValue r = slot.getValue(go, id);
+    if (takeException(vm, out))
+        return -1;
+    *out = JSValue::encode(r);
+    return 1;
+}
+
+// A JS string from Latin-1 bytes (not UTF-8: every byte is one code unit).
+extern "C" int32_t rjs_string_latin1(void* g, const uint8_t* p, size_t len, uint64_t* out)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    if (!len) {
+        *out = JSValue::encode(jsEmptyString(vm));
+        return RJS_OK;
+    }
+    *out = JSValue::encode(jsString(vm, WTF::String(std::span<const Latin1Character> { reinterpret_cast<const Latin1Character*>(p), len })));
+    return RJS_OK;
+}
+
+// A view's [[ViewedArrayBuffer]] (materialised for a fast typed array — the
+// serializer needs the buffer's identity, two views on one buffer stay one).
+extern "C" int32_t rjs_view_buffer(void* g, uint64_t v, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    auto* view = dynamicDowncast<JSArrayBufferView>(JSValue::decode(v));
+    if (!view)
+        return RJS_BAD_ARG;
+    JSArrayBuffer* b = view->possiblySharedJSBuffer(go);
+    if (takeException(vm, out))
+        return RJS_EXCEPTION;
+    if (!b)
+        return RJS_BAD_ARG;
+    *out = JSValue::encode(JSValue(b));
+    return RJS_OK;
+}
+
+// 1 (+ length) when `v` is a JSArray whose own enumerable properties are
+// exactly its indices 0..length-1 — no holes, no accessors, no extra named
+// properties — so it can go over the wire as a bare value list.
+extern "C" int32_t rjs_array_dense(void* g, uint64_t v, uint32_t* lenOut)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue val = JSValue::decode(v);
+    if (!isJSArray(val))
+        return 0;
+    JSArray* a = downcast<JSArray>(val);
+    uint32_t len = a->length();
+    for (uint32_t i = 0; i < len; i++) {
+        if (!a->canGetIndexQuickly(i))
+            return 0;
+    }
+    PropertyNameArrayBuilder names(vm, PropertyNameMode::Strings, PrivateSymbolMode::Exclude);
+    a->getOwnNonIndexPropertyNames(go, names, DontEnumPropertiesMode::Exclude);
+    if (takeException(vm, nullptr))
+        return 0;
+    for (const auto& id : names) {
+        (void)id;
+        return 0;
+    }
+    *lenOut = len;
+    return 1;
 }
 
 // ---------------------------------------------------------------------------

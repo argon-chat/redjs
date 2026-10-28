@@ -40,10 +40,12 @@
   var HIGH_WATER = 1 << 20;
   var DRAIN_POLL_MS = 4;
 
+  // The spec's "a new `name` DOMException" — the real class, installed by redjs
+  // before this script runs, captured so a page that reassigns the global
+  // cannot change what this throws.
+  var DOMEx = g.DOMException;
   function named(name, message) {
-    var e = new Error(message);
-    e.name = name;
-    return e;
+    return new DOMEx(message, name);
   }
 
   // Marks a promise handled so an unobserved `closed` rejection is not noise;

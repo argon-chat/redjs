@@ -241,10 +241,10 @@ unsafe extern "sysv64" fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void)
 /// `getUserMedia` is not here, and saying so by name beats `undefined is not a
 /// function` from inside a call stack five frames deep.
 unsafe extern "sysv64" fn md_get_user_media(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    rejected_promise(
+    super::domexception::rejected(
         g,
-        0,
-        "NotSupportedError: navigator.mediaDevices.getUserMedia is not implemented — this runtime has \
+        "NotSupportedError",
+        "navigator.mediaDevices.getUserMedia is not implemented — this runtime has \
          no media capture and no MediaStream. Output selection (enumerateDevices + \
          AudioContext.setSinkId) works without it; capture arrives with the media/WebRTC layer.",
     )
@@ -441,7 +441,9 @@ mod jsc_tests {
             &format!(
                 "globalThis.__out = '<pending>'; (async () => {{ {body} }})().then(\
                    v => {{ globalThis.__out = String(v); }}, \
-                   e => {{ globalThis.__out = 'ERROR: ' + ((e && e.message) || e); }}); 'started'"
+                   e => {{ globalThis.__out = 'ERROR: ' + \
+                     (e instanceof DOMException ? 'DOMException ' + e.name + ': ' : '') + \
+                     ((e && e.message) || e); }}); 'started'"
             ),
         );
         for _ in 0..64 {
@@ -522,7 +524,7 @@ mod jsc_tests {
             "outputs-only"
         );
         let got = run(&c, "await navigator.mediaDevices.getUserMedia({ audio: true }); return 'resolved';");
-        assert!(got.contains("NotSupportedError"), "{got}");
+        assert!(got.contains("DOMException NotSupportedError"), "{got}");
         assert!(got.contains("MediaStream"), "getUserMedia must say why: {got}");
     }
 

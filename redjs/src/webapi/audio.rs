@@ -1432,7 +1432,7 @@ unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     if rec.started {
         // Spec: InvalidStateError. A source is start-once, restarting it means
         // creating another one — cheap, by design.
-        return throw_error(g, 0, "InvalidStateError: start() has already been called on this source");
+        return super::domexception::throw(g, "InvalidStateError", "start() has already been called on this source");
     }
     rec.started = true;
     // Spec: a playing source is kept alive even without JS references.
@@ -2077,12 +2077,10 @@ unsafe extern "sysv64" fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u6
     let device = match mediadevices::resolve_output(&requested) {
         Ok(d) => d,
         Err(()) => {
-            return rejected_promise(
+            return super::domexception::rejected(
                 g,
-                0,
-                &format!(
-                    "NotFoundError: AudioContext.setSinkId: no audio output device with id '{requested}'"
-                ),
+                "NotFoundError",
+                &format!("AudioContext.setSinkId: no audio output device with id '{requested}'"),
             )
         }
     };
@@ -2134,7 +2132,7 @@ unsafe extern "sysv64" fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u6
     match outcome {
         Outcome::Ok => resolved_promise(g, UNDEF),
         Outcome::Closed => {
-            rejected_promise(g, 0, "InvalidStateError: AudioContext.setSinkId: the context is closed")
+            super::domexception::rejected(g, "InvalidStateError", "AudioContext.setSinkId: the context is closed")
         }
         Outcome::Failed(e) => rejected_promise(
             g,
@@ -2153,7 +2151,8 @@ unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) ->
     let mut gl = glob().lock().unwrap();
     if let Some(eng) = gl.engines.get_mut(&h) {
         if eng.state == ST_CLOSED {
-            return rejected_promise(g, 0, "AudioContext is closed");
+            // Spec: "reject promise with an InvalidStateError".
+            return super::domexception::rejected(g, "InvalidStateError", "AudioContext is closed");
         }
         eng.state = if suspended { ST_SUSPENDED } else { ST_RUNNING };
         let old = eng.master_params;
@@ -2409,7 +2408,7 @@ pub(crate) fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<P
         )
         .map_err(|e| {
             format!(
-                "EncodingError: decodeAudioData could not decode this data ({e}). \
+                "decodeAudioData could not decode this data ({e}). \
                  Decodable here: {}. Not decodable in any build: Opus, HE-AAC/AAC+ (the AAC-LC \
                  core decodes, SBR/PS do not), and anything DRM-protected.",
                 supported_decode_formats().join(", ")
@@ -2433,7 +2432,9 @@ unsafe extern "sysv64" fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void)
         return rejected_promise(g, 1, "decodeAudioData: expected an ArrayBuffer");
     };
     if bytes.is_empty() {
-        return rejected_promise(g, 0, "decodeAudioData: empty buffer");
+        // Nothing to decode is undecodable: Chrome and Firefox both reject an
+        // empty buffer with EncodingError.
+        return super::domexception::rejected(g, "EncodingError", "decodeAudioData: empty buffer");
     }
     let target_rate = {
         let gl = glob().lock().unwrap();
@@ -2464,9 +2465,8 @@ unsafe extern "sysv64" fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void)
                 let _ = call(g, res, UNDEF, &[js_buf]);
             }
             Err(msg) => {
-                let m: Vec<u16> = msg.encode_utf16().collect();
-                let mut err = UNDEF;
-                glue::rjs_error_create(g, 0, m.as_ptr(), m.len(), &mut err);
+                // Spec: "an EncodingError DOMException".
+                let err = super::domexception::create(g, "EncodingError", &msg);
                 if is_cell(error_cb) {
                     let _ = call(g, error_cb, UNDEF, &[err]);
                 }
@@ -2939,7 +2939,9 @@ mod jsc_tests {
             &format!(
                 "globalThis.__out = '<pending>'; (async () => {{ {body} }})().then(\
                    v => {{ globalThis.__out = String(v); }}, \
-                   e => {{ globalThis.__out = 'ERROR: ' + ((e && e.message) || e); }}); 'started'"
+                   e => {{ globalThis.__out = 'ERROR: ' + \
+                     (e instanceof DOMException ? 'DOMException ' + e.name + ': ' : '') + \
+                     ((e && e.message) || e); }}); 'started'"
             ),
         );
         // Microtasks alone are not enough for everything under test:
@@ -3014,7 +3016,7 @@ mod jsc_tests {
              try { await a.setSinkId('no-such-endpoint'); return 'resolved'; }
              finally { a.close(); }",
         );
-        assert!(got.contains("NotFoundError"), "{got}");
+        assert!(got.contains("DOMException NotFoundError"), "{got}");
         assert!(got.contains("no-such-endpoint"), "{got}");
     }
 
@@ -3045,7 +3047,7 @@ mod jsc_tests {
              await a.setSinkId('');
              return 'resolved';",
         );
-        assert!(got.contains("InvalidStateError"), "{got}");
+        assert!(got.contains("DOMException InvalidStateError"), "{got}");
     }
 
     #[test]
@@ -3169,12 +3171,13 @@ mod jsc_tests {
     #[test]
     fn an_oscillator_starts_once() {
         let c = ctx();
-        let msg = throws(
+        ok(
             &c,
-            "{ const a = new AudioContext(); const o = a.createOscillator(); o.start();
-               try { o.start(); } finally { a.close(); } }",
+            "(() => { const a = new AudioContext(); const o = a.createOscillator(); o.start();
+               try { o.start(); return false; }
+               catch (e) { return e instanceof DOMException && e.name === 'InvalidStateError' && e.code === 11; }
+               finally { a.close(); } })()",
         );
-        assert!(msg.contains("InvalidStateError"), "{msg}");
     }
 
     #[test]
@@ -3429,7 +3432,7 @@ mod jsc_tests {
              finally { a.close(); }",
         );
         assert!(got.starts_with("ERROR"), "garbage decoded?! {got}");
-        assert!(got.contains("EncodingError"), "{got}");
+        assert!(got.contains("DOMException EncodingError"), "{got}");
         assert!(got.contains("WAV"), "the rejection must list what IS decodable: {got}");
         assert!(got.contains("Opus"), "the rejection must name the notable absences: {got}");
     }
