@@ -196,6 +196,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     storage::forget(gone);
     streams::forget(gone);
     uievents::forget(gone);
+    url::forget(gone);
     websocket::forget(gone);
 }
 

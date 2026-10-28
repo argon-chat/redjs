@@ -5,8 +5,14 @@
 //! URL instances are host objects carrying `Box<::url::Url>`; URLSearchParams
 //! carry their pair list plus an optional protected link to the parent URL
 //! (spec: the two stay in sync).
+//!
+//! `URL.createObjectURL` / `revokeObjectURL` keep a real blob URL store per
+//! context; `fetch` resolves `blob:` URLs through it, and a host resolves
+//! them with [`resolve_blob_url`].
 
 use core::ffi::c_void;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use super::util::*;
 use crate::glue;
@@ -221,15 +227,177 @@ unsafe extern "sysv64" fn can_parse(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_bool(ok)
 }
 
-unsafe extern "sysv64" fn create_object_url(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    // No blob URL store in the player; unique opaque token.
-    static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-    let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    js_string(g, &format!("blob:redpew/{n:x}"))
+// ---------------------------------------------------------------------------
+// Blob URLs (File API §8): the per-context store
+// ---------------------------------------------------------------------------
+//
+// An entry holds the Blob's SOURCE — the `Arc` of its bytes or its path, and
+// its window — never the Blob object: no JS value is protected, so the store
+// cannot keep a heap alive, and a host consumer on another thread (vn-tree's
+// `<img>`) can read it. The bytes stay alive until `revokeObjectURL`, or until
+// the context goes, as in a browser.
+
+/// What a blob URL resolves to.
+#[derive(Clone, Debug)]
+pub(crate) struct BlobEntry {
+    pub range: super::blob::Range,
+    pub mime: String,
 }
 
-unsafe extern "sysv64" fn noop_undef(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[derive(Default)]
+struct BlobUrls {
+    /// The origin part of this context's blob URLs, made on first use.
+    origin: Option<String>,
+    urls: HashMap<String, BlobEntry>,
+}
+
+fn blob_urls() -> &'static Mutex<HashMap<usize, BlobUrls>> {
+    static S: OnceLock<Mutex<HashMap<usize, BlobUrls>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The store belonged to a context that is gone; its bytes go with it.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    blob_urls().lock().unwrap().remove(&gone.key);
+}
+
+/// A random (version 4) UUID, lowercase — the shape every browser uses.
+fn uuid_v4() -> String {
+    let mut b = [0u8; 16];
+    if getrandom::fill(&mut b).is_err() {
+        // Never a constant: two URLs must not collide. The clock and a counter
+        // are unique per call, if not unpredictable.
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        b[..8].copy_from_slice(&crate::web::now_ms().to_bits().to_le_bytes());
+        b[8..].copy_from_slice(&N.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_le_bytes());
+    }
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
+/// The key a lookup uses: the parsed URL without its fragment (Chromium and
+/// the URL Standard's "resolve a blob URL" both ignore it). `None` = not a
+/// `blob:` URL at all.
+fn store_key(url: &str) -> Option<String> {
+    let mut u = ::url::Url::parse(url.trim()).ok()?;
+    if u.scheme() != "blob" {
+        return None;
+    }
+    u.set_fragment(None);
+    Some(u.as_str().to_string())
+}
+
+/// File API "generate a new blob URL": `blob:` + the serialization of the
+/// environment's origin + `/` + a UUID. The origin is this context's
+/// `location.origin`, read once; where there is none, or it is opaque
+/// (`"null"`), the spec lets the value be implementation-defined, and it is
+/// `vn`.
+unsafe fn origin_part(g: *mut c_void) -> String {
+    if let Some(o) = blob_urls().lock().unwrap().get(&(g as usize)).and_then(|s| s.origin.clone()) {
+        return o;
+    }
+    let loc = get(g, glue::rjs_global(g), "location");
+    let o = if is_cell(loc) { read_string(g, get(g, loc, "origin")).unwrap_or_default() } else { String::new() };
+    let o = if o.is_empty() || o == "null" { "vn".to_string() } else { o };
+    blob_urls().lock().unwrap().entry(g as usize).or_default().origin = Some(o.clone());
+    o
+}
+
+unsafe extern "sysv64" fn create_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if cf_argc(cf) < 1 {
+        return throw_type_error(g, "Failed to execute 'createObjectURL' on 'URL': 1 argument required, but only 0 present.");
+    }
+    let origin = origin_part(g);
+    // `(Blob or MediaSource)`: there is no MediaSource here.
+    let Some(b) = super::blob::data_of(g, cf_arg(cf, 0)) else {
+        return throw_type_error(g, "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
+    };
+    let entry = BlobEntry { range: b.range(), mime: b.mime.clone() };
+    let url = format!("blob:{origin}/{}", uuid_v4());
+    let key = store_key(&url).unwrap_or_else(|| url.clone());
+    blob_urls().lock().unwrap().entry(g as usize).or_default().urls.insert(key, entry);
+    js_string(g, &url)
+}
+
+/// `revokeObjectURL(url)`: anything that is not a `blob:` URL of this
+/// context's store is ignored, as the spec says — never an error.
+unsafe extern "sysv64" fn revoke_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if cf_argc(cf) < 1 {
+        return throw_type_error(g, "Failed to execute 'revokeObjectURL' on 'URL': 1 argument required, but only 0 present.");
+    }
+    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let url = read_string(g, s).unwrap_or_default();
+    if let Some(key) = store_key(&url) {
+        if let Some(st) = blob_urls().lock().unwrap().get_mut(&(g as usize)) {
+            st.urls.remove(&key);
+        }
+    }
     UNDEF
+}
+
+/// This context's entry for `url` (fetch's blob scheme).
+pub(crate) fn lookup(g: *mut c_void, url: &str) -> Option<BlobEntry> {
+    let key = store_key(url)?;
+    blob_urls().lock().unwrap().get(&(g as usize))?.urls.get(&key).cloned()
+}
+
+/// A blob URL, resolved for a HOST consumer (vn-tree's `<img>` / `<video>`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlobTarget {
+    /// A path-backed Blob or File: load it by path, without a copy. `range`
+    /// is `Some((offset, len))` for a slice and `None` for the whole file.
+    /// `size` / `mtime` are the snapshot its reads are checked against; see
+    /// [`BlobTarget::snapshot_holds`].
+    Path { path: std::path::PathBuf, range: Option<(u64, u64)>, size: u64, mtime: Option<std::time::SystemTime>, mime: String },
+    /// Bytes in memory: the shared `Arc` and the window onto it.
+    Bytes { bytes: std::sync::Arc<Vec<u8>>, offset: usize, len: usize, mime: String },
+}
+
+impl BlobTarget {
+    pub fn mime(&self) -> &str {
+        match self {
+            BlobTarget::Path { mime, .. } | BlobTarget::Bytes { mime, .. } => mime,
+        }
+    }
+
+    /// Is a path-backed target's file still the one its `File` was made from
+    /// (same size and mtime)? A browser fails a load whose file changed —
+    /// the same rule `text()` applies. Always true for bytes.
+    pub fn snapshot_holds(&self) -> bool {
+        match self {
+            BlobTarget::Path { path, size, mtime, .. } => {
+                std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == *size && m.modified().ok() == *mtime)
+            }
+            BlobTarget::Bytes { .. } => true,
+        }
+    }
+}
+
+/// Resolves a `blob:` URL against context `g`'s store. `None` for a URL
+/// that was never created here, was revoked, or names a Blob that could no
+/// longer be read when it was made. Takes no JS lock and runs no JS: the
+/// store is plain Rust data.
+pub fn resolve_blob_url(g: *mut c_void, url: &str) -> Option<BlobTarget> {
+    use super::blob::Source;
+    let e = lookup(g, url)?;
+    match e.range.source {
+        Source::Disk(f) => {
+            let whole = e.range.offset == 0 && e.range.len == f.size;
+            Some(BlobTarget::Path {
+                path: f.path.clone(),
+                range: (!whole).then_some((e.range.offset, e.range.len)),
+                size: f.size,
+                mtime: f.mtime,
+                mime: e.mime,
+            })
+        }
+        Source::Memory(bytes) => {
+            Some(BlobTarget::Bytes { bytes, offset: e.range.offset as usize, len: e.range.len as usize, mime: e.mime })
+        }
+        Source::Unreadable(_) => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +720,7 @@ pub unsafe fn install(
             match s {
                 "canParse" => can_parse as *const c_void,
                 "createObjectURL" => create_object_url as *const c_void,
-                _ => noop_undef as *const c_void,
+                _ => revoke_object_url as *const c_void,
             },
             &mut f,
         );
@@ -563,4 +731,94 @@ pub unsafe fn install(
     define(g, url.ctor, "revokeObjectURL", n16("revokeObjectURL"), 2);
 
     (url_cls, url, usp_cls, usp, usp_iter_cls, usp_iter_proto)
+}
+
+#[cfg(test)]
+mod jsc_tests {
+    use super::{resolve_blob_url, BlobTarget};
+    use crate::webapi::file::testing::*;
+    use crate::webapi::testing::*;
+
+    #[test]
+    fn object_urls_have_the_file_api_shape_and_revoke() {
+        let c = file_ctx();
+        ok(&c, "(() => { const u = URL.createObjectURL(new Blob(['x'])); \
+                 return /^blob:app:\\/\\/redpew\\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u) \
+                   && u !== URL.createObjectURL(new Blob(['x'])); })()");
+        assert_eq!(throws(&c, "URL.createObjectURL({})"), "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
+        assert_eq!(throws(&c, "URL.createObjectURL()"), "Failed to execute 'createObjectURL' on 'URL': 1 argument required, but only 0 present.");
+        assert_eq!(throws(&c, "URL.revokeObjectURL()"), "Failed to execute 'revokeObjectURL' on 'URL': 1 argument required, but only 0 present.");
+        ok(&c, "URL.revokeObjectURL('https://example.com/') === undefined && URL.revokeObjectURL('not a url') === undefined");
+        assert_eq!(
+            run(&c, "const u = URL.createObjectURL(new Blob(['hello'], { type: 'text/x' })); \
+                     const r = await fetch(u + '#frag'); \
+                     const t = [r.status, r.statusText, r.ok, r.type, r.url === u, r.headers.get('content-type'), r.headers.get('content-length'), await r.text()].join(); \
+                     URL.revokeObjectURL(u + '#other'); \
+                     try { await fetch(u); return 'fetched after revoke'; } catch (e) { return t + '|' + e.name; }"),
+            "200,OK,true,basic,true,text/x,5,hello|TypeError"
+        );
+        // An empty type is still a header (Fetch: `Content-Type` is always set).
+        assert_eq!(run(&c, "const r = await fetch(URL.createObjectURL(new Blob([]))); return JSON.stringify(r.headers.get('content-type'));"), "\"\"");
+        assert!(run(&c, "await fetch(URL.createObjectURL(new Blob(['x'])), { method: 'POST', body: 'y' });").contains("only be fetched with GET"));
+    }
+
+    #[test]
+    fn a_range_request_gets_206_and_bad_ranges_are_network_errors() {
+        let c = file_ctx();
+        s(&c, "globalThis.u = URL.createObjectURL(new Blob(['0123456789'], { type: 'a/b' })); 0");
+        let r = |range: &str| {
+            run(&c, &format!(
+                "const r = await fetch(u, {{ headers: {{ Range: '{range}' }} }}); \
+                 return [r.status, r.headers.get('content-range'), r.headers.get('content-length'), await r.text()].join();"
+            ))
+        };
+        assert_eq!(r("bytes=2-4"), "206,bytes 2-4/10,3,234");
+        assert_eq!(r("bytes=7-"), "206,bytes 7-9/10,3,789");
+        assert_eq!(r("bytes=-3"), "206,bytes 7-9/10,3,789");
+        assert_eq!(r("bytes=-30"), "206,bytes 0-9/10,10,0123456789");
+        assert_eq!(r("bytes=8-100"), "206,bytes 8-9/10,2,89");
+        for bad in ["bytes=10-", "bytes=5-2", "bytes=1-2,4-5", "items=1-2", "bytes= 1-2", "bytes=-"] {
+            assert!(r(bad).starts_with("ERROR: TypeError"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_path_backed_blob_url_resolves_by_path_and_fetches_off_thread() {
+        let c = file_ctx();
+        let t = TempFile::new("pic.png", b"\x89PNG not really");
+        t.expose(&c, "picked");
+        let whole = s(&c, "globalThis.whole = URL.createObjectURL(picked)");
+        let part = s(&c, "globalThis.part = URL.createObjectURL(picked.slice(1, 4))");
+        let mem = s(&c, "URL.createObjectURL(new Blob(['mem'], { type: 'text/plain' }))");
+        let g = c.raw();
+        match resolve_blob_url(g, &whole) {
+            Some(BlobTarget::Path { path, range: None, size: 15, mime, .. }) => {
+                assert_eq!(path, t.0);
+                assert_eq!(mime, "image/png");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(resolve_blob_url(g, &part), Some(BlobTarget::Path { range: Some((1, 3)), .. })));
+        match resolve_blob_url(g, &(mem.clone() + "#x")) {
+            Some(BlobTarget::Bytes { bytes, offset: 0, len: 3, mime }) => {
+                assert_eq!(&bytes[..], b"mem");
+                assert_eq!(mime, "text/plain");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(resolve_blob_url(g, "blob:app://redpew/00000000-0000-4000-8000-000000000000").is_none());
+        assert!(resolve_blob_url(g, &whole).unwrap().snapshot_holds());
+        assert_eq!(run(&c, "return await (await fetch(part)).text();"), "PNG");
+        std::fs::write(&t.0, b"changed").unwrap();
+        assert!(!resolve_blob_url(g, &whole).unwrap().snapshot_holds());
+        assert!(run(&c, "await fetch(whole);").starts_with("ERROR: TypeError: Failed to fetch: NotReadableError"));
+        // An abort that lands while the read runs still wins.
+        assert_eq!(
+            run(&c, "const ac = new AbortController(); const p = fetch(URL.createObjectURL(new File([picked], 'x')), { signal: ac.signal }); \
+                     ac.abort(); try { await p; return 'resolved'; } catch (e) { return e.name; }"),
+            "AbortError"
+        );
+        s(&c, "URL.revokeObjectURL(whole); 0");
+        assert!(resolve_blob_url(g, &whole).is_none());
+    }
 }

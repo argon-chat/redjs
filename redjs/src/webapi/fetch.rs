@@ -728,6 +728,9 @@ unsafe extern "sysv64" fn fetch_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
     if lower.starts_with("http://") || lower.starts_with("https://") {
         return fetch_network(g, plan);
     }
+    if lower.starts_with("blob:") {
+        return fetch_blob(g, &plan);
+    }
     if let Some(scheme) = unsupported_scheme(&lower) {
         return reject_refusal(g, &format!(
             "Failed to fetch: the {scheme}: scheme is not supported by this runtime"
@@ -736,10 +739,155 @@ unsafe extern "sysv64" fn fetch_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
     fetch_local(g, &plan)
 }
 
+/// Fetch §"parse a single range header value" (no whitespace allowed — what
+/// a blob fetch calls it with): `bytes=a-b`, `bytes=a-` or `bytes=-n`, as
+/// `(start, end)`; `None` for anything else, including a list of ranges.
+fn parse_single_range(v: &str) -> Option<(Option<u64>, Option<u64>)> {
+    let rest = v.strip_prefix("bytes=")?;
+    let (a, b) = rest.split_once('-')?;
+    let num = |s: &str| -> Option<Option<u64>> {
+        if s.is_empty() {
+            return Some(None);
+        }
+        if !s.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        s.parse::<u64>().ok().map(Some)
+    };
+    let (start, end) = (num(a)?, num(b)?);
+    match (start, end) {
+        (None, None) => None,
+        (Some(s), Some(e)) if s > e => None,
+        r => Some(r),
+    }
+}
+
+/// What a blob fetch settles with, all of it `Send`.
+struct BlobDelivery {
+    resolve: u64,
+    reject: u64,
+    signal: u64,
+    url: String,
+    status: i32,
+    headers: Vec<(String, String)>,
+}
+unsafe impl Send for BlobDelivery {}
+
+impl BlobDelivery {
+    unsafe fn settle(self, g: *mut c_void, body: Result<Arc<Vec<u8>>, super::blob::ReadError>) {
+        // An abort that landed while the read ran still wins, as for http.
+        if signal_is_aborted(g, self.signal) {
+            let reason = signal_reason(g, self.signal);
+            let _ = call(g, self.reject, UNDEF, &[reason]);
+        } else {
+            match body {
+                Ok(bytes) => {
+                    let resp = create_response(g, RespData {
+                        bytes,
+                        headers: self.headers,
+                        url: self.url,
+                        status: self.status,
+                        status_text: if self.status == 206 { "Partial Content".into() } else { "OK".into() },
+                        redirected: false,
+                        kind: "basic",
+                        has_body: true,
+                        body_used: false,
+                    });
+                    let _ = call(g, self.resolve, UNDEF, &[resp]);
+                }
+                Err(e) => {
+                    // A network error, as for any blob whose read fails.
+                    let err = make_error(g, TYPE_ERR, "", &format!("Failed to fetch: {}: {}", e.name(), e.message()));
+                    let _ = call(g, self.reject, UNDEF, &[err]);
+                }
+            }
+        }
+        crate::ffi::redjs_unprotect(g, self.resolve);
+        crate::ffi::redjs_unprotect(g, self.reject);
+        if is_cell(self.signal) {
+            crate::ffi::redjs_unprotect(g, self.signal);
+        }
+    }
+}
+
+/// Fetch §"scheme fetch" for `blob:`: GET only; the entry in this context's
+/// store or a network error; `200` with `Content-Length` and `Content-Type`
+/// (the Blob's type, even when it is empty), or `206` with `Content-Range`
+/// for one valid `Range`. A memory Blob answers at once (its `Arc` shared
+/// when the whole of it is asked for); a path-backed one is read on a read
+/// thread under the snapshot rule, like `text()`.
+unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
+    if plan.method != "GET" {
+        return reject_refusal(g, &format!("Failed to fetch: a blob: URL can only be fetched with GET, not {}", plan.method));
+    }
+    let Some(entry) = super::url::lookup(g, &plan.url) else {
+        return reject_refusal(g, "Failed to fetch: this blob: URL is not in the blob URL store (it was revoked, or never created in this context)");
+    };
+    let full = entry.range.len;
+    let range = plan.headers.iter().find(|(k, _)| k == "range").map(|(_, v)| v.clone());
+    let (start, len, content_range) = match range {
+        None => (0, full, None),
+        Some(v) => {
+            let Some(r) = parse_single_range(&v) else {
+                return reject_refusal(g, &format!("Failed to fetch: the Range header {v:?} is not a single byte range"));
+            };
+            let (s, e) = match r {
+                // A suffix: the last n bytes (all of them when n is larger).
+                (None, Some(n)) => (full.saturating_sub(n), full.saturating_sub(1)),
+                (Some(s), e) => {
+                    if s >= full {
+                        return reject_refusal(g, &format!("Failed to fetch: the Range {v:?} starts past the end of a {full}-byte Blob"));
+                    }
+                    (s, e.map_or(full - 1, |e| e.min(full - 1)))
+                }
+                (None, None) => unreachable!(),
+            };
+            if full == 0 || e < s {
+                return reject_refusal(g, &format!("Failed to fetch: the Range {v:?} selects nothing in an empty Blob"));
+            }
+            (s, e - s + 1, Some(format!("bytes {s}-{e}/{full}")))
+        }
+    };
+    let mut headers = vec![("content-length".to_string(), len.to_string()), ("content-type".to_string(), entry.mime.clone())];
+    if let Some(cr) = &content_range {
+        headers.push(("content-range".to_string(), cr.clone()));
+    }
+    let status = if content_range.is_some() { 206 } else { 200 };
+    if signal_is_aborted(g, plan.signal) {
+        let reason = signal_reason(g, plan.signal);
+        return reject_with(g, reason);
+    }
+    let window = super::blob::Range { source: entry.range.source.clone(), offset: entry.range.offset + start, len };
+
+    let (mut resolve, mut reject, mut promise) = (0u64, 0u64, 0u64);
+    if crate::ffi::redjs_promise_create(g, &mut resolve, &mut reject, &mut promise) != 0 {
+        return reject_refusal(g, "fetch: could not create a promise");
+    }
+    crate::ffi::redjs_protect(g, resolve);
+    crate::ffi::redjs_protect(g, reject);
+    if is_cell(plan.signal) {
+        crate::ffi::redjs_protect(g, plan.signal);
+    }
+    // `Response.url` is serialized with "exclude fragment" (Fetch).
+    let url = plan.url.split('#').next().unwrap_or_default().to_string();
+    let d = BlobDelivery { resolve, reject, signal: plan.signal, url, status, headers };
+    if let super::blob::Source::Memory(arc) = &window.source {
+        let body = if window.offset == 0 && window.len as usize == arc.len() {
+            Ok(Arc::clone(arc))
+        } else {
+            window.in_memory().map(|b| Arc::new(b.to_vec())).ok_or(super::blob::ReadError::NotReadable)
+        };
+        d.settle(g, body);
+        return promise;
+    }
+    super::blob::read_async(g, window, Box::new(move |g, r| unsafe { d.settle(g, r.map(Arc::new)) }));
+    promise
+}
+
 /// A scheme we recognise as a scheme but will not serve. Anything without a
 /// scheme is a local path and goes to `fetch_local`.
 fn unsupported_scheme(lower_url: &str) -> Option<&'static str> {
-    for s in ["ws", "wss", "ftp", "ftps", "blob", "about", "chrome", "javascript"] {
+    for s in ["ws", "wss", "ftp", "ftps", "about", "chrome", "javascript"] {
         if lower_url.starts_with(s) && lower_url[s.len()..].starts_with(':') {
             return Some(s);
         }
