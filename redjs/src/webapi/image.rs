@@ -25,6 +25,12 @@ unsafe fn this_bitmap<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut Bit
     host_data::<BitmapData>(g, state(g).bitmap_class, cf_this(cf))
 }
 
+/// The ImageBitmap behind `v`, if it is one. A closed (or transferred-away)
+/// bitmap reads as 0×0 with no pixels — HTML's [[Detached]].
+pub(crate) unsafe fn bitmap_of<'a>(g: *mut c_void, v: u64) -> Option<&'a mut BitmapData> {
+    host_data::<BitmapData>(g, state(g).bitmap_class, v)
+}
+
 /// Wraps decoded pixels in an ImageBitmap instance.
 pub unsafe fn create_bitmap(g: *mut c_void, data: BitmapData) -> u64 {
     let st = state(g);

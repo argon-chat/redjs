@@ -1051,9 +1051,15 @@ unsafe extern "sysv64" fn close_event_construct(g: *mut c_void, cf: *mut c_void)
 
 /// A trusted `MessageEvent` carrying `data`, dispatched from the pump.
 unsafe fn new_message_event(g: *mut c_void, data: u64, origin: &str) -> u64 {
+    new_message_event_of(g, "message", data, origin)
+}
+
+/// A trusted `MessageEvent` of any type (`message` / `messageerror`) — also
+/// what BroadcastChannel delivers.
+pub(crate) unsafe fn new_message_event_of(g: *mut c_void, ty: &str, data: u64, origin: &str) -> u64 {
     let c = classes(g);
     let obj = new_object(g, c.message_event.proto);
-    events::init_event(g, obj, js_string(g, "message"), UNDEF, false);
+    events::init_event(g, obj, js_string(g, ty), UNDEF, false);
     if let Some(s) = slots(g, obj) {
         define(g, s, "isTrusted", TRUE, 0);
         define(g, s, "data", data, 0);

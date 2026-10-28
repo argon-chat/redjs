@@ -1,16 +1,18 @@
 //! Native platform odds and ends: `atob`/`btoa`, `ImageData`,
 //! `BroadcastChannel`.
 //!
-//! `BroadcastChannel` is a real `EventTarget`; `postMessage` structured-clones
-//! the value and delivers a `message` event asynchronously (next pump tick)
-//! to every OTHER open channel with the same name in this context — the same
-//! observable semantics as same-agent channels in a browser.
+//! `BroadcastChannel` is a real `EventTarget`; `postMessage` serializes the
+//! value ONCE (the structured serializer, [`super::serialize`]) and queues one
+//! task per destination — every OTHER open channel of that name in this
+//! context, in creation order — that deserializes its own copy and fires a
+//! trusted `MessageEvent` (`messageerror` if that deserialization throws).
+//! The same observable semantics as same-agent channels in a browser.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use super::{clone, events, fsutil};
+use super::{events, fsutil, serialize, websocket};
 use super::util::*;
 use crate::glue;
 
@@ -149,6 +151,39 @@ unsafe extern "sysv64" fn imagedata_get_colorspace(g: *mut c_void, _cf: *mut c_v
     js_string(g, "srgb")
 }
 
+/// `(data, width, height)` of an ImageData — `None` for anything else,
+/// including a BroadcastChannel (same slot atom, `{name, closed}` bag).
+pub(crate) unsafe fn image_data_parts(g: *mut c_void, v: u64) -> Option<(u64, u32, u32)> {
+    let c = registry().lock().unwrap().get(&(g as usize)).copied()?;
+    let slots = get_a(g, v, c.s_plat);
+    if !is_cell(slots) {
+        return None;
+    }
+    let w = dec_f64(get(g, slots, "width"))?;
+    let h = dec_f64(get(g, slots, "height"))?;
+    Some((get(g, slots, "data"), w as u32, h as u32))
+}
+
+/// An ImageData over an existing Uint8ClampedArray of exactly `w*h*4`
+/// elements; `None` if `data` is not that.
+pub(crate) unsafe fn create_image_data(g: *mut c_void, data: u64, w: u32, h: u32) -> Option<u64> {
+    let c = registry().lock().unwrap().get(&(g as usize)).copied()?;
+    let mut info = crate::ffi::RjsTaInfo::default();
+    if w == 0 || h == 0 || glue::rjs_typedarray_info(g, data, &mut info) != 0 || info.kind != 3 {
+        return None;
+    }
+    if info.length as u64 != w as u64 * h as u64 * 4 {
+        return None;
+    }
+    let obj = new_object(g, c.imagedata.proto);
+    let slots = new_object(g, UNDEF);
+    define(g, slots, "data", data, 0);
+    define(g, slots, "width", enc_i32(w as i32), 0);
+    define(g, slots, "height", enc_i32(h as i32), 0);
+    glue::rjs_define(g, obj, c.s_plat, slots, 0);
+    Some(obj)
+}
+
 // ---- BroadcastChannel ----------------------------------------------------------
 
 unsafe extern "sysv64" fn bc_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -184,30 +219,55 @@ unsafe extern "sysv64" fn bc_post_message(g: *mut c_void, cf: *mut c_void) -> u6
         return super::domexception::throw(g, "InvalidStateError", "BroadcastChannel.postMessage: channel is closed");
     }
     let name = read_string(g, get(g, slots, "name")).unwrap_or_default();
-    let data = match clone::clone(g, cf_arg(cf, 0)) {
-        Ok(v) => v,
-        Err(e) => return super::domexception::throw(g, "DataCloneError", &e),
-    };
-    crate::ffi::redjs_protect(g, data);
-
-    // Deliver on the next pump tick (spec: a queued task), to every OTHER
-    // channel with this name that is still open.
-    crate::web::schedule_native(g, 0.0, Box::new(move |g| {
-        let targets: Vec<u64> = channels()
-            .lock()
-            .unwrap()
-            .get(&(g as usize))
-            .and_then(|m| m.get(&name))
-            .map(|v| v.iter().copied().filter(|&t| t != this).collect())
-            .unwrap_or_default();
-        for t in targets {
-            let ev = events::new_trusted_event(g, "message");
-            define(g, ev, "data", data, 0);
-            events::dispatch(g, t, ev);
+    // "Let serialized be StructuredSerialize(message). Rethrow any exceptions."
+    // Once — every destination deserializes its own copy from these bytes.
+    let serialized = match serialize::serialize(g, cf_arg(cf, 0), &serialize::Options { for_storage: false, transfer: &[] }) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            glue::rjs_throw(g, e);
+            return UNDEF;
         }
-        crate::ffi::redjs_unprotect(g, data);
-    }));
+    };
+    let origin = source_origin(g);
+
+    // The destinations are fixed NOW: every other open channel of this name,
+    // in creation order — each gets its own queued task.
+    let destinations: Vec<u64> = channels()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .and_then(|m| m.get(&name))
+        .map(|v| v.iter().copied().filter(|&t| t != this).collect())
+        .unwrap_or_default();
+    for dest in destinations {
+        crate::ffi::redjs_protect(g, dest);
+        let serialized = Arc::clone(&serialized);
+        let origin = origin.clone();
+        crate::web::schedule_native(g, 0.0, Box::new(move |g| {
+            let slots = slots_of(g, dest);
+            if is_cell(slots) && get(g, slots, "closed") != TRUE {
+                // A deserialization that throws is a `messageerror`, not a throw.
+                let ev = match serialize::deserialize_ref(g, &serialized) {
+                    Ok(data) => websocket::new_message_event_of(g, "message", data, &origin),
+                    Err(_) => websocket::new_message_event_of(g, "messageerror", NULL, &origin),
+                };
+                events::dispatch(g, dest, ev);
+            }
+            crate::ffi::redjs_unprotect(g, dest);
+        }));
+    }
     UNDEF
+}
+
+/// The serialization of the source origin for `MessageEvent.origin`:
+/// `location.origin` when the global has one, else `""`.
+unsafe fn source_origin(g: *mut c_void) -> String {
+    let loc = get(g, glue::rjs_global(g), "location");
+    if !is_cell(loc) {
+        return String::new();
+    }
+    let o = get(g, loc, "origin");
+    if glue::rjs_kind(g, o) == 5 { read_string(g, o).unwrap_or_default() } else { String::new() }
 }
 
 unsafe extern "sysv64" fn bc_close(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -274,4 +334,37 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
 
     let boxed: &'static PlatformClasses = Box::leak(Box::new(PlatformClasses { imagedata, bc, s_plat }));
     registry().lock().unwrap().insert(g as usize, boxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::webapi::testing::{ctx, ok, s};
+
+    fn pump(c: &crate::api::Context) {
+        let mut stats = crate::ffi::RjsPumpStats::default();
+        unsafe { crate::ffi::redjs_pump(c.raw(), 7, &mut stats) };
+    }
+
+    #[test]
+    fn broadcast_channel_delivers_a_fresh_clone_per_receiver() {
+        let c = ctx();
+        s(&c, "globalThis.got = []; const a = new BroadcastChannel('ch'), b = new BroadcastChannel('ch'), tx = new BroadcastChannel('ch'); \
+               a.onmessage = e => got.push(['a', e]); b.addEventListener('message', e => got.push(['b', e])); \
+               globalThis.payload = { list: [1, 2], when: new Date(3) }; tx.postMessage(payload); \
+               a.close(); /* closed before its task ran: nothing for a */ 0");
+        assert_eq!(s(&c, "got.length"), "0");
+        pump(&c);
+        ok(&c, "got.length === 1 && got[0][0] === 'b' && got[0][1] instanceof MessageEvent && got[0][1].isTrusted \
+                && got[0][1].data !== payload && got[0][1].data.list[1] === 2 && got[0][1].data.when.getTime() === 3 \
+                && typeof got[0][1].origin === 'string'");
+    }
+
+    #[test]
+    fn broadcast_channel_post_rethrows_serialization_errors() {
+        let c = ctx();
+        ok(&c, "(() => { const tx = new BroadcastChannel('x'); try { tx.postMessage(() => 1); return false; } \
+                catch (e) { return e instanceof DOMException && e.name === 'DataCloneError'; } })()");
+        ok(&c, "(() => { const tx = new BroadcastChannel('x'); tx.close(); try { tx.postMessage(1); return false; } \
+                catch (e) { return e instanceof DOMException && e.name === 'InvalidStateError'; } })()");
+    }
 }

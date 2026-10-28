@@ -801,7 +801,12 @@ pub unsafe extern "sysv64" fn dispatch_event(g: *mut c_void, cf: *mut c_void) ->
 
 unsafe extern "sysv64" fn event_target_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
-    ordinary_create(g, cf_new_target(cf), st.event_target.proto)
+    let obj = ordinary_create(g, cf_new_target(cf), st.event_target.proto);
+    // The listener list up front: it is also what makes `new EventTarget()`
+    // (and every subclass instance) a platform object to the structured
+    // serializer — a DataCloneError, as in a browser, not a cloned `{}`.
+    listeners_of(g, obj, true);
+    obj
 }
 
 // ---------------------------------------------------------------------------

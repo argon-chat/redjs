@@ -21,7 +21,8 @@
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
 //! window (+ host hooks), UIEvent / MouseEvent / KeyboardEvent / WheelEvent /
 //! FocusEvent / InputEvent / PointerEvent / DragEvent / DataTransfer,
-//! DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, the
+//! DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, `structuredClone`
+//! over a byte-level structured serializer (see [`serialize`]), the
 //! Streams queueing cores and the gzip/deflate codec, and the alert / confirm /
 //! prompt host hooks. Only genuinely dumb stubs remain in the embedded
 //! `bootstrap.js` (console fmt, atob/btoa, crypto, OffscreenCanvas-2D over
@@ -49,7 +50,6 @@ pub mod audio;
 pub mod blob;
 #[cfg(feature = "clipboard")]
 pub mod clipboard;
-pub mod clone;
 pub mod compression;
 pub mod crypto;
 pub mod dialogs;
@@ -75,6 +75,7 @@ pub mod permissions;
 pub mod pcm;
 pub mod platform;
 pub mod request;
+pub mod serialize;
 #[cfg(feature = "storages")]
 pub mod storage;
 pub mod streams;
@@ -175,6 +176,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     path2d::forget(gone);
     permissions::forget(gone);
     platform::forget(gone);
+    serialize::forget(gone);
     #[cfg(feature = "storages")]
     storage::forget(gone);
     streams::forget(gone);
@@ -314,7 +316,11 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         return 1;
     }
     uievents::install(g, ev_proto);
-    clone::install(g);
+    // After streams (it captures their prototypes) and before any user
+    // script: the Map/Set/Error/ArrayBuffer intrinsics it reads through are
+    // captured here, so a later override of `Map.prototype.entries` cannot
+    // reach into a clone.
+    serialize::install(g);
     #[cfg(feature = "audio")]
     {
         audio::install(g);

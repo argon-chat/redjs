@@ -278,6 +278,26 @@ pub unsafe fn define(g: *mut c_void, obj: u64, name: &str, v: u64, attrs: u32) {
     glue::rjs_atom_free(g, a);
 }
 
+/// Is `proto` on `v`'s prototype chain? Read off the stored [[Prototype]]
+/// slots — no trap, no getter — so a brand check built on it is unobservable.
+pub unsafe fn proto_chain_has(g: *mut c_void, v: u64, proto: u64) -> bool {
+    if !is_cell(v) || !is_cell(proto) {
+        return false;
+    }
+    let mut o = v;
+    for _ in 0..4096 {
+        let p = capi::JSObjectGetPrototype(g, o as usize as capi::JSObjectRef) as usize as u64;
+        if !is_cell(p) {
+            return false;
+        }
+        if p == proto {
+            return true;
+        }
+        o = p;
+    }
+    false
+}
+
 pub unsafe fn get_a(g: *mut c_void, obj: u64, a: *mut c_void) -> u64 {
     let mut out = UNDEF;
     if glue::rjs_get(g, obj, a, &mut out) != 0 {

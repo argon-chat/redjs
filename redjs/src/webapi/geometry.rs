@@ -283,6 +283,7 @@ struct GeomClasses {
     ro: Class,
     rw: Class,
     point_class: capi::JSClassRef,
+    point_ro: Class,
     point_rw: Class,
 }
 
@@ -319,6 +320,42 @@ pub unsafe fn new_matrix(g: *mut c_void, m: Mat) -> u64 {
 pub unsafe fn new_point(g: *mut c_void, p: [f64; 4]) -> u64 {
     let c = classes(g);
     host_create(g, c.point_class, c.point_rw.proto, PointData { p })
+}
+
+// ---- structured serialization (webapi::serialize) ----------------------------
+
+use super::util::proto_chain_has as has_in_chain;
+
+fn classes_opt(g: *mut c_void) -> Option<&'static GeomClasses> {
+    registry().lock().unwrap().get(&(g as usize)).copied()
+}
+
+/// `(x, y, z, w, read_only)` of a DOMPoint / DOMPointReadOnly — read-only
+/// unless `DOMPoint.prototype` is on its chain (a subclass serializes as the
+/// interface it extends, as in a browser).
+pub(crate) unsafe fn point_parts(g: *mut c_void, v: u64) -> Option<([f64; 4], bool)> {
+    let c = classes_opt(g)?;
+    let d = host_data::<PointData>(g, c.point_class, v)?;
+    Some((d.p, !has_in_chain(g, v, c.point_rw.proto)))
+}
+
+pub(crate) unsafe fn create_point(g: *mut c_void, p: [f64; 4], read_only: bool) -> Option<u64> {
+    let c = classes_opt(g)?;
+    let proto = if read_only { c.point_ro.proto } else { c.point_rw.proto };
+    Some(host_create(g, c.point_class, proto, PointData { p }))
+}
+
+/// The matrix and whether it is a DOMMatrixReadOnly (see [`point_parts`]).
+pub(crate) unsafe fn matrix_parts(g: *mut c_void, v: u64) -> Option<(Mat, bool)> {
+    let c = classes_opt(g)?;
+    let d = host_data::<MatrixData>(g, c.matrix_class, v)?;
+    Some((d.m, !has_in_chain(g, v, c.rw.proto)))
+}
+
+pub(crate) unsafe fn create_matrix(g: *mut c_void, m: Mat, read_only: bool) -> Option<u64> {
+    let c = classes_opt(g)?;
+    let proto = if read_only { c.ro.proto } else { c.rw.proto };
+    Some(host_create(g, c.matrix_class, proto, MatrixData { m }))
 }
 
 /// True when `v` is one of this module's matrix objects.
@@ -967,7 +1004,7 @@ pub unsafe fn install(g: *mut c_void) {
     }
 
     let boxed: &'static GeomClasses =
-        Box::leak(Box::new(GeomClasses { matrix_class, ro, rw, point_class, point_rw }));
+        Box::leak(Box::new(GeomClasses { matrix_class, ro, rw, point_class, point_ro, point_rw }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 

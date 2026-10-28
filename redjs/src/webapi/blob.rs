@@ -183,6 +183,19 @@ pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class) {
     (cls, class)
 }
 
+/// The Blob behind `v`, if it is one (the serializer's read).
+pub(crate) unsafe fn data_of<'a>(g: *mut c_void, v: u64) -> Option<&'a BlobData> {
+    let st = state(g);
+    host_data::<BlobData>(g, st.blob_class, v).map(|b| &*b)
+}
+
+/// A Blob over existing bytes — shared, not copied (the serializer's
+/// blob-by-reference attachment lands here).
+pub(crate) unsafe fn from_data(g: *mut c_void, data: BlobData) -> u64 {
+    let st = state(g);
+    host_create(g, st.blob_class, st.blob.proto, data)
+}
+
 /// Raw bytes of a Blob value (fetch/createImageBitmap internals).
 pub unsafe fn bytes_of(g: *mut c_void, v: u64) -> Option<Vec<u8>> {
     let st = state(g);

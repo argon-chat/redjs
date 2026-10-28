@@ -898,7 +898,9 @@ extern "C" int32_t rjs_arraybuffer_detach(void* g, uint64_t v)
     VM& vm = go->vm();
     JSLockHolder lock(vm);
     auto* jsBuf = dynamicDowncast<JSArrayBuffer>(JSValue::decode(v));
-    if (!jsBuf || !jsBuf->impl())
+    // A locked buffer (a WebAssembly.Memory's) is not detachable: ECMA-262
+    // DetachArrayBuffer throws for it, and the caller says so.
+    if (!jsBuf || !jsBuf->impl() || !jsBuf->impl()->isDetachable())
         return RJS_BAD_ARG;
     jsBuf->impl()->detach(vm);
     return RJS_OK;
@@ -997,7 +999,7 @@ extern "C" int32_t rjs_queue_microtask(void* g, uint64_t fn)
 }
 
 // Own enumerable string-keyed property names of an object, as a JS array of
-// strings (structuredClone / object walking).
+// strings (the structured serializer / object walking).
 extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
@@ -1387,6 +1389,91 @@ extern "C" int32_t rjs_array_dense(void* g, uint64_t v, uint32_t* lenOut)
     }
     *lenOut = len;
     return 1;
+}
+
+// HTML's property step — "if ! HasOwnProperty(value, key) is true, then let
+// inputValue be ? value.[[Get]](key, value)" — as ONE own lookup. Only for an
+// ordinary object or an Array (proxies never get here), where the two are the
+// same thing: 1 present (*out = the value; a getter has run), 0 absent,
+// -1 exception (in *out).
+extern "C" int32_t rjs_own_get_v(void* g, uint64_t obj, uint64_t key, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return 0;
+    JSObject* o = asObject(base);
+    Identifier pk = JSValue::decode(key).toPropertyKey(go);
+    if (takeException(vm, out))
+        return -1;
+    PropertySlot slot(o, PropertySlot::InternalMethodType::Get);
+    bool has = o->methodTable()->getOwnPropertySlot(o, go, pk, slot);
+    if (takeException(vm, out))
+        return -1;
+    if (!has)
+        return 0;
+    JSValue r = slot.getValue(go, pk);
+    if (takeException(vm, out))
+        return -1;
+    *out = JSValue::encode(r);
+    return 1;
+}
+
+// rjs_own_get_v for an array-index key, without making a string of it; an
+// Array's plain element is read straight out of its butterfly.
+extern "C" int32_t rjs_own_get_index(void* g, uint64_t obj, uint32_t index, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return 0;
+    JSObject* o = asObject(base);
+    if (auto* a = dynamicDowncast<JSArray>(o)) {
+        if (a->canGetIndexQuickly(index)) {
+            *out = JSValue::encode(a->getIndexQuickly(index));
+            return 1;
+        }
+    }
+    PropertySlot slot(o, PropertySlot::InternalMethodType::Get);
+    bool has = o->methodTable()->getOwnPropertySlotByIndex(o, go, index, slot);
+    if (takeException(vm, out))
+        return -1;
+    if (!has)
+        return 0;
+    JSValue r = slot.getValue(go, static_cast<uint64_t>(index));
+    if (takeException(vm, out))
+        return -1;
+    *out = JSValue::encode(r);
+    return 1;
+}
+
+// CreateDataProperty(obj, index, val) — never a setter on the prototype chain.
+extern "C" int32_t rjs_define_index(void* g, uint64_t obj, uint32_t index, uint64_t val)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return RJS_BAD_ARG;
+    asObject(base)->putDirectIndex(go, index, JSValue::decode(val));
+    if (takeException(vm, nullptr))
+        return RJS_EXCEPTION;
+    return RJS_OK;
+}
+
+// The VM's soft stack limit on this thread (0 when it has none yet). The
+// serializer recurses natively and stops where JS would: a graph too deep to
+// walk is a RangeError, as in a browser, never a native stack overflow.
+extern "C" uintptr_t rjs_stack_soft_limit(void* g)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    return reinterpret_cast<uintptr_t>(vm.softStackLimit());
 }
 
 // ---------------------------------------------------------------------------

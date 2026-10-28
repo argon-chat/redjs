@@ -101,6 +101,12 @@ extern "C" {
     pub fn rjs_string_latin1(g: *mut c_void, p: *const u8, len: usize, out: *mut u64) -> i32;
     pub fn rjs_view_buffer(g: *mut c_void, v: u64, out: *mut u64) -> i32;
     pub fn rjs_array_dense(g: *mut c_void, v: u64, len: *mut u32) -> i32;
+    /// HasOwnProperty + [[Get]] in one own lookup: 1 present, 0 absent, -1 exception.
+    pub fn rjs_own_get_v(g: *mut c_void, obj: u64, key: u64, out: *mut u64) -> i32;
+    pub fn rjs_own_get_index(g: *mut c_void, obj: u64, index: u32, out: *mut u64) -> i32;
+    /// CreateDataProperty with an index key (no prototype-chain setter).
+    pub fn rjs_define_index(g: *mut c_void, obj: u64, index: u32, val: u64) -> i32;
+    pub fn rjs_stack_soft_limit(g: *mut c_void) -> usize;
     pub fn rjs_gc(g: *mut c_void, mode: i32);
     pub fn rjs_heap_stats(g: *mut c_void, out: *mut RjsHeapStats);
     pub fn rjs_report_extra_memory(g: *mut c_void, bytes: u64);

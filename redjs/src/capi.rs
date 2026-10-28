@@ -162,6 +162,8 @@ extern "C" {
     pub fn JSObjectGetPrivate(object: JSObjectRef) -> *mut c_void;
     pub fn JSObjectSetPrivate(object: JSObjectRef, data: *mut c_void) -> bool;
     pub fn JSObjectSetPrototype(ctx: JSContextRef, object: JSObjectRef, value: JSValueRef);
+    /// The object's [[Prototype]] slot as stored (no Proxy trap runs).
+    pub fn JSObjectGetPrototype(ctx: JSContextRef, object: JSObjectRef) -> JSValueRef;
     /// Brand check: is `value` an object created from `js_class`?
     pub fn JSValueIsObjectOfClass(ctx: JSContextRef, value: JSValueRef, js_class: JSClassRef) -> bool;
 }

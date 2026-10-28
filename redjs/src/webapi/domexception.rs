@@ -220,13 +220,32 @@ pub unsafe fn parts(g: *mut c_void, v: u64) -> Option<Parts> {
     Some(Parts { name, message, quota })
 }
 
-/// Rebuilds an instance from [`Parts`] (deserialization), with `stack` when
-/// one was carried.
+/// Rebuilds an instance from [`Parts`].
 pub unsafe fn from_parts(g: *mut c_void, p: &Parts) -> u64 {
     match p.quota {
         Some((q, r)) => create_quota_exceeded(g, &p.message, q, r),
         None => create(g, &p.name, &p.message),
     }
+}
+
+/// The internal slots as the JS values they hold — `(name, message,
+/// Some((quota, requested)))` for a QuotaExceededError, each of those a
+/// number or `null`. The serializer's read: strings stay exact (a lone
+/// surrogate in a message survives, which [`parts`]' `String` would not).
+pub(crate) unsafe fn raw_parts(g: *mut c_void, v: u64) -> Option<(u64, u64, Option<(u64, u64)>)> {
+    let c = classes(g)?;
+    let slots = slot_of(g, c, v)?;
+    let quota = if is_quota(g, c, v) { Some((get(g, slots, "quota"), get(g, slots, "requested"))) } else { None };
+    Some((get(g, slots, "name"), get(g, slots, "message"), quota))
+}
+
+/// The serializer's write: a DOMException (or, with `quota`, a
+/// QuotaExceededError) from JS strings and numbers-or-null. `None` before
+/// install.
+pub(crate) unsafe fn from_raw(g: *mut c_void, name: u64, message: u64, quota: Option<(u64, u64)>) -> Option<u64> {
+    let c = classes(g)?;
+    let proto = if quota.is_some() { c.quota.proto } else { c.dom.proto };
+    Some(make(g, c, proto, name, message, quota))
 }
 
 unsafe fn slot_of(g: *mut c_void, c: &DomClasses, v: u64) -> Option<u64> {
