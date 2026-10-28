@@ -142,6 +142,13 @@ clipboard = []
 # dependency; one OS thread, spawned at the first `open`, never at install.
 indexeddb = []
 
+# WPT IndexedDB runner (tests/wpt/README.md): its own `main`, one child
+# process per test file.
+[[test]]
+name = "wpt_idb"
+harness = false
+required-features = ["indexeddb"]
+
 # Examples that cannot compile without their host-class feature.
 [[example]]
 name = "yoga_conformance"

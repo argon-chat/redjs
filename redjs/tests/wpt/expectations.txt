@@ -1,0 +1,73 @@
+# WPT IndexedDB expectations for redjs (tests/wpt/README.md).
+#
+#   skip <file>              not run at all (reason above it)
+#   harness <file>           the file's harness status is expected NOT to be OK
+#   fail <file> :: <name>    this subtest is expected NOT to pass
+#
+# Every subtest not listed must PASS. A listed one that passes fails the run
+# too ("UNEXPECTED PASS"), so this file is always the exact truth.
+
+# ---------------------------------------------------------------------------
+# P3, not implemented on purpose (design §4.11, IDB-D5): getAllRecords() and
+# the getAll/getAllKeys options dictionary. The methods are ABSENT (feature
+# detection takes the old path), so these files cannot run meaningfully.
+skip idbobjectstore_getAllRecords.any.js
+skip idbindex_getAllRecords.any.js
+skip idbobjectstore_getAll-options.any.js
+skip idbobjectstore_getAllKeys-options.any.js
+skip idbindex_getAll-options.any.js
+skip idbindex_getAllKeys-options.any.js
+
+# ---------------------------------------------------------------------------
+# `createDetachedArrayBuffer` (support.js) detaches through MessageChannel,
+# which redjs does not have (detached buffers ARE invalid keys here: key.rs
+# checks the brand's detached flag, unit-tested in Rust).
+fail idbobjectstore_getAll.any.js :: Get all values with invalid query keys
+fail idbobjectstore_getAllKeys.any.js :: Get all keys with invalid query keys
+fail idbindex_getAll.any.js :: Get all values with invalid query keys
+fail idbindex_getAllKeys.any.js :: Get all keys with invalid query keys
+fail idb-binary-key-detached.any.js :: Detached ArrayBuffers must throw DataError when used as a key
+fail idb-binary-key-detached.any.js :: Detached TypedArrays must throw DataError when used as a key
+
+# ---------------------------------------------------------------------------
+# Reading a Blob back is done through APIs redjs does not have: FileReader
+# (nested-cloning-common.js), XMLHttpRequest, blob: URLs for fetch. The Blob
+# round trip itself passes everywhere else (blob-valid-*, value, nested-cloning
+# without blobs) — what fails is the helper reading it.
+fail blob-composite-blob-reads.any.js :: Composite Blob Handling: Many blobs: fetch-blob-url
+fail blob-contenttype.any.js :: Ensure that content type round trips when reading blob data
+fail nested-cloning-basic.any.js :: blob
+fail nested-cloning-large-multiple.any.js :: multiple requests of objects with blobs and large typed arrays
+fail nested-cloning-large-multiple.any.js :: multiple requests of objects with blobs and large typed arrays with key generator
+fail nested-cloning-large.any.js :: blob with large typed array
+fail nested-cloning-large.any.js :: blob with large typed array with key generator
+fail nested-cloning-large.any.js :: array of blobs and large typed arrays
+fail nested-cloning-large.any.js :: array of blobs and large typed arrays with key generator
+fail nested-cloning-large.any.js :: object with blobs and large typed arrays
+fail nested-cloning-large.any.js :: object with blobs and large typed arrays with key generator
+fail nested-cloning-small.any.js :: blob with small typed array
+fail nested-cloning-small.any.js :: blob with small typed array with key generator
+fail nested-cloning-small.any.js :: blob array
+fail nested-cloning-small.any.js :: blob array with key generator
+fail nested-cloning-small.any.js :: array of blobs and small typed arrays
+fail nested-cloning-small.any.js :: array of blobs and small typed arrays with key generator
+
+# ---------------------------------------------------------------------------
+# `new File(...)` at top level: File is not implemented (P3, design §4.14), so
+# the file throws before registering any test.
+harness keypath-special-identifiers.any.js
+
+# ---------------------------------------------------------------------------
+# JSC's Array.prototype.join detects cycles (so do V8 and SpiderMonkey): the
+# WebIDL sequence<DOMString> conversion of a self-referential array yields ''
+# instead of exhausting the stack. Matching would mean replacing the engine's
+# own ToString for arrays.
+fail keypath.any.js :: Key path conversion: a self-referential array exhausts the stack
+
+# ---------------------------------------------------------------------------
+# The file throws at top level at `new DOMRect`: DOMRect/DOMRectReadOnly are
+# not implemented (geometry.rs has DOMPoint/DOMMatrix), and geometry, ImageData
+# and File serialization are P3 (design §4.14). Every subtest registered before
+# that line runs and passes; the ones after it (geometry, ImageData, Blob,
+# File, the non-serializable list) never register.
+harness structured-clone.any.js
