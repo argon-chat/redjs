@@ -76,7 +76,7 @@ redcss = { path = "../../redcss", optional = true }
 # dep regardless of features, so `../../redcss` must exist on disk even with
 # `css-host` off — a stub crate at that path satisfies it.
 [features]
-default = ["audio", "physics", "mesh", "css-host", "yoga-host"]
+default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
 # decodeAudioData beyond the game formats: AAC-LC + the MP4/M4A, CAF, MKV and
@@ -132,6 +132,15 @@ storages = []
 # clipboard for its own text fields implements the trait over that same handle
 # rather than opening a second one.
 clipboard = []
+
+# IndexedDB 3.0: `indexedDB`, every `IDB*` interface, `DOMStringList`,
+# `IDBVersionChangeEvent`, `navigator.storage` — over a process-wide server
+# thread and the in-memory backend (persistence is the SQLite backend, later).
+# ON by default, unlike the two above: it needs nothing from the embedder to be
+# truthful (an app that installs no host gets a working, memory-only database
+# and one advisory saying so), and every consumer of this crate is ours. No new
+# dependency; one OS thread, spawned at the first `open`, never at install.
+indexeddb = []
 
 # Examples that cannot compile without their host-class feature.
 [[example]]

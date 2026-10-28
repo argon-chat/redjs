@@ -914,6 +914,33 @@ pub unsafe extern "C" fn redjs_navigator_set_user_agent(ua: *const u16, len: usi
     crate::webapi::navigator::set_user_agent(Some(&s));
 }
 
+/// The per-pump delivery budget, process-wide, in microseconds: how long one
+/// `redjs_pump` may keep delivering — and waiting for — results produced on
+/// other threads (IndexedDB) while any are still in flight. Default 4000.
+/// 0 = deliver what is already queued and never wait. Present in every build
+/// (the budget is the pump's, not IndexedDB's).
+#[no_mangle]
+pub extern "C" fn redjs_idb_set_budget_us(us: u32) {
+    crate::web::set_pump_budget_us(us);
+}
+
+/// Ends IndexedDB's work before exit: transactions that never committed are
+/// lost (as when a browser is killed) and every database is closed. Returns 1
+/// if the server finished within `timeout_ms` (or never started), 0 if not.
+/// A build without the `indexeddb` feature always returns 1.
+#[no_mangle]
+pub extern "C" fn redjs_idb_shutdown(timeout_ms: u32) -> i32 {
+    #[cfg(feature = "indexeddb")]
+    {
+        crate::webapi::indexeddb::shutdown(std::time::Duration::from_millis(timeout_ms as u64)) as i32
+    }
+    #[cfg(not(feature = "indexeddb"))]
+    {
+        let _ = timeout_ms;
+        1
+    }
+}
+
 /// Registers (or clears, with null) the host CONTENT PROVIDER for fetch/Image
 /// local reads (W-HIVE). `read_fn` is
 /// `int32_t (const uint8_t* path_utf8, size_t path_len, void (*sink)(void* ctx, const uint8_t* ptr, size_t len), void* sink_ctx)`

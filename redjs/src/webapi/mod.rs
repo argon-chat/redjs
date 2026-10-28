@@ -29,6 +29,9 @@
 //! `bootstrap.js` (console fmt, atob/btoa, crypto, OffscreenCanvas-2D over
 //! native pixels, silent Web Audio, misc instanceof brands).
 //!
+//! IndexedDB (`indexeddb`, on by default) is its own subtree — see
+//! [`indexeddb`] for its client/server shape.
+//!
 //! Two more surfaces are behind cargo features, because an embedder that has
 //! no answer for them should not ship a global that lies: `localStorage` /
 //! `sessionStorage` / `StorageEvent` (`storages`, see [`storage`]) and
@@ -66,6 +69,8 @@ pub mod headers;
 pub mod hrtf;
 pub mod http;
 pub mod image;
+#[cfg(feature = "indexeddb")]
+pub mod indexeddb;
 #[cfg(feature = "audio")]
 pub mod mediadevices;
 pub mod navigator;
@@ -175,6 +180,8 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     fsutil::forget(gone);
     geometry::forget(gone);
     headers::forget(gone);
+    #[cfg(feature = "indexeddb")]
+    indexeddb::forget(gone);
     navigator::forget(gone);
     path2d::forget(gone);
     permissions::forget(gone);
@@ -358,6 +365,12 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     if storage::install(g, ev_proto) != 0 {
         return 1;
     }
+    // `indexedDB` & co. After `domexception` (every IDB failure is a real
+    // DOMException), `serialize` (values are stored as its bytes) and
+    // `navigator` (it hangs `navigator.storage` there). Nothing spawns here:
+    // the server thread starts at the first open.
+    #[cfg(feature = "indexeddb")]
+    indexeddb::install(g, ev_proto, et_proto);
     platform::install(g, et_proto);
     #[cfg(feature = "physics")]
     crate::physics::install(g);
