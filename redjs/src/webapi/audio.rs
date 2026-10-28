@@ -689,6 +689,23 @@ fn classes(g: *mut c_void) -> &'static AudioClasses {
     class_registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::audio not installed")
 }
 
+/// `crate::context` fan-out. A gone context's engines are silenced and detached
+/// from the address (`g = 0`), so a new context that lands on the same address
+/// never has another context's `onended` handles pumped into it. Their graph
+/// records go when the wrappers' finalizers report them, as before.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    class_registry().lock().unwrap().remove(&gone.key);
+    let mut gl = glob().lock().unwrap();
+    for eng in gl.engines.values_mut().filter(|e| e.g == gone.key) {
+        if eng.fw.is_audio_stream_running() {
+            eng.fw.stop_stream();
+        }
+        eng.running = false;
+        eng.state = ST_CLOSED;
+        eng.g = 0;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------

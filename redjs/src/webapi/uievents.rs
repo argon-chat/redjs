@@ -135,6 +135,10 @@ fn classes(g: *mut c_void) -> &'static UiClasses {
     registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::uievents not installed")
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+}
+
 /// The `[[s_event]]` slot object — the same one `events.rs` fills and dispatch
 /// reads.
 unsafe fn slots(g: *mut c_void, this: u64) -> Option<u64> {

@@ -31,3 +31,10 @@ pub unsafe fn install(g: *mut c_void) {
     p2d::install(g);
     p3d::install(g);
 }
+
+/// `crate::context` fan-out: both class registries forget a dead context, so
+/// `install` at a recycled address installs instead of returning early.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    p2d::forget(gone);
+    p3d::forget(gone);
+}

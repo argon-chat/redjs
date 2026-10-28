@@ -39,6 +39,11 @@ fn channels() -> &'static Mutex<HashMap<usize, HashMap<String, Vec<u64>>>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+    channels().lock().unwrap().remove(&gone.key);
+}
+
 unsafe fn slots_of(g: *mut c_void, obj: u64) -> u64 {
     get_a(g, obj, classes(g).s_plat)
 }

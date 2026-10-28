@@ -467,8 +467,18 @@ impl Context {
 
     // -- vm ---------------------------------------------------------------------
 
+    /// A microtask checkpoint ([`crate::web::checkpoint`]): drains the queue,
+    /// then runs the post-checkpoint hooks when no JS is on the stack.
     pub fn drain_microtasks(&self) {
-        unsafe { glue::rjs_drain_microtasks(self.g) }
+        unsafe {
+            crate::web::checkpoint(self.g);
+        }
+    }
+
+    /// This context's process-unique id ([`crate::context::ContextId`]) —
+    /// unlike [`Context::raw`], never shared with a later context.
+    pub fn id(&self) -> crate::context::ContextId {
+        crate::context::id_of(self.g).expect("a redjs Context is always registered")
     }
 
     pub fn gc(&self) {

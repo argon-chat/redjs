@@ -60,6 +60,12 @@ pub fn set_content_provider(g: *mut c_void, read: Option<ContentReadFn>) {
     }
 }
 
+/// A recycled address must not inherit another context's roots or provider.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    roots().lock().unwrap().remove(&gone.key);
+    providers().lock().unwrap().remove(&gone.key);
+}
+
 fn get_content_provider(g: *mut c_void) -> Option<ContentReadFn> {
     providers().lock().unwrap().get(&(g as usize)).copied()
 }

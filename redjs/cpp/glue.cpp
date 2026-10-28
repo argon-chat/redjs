@@ -257,6 +257,16 @@ extern "C" void rjs_drain_microtasks(void* g)
     vm.drainMicrotasks();
 }
 
+// 1 if JS is on this VM's stack right now (any VMEntryScope is live) — the
+// "JS execution context stack is empty" test HTML's microtask checkpoint
+// hinges on. `web::checkpoint` runs its hooks only when this is 0.
+extern "C" int32_t rjs_in_js(void* g)
+{
+    VM& vm = G(g)->vm();
+    JSLockHolder lock(vm);
+    return vm.isEntered() ? 1 : 0;
+}
+
 extern "C" void rjs_gc(void* g, int32_t mode)
 {
     VM& vm = G(g)->vm();

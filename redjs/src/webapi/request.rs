@@ -79,6 +79,10 @@ fn request_registry() -> &'static Mutex<HashMap<usize, &'static RequestClass>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    request_registry().lock().unwrap().remove(&gone.key);
+}
+
 fn request_class(g: *mut c_void) -> &'static RequestClass {
     request_registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::fetch not installed")
 }

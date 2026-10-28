@@ -26,8 +26,10 @@
 //! never held across a JS callback.
 
 use core::ffi::c_void;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
 use crate::capi;
@@ -97,6 +99,19 @@ pub(crate) fn schedule_native(g: *mut c_void, delay_ms: f64, task: NativeTask) {
 fn registry() -> &'static Mutex<HashMap<usize, Scheduler>> {
     static REG: OnceLock<Mutex<HashMap<usize, Scheduler>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `crate::context` fan-out. The timers, rAF/idle callbacks and native tasks
+/// of a context that is gone are DROPPED, never run: their callbacks are
+/// protected values in a heap that no longer exists.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    let dropped = registry().lock().unwrap().remove(&gone.key);
+    drop(dropped); // outside the lock: native tasks may own Arcs with Drop impls
+}
+
+#[cfg(test)]
+pub(crate) fn has_scheduler(g: *mut c_void) -> bool {
+    registry().lock().unwrap().contains_key(&(g as usize))
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +344,9 @@ unsafe fn define_native(g: *mut c_void, target: u64, name: &str, arity: u32, f: 
 /// cancelAnimationFrame, setTimeout/clearTimeout/setInterval/clearInterval
 /// as NATIVE globals sharing one clock. Idempotent per context.
 pub unsafe fn install(g: *mut c_void) -> i32 {
+    // First: if this address last belonged to another context, its timers are
+    // purged here instead of being fired into this one (crate::context).
+    crate::context::ensure(g);
     let _ = clock(); // pin the time origin before anything reads it
     registry().lock().unwrap().entry(g as usize).or_default();
 
@@ -383,15 +401,118 @@ pub unsafe fn install(g: *mut c_void) -> i32 {
 pub const PUMP_TIMERS: u32 = 1;
 pub const PUMP_RAF: u32 = 2;
 pub const PUMP_MICROTASKS: u32 = 4;
+/// A microtask checkpoint after EVERY task the pump runs (each timer, rAF and
+/// idle callback, each native task, each module pump's delivery batch), the
+/// way the HTML event loop does it — instead of one drain at the end of the
+/// pump. OFF for vue-native's window today: turning it on there changes Vue's
+/// flush timing runtime-wide, which is its own decision (m25 indexeddb-design
+/// §4.1 IDB-D1, workers-design §3.2). A worker agent's loop always sets it.
+pub const PUMP_CHECKPOINT_PER_TASK: u32 = 8;
 
 pub use crate::ffi::RjsPumpStats;
 
-unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64]) {
+unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64], flags: u32) {
     let mut out = 0u64;
     let rc = glue::rjs_call(g, cb, ENC_UNDEFINED, args.as_ptr(), args.len() as u32, &mut out);
     if rc == 1 {
         crate::errors::report(g, out, crate::errors::ErrKind::PumpCallback);
     }
+    if flags & PUMP_CHECKPOINT_PER_TASK != 0 {
+        checkpoint(g);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The microtask checkpoint
+// ---------------------------------------------------------------------------
+
+/// Runs after every checkpoint that drained with no JS on the stack, with the
+/// context it ran for. The seam IndexedDB's "cleanup Indexed Database
+/// transactions" step hangs on (HTML §8.1.7.3 step 6). Must not run user JS:
+/// it runs at the END of a checkpoint, and a microtask it queued would wait
+/// for the next one.
+pub type CheckpointHook = unsafe fn(*mut c_void);
+
+static ANY_CHECKPOINT_HOOK: AtomicBool = AtomicBool::new(false);
+
+fn checkpoint_hooks() -> &'static RwLock<Vec<CheckpointHook>> {
+    static H: OnceLock<RwLock<Vec<CheckpointHook>>> = OnceLock::new();
+    H.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Registers a post-checkpoint hook, process-wide and for good (modules
+/// register at install; registering the same fn twice is a no-op).
+pub fn on_checkpoint(f: CheckpointHook) {
+    let mut hooks = checkpoint_hooks().write().unwrap();
+    if !hooks.iter().any(|h| *h as usize == f as usize) {
+        hooks.push(f);
+    }
+    ANY_CHECKPOINT_HOOK.store(true, Ordering::Release);
+}
+
+thread_local! {
+    /// HTML's per-event-loop "performing a microtask checkpoint" flag, kept per
+    /// context: the contexts this thread is checkpointing right now.
+    static CHECKPOINTING: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// What one [`checkpoint`] call did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checkpoint {
+    /// Microtasks drained and the post-checkpoint hooks ran.
+    Full,
+    /// Microtasks drained, hooks NOT run: JavaScript is on the stack (a host
+    /// function asked for a drain mid-script). Running them there would, for
+    /// example, deactivate an IndexedDB transaction the calling script created a
+    /// moment ago — stricter than any browser.
+    DrainedInJs,
+    /// Nothing at all: this context is already performing a checkpoint further
+    /// up the stack (HTML: "if performing a microtask checkpoint is true,
+    /// return"). The outer drain runs whatever is still queued.
+    Nested,
+}
+
+/// THE microtask checkpoint — the single entry point every drain in redjs goes
+/// through: the end of [`pump`], [`crate::api::Context::drain_microtasks`], the
+/// `redjs_drain_microtasks` export (so vue-native's own drains and a C# host's
+/// count), and an event dispatcher's between-listeners step. Nothing calls
+/// `rjs_drain_microtasks` directly any more.
+///
+/// = drain the VM's microtask queue (and JSC's deferred engine work), then the
+/// [`on_checkpoint`] hooks — the hooks only when no JS is on the stack.
+///
+/// One drain this function does not see: JSC drains by itself whenever the
+/// OUTERMOST API lock is released (`JSLock::willReleaseLock`), i.e. after any
+/// top-level call made without the lock held. Those drains run no hooks. An
+/// embedder that holds the lock across its frame — vue-native's pump holds
+/// `redjs_lock`, a worker agent's loop will too — routes every drain here.
+///
+/// # Safety
+/// `g` must be a live context, on its VM thread.
+pub unsafe fn checkpoint(g: *mut c_void) -> Checkpoint {
+    let key = g as usize;
+    let nested = CHECKPOINTING.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.contains(&key) {
+            true
+        } else {
+            c.push(key);
+            false
+        }
+    });
+    if nested {
+        return Checkpoint::Nested;
+    }
+    glue::rjs_drain_microtasks(g);
+    let full = glue::rjs_in_js(g) == 0;
+    if full && ANY_CHECKPOINT_HOOK.load(Ordering::Acquire) {
+        let hooks: Vec<CheckpointHook> = checkpoint_hooks().read().unwrap().clone();
+        for h in hooks {
+            h(g);
+        }
+    }
+    CHECKPOINTING.with(|c| c.borrow_mut().retain(|&k| k != key));
+    if full { Checkpoint::Full } else { Checkpoint::DrainedInJs }
 }
 
 pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
@@ -399,6 +520,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
     let key = g as usize;
     let mut timers_fired = 0u32;
     let mut raf_fired = 0u32;
+    let per_task = flags & PUMP_CHECKPOINT_PER_TASK != 0;
 
     if flags & PUMP_TIMERS != 0 {
         // Native one-shots first (image loads etc). Taken under the lock, run
@@ -419,6 +541,9 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         };
         for task in due_native {
             task(g);
+            if per_task {
+                checkpoint(g);
+            }
         }
 
         // Snapshot due timers (entries stay in the map so a mid-drain clear
@@ -443,7 +568,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
             if !still_there {
                 continue;
             }
-            fire(g, cb, &args);
+            fire(g, cb, &args, flags);
             timers_fired += 1;
 
             let removed = {
@@ -474,7 +599,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         };
         let ts = [enc_double(now)];
         for (_, cb) in &batch {
-            fire(g, *cb, &ts);
+            fire(g, *cb, &ts, flags);
             raf_fired += 1;
         }
         for (_, cb) in &batch {
@@ -505,7 +630,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
             glue::rjs_define(g, deadline, a, trf, 2);
             glue::rjs_atom_free(g, a);
             for (_, cb) in &idle_batch {
-                fire(g, *cb, &[deadline]);
+                fire(g, *cb, &[deadline], flags);
             }
             for (_, cb) in &idle_batch {
                 capi::JSValueUnprotect(g, *cb as usize as capi::JSValueRef);
@@ -517,10 +642,16 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         // Permission `change` delivery. One `drain_changes()` call, and nothing
         // at all unless a host is installed and reports a subscription.
         crate::webapi::permissions::pump(g);
+        if per_task {
+            checkpoint(g);
+        }
         // WebSocket delivery: open/message/error/close events parsed off-thread
         // and dispatched here, on the thread that owns the VM. One relaxed
         // atomic read when no socket is connected.
         crate::webapi::websocket::pump(g);
+        if per_task {
+            checkpoint(g);
+        }
     }
 
     #[cfg(feature = "audio")]
@@ -531,10 +662,13 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         // Device hot-plug polling. Costs two property reads unless something
         // is actually listening for `devicechange`.
         crate::webapi::mediadevices::pump(g);
+        if per_task {
+            checkpoint(g);
+        }
     }
 
     if flags & PUMP_MICROTASKS != 0 {
-        glue::rjs_drain_microtasks(g);
+        checkpoint(g);
     }
 
     if !stats.is_null() {
@@ -561,4 +695,130 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
 
 pub fn set_uncaught(handler: *const c_void) {
     crate::errors::set_handler(handler)
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use crate::api::Context;
+    use crate::webapi::testing::{ok, s};
+    use crate::webapi::util::{define, make_fn};
+
+    /// Hooks are process-wide and tests run in parallel, so every observation
+    /// is filed under the context it was made for.
+    fn hook_runs() -> &'static Mutex<HashMap<usize, u32>> {
+        static R: OnceLock<Mutex<HashMap<usize, u32>>> = OnceLock::new();
+        R.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    fn seen() -> &'static Mutex<HashMap<usize, Vec<Checkpoint>>> {
+        static S: OnceLock<Mutex<HashMap<usize, Vec<Checkpoint>>>> = OnceLock::new();
+        S.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    unsafe fn count_hook(g: *mut c_void) {
+        *hook_runs().lock().unwrap().entry(g as usize).or_default() += 1;
+    }
+    fn runs(c: &Context) -> u32 {
+        hook_runs().lock().unwrap().get(&(c.raw() as usize)).copied().unwrap_or(0)
+    }
+    fn outcomes(c: &Context) -> Vec<Checkpoint> {
+        seen().lock().unwrap().get(&(c.raw() as usize)).cloned().unwrap_or_default()
+    }
+
+    /// `__cp()` — a host function that asks for a checkpoint from inside JS.
+    unsafe extern "sysv64" fn cp_from_js(g: *mut c_void, _cf: *mut c_void) -> u64 {
+        let r = checkpoint(g);
+        seen().lock().unwrap().entry(g as usize).or_default().push(r);
+        ENC_UNDEFINED
+    }
+
+    fn ctx() -> Context {
+        on_checkpoint(count_hook);
+        let c = crate::webapi::testing::ctx();
+        unsafe {
+            install(c.raw());
+            let g = c.raw();
+            define(g, glue::rjs_global(g), "__cp", make_fn(g, "__cp", 0, cp_from_js), 2);
+        }
+        c
+    }
+
+    #[test]
+    fn a_checkpoint_from_rust_drains_and_runs_the_hooks() {
+        let c = ctx();
+        s(&c, "globalThis.x = 0; Promise.resolve().then(() => { x = 1; }); 0");
+        let before = runs(&c);
+        assert_eq!(unsafe { checkpoint(c.raw()) }, Checkpoint::Full);
+        ok(&c, "x === 1");
+        assert_eq!(runs(&c), before + 1, "hooks run once per full checkpoint");
+        // `Context::drain_microtasks` IS a checkpoint.
+        c.drain_microtasks();
+        assert_eq!(runs(&c), before + 2);
+    }
+
+    #[test]
+    fn a_checkpoint_asked_for_mid_script_drains_but_never_runs_the_hooks() {
+        // HTML only cleans up (IDB transactions…) when the JS stack is empty: a
+        // hook here would deactivate a transaction the calling script just made.
+        let c = ctx();
+        let before = runs(&c);
+        ok(&c, "globalThis.y = 0; Promise.resolve().then(() => { y = 1; }); __cp(); y === 1");
+        assert_eq!(outcomes(&c), vec![Checkpoint::DrainedInJs]);
+        assert_eq!(runs(&c), before, "no hook while JS is on the stack");
+    }
+
+    fn probes() -> &'static Mutex<Vec<usize>> {
+        static P: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+        &P
+    }
+    /// A hook that asks for another checkpoint of the context it runs for —
+    /// only for contexts that opted in, since hooks are process-wide.
+    unsafe fn reentering_hook(g: *mut c_void) {
+        if probes().lock().unwrap().contains(&(g as usize)) {
+            let r = checkpoint(g);
+            seen().lock().unwrap().entry(g as usize).or_default().push(r);
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_inside_a_checkpoint_is_a_no_op() {
+        // "If the event loop's performing a microtask checkpoint is true, return."
+        on_checkpoint(reentering_hook);
+        let c = ctx();
+        probes().lock().unwrap().push(c.raw() as usize);
+        let before = runs(&c);
+        assert_eq!(unsafe { checkpoint(c.raw()) }, Checkpoint::Full);
+        probes().lock().unwrap().retain(|&k| k != c.raw() as usize);
+        assert_eq!(outcomes(&c), vec![Checkpoint::Nested]);
+        assert_eq!(runs(&c), before + 1, "the nested call ran no hooks of its own");
+        // The flag is per context and cleared on the way out.
+        assert_eq!(unsafe { checkpoint(c.raw()) }, Checkpoint::Full);
+    }
+
+    #[test]
+    fn per_task_checkpoints_run_microtasks_between_timers() {
+        // HTML: the microtask a timer queues runs before the NEXT timer.
+        // Without the flag the pump keeps its one-drain-at-the-end shape.
+        for (flags, expect) in [
+            (PUMP_TIMERS | PUMP_MICROTASKS | PUMP_CHECKPOINT_PER_TASK, "a,micro,b"),
+            (PUMP_TIMERS | PUMP_MICROTASKS, "a,b,micro"),
+        ] {
+            let c = ctx();
+            s(
+                &c,
+                "globalThis.log = [];
+                 setTimeout(() => { log.push('a'); Promise.resolve().then(() => log.push('micro')); }, 0);
+                 setTimeout(() => log.push('b'), 0); 0",
+            );
+            // Held across the pump, as an embedder's frame does (vue-native's
+            // pump holds `redjs_lock`): JSC drains microtasks by itself whenever
+            // the OUTERMOST API lock is released, so an unlocked pump would get
+            // a drain after every call regardless of the flag.
+            unsafe {
+                glue::rjs_lock(c.raw());
+                pump(c.raw(), flags, core::ptr::null_mut());
+                glue::rjs_unlock(c.raw());
+            }
+            assert_eq!(s(&c, "log.join()"), expect, "flags {flags}");
+        }
+    }
 }

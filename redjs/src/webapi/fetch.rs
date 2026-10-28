@@ -279,6 +279,12 @@ fn stream_factories() -> &'static Mutex<HashMap<usize, u64>> {
     F.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The factory was protected in the gone context; that heap is gone with it.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    stream_factories().lock().unwrap().remove(&gone.key);
+    super::request::forget(gone);
+}
+
 unsafe fn make_body_stream(g: *mut c_void, bytes: &[u8]) -> u64 {
     let factory = {
         let mut map = stream_factories().lock().unwrap();

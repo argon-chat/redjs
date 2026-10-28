@@ -331,6 +331,10 @@ fn classes(g: *mut c_void) -> &'static StreamClasses {
     registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::streams not installed")
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+}
+
 unsafe fn this_readable<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut ReadableCore> {
     host_data::<ReadableCore>(g, classes(g).readable_cls, cf_this(cf))
 }

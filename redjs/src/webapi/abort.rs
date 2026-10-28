@@ -33,6 +33,10 @@ fn classes(g: *mut c_void) -> &'static AbortClasses {
     registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::abort not installed")
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+}
+
 unsafe fn slots_of(g: *mut c_void, obj: u64) -> u64 {
     get_a(g, obj, classes(g).s_abort)
 }

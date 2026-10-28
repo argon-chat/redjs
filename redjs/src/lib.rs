@@ -8,6 +8,9 @@
 //! - [`trampoline`]: the SysV→MS host-function trampoline pool (C# entry).
 //! - [`errors`]: the one funnel for exceptions no JS code will ever see —
 //!   pumped-callback throws and unhandled promise rejections.
+//! - [`context`]: a monotonic, never-reused id per context, and the one list
+//!   of per-context registries cleared when an address stops meaning its
+//!   context.
 //! - [`ffi`]: the exported `redjs_*` C ABI for C# (csbindgen input).
 //! - [`api`]: safe-ish Rust API over the same machinery (tests, tools, and
 //!   any Rust-side host logic).
@@ -24,6 +27,7 @@
 
 pub mod api;
 pub mod capi;
+pub mod context;
 pub mod errors;
 pub mod ffi;
 pub mod glue;

@@ -360,6 +360,10 @@ fn classes(g: *mut c_void) -> &'static ZipClasses {
     registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::compression not installed")
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+}
+
 unsafe fn this_zip<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut ZipData> {
     host_data::<ZipData>(g, classes(g).cls, cf_this(cf))
 }

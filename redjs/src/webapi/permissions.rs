@@ -271,6 +271,30 @@ fn live() -> &'static Mutex<HashMap<usize, HashMap<Capability, u64>>> {
     L.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Changes not yet delivered, per context — keyed by [`crate::context::ContextId`],
+/// never by address, so a change cannot be handed to a context that merely
+/// reused a dead one's address.
+///
+/// [`PermissionHost::drain_changes`] is a *process-wide* queue: whoever calls
+/// it takes everything. Before this table, that was whichever context pumped
+/// first, and every other context silently never saw the change. Now any pump
+/// drains the host once and fans the result out to every context that has
+/// `navigator.permissions`; each context then delivers only its own share. A
+/// queue holds each capability at most once (a second change before delivery
+/// is the same `change` event — the state is read live), so it is bounded by
+/// [`Capability::ALL`].
+fn pending() -> &'static Mutex<HashMap<u64, Vec<Capability>>> {
+    static P: OnceLock<Mutex<HashMap<u64, Vec<Capability>>>> = OnceLock::new();
+    P.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `crate::context` fan-out.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    classes_reg().lock().unwrap().remove(&gone.key);
+    live().lock().unwrap().remove(&gone.key);
+    pending().lock().unwrap().remove(&gone.id.0);
+}
+
 // ---------------------------------------------------------------------------
 // PermissionStatus
 // ---------------------------------------------------------------------------
@@ -382,13 +406,33 @@ unsafe extern "sysv64" fn perms_query(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// Called once per pump. Costs one `drain_changes()` call — nothing at all on a
 /// platform whose host returns `None`, and no work per capability unless
 /// something actually changed.
+///
+/// The host's queue is process-wide; what it returns is fanned out to every
+/// context's [`pending`] queue before this context takes its own share, so
+/// two contexts that both hold a `PermissionStatus` both get `change` no
+/// matter which of them pumps first.
 pub unsafe fn pump(g: *mut c_void) {
     let Some(h) = host() else { return };
-    let Some(changed) = h.drain_changes() else { return };
-    if changed.is_empty() {
-        return;
-    }
-    for cap in changed {
+    let Some(id) = crate::context::id_of(g) else { return };
+    let mine = {
+        let mut pend = pending().lock().unwrap();
+        // Drained under the lock, so two threads pumping two contexts cannot
+        // interleave a drain with a fan-out and drop a change between them.
+        if let Some(changed) = h.drain_changes() {
+            for cap in changed {
+                for q in pend.values_mut() {
+                    if !q.contains(&cap) {
+                        q.push(cap);
+                    }
+                }
+            }
+        }
+        match pend.get_mut(&id.0) {
+            Some(q) if !q.is_empty() => core::mem::take(q),
+            _ => return,
+        }
+    };
+    for cap in mine {
         // Only capabilities somebody has queried have a status object; a change
         // nobody subscribed to is not an event.
         let obj = live().lock().unwrap().get(&(g as usize)).and_then(|m| m.get(&cap)).copied();
@@ -427,6 +471,10 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
 
     let boxed: &'static PermClasses = Box::leak(Box::new(PermClasses { status, s_perm }));
     classes_reg().lock().unwrap().insert(g as usize, boxed);
+    // A context starts receiving changes from the moment it can name a
+    // capability; one that never installs the API never accumulates a queue.
+    let id = crate::context::ensure(g);
+    pending().lock().unwrap().entry(id.0).or_default();
 
     let perms = new_object(g, perms_class.proto);
     crate::ffi::redjs_protect(g, perms);
@@ -570,6 +618,51 @@ mod jsc_tests {
                 _ => PermissionState::Unsupported,
             }
         }
+        /// Subscribed: a process-wide queue, exactly the shape of the real
+        /// backends (vn-permissions' Windows watcher is one queue per process).
+        fn drain_changes(&self) -> Option<Vec<Capability>> {
+            Some(core::mem::take(&mut *CHANGES.lock().unwrap()))
+        }
+    }
+
+    static CHANGES: Mutex<Vec<Capability>> = Mutex::new(Vec::new());
+
+    unsafe fn pump_all(c: &Context) {
+        // Permission delivery rides the TIMERS phase of the pump.
+        crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+    }
+
+    #[test]
+    fn a_change_reaches_every_context_whichever_pumps_first() {
+        // Latent bug C9: the host queue is process-wide, and the first context
+        // to pump used to take the change for itself — the second context's
+        // status never fired. Each context now gets its own copy.
+        install_scripted_host();
+        let a = ctx();
+        let b = ctx();
+        for c in [&a, &b] {
+            run(
+                c,
+                "const st = await navigator.permissions.query({ name: 'camera' });
+                 globalThis.__n = 0;
+                 st.addEventListener('change', () => { globalThis.__n++; });
+                 return 'ok';",
+            );
+        }
+        CHANGES.lock().unwrap().push(Capability::Camera);
+        unsafe {
+            pump_all(&a);
+            pump_all(&b);
+        }
+        ok(&a, "globalThis.__n === 1");
+        ok(&b, "globalThis.__n === 1");
+        // Delivered once each, not once per pump.
+        unsafe {
+            pump_all(&b);
+            pump_all(&a);
+        }
+        ok(&a, "globalThis.__n === 1");
+        ok(&b, "globalThis.__n === 1");
     }
 
     #[test]

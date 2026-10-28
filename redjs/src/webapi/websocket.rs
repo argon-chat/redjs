@@ -926,6 +926,17 @@ fn classes(g: *mut c_void) -> &'static WsClasses {
     classes_reg().lock().unwrap().get(&(g as usize)).copied().expect("webapi::websocket not installed")
 }
 
+/// `crate::context` fan-out. The protections died with the gone heap; only the
+/// bookkeeping is dropped (no unprotect — there is no VM to call into). The
+/// connection threads run on until the peer closes, exactly as a context
+/// release left them before this hook existed.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    classes_reg().lock().unwrap().remove(&gone.key);
+    if let Some(v) = live().lock().unwrap().remove(&gone.key) {
+        LIVE_COUNT.fetch_sub(v.len(), Ordering::SeqCst);
+    }
+}
+
 /// The JS objects the pump must be able to reach: `(socket id, protected
 /// instance)`. Protected for exactly as long as the connection can still fire
 /// an event — a browser keeps an open socket alive with no references too.

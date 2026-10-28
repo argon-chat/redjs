@@ -298,6 +298,10 @@ fn classes(g: *mut c_void) -> &'static GeomClasses {
     registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::geometry not installed")
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+}
+
 unsafe fn this_mat<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut MatrixData> {
     host_data::<MatrixData>(g, classes(g).matrix_class, cf_this(cf))
 }

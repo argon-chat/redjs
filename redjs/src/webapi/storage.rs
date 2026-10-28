@@ -288,6 +288,15 @@ fn proxies() -> &'static Mutex<HashMap<(usize, u64), bool>> {
     P.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// `crate::context` fan-out. A gone context's `sessionStorage` dies with it —
+/// a browsing context's session area does — instead of greeting the next
+/// context that lands on the same address.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    classes_reg().lock().unwrap().remove(&gone.key);
+    session_areas().lock().unwrap().remove(&gone.key);
+    proxies().lock().unwrap().retain(|(g, _), _| *g != gone.key);
+}
+
 /// `(is_local, context)` for a `this` that is either a native Storage or one of
 /// this context's two proxies.
 unsafe fn this_area(g: *mut c_void, cf: *mut c_void) -> Option<(bool, usize)> {

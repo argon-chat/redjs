@@ -235,6 +235,10 @@ fn classes(g: *mut c_void) -> &'static FdClasses {
     registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::formdata not installed")
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+}
+
 unsafe fn this_fd<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut FormDataData> {
     host_data::<FormDataData>(g, classes(g).cls, cf_this(cf))
 }

@@ -423,6 +423,10 @@ fn class_of(g: *mut c_void) -> Option<(capi::JSClassRef, u64)> {
     states().lock().unwrap().get(&(g as usize)).map(|s| (s.0.cls, s.0.proto))
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    states().lock().unwrap().remove(&gone.key);
+}
+
 macro_rules! world {
     ($g:expr, $cf:expr) => {{
         let Some((cls, _)) = class_of($g) else {

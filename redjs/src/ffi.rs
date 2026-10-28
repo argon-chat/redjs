@@ -182,6 +182,10 @@ pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
     glue::rjs_init(core::ptr::null());
     let g = capi::JSGlobalContextCreate(null_mut());
     if !g.is_null() {
+        // Before anything is keyed by this address: if it belonged to a context
+        // released earlier, that context's registrations are purged here, so
+        // nothing below mistakes them for this one's (crate::context).
+        crate::context::register(g);
         crate::errors::install_rejection(g);
     }
     g
@@ -190,9 +194,23 @@ pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
 /// Releases the context. ⚠ Known issue: this Bun WebKit prebuilt fastfail-
 /// crashes in VM teardown (`JSGlobalContextRelease`). Prefer leaking contexts
 /// (create once, keep for process lifetime). Kept for API completeness.
+///
+/// Every redjs registry keyed by this context is cleared first, so a context
+/// created later at the same address starts from nothing.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_context_release(ctx: *mut c_void) {
+    crate::context::forget(ctx);
     capi::JSGlobalContextRelease(ctx);
+}
+
+/// This context's process-unique id: minted at creation from one counter,
+/// never 0, NEVER reused — unlike the `ctx` address, which a later context can
+/// receive. 0 for an address redjs has never seen. Key anything that can be
+/// delivered to a context *later* (from another thread, after a wait) by this,
+/// not by the address.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_context_id(ctx: *mut c_void) -> u64 {
+    crate::context::id_of(ctx).map(|id| id.0).unwrap_or(0)
 }
 
 /// The global object of this context as a JS value.
@@ -220,11 +238,13 @@ pub unsafe extern "C" fn redjs_unlock(ctx: *mut c_void) {
     glue::rjs_unlock(ctx)
 }
 
-/// Runs the microtask queue (promise reactions, await continuations). Call
-/// after eval/call batches — e.g. once per frame after the rAF callback.
+/// A microtask checkpoint: runs the microtask queue (promise reactions, await
+/// continuations), then — when no JS is on the stack — the post-checkpoint
+/// steps redjs's web APIs hang on it. Call after eval/call batches — e.g. once
+/// per frame after the rAF callback. Same entry point `redjs_pump` uses.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_drain_microtasks(ctx: *mut c_void) {
-    glue::rjs_drain_microtasks(ctx)
+    crate::web::checkpoint(ctx);
 }
 
 /// mode: 0 = full sync, 1 = eden (young gen) sync, 2 = async full request.
@@ -895,6 +915,9 @@ pub unsafe extern "C" fn redjs_content_provider_set(ctx: *mut c_void, read_fn: *
     } else {
         Some(core::mem::transmute::<*const c_void, crate::webapi::fsutil::ContentReadFn>(read_fn))
     };
+    // Registered first, so a recycled address is purged BEFORE this hook lands
+    // rather than by the install that follows it.
+    crate::context::ensure(ctx);
     crate::webapi::fsutil::set_content_provider(ctx, read);
 }
 
@@ -1010,5 +1033,6 @@ pub unsafe extern "C" fn redjs_dialog_handler_set(ctx: *mut c_void, handler: *co
     } else {
         Some(core::mem::transmute::<*const c_void, crate::webapi::dialogs::DialogFn>(handler))
     };
+    crate::context::ensure(ctx); // see redjs_content_provider_set
     crate::webapi::dialogs::set_handler(ctx, f);
 }

@@ -188,6 +188,18 @@ fn installed() -> &'static Mutex<HashSet<usize>> {
     SET.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// `crate::context` fan-out: the address no longer means the context it was
+/// armed for, so a newcomer there must be armed again rather than skipped.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    installed().lock().unwrap().remove(&gone.key);
+}
+
+/// Whether [`install_rejection`] has run for this address (tests).
+#[cfg(test)]
+pub(crate) fn rejection_armed(g: *mut c_void) -> bool {
+    installed().lock().unwrap().contains(&(g as usize))
+}
+
 /// Arms JSC's unhandled-rejection hook on `g`. Called from
 /// `redjs_context_create`, so every context has it — an embedder cannot forget
 /// and get silence. Idempotent per context.
@@ -195,6 +207,9 @@ fn installed() -> &'static Mutex<HashSet<usize>> {
 /// # Safety
 /// `g` must be the `JSGlobalContextRef` from `JSGlobalContextCreate`.
 pub unsafe fn install_rejection(g: *mut c_void) -> i32 {
+    // A recycled address purges its stale registration here, before the
+    // "already armed" test below could mistake it for this context's.
+    crate::context::ensure(g);
     if !installed().lock().unwrap().insert(g as usize) {
         return 0;
     }

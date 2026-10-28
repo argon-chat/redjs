@@ -37,3 +37,11 @@ pub unsafe fn install(g: *mut c_void) {
     #[cfg(not(any(feature = "yoga-host", feature = "css-host")))]
     let _ = g;
 }
+
+/// `crate::context` fan-out. `css` keeps no per-context registry.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    #[cfg(feature = "yoga-host")]
+    yoga::forget(gone);
+    #[cfg(not(feature = "yoga-host"))]
+    let _ = gone;
+}

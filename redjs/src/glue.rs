@@ -21,6 +21,8 @@ extern "C" {
     pub fn rjs_lock(g: *mut c_void);
     pub fn rjs_unlock(g: *mut c_void);
     pub fn rjs_drain_microtasks(g: *mut c_void);
+    /// 1 while any JS frame of this VM is on the stack, else 0.
+    pub fn rjs_in_js(g: *mut c_void) -> i32;
     pub fn rjs_gc(g: *mut c_void, mode: i32);
     pub fn rjs_heap_stats(g: *mut c_void, out: *mut RjsHeapStats);
     pub fn rjs_report_extra_memory(g: *mut c_void, bytes: u64);

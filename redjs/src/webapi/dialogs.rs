@@ -64,6 +64,10 @@ pub fn set_handler(g: *mut c_void, handler: Option<DialogFn>) {
     };
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    handlers().lock().unwrap().remove(&gone.key);
+}
+
 fn handler_of(g: *mut c_void) -> Option<DialogFn> {
     let raw = *handlers().lock().unwrap().get(&(g as usize))?;
     Some(unsafe { core::mem::transmute::<usize, DialogFn>(raw) })

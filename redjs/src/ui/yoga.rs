@@ -409,6 +409,10 @@ fn class_of(g: *mut c_void) -> Option<(capi::JSClassRef, u64)> {
     states().lock().unwrap().get(&(g as usize)).map(|s| (s.0.cls, s.0.proto))
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    states().lock().unwrap().remove(&gone.key);
+}
+
 thread_local! {
     /// Depth of `YGNodeCalculateLayout` calls on this thread's stack. Non-zero
     /// means a measure callback may be running, and every `RedYoga` method must

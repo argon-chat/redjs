@@ -489,3 +489,10 @@ pub fn state(g: *mut c_void) -> &'static WebState {
 pub fn has_state(g: *mut c_void) -> bool {
     states().lock().unwrap().contains_key(&(g as usize))
 }
+
+/// `crate::context` fan-out. The leaked `WebState` stays leaked (its values
+/// were protected in a heap that no longer exists); only the key is freed so
+/// a new context at the same address installs from nothing.
+pub(crate) fn forget_state(gone: crate::context::Gone) {
+    states().lock().unwrap().remove(&gone.key);
+}

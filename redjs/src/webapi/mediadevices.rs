@@ -152,6 +152,11 @@ fn polls() -> &'static Mutex<HashMap<usize, PollState>> {
     P.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn forget(gone: crate::context::Gone) {
+    classes_reg().lock().unwrap().remove(&gone.key);
+    polls().lock().unwrap().remove(&gone.key);
+}
+
 // ---------------------------------------------------------------------------
 // MediaDeviceInfo
 // ---------------------------------------------------------------------------

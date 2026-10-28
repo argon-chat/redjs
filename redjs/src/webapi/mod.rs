@@ -149,7 +149,39 @@ unsafe extern "sysv64" fn print(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
+/// `crate::context` fan-out: every per-context registry in this tree drops the
+/// gone context's key, so a context created later at the same address installs
+/// from nothing instead of being mistaken for an already-installed one. Nothing
+/// here touches JS — the heap these entries pointed into no longer exists.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    util::forget_state(gone);
+    abort::forget(gone);
+    #[cfg(feature = "audio")]
+    {
+        audio::forget(gone);
+        mediadevices::forget(gone);
+    }
+    compression::forget(gone);
+    dialogs::forget(gone);
+    fetch::forget(gone);
+    formdata::forget(gone);
+    fsutil::forget(gone);
+    geometry::forget(gone);
+    headers::forget(gone);
+    path2d::forget(gone);
+    permissions::forget(gone);
+    platform::forget(gone);
+    #[cfg(feature = "storages")]
+    storage::forget(gone);
+    streams::forget(gone);
+    uievents::forget(gone);
+    websocket::forget(gone);
+}
+
 pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> i32 {
+    // Before the idempotence check: a recycled address whose old registrations
+    // were never released is detected here, purged, and installed afresh.
+    crate::context::ensure(g);
     if has_state(g) {
         return 0; // idempotent
     }
