@@ -203,12 +203,20 @@ fn read_disk(f: &DiskFile, offset: u64, len: u64) -> Result<Vec<u8>, ReadError> 
 // Read threads
 // ---------------------------------------------------------------------------
 
-/// Path-backed reads running at once (`fetch` caps its sockets the same way).
-/// More than this QUEUE rather than fail: a browser never refuses a read.
+/// Path-backed reads running at once. More than this QUEUE rather than fail:
+/// a browser never refuses a read. (This is not fetch's cap: fetch allows 64
+/// network requests and REJECTS past that.)
+///
+/// The pool is one per process. Eight reads that block for a long time, such
+/// as a file on an offline network share or a OneDrive placeholder being
+/// downloaded, therefore hold up every other path-backed read in every
+/// context until one of them returns. Nothing is lost; the rest queue.
 pub const MAX_READS_IN_FLIGHT: usize = 8;
 
+type Job = Box<dyn FnOnce() + Send>;
+
 struct Pool {
-    jobs: VecDeque<Box<dyn FnOnce() + Send>>,
+    jobs: VecDeque<Job>,
     running: usize,
     /// The most that ever ran at once (tests hold the cap to it).
     peak: usize,
@@ -219,10 +227,21 @@ fn pool() -> &'static Mutex<Pool> {
     P.get_or_init(|| Mutex::new(Pool { jobs: VecDeque::new(), running: 0, peak: 0 }))
 }
 
+/// Runs one job. A job that panics loses its own result, never the thread:
+/// otherwise each panic would retire a slot for good, and after eight of them
+/// no path-backed read in the process would ever run again. (The read jobs
+/// also catch their own panic, so their caller still gets an answer.)
+fn run_job(job: Job) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+}
+
 /// A read thread: runs jobs until the queue is empty, then leaves. The exit
 /// decision and the decrement happen under the same lock a submitter takes,
 /// so a job is never left behind by a thread that was on its way out.
-fn worker() {
+fn worker(first: Arc<Mutex<Option<Job>>>) {
+    if let Some(job) = first.lock().unwrap().take() {
+        run_job(job);
+    }
     loop {
         let job = {
             let mut p = pool().lock().unwrap();
@@ -234,24 +253,35 @@ fn worker() {
                 }
             }
         };
-        job();
+        run_job(job);
     }
 }
 
-fn submit(job: Box<dyn FnOnce() + Send>) {
+fn submit(job: Job) {
     {
         let mut p = pool().lock().unwrap();
-        p.jobs.push_back(job);
         if p.running >= MAX_READS_IN_FLIGHT {
+            p.jobs.push_back(job);
             return; // a running thread takes it next
         }
         p.running += 1;
         p.peak = p.peak.max(p.running);
     }
-    if std::thread::Builder::new().name("redjs-blob-read".into()).spawn(worker).is_err() {
-        // No thread to be had: run the queue here. The results still settle
-        // from the pump, so the caller still sees an asynchronous read.
-        worker();
+    // The new thread's first job travels beside it rather than through the
+    // queue, so that a failed spawn can take back exactly this job.
+    let first = Arc::new(Mutex::new(Some(job)));
+    let theirs = Arc::clone(&first);
+    if std::thread::Builder::new().name("redjs-blob-read".into()).spawn(move || worker(theirs)).is_err() {
+        pool().lock().unwrap().running -= 1;
+        // No thread to be had: run THIS job here, and only it. Other contexts'
+        // reads stay queued for the threads that exist (a job is queued only
+        // while all MAX_READS_IN_FLIGHT of them run). The result is still
+        // delivered from the pump, so the caller still sees an asynchronous
+        // read.
+        let job = first.lock().unwrap().take();
+        if let Some(job) = job {
+            run_job(job);
+        }
     }
 }
 
@@ -286,7 +316,8 @@ pub(crate) fn read_async(g: *mut c_void, range: Range, done: ReadDone) {
     let ctx = Ctx(g);
     let id = crate::context::id_of(g);
     submit(Box::new(move || {
-        let r = range.read();
+        // A read that panics is a failed read, and its caller still hears so.
+        let r = std::panic::catch_unwind(|| range.read()).unwrap_or(Err(ReadError::NotReadable));
         crate::web::schedule_native(
             ctx.ptr(),
             0.0,
@@ -910,6 +941,21 @@ pub unsafe fn bytes_of(g: *mut c_void, v: u64, consumer: &str) -> Option<Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// More panicking jobs than there are read threads, then an ordinary one:
+    /// it still runs. Before, each panic took its thread's slot for good, and
+    /// after eight every read in the process waited forever.
+    #[test]
+    fn a_job_that_panics_does_not_take_its_thread_slot_with_it() {
+        for _ in 0..MAX_READS_IN_FLIGHT * 2 {
+            submit(Box::new(|| panic!("a read job panics on purpose (test)")));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        submit(Box::new(move || {
+            let _ = tx.send(());
+        }));
+        rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the pool still runs jobs after panics");
+    }
 
     #[test]
     fn native_endings_normalise_every_line_break() {
