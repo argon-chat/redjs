@@ -739,22 +739,51 @@ unsafe extern "sysv64" fn fetch_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
     fetch_local(g, &plan)
 }
 
-/// Fetch §"parse a single range header value" (no whitespace allowed — what
-/// a blob fetch calls it with): `bytes=a-b`, `bytes=a-` or `bytes=-n`, as
-/// `(start, end)`; `None` for anything else, including a list of ranges.
+/// Fetch §"parse a single range header value" with allowWhitespace = true,
+/// which is how the blob scheme fetch calls it: `bytes`, optional tabs or
+/// spaces, `=`, then `a-b`, `a-` or `-n` with optional tabs or spaces around
+/// the numbers (`bytes= 9 - 21`, as Chromium and WPT `fetch/range/blob.any.js`
+/// accept), and nothing after. `(start, end)`; `None` for anything else,
+/// including a list of ranges. A number too large for `u64` is `u64::MAX`:
+/// the spec reads the digits as a mathematical value, so an end past the
+/// Blob is clamped by the caller and a start past it is a network error.
 fn parse_single_range(v: &str) -> Option<(Option<u64>, Option<u64>)> {
-    let rest = v.strip_prefix("bytes=")?;
-    let (a, b) = rest.split_once('-')?;
-    let num = |s: &str| -> Option<Option<u64>> {
-        if s.is_empty() {
-            return Some(None);
+    let b = v.as_bytes();
+    let mut i = "bytes".len();
+    if !b.starts_with(b"bytes") {
+        return None;
+    }
+    let ws = |i: &mut usize| {
+        while *i < b.len() && (b[*i] == b' ' || b[*i] == b'\t') {
+            *i += 1;
         }
-        if !s.bytes().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-        s.parse::<u64>().ok().map(Some)
     };
-    let (start, end) = (num(a)?, num(b)?);
+    let digits = |i: &mut usize| -> Option<u64> {
+        let from = *i;
+        let mut n = 0u64;
+        while *i < b.len() && b[*i].is_ascii_digit() {
+            n = n.saturating_mul(10).saturating_add((b[*i] - b'0') as u64);
+            *i += 1;
+        }
+        (*i > from).then_some(n)
+    };
+    ws(&mut i);
+    if b.get(i) != Some(&b'=') {
+        return None;
+    }
+    i += 1;
+    ws(&mut i);
+    let start = digits(&mut i);
+    ws(&mut i);
+    if b.get(i) != Some(&b'-') {
+        return None;
+    }
+    i += 1;
+    ws(&mut i);
+    let end = digits(&mut i);
+    if i != b.len() {
+        return None;
+    }
     match (start, end) {
         (None, None) => None,
         (Some(s), Some(e)) if s > e => None,
@@ -824,7 +853,10 @@ unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
         return reject_refusal(g, "Failed to fetch: this blob: URL is not in the blob URL store (it was revoked, or never created in this context)");
     };
     let full = entry.range.len;
-    let range = plan.headers.iter().find(|(k, _)| k == "range").map(|(_, v)| v.clone());
+    // "Get `Range`" combines every value with ", ", so two Range headers are
+    // a list of ranges, which is a network error.
+    let values: Vec<&str> = plan.headers.iter().filter(|(k, _)| k == "range").map(|(_, v)| v.as_str()).collect();
+    let range = (!values.is_empty()).then(|| values.join(", "));
     let (start, len, content_range) = match range {
         None => (0, full, None),
         Some(v) => {

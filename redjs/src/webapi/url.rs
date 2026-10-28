@@ -777,9 +777,32 @@ mod jsc_tests {
         assert_eq!(r("bytes=-3"), "206,bytes 7-9/10,3,789");
         assert_eq!(r("bytes=-30"), "206,bytes 0-9/10,10,0123456789");
         assert_eq!(r("bytes=8-100"), "206,bytes 8-9/10,2,89");
-        for bad in ["bytes=10-", "bytes=5-2", "bytes=1-2,4-5", "items=1-2", "bytes= 1-2", "bytes=-"] {
+        // allowWhitespace: tabs and spaces around `=` and the numbers
+        // (WPT fetch/range/blob.any.js "with whitespace": `bytes= 9 - 21`).
+        assert_eq!(r("bytes= 1-2"), "206,bytes 1-2/10,2,12");
+        assert_eq!(r("bytes \\t= 2 \\t- 4"), "206,bytes 2-4/10,3,234");
+        // Trailing whitespace never reaches the parser: a header value is normalized.
+        assert_eq!(r("bytes=1-2 "), "206,bytes 1-2/10,2,12");
+        // An end too large for any integer is clamped like any end past the Blob;
+        // a start that large starts past it.
+        assert_eq!(r("bytes=3-99999999999999999999999"), "206,bytes 3-9/10,7,3456789");
+        assert_eq!(r("bytes=-99999999999999999999999"), "206,bytes 0-9/10,10,0123456789");
+        for bad in [
+            "bytes=10-",
+            "bytes=5-2",
+            "bytes=1-2,4-5",
+            "items=1-2",
+            "bytes=-",
+            "bytes=1 2-3",
+            "Bytes=1-2",
+            "bytes=99999999999999999999999-",
+        ] {
             assert!(r(bad).starts_with("ERROR: TypeError"), "{bad}");
         }
+        // Two Range headers combine into a list, which is a network error.
+        assert!(run(&c, "const h = new Headers(); h.append('Range', 'bytes=0-1'); h.append('Range', 'bytes=2-3'); \
+                         await fetch(u, { headers: h });")
+            .starts_with("ERROR: TypeError"));
     }
 
     #[test]
