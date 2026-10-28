@@ -102,26 +102,11 @@ fn clean_relative(url: &str) -> Option<String> {
     Some(clean.to_string())
 }
 
+/// The `Content-Type` of a local read: the one table `File.type` and `accept`
+/// filters use ([`super::mime`]), and `application/octet-stream` for what it
+/// does not know — a response always has a type, where a `File` says `""`.
 pub fn guess_content_type(path: &str) -> &'static str {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
-        "json" => "application/json",
-        "js" | "mjs" => "text/javascript",
-        "wasm" => "application/wasm",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        "txt" => "text/plain",
-        "html" | "htm" => "text/html",
-        "css" => "text/css",
-        "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
-        "wav" => "audio/wav",
-        _ => "application/octet-stream",
-    }
+    super::mime::type_for_name(path).unwrap_or("application/octet-stream")
 }
 
 /// Strip query/hash + file://, then resolve against scripts dir, assets dir.

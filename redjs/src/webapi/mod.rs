@@ -73,6 +73,7 @@ pub mod image;
 pub mod indexeddb;
 #[cfg(feature = "audio")]
 pub mod mediadevices;
+pub mod mime;
 pub mod navigator;
 #[cfg(feature = "audio")]
 pub mod osc;
