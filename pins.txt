@@ -30,3 +30,17 @@ mimalloc.commit = 92ef6587c57b262f6e6abf513f7776a2f8d12aeb
 # the sha256 of the text "<sha256 of file>  <path>\n" per file, paths relative
 # with forward slashes, ordinal-sorted — `sha256sum` manifest form.
 mimalloc.tree-sha256 = a39655bf7f2628e42f7bf3b07c1ad2e26284edb21979e6ddf695881803c5339b
+
+# utelle/SQLite3MultipleCiphers (MIT; SQLite itself is public domain): the
+# amalgamation IndexedDB's persistent backend is compiled from — ONLY with the
+# `indexeddb-sqlite` feature (build.rs), into one TU with every sqlite3_*
+# symbol static (cpp/idb_sqlite.c). setup.ps1 fetches the release asset,
+# checks `sqlite3mc.sha256` (the same value upstream publishes in its
+# -SHA256SUMS), extracts it minus the shell into prebuilt/sqlite3mc/, and
+# checks the tree hash (same manifest form as mimalloc's) before stamping it.
+# The cipher parameters are on-disk format: see IDB_CIPHER_V1 in that file.
+sqlite3mc.version     = 2.6.1
+sqlite3mc.sqlite      = 3.54.0
+sqlite3mc.asset       = sqlite3mc-2.6.1-sqlite-3.54.0-amalgamation.zip
+sqlite3mc.sha256      = 3f25af603566a23c821d8e581778b5ece2a541d2435776de57b8d845c176815a
+sqlite3mc.tree-sha256 = 4da97871168e9e31ec88e46e99487fc25980bb8cbf2517a6d9f5883f48cfb2fd

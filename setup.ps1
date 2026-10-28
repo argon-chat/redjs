@@ -6,8 +6,11 @@
 #   redjs/cpp/mimalloc/    oven-sh/mimalloc sources (src/, include/, LICENSE),
 #                          compiled by redjs/build.rs — this JSC build calls the
 #                          EMBEDDER's mimalloc
+#   prebuilt/sqlite3mc/    the SQLite3 Multiple Ciphers amalgamation (~14 MB of
+#                          C), compiled by redjs/build.rs only with the
+#                          `indexeddb-sqlite` feature (IndexedDB on disk)
 #
-# Both are git-ignored. Idempotent: what is already on disk at the pinned
+# All three are git-ignored. Idempotent: what is already on disk at the pinned
 # version is left alone. What is on disk at ANY OTHER version is replaced — a
 # checkout that pulls a new pin and re-runs this script never keeps building
 # against the old engine (and redjs/build.rs refuses to, if it is not re-run).
@@ -42,7 +45,8 @@ function Read-Pins([string] $path) {
         if ($eq -lt 1) { throw "pins.txt: cannot parse line: $raw" }
         $pins[$line.Substring(0, $eq).Trim()] = $line.Substring($eq + 1).Trim()
     }
-    foreach ($k in 'webkit.tag', 'webkit.version', 'webkit.asset', 'webkit.sha256', 'mimalloc.commit', 'mimalloc.tree-sha256') {
+    foreach ($k in 'webkit.tag', 'webkit.version', 'webkit.asset', 'webkit.sha256', 'mimalloc.commit', 'mimalloc.tree-sha256',
+        'sqlite3mc.version', 'sqlite3mc.asset', 'sqlite3mc.sha256', 'sqlite3mc.tree-sha256') {
         if (-not $pins.ContainsKey($k)) { throw "pins.txt: missing '$k'" }
     }
     return $pins
@@ -195,6 +199,43 @@ else {
     Set-Content -LiteralPath $stamp -Value $commit -NoNewline -Encoding ascii
     Remove-Item -LiteralPath $miTar -Force
     Write-Host "[jscore] mimalloc $commit -> $mi"
+}
+
+# --- 3. SQLite3 Multiple Ciphers (IndexedDB's persistent backend) ----------------
+
+$mc = Join-Path $root 'prebuilt/sqlite3mc'
+$mcStamp = Join-Path $mc '.redjs-pin'
+$mcWant = "$($pins['sqlite3mc.version']) $($pins['sqlite3mc.tree-sha256'])"
+$mcHave = $null
+if (Test-Path -LiteralPath $mcStamp) { $mcHave = (Get-Content -LiteralPath $mcStamp -Raw).Trim() }
+
+if (-not $Force -and $mcHave -eq $mcWant -and (Test-Path -LiteralPath (Join-Path $mc 'sqlite3mc_amalgamation.c'))) {
+    Write-Host "[jscore] sqlite3mc present at the pin ($($pins['sqlite3mc.version'])): $mc"
+}
+else {
+    if ($mcHave -and $mcHave -ne $mcWant) {
+        Write-Host "[jscore] sqlite3mc on disk is '$mcHave', pins.txt says '$mcWant' — replacing it"
+    }
+    $ver = $pins['sqlite3mc.version']
+    $mcZip = Join-Path $env:TEMP ("redjs-" + $pins['sqlite3mc.asset'])
+    Get-Url "https://github.com/utelle/SQLite3MultipleCiphers/releases/download/v$ver/$($pins['sqlite3mc.asset'])" $mcZip
+    Assert-Sha256 $mcZip $pins['sqlite3mc.sha256']
+    $mcStaging = Join-Path (Split-Path $mc) ".sqlite3mc-staging-$PID"
+    Remove-Tree $mcStaging
+    New-Item -ItemType Directory -Force $mcStaging | Out-Null
+    Expand-Archive -LiteralPath $mcZip -DestinationPath $mcStaging -Force
+    # The shell is a program, not a library: never compiled, not kept.
+    Get-ChildItem -LiteralPath $mcStaging -Recurse -File -Filter 'shell*.c' | Remove-Item -Force
+    $mcTree = Get-TreeSha256 $mcStaging
+    if ($mcTree -ne $pins['sqlite3mc.tree-sha256']) {
+        throw "sqlite3mc tree sha256 mismatch:`n  pinned: $($pins['sqlite3mc.tree-sha256'])`n  tree:   $mcTree`nRefusing to use it."
+    }
+    Remove-Tree $mc
+    Move-Item -LiteralPath $mcStaging -Destination $mc
+    # Written LAST, after both hashes: build.rs trusts the stamp.
+    Set-Content -LiteralPath $mcStamp -Value $mcWant -NoNewline -Encoding ascii
+    Remove-Item -LiteralPath $mcZip -Force
+    Write-Host "[jscore] sqlite3mc $ver -> $mc"
 }
 
 Write-Host "[jscore] setup complete. Next: ./build.ps1"

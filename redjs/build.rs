@@ -23,15 +23,23 @@
 //!    links its own. It is a normal (bundled) static lib, so it lands INSIDE
 //!    the thin redjs.lib and a NativeAOT consumer gets it without listing it.
 //!
-//! 5. Links the WebKit static libs. They are linked with the `-bundle`
+//! 5. With `indexeddb-sqlite` only: compiles `cpp/idb_sqlite.c` — SQLite3
+//!    Multiple Ciphers (`../prebuilt/sqlite3mc`, fetched by setup.ps1) as ONE
+//!    translation unit whose `sqlite3_*` API is `static`, trimmed to the
+//!    ChaCha20-Poly1305 cipher and size-optimised (-Os, /Gy /Gw so the final
+//!    link's /OPT:REF drops what IndexedDB never calls). Bundled into the
+//!    rlib like mimalloc.
+//!
+//! 6. Links the WebKit static libs. They are linked with the `-bundle`
 //!    modifier so the `staticlib` artifact (redjs.lib for NativeAOT) stays
 //!    thin — the consuming link (ILC) must also pass the WebKit libs. The
 //!    `cdylib` artifact (redjs.dll) is always fully self-contained.
 //!
-//! Before any of it, the prebuilt and the mimalloc tree are checked against
-//! `../pins.txt`: a mismatch is a build error with the command that fixes it,
-//! because linking whatever happens to be on disk is how a checkout keeps the
-//! OLD engine after pulling a new pin.
+//! Before any of it, the prebuilt, the mimalloc tree and (with
+//! `indexeddb-sqlite`) the sqlite3mc tree are checked against `../pins.txt`:
+//! a mismatch is a build error with the command that fixes it, because
+//! linking whatever happens to be on disk is how a checkout keeps the OLD
+//! engine after pulling a new pin.
 //!
 //! Prebuilt location: `BUN_WEBKIT_DIR` env or `../prebuilt/bun-webkit`.
 
@@ -174,6 +182,36 @@ fn main() {
         .define("MI_CMAKE_BUILD_TYPE", "release")
         .compile("redjs_mimalloc");
 
+    // --- SQLite3 Multiple Ciphers (IndexedDB on disk) ----------------------
+    // ONE C translation unit, `cpp/idb_sqlite.c`, which #includes the pinned
+    // amalgamation from prebuilt/sqlite3mc (setup.ps1) and exports only its
+    // own `rjs_sql_*` wrappers: every sqlite3_* function is `static` there.
+    // Only with `indexeddb-sqlite`; without it nothing is checked or compiled.
+    //
+    // Optimised for SIZE in every profile (/O1): the owner weighs the binary,
+    // and the trimmed -O1 object adds ~0.76 MB to an exe where -O2 adds ~1.17
+    // (research/reports/m25/indexeddb-p2-impl.md has the numbers, and the
+    // benchmarks that say what it costs). /Gy + /Gw put every function and
+    // global in its own COMDAT, so the linker drops what nothing reaches.
+    if env::var_os("CARGO_FEATURE_INDEXEDDB_SQLITE").is_some() {
+        let mc = manifest.parent().unwrap().join("prebuilt").join("sqlite3mc");
+        check_sqlite3mc(&mc, &pins);
+        cc::Build::new()
+            .compiler("clang-cl")
+            .static_crt(true)
+            .file("cpp/idb_sqlite.c")
+            .include(&mc)
+            .opt_level_str("s")
+            .flag("/Gy")
+            .flag("/Gw")
+            .flag("-w")
+            .define("NDEBUG", None)
+            .define("_CRT_SECURE_NO_WARNINGS", None)
+            .compile("redjs_sqlite");
+        println!("cargo:rerun-if-changed=cpp/idb_sqlite.c");
+        println!("cargo:rerun-if-changed={}", mc.join(".redjs-pin").display());
+    }
+
     println!("cargo:rustc-link-search=native={}", lib.display());
 
     // WebKit static libs. `-bundle`: not embedded into the staticlib artifact
@@ -286,6 +324,23 @@ fn check_mimalloc(dir: &Path, pins: &[(String, String)]) {
             "\n\nmimalloc sources at {} are {}, but redjs pins oven-sh/mimalloc@{want} (pins.txt).\n\
              This JSC build allocates through the embedder's mimalloc, so redjs compiles it.\n\
              Run vendor/redjs/setup.ps1 (packages/jscore/setup.ps1 in PEWPEW) to fetch it.\n",
+            dir.display(),
+            have.as_deref().unwrap_or("missing"),
+        );
+    }
+}
+
+/// setup.ps1 writes `prebuilt/sqlite3mc/.redjs-pin` (`<version> <tree sha256>`)
+/// only after the release asset's sha256 AND the extracted tree's matched
+/// pins.txt; a stamp naming anything else is a tree this build refuses.
+fn check_sqlite3mc(dir: &Path, pins: &[(String, String)]) {
+    let want = format!("{} {}", pin(pins, "sqlite3mc.version"), pin(pins, "sqlite3mc.tree-sha256"));
+    let have = fs::read_to_string(dir.join(".redjs-pin")).ok().map(|s| s.trim().to_owned());
+    if have.as_deref() != Some(want.as_str()) || !dir.join("sqlite3mc_amalgamation.c").is_file() {
+        panic!(
+            "\n\nthe SQLite3 Multiple Ciphers amalgamation at {} is {}, but redjs pins `{want}` (pins.txt).\n\
+             The `indexeddb-sqlite` feature compiles it into IndexedDB's persistent backend.\n\
+             Run vendor/redjs/setup.ps1 to fetch and verify it.\n",
             dir.display(),
             have.as_deref().unwrap_or("missing"),
         );

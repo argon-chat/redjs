@@ -141,6 +141,14 @@ clipboard = []
 # and one advisory saying so), and every consumer of this crate is ours. No new
 # dependency; one OS thread, spawned at the first `open`, never at install.
 indexeddb = []
+# IndexedDB ON DISK: the SQLite3 Multiple Ciphers backend (one C TU compiled
+# by build.rs from the amalgamation pinned in ../pins.txt, size-optimised and
+# trimmed to ChaCha20-Poly1305; no sqlite3_* symbol leaves it). Still no
+# Rust dependency. Used only when an `IndexedDbHost` is installed (or a test
+# asks for it); without a host the memory backend runs, as with `indexeddb`
+# alone. OFF by default: it is a C compile and ~0.8 MB of code that a
+# consumer with no host to give it a folder would carry for nothing.
+indexeddb-sqlite = ["indexeddb"]
 
 # WPT IndexedDB runner (tests/wpt/README.md): its own `main`, one child
 # process per test file.
