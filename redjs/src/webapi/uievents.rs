@@ -962,8 +962,9 @@ unsafe extern "sysv64" fn list_remove(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let Ok(n) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
     let Ok((dt, d)) = this_list(g, cf, "remove") else { return UNDEF };
+    // HTML: "not in the read/write mode" throws, the disabled mode included
+    // (Chromium: `!CanWriteData()`).
     match d.mode {
-        DragDataMode::Disabled => return UNDEF,
         DragDataMode::ReadWrite => {}
         _ => {
             return super::domexception::throw(
@@ -1045,8 +1046,9 @@ unsafe extern "sysv64" fn item_get_as_string(g: *mut c_void, cf: *mut c_void) ->
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Failed to execute 'getAsString' on 'DataTransferItem': 1 argument required, but only 0 present.");
     }
+    // `FunctionStringCallback?`: undefined converts to null, like null.
     let cb = cf_arg(cf, 0);
-    if cb == NULL {
+    if cb == NULL || cb == UNDEF {
         return UNDEF;
     }
     if glue::rjs_kind(g, cb) != 9 {
@@ -1093,6 +1095,17 @@ unsafe extern "sysv64" fn item_get_as_file(g: *mut c_void, cf: *mut c_void) -> u
 /// has a hook installed, so `'getAsFileSystemHandle' in item` tells the truth.
 /// `null` for a string item, a script-added File, or outside drop/dragstart.
 unsafe extern "sysv64" fn item_get_as_handle(g: *mut c_void, cf: *mut c_void) -> u64 {
+    // A promise-returning operation REJECTS on a bad `this` (WebIDL), so the
+    // brand check makes the TypeError without throwing it.
+    if host_data::<DtItemData>(g, classes(g).item_cls, cf_this(cf)).is_none() {
+        let e = super::fetch::make_error(
+            g,
+            super::fetch::TYPE_ERR,
+            "",
+            "DataTransferItem.getAsFileSystemHandle called on a non-DataTransferItem",
+        );
+        return super::domexception::rejected_with(g, e);
+    }
     let found = match this_item(g, cf, "getAsFileSystemHandle") {
         Ok(v) => v,
         Err(e) => return super::domexception::rejected_with(g, e),
@@ -1589,7 +1602,7 @@ mod jsc_tests {
             &c,
             "const dt = new DataTransfer(); dt.setData('text', 'hi'); let sync = 'none'; \
              const got = new Promise(r => dt.items[0].getAsString(s => { r(s); })); dt.items[0].getAsString(s => { sync = s; }); \
-             const before = sync; dt.items[0].getAsString(null); \
+             const before = sync; dt.items[0].getAsString(null); dt.items[0].getAsString(undefined); \
              let threw = false; try { dt.items[0].getAsString(5); } catch (e) { threw = e instanceof TypeError; } \
              return [before, await got, threw].join();",
         );
@@ -1626,6 +1639,8 @@ mod jsc_tests {
             set_drag_data_mode(g, dt, DragDataMode::Disabled);
             ok(&c, "dt.types.length === 0 && dt.items.length === 0 && dt.items[0] === undefined && dt.files.length === 0 \
                     && kept.kind === '' && kept.getAsFile() === null && dt.getData('text') === ''");
+            // Disabled is not read/write either: remove() throws (it returned silently).
+            assert!(throws(&c, "dt.items.remove(0)").contains("not writable"));
         }
         assert!(crate::webapi::blob::advisories().iter().any(|m| m.contains("A-F3")));
         let _ = std::fs::remove_dir(&dir);
@@ -1648,6 +1663,9 @@ mod jsc_tests {
         unsafe {
             set_file_system_handle_hook(g, Some(hook));
             ok(&c, "typeof DataTransferItem.prototype.getAsFileSystemHandle === 'function'");
+            // A bad `this` is a rejection, not a synchronous throw plus a stray promise.
+            ok(&c, "(() => { const p = DataTransferItem.prototype.getAsFileSystemHandle.call({}); globalThis.bad = p; \n                     p.catch(() => {}); return p instanceof Promise; })()");
+            assert_eq!(run(&c, "try { await bad; return 'resolved'; } catch (e) { return String(e instanceof TypeError); }"), "true");
             let dt = create_drag_data(g, &[DropEntry { path: t.0.clone(), is_dir: false, stat: None }], DragDataMode::Protected);
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "dt", dt, 0);
             assert_eq!(run(&c, "return String(await dt.items[0].getAsFileSystemHandle());"), "null", "protected: null");
