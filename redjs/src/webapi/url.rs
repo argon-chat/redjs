@@ -7,8 +7,12 @@
 //! (spec: the two stay in sync).
 //!
 //! `URL.createObjectURL` / `revokeObjectURL` keep a real blob URL store per
-//! context; `fetch` resolves `blob:` URLs through it, and a host resolves
-//! them with [`resolve_blob_url`].
+//! context. Everything in redjs that takes a URL resolves `blob:` through it:
+//! `fetch`, an `Image`'s `src` and a `createImageBitmap` string (image.rs).
+//! A host resolves them with [`resolve_blob_url`] (vue-native: `<img>`,
+//! `<video>`, `<lottie>`). The store is per context: once Workers exist, a
+//! URL made in a worker will not resolve in the window. A browser has one
+//! store per user agent, where it does — a note for the Workers design.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
