@@ -1001,6 +1001,9 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         // Device hot-plug polling. Costs two property reads unless something
         // is actually listening for `devicechange`.
         crate::webapi::mediadevices::pump(g);
+        // Finished `getUserMedia` opens and devices lost under live tracks.
+        // One relaxed load when there are none.
+        crate::webapi::mediastream::pump(g);
         if per_task {
             checkpoint(g);
         }

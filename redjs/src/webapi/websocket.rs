@@ -2015,8 +2015,14 @@ mod jsc_tests {
         );
         let deadline = Instant::now() + Duration::from_secs(25);
         loop {
+            // Under the API lock, as an embedder's frame pumps (`redjs_lock`):
+            // the pump allocates (a binary message is a new ArrayBuffer), and a
+            // collection JSC starts from an unlocked allocation is a
+            // WTFCrash in `Heap::collect`, not a test failure.
             unsafe {
+                crate::glue::rjs_lock(c.raw());
                 crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+                crate::glue::rjs_unlock(c.raw());
             }
             c.drain_microtasks();
             let out = s(c, "globalThis.__out");

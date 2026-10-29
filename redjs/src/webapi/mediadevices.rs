@@ -1,24 +1,27 @@
 //! `navigator.mediaDevices` — audio device enumeration without a DOM.
 //!
 //! A device picker in a desktop application is built from
-//! `navigator.mediaDevices.enumerateDevices()`, and the chosen output is then
-//! applied with `AudioContext.setSinkId()` (see [`super::audio`]). Neither call
-//! needs an `<audio>` element, a `MediaStream`, or a media-capture permission —
-//! which is exactly why the pair is implementable here while capture is not.
+//! `navigator.mediaDevices.enumerateDevices()`. The chosen output is applied
+//! with `AudioContext.setSinkId()` (see [`super::audio`]), the chosen input is
+//! opened with `getUserMedia({ audio: { deviceId } })` (see
+//! [`super::mediastream`], whose script replaces the `getUserMedia` stub here).
 //!
 //! ## What this module reports, and what it deliberately does not
 //!
-//! Only `audiooutput`. The list comes from the same CPAL host enumerator that
-//! [`super::audio`] opens its output stream through, so every id in it is an id
-//! `setSinkId` can actually select — the enumeration and the selection cannot
-//! disagree.
+//! `audiooutput` and `audioinput`. Both lists come from the CPAL host that
+//! [`super::audio`] plays through and [`super::mediastream`] captures through,
+//! so every id in them is one `setSinkId` or `getUserMedia` can select: the
+//! enumeration and the selection cannot disagree.
 //!
-//! `audioinput` and `videoinput` are **omitted on purpose**. This runtime has no
-//! `getUserMedia` and no `MediaStream`, so every microphone or camera listed
-//! here would be a device the application could offer the user and then never
-//! open: a picker where every choice is silent. Input enumeration belongs with
-//! capture, in the media/WebRTC layer, and arrives with it — not before.
-//! `jsc_tests::the_input_boundary_is_pinned` fails if that ever drifts silently.
+//! Inputs are **named only when they could be opened**, i.e. when the capture
+//! gate is open (see "The capture gate" in mediastream.rs). Otherwise the list
+//! carries one `audioinput` with an empty `deviceId` and `label`, the shape a
+//! browser reports before the user has granted the microphone: the page can
+//! tell a microphone exists, and `getUserMedia` then says `NotAllowedError`.
+//! A picker never offers a device that cannot be opened.
+//! `jsc_tests::the_input_boundary_is_pinned` pins that.
+//!
+//! `videoinput` is omitted: this runtime captures no video.
 //!
 //! ## Shape notes (deviations, all deliberate)
 //!
@@ -64,6 +67,20 @@ pub struct AudioDevice {
     pub id: String,
     pub label: String,
     pub is_default: bool,
+}
+
+/// The system's audio capture endpoints, as CPAL lists them.
+pub fn input_devices() -> Vec<AudioDevice> {
+    CpalEnumerator
+        .default_host()
+        .input_devices()
+        .into_iter()
+        .map(|d| AudioDevice {
+            id: format!("{}", d.id),
+            label: d.name.unwrap_or_else(|| String::from("Unknown input device")),
+            is_default: d.is_default,
+        })
+        .collect()
 }
 
 /// The system's audio output endpoints, default first.
@@ -112,6 +129,14 @@ fn devices_changed(prev: &[(String, bool)], next: &[(String, bool)]) -> bool {
 
 fn snapshot_of(devices: &[AudioDevice]) -> Vec<(String, bool)> {
     devices.iter().map(|d| (d.id.clone(), d.is_default)).collect()
+}
+
+/// Outputs and inputs together: plugging in a headset's microphone is a
+/// `devicechange` as much as its speakers are.
+fn snapshot_now() -> Vec<(String, bool)> {
+    let mut s = snapshot_of(&output_devices());
+    s.extend(input_devices().into_iter().map(|d| (format!("in:{}", d.id), d.is_default)));
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -165,12 +190,12 @@ unsafe fn info_slots(g: *mut c_void, obj: u64) -> u64 {
     get_a(g, obj, classes(g).s_md)
 }
 
-unsafe fn new_device_info(g: *mut c_void, device_id: &str, label: &str) -> u64 {
+unsafe fn new_device_info(g: *mut c_void, kind: &str, device_id: &str, label: &str) -> u64 {
     let c = classes(g);
     let obj = new_object(g, c.info.proto);
     let slots = new_object(g, UNDEF);
     define(g, slots, "deviceId", js_string(g, device_id), 0);
-    define(g, slots, "kind", js_string(g, "audiooutput"), 0);
+    define(g, slots, "kind", js_string(g, kind), 0);
     define(g, slots, "label", js_string(g, label), 0);
     define(g, slots, "groupId", js_string(g, ""), 0);
     glue::rjs_define(g, obj, c.s_md, slots, 0);
@@ -212,41 +237,56 @@ unsafe extern "sysv64" fn info_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
 // MediaDevices
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    let devices = output_devices();
-    let arr = new_array(g);
-    let mut i = 0u32;
-
-    // The synthetic default, first — see the module header.
+/// One kind's entries: the synthetic default first, then every endpoint.
+unsafe fn push_kind(g: *mut c_void, arr: u64, i: &mut u32, kind: &str, devices: &[AudioDevice]) {
     let default_label = devices
         .iter()
         .find(|d| d.is_default)
         .map(|d| format!("Default - {}", d.label))
         .unwrap_or_else(|| String::from("Default"));
-    set_i(g, arr, i, new_device_info(g, DEFAULT_SINK, &default_label));
-    i += 1;
-
-    for d in &devices {
+    set_i(g, arr, *i, new_device_info(g, kind, DEFAULT_SINK, &default_label));
+    *i += 1;
+    for d in devices {
         // A backend that ever hands back the literal id "default" would produce
         // two entries the picker cannot tell apart.
         if d.id == DEFAULT_SINK {
             continue;
         }
-        set_i(g, arr, i, new_device_info(g, &d.id, &d.label));
-        i += 1;
+        set_i(g, arr, *i, new_device_info(g, kind, &d.id, &d.label));
+        *i += 1;
     }
+}
+
+unsafe extern "sysv64" fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void) -> u64 {
+    let arr = new_array(g);
+    let mut i = 0u32;
+
+    // Inputs first, as Chrome orders them. Named only when `getUserMedia`
+    // could open them (webapi/mediastream.rs, "The capture gate"); otherwise
+    // one entry with no id and no label, which is what a browser lists before
+    // the user has granted the microphone.
+    let inputs = input_devices();
+    if !inputs.is_empty() {
+        if super::mediastream::inputs_visible(g as usize) {
+            push_kind(g, arr, &mut i, "audioinput", &inputs);
+        } else {
+            set_i(g, arr, i, new_device_info(g, "audioinput", "", ""));
+            i += 1;
+        }
+    }
+
+    push_kind(g, arr, &mut i, "audiooutput", &output_devices());
     resolved_promise(g, arr)
 }
 
-/// `getUserMedia` is not here, and saying so by name beats `undefined is not a
-/// function` from inside a call stack five frames deep.
+/// Replaced by mediastream.js. Left as the answer if that script ever fails to
+/// install, so the failure is named rather than `undefined is not a function`.
 unsafe extern "sysv64" fn md_get_user_media(g: *mut c_void, _cf: *mut c_void) -> u64 {
     super::domexception::rejected(
         g,
         "NotSupportedError",
-        "navigator.mediaDevices.getUserMedia is not implemented — this runtime has \
-         no media capture and no MediaStream. Output selection (enumerateDevices + \
-         AudioContext.setSinkId) works without it; capture arrives with the media/WebRTC layer.",
+        "navigator.mediaDevices.getUserMedia is unavailable: the MediaStream surface \
+         (redjs/mediastream.js) failed to install. See the log for its error.",
     )
 }
 
@@ -296,7 +336,7 @@ pub unsafe fn pump(g: *mut c_void) {
         return;
     }
 
-    let next = snapshot_of(&output_devices());
+    let next = snapshot_now();
     let fire = armed && devices_changed(&prev, &next);
     if let Some(p) = polls().lock().unwrap().get_mut(&(g as usize)) {
         p.snapshot = next;
@@ -481,19 +521,17 @@ mod jsc_tests {
     }
 
     #[test]
-    fn the_list_is_outputs_only_with_a_default_first() {
+    fn the_outputs_are_listed_with_a_default_first() {
         let c = ctx();
         assert_eq!(
             run(
                 &c,
-                "const ds = await navigator.mediaDevices.enumerateDevices();
-                 if (!Array.isArray(ds)) return 'not an array';
+                "const ds = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput');
                  if (ds.length < 1) return 'empty list';
                  if (ds[0].deviceId !== 'default') return 'first is ' + ds[0].deviceId;
                  const ids = new Set();
                  for (const d of ds) {
                    if (!(d instanceof MediaDeviceInfo)) return 'not a MediaDeviceInfo';
-                   if (d.kind !== 'audiooutput') return 'kind: ' + d.kind;
                    if (typeof d.deviceId !== 'string' || !d.deviceId) return 'bad deviceId';
                    if (typeof d.label !== 'string' || !d.label) return 'bad label';
                    if (typeof d.groupId !== 'string') return 'bad groupId';
@@ -509,23 +547,38 @@ mod jsc_tests {
 
     #[test]
     fn the_input_boundary_is_pinned() {
-        // Capture is the media/WebRTC layer's, not this module's. Listing a
-        // microphone here would put a device in the picker that nothing can
-        // open; this test fails the day inputs start appearing, so the change
-        // has to be a decision rather than a drift.
+        // The gate is closed here (no test enables capture for this context):
+        // at most one anonymous microphone, never a named device the page
+        // could offer and then fail to open, and only audio kinds at all.
         let c = ctx();
         assert_eq!(
             run(
                 &c,
                 "const ds = await navigator.mediaDevices.enumerateDevices();
-                 const other = ds.filter(d => d.kind !== 'audiooutput').map(d => d.kind);
-                 return other.length ? other.join(',') : 'outputs-only';"
+                 const kinds = new Set(ds.map(d => d.kind));
+                 for (const k of kinds) if (k !== 'audioinput' && k !== 'audiooutput') return 'kind ' + k;
+                 const ins = ds.filter(d => d.kind === 'audioinput');
+                 if (ins.length > 1) return 'named inputs while closed: ' + ins.length;
+                 if (ins.length && (ins[0].deviceId !== '' || ins[0].label !== '')) return 'an input is named';
+                 if (ins.length && ds.indexOf(ins[0]) !== 0) return 'inputs are not first';
+                 return 'ok';"
             ),
-            "outputs-only"
+            "ok"
         );
         let got = run(&c, "await navigator.mediaDevices.getUserMedia({ audio: true }); return 'resolved';");
-        assert!(got.contains("DOMException NotSupportedError"), "{got}");
-        assert!(got.contains("MediaStream"), "getUserMedia must say why: {got}");
+        assert!(got.contains("DOMException NotAllowedError"), "{got}");
+        assert!(got.contains("has not enabled microphone capture"), "getUserMedia must say why: {got}");
+    }
+
+    #[test]
+    fn every_enumerated_input_id_is_unique_and_non_empty() {
+        let devices = super::input_devices();
+        let mut ids: Vec<&str> = devices.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.iter().all(|i| !i.is_empty()), "{devices:?}");
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "duplicate input ids in {devices:?}");
     }
 
     #[test]

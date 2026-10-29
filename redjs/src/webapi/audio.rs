@@ -18,6 +18,8 @@
 //! | `ChannelSplitterNode`    | `SplitterNode` (ours): output k = port k     |
 //! | `ChannelMergerNode`      | `MergerNode` (ours): input j = ports 2j, 2j+1 |
 //! | `RedStreamSourceNode`    | `StreamWriterNode` (webapi/pcm.rs) — ours     |
+//! | `MediaStreamAudioSourceNode` | `StreamWriterNode`, fed by a track (webapi/mediastream.rs) |
+//! | `MediaStreamAudioDestinationNode` | `TapNode` (ours): 2 inputs, no outputs, hands each block to its track |
 //! | `decodeAudioData`        | symphonium (resampled to the stream rate)    |
 //! | `currentTime`            | the audio-stream sample clock (seconds)      |
 //!
@@ -339,6 +341,85 @@ impl firewheel::node::AudioNodeProcessor for MonitorProcessor {
 }
 
 // ---------------------------------------------------------------------------
+// MediaStreamAudioDestinationNode backing: a sink that hands every block to a
+// track (webapi/mediastream.rs).
+// ---------------------------------------------------------------------------
+//
+// Two inputs (the node's stereo input), no outputs. Firewheel schedules every
+// node of the graph, a sink included, so the processor runs once per block
+// whether or not anything downstream exists. It interleaves into a buffer
+// sized off the audio thread and calls `Source::deliver`, which never blocks.
+
+#[derive(Clone)]
+struct TapNode {
+    source: Arc<super::mediastream::Source>,
+}
+
+impl firewheel::node::AudioNode for TapNode {
+    type Configuration = firewheel::node::EmptyConfig;
+
+    fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
+        firewheel::node::AudioNodeInfo::new()
+            .debug_name("webaudio_media_stream_destination")
+            .channel_config(firewheel::channel_config::ChannelConfig {
+                num_inputs: firewheel::channel_config::ChannelCount::STEREO,
+                num_outputs: firewheel::channel_config::ChannelCount::ZERO,
+            })
+    }
+
+    fn construct_processor(
+        &self,
+        _config: &Self::Configuration,
+        cx: firewheel::node::ConstructProcessorContext,
+    ) -> impl firewheel::node::AudioNodeProcessor {
+        let rate = cx.stream_info.sample_rate.get();
+        self.source.set_format(2, rate);
+        TapProcessor {
+            source: Arc::clone(&self.source),
+            scratch: vec![0.0; cx.stream_info.max_block_frames.get() as usize * 2],
+            rate,
+        }
+    }
+}
+
+struct TapProcessor {
+    source: Arc<super::mediastream::Source>,
+    scratch: Vec<f32>,
+    rate: u32,
+}
+
+impl firewheel::node::AudioNodeProcessor for TapProcessor {
+    fn process(
+        &mut self,
+        info: &firewheel::node::ProcInfo,
+        buffers: firewheel::node::ProcBuffers,
+        _events: &mut firewheel::event::ProcEvents,
+        _extra: &mut firewheel::node::ProcExtra,
+    ) -> firewheel::node::ProcessStatus {
+        let frames = info.frames.min(self.scratch.len() / 2);
+        for ch in 0..2 {
+            let silent = info.in_silence_mask.is_channel_silent(ch);
+            let input = buffers.inputs.get(ch);
+            for i in 0..frames {
+                self.scratch[2 * i + ch] = match input {
+                    Some(buf) if !silent => buf[i],
+                    _ => 0.0,
+                };
+            }
+        }
+        self.source.deliver(&self.scratch[..frames * 2], 2, self.rate);
+        firewheel::node::ProcessStatus::ClearAllOutputs
+    }
+
+    fn new_stream(&mut self, stream_info: &firewheel::StreamInfo, _context: &mut firewheel::node::ProcStreamCtx) {
+        // Off the audio thread: allocating here is fine.
+        self.rate = stream_info.sample_rate.get();
+        self.scratch.resize(stream_info.max_block_frames.get() as usize * 2, 0.0);
+        self.source.set_format(2, self.rate);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ChannelSplitterNode / ChannelMergerNode backing: two custom Firewheel nodes.
 // ---------------------------------------------------------------------------
 //
@@ -591,6 +672,8 @@ enum Params {
     /// The media-element source's silent pass-through
     /// (`ctx_create_media_element_source`): no inputs, audio passes untouched.
     Passthrough,
+    /// MediaStreamAudioDestinationNode: a sink feeding its track (see [`TapNode`]).
+    MediaDest(Arc<super::mediastream::Source>),
 }
 
 /// One Web Audio connection, kept so `disconnect(…)` can find it again.
@@ -653,6 +736,8 @@ impl NodeRec {
             Params::Osc(_) => (0, 2),
             Params::Splitter(n) => (*n, *n),
             Params::Merger { n, .. } => (2 * n, *n),
+            // A sink: its track is its output, not a port.
+            Params::MediaDest(_) => (2, 0),
             _ => (2, 2),
         };
         Self {
@@ -689,10 +774,12 @@ impl NodeRec {
         }
     }
 
-    /// Web Audio `numberOfOutputs` (the destination's is 1, as in the spec).
+    /// Web Audio `numberOfOutputs` (the destination's is 1, as in the spec;
+    /// a MediaStreamAudioDestinationNode's is 0).
     fn web_outputs(&self) -> u32 {
         match &self.params {
             Params::Splitter(n) => *n,
+            Params::MediaDest(_) => 0,
             _ => 1,
         }
     }
@@ -1253,6 +1340,7 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
             eng.fw.add_node(MergerNode { n: *n, discrete: ArcGc::clone(discrete) }, None)
         }
         Params::Passthrough => eng.fw.add_node(VolumeNode::default(), None),
+        Params::MediaDest(source) => eng.fw.add_node(TapNode { source: Arc::clone(source) }, None),
         Params::Dest => eng.master,
     };
 
@@ -2781,11 +2869,12 @@ unsafe extern "sysv64" fn ctx_create_oscillator(g: *mut c_void, cf: *mut c_void)
 /// tell at a glance.
 ///
 /// The browser's equivalent seam is `createMediaStreamSource(stream)`, which
-/// presumes a `MediaStream` the engine pulls from. This runtime has no
-/// `MediaStream` (see webapi/mediadevices.rs) and the producers that need this
+/// takes a `MediaStream` the engine pulls from (webapi/mediastream.rs has
+/// those now, and that node is built on this one). The producers this is for
 /// — a WebRTC track, a native decoder — already hold decoded `f32` frames and
-/// want to push. Calling that `createMediaStreamSource` would be a different
-/// API wearing a standard name; see webapi/pcm.rs for the contract.
+/// want to push without a stream object in between. Calling that
+/// `createMediaStreamSource` would be a different API wearing a standard name;
+/// see webapi/pcm.rs for the contract.
 ///
 /// `options`: `{ sampleRate?, channelCount?, latencySeconds?, capacitySeconds? }`.
 unsafe extern "sysv64" fn ctx_create_red_stream_source(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -2819,6 +2908,76 @@ unsafe extern "sysv64" fn ctx_create_red_stream_source(g: *mut c_void, cf: *mut 
         }
     }
     obj
+}
+
+/// The engine behind an `AudioContext` passed as an argument (the
+/// MediaStream node constructors take the context first, as in the spec).
+unsafe fn engine_of(g: *mut c_void, v: u64) -> Option<u64> {
+    host_data::<CtxHandle>(g, classes(g).ctx_cls, v).map(|h| h.0)
+}
+
+/// mediastream.js: `sourceNode(context, trackHandle, proto)` → the native
+/// node of a `MediaStreamAudioSourceNode`: a streaming-PCM node at the track's
+/// rate, at most stereo, fed by the track (`mediastream::pipe`). The pcm
+/// channel resamples to this graph's rate, so a 44.1 kHz microphone plays into
+/// a 48 kHz context as a browser's does.
+pub(crate) unsafe extern "sysv64" fn ms_source_node(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(engine) = engine_of(g, cf_arg(cf, 0)) else {
+        return throw_type_error(g, "MediaStreamAudioSourceNode: parameter 1 is not of type 'AudioContext'.");
+    };
+    let Some(track) = super::mediastream::handle_id(g, cf_arg(cf, 1)) else {
+        return throw_type_error(g, "MediaStreamAudioSourceNode: the track is not a MediaStreamTrack.");
+    };
+    let Some(info) = super::mediastream::info(track) else {
+        return super::domexception::throw(g, "InvalidStateError", "MediaStreamAudioSourceNode: the track is gone.");
+    };
+    let cfg = PcmStreamConfig {
+        sample_rate: info.sample_rate,
+        channels: info.channels.min(2),
+        // A live device, not a network: a short queue keeps the monitor
+        // latency near a browser's.
+        latency_seconds: 0.03,
+        capacity_seconds: 0.2,
+    }
+    .sanitized();
+    let proto = cf_arg(cf, 2);
+    let obj = create_node_on(g, engine, Params::PcmStream(cfg), proto, &[]);
+    if is_cell(obj) {
+        if let Some(h) = host_data::<NodeHandle>(g, classes(g).node_cls, obj).map(|x| x.0) {
+            // An ended track pipes nothing: the node is silent, as the spec's
+            // source of an ended track is.
+            if !super::mediastream::pipe(h, track) {
+                alog!("MediaStreamAudioSourceNode {h}: track {track} is not live");
+            }
+        }
+    }
+    obj
+}
+
+/// mediastream.js: `destNode(context, proto, channelCount)` → `[node,
+/// trackHandle]`: a `MediaStreamAudioDestinationNode` and the track it feeds.
+pub(crate) unsafe extern "sysv64" fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(engine) = engine_of(g, cf_arg(cf, 0)) else {
+        return throw_type_error(g, "MediaStreamAudioDestinationNode: parameter 1 is not of type 'AudioContext'.");
+    };
+    let rate = glob().lock().unwrap().engines.get(&engine).map(|e| e.sample_rate).unwrap_or(48_000);
+    let source = super::mediastream::Source::new(
+        super::mediastream::SourceKind::Graph,
+        "MediaStreamAudioDestinationNode".into(),
+        2,
+        rate,
+        super::mediastream::Settings::default(),
+    );
+    let obj = create_node_on(g, engine, Params::MediaDest(Arc::clone(&source)), cf_arg(cf, 1), &[]);
+    if !is_cell(obj) {
+        return obj; // the context is closed: already thrown
+    }
+    let track = super::mediastream::new_track(&source, super::mediastream::owner_of(g));
+    let handle = super::mediastream::new_handle(g, track);
+    let out = new_array(g);
+    set_i(g, out, 0, obj);
+    set_i(g, out, 1, handle);
+    out
 }
 
 unsafe extern "sysv64" fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -3292,6 +3451,7 @@ pub unsafe fn pump(g: *mut c_void) {
                 // side no longer exists.
                 for (nh, r) in gl.nodes.iter() {
                     if r.engine == h && matches!(r.params, Params::PcmStream(_)) {
+                        super::mediastream::unpipe(*nh);
                         pcm::unregister(*nh);
                     }
                 }
@@ -3301,6 +3461,8 @@ pub unsafe fn pump(g: *mut c_void) {
             }
             if let Some(rec) = gl.nodes.remove(&h) {
                 if matches!(rec.params, Params::PcmStream(_)) {
+                    // A MediaStreamAudioSourceNode stops reading its track.
+                    super::mediastream::unpipe(h);
                     pcm::unregister(h);
                 }
                 if !matches!(rec.params, Params::Dest) {

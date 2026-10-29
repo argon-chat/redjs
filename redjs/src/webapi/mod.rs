@@ -79,6 +79,8 @@ pub mod indexeddb;
 mod interface_tags;
 #[cfg(feature = "audio")]
 pub mod mediadevices;
+#[cfg(feature = "audio")]
+pub mod mediastream;
 pub mod mime;
 pub mod navigator;
 #[cfg(feature = "audio")]
@@ -182,6 +184,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     {
         audio::forget(gone);
         mediadevices::forget(gone);
+        mediastream::forget(gone);
     }
     compression::forget(gone);
     dialogs::forget(gone);
@@ -356,6 +359,9 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         // After audio: `navigator.mediaDevices` only ever hands out ids that
         // `AudioContext.setSinkId` can select, so the two belong together.
         mediadevices::install(g, et_proto);
+        // After both: `MediaStream`, `getUserMedia` and the two MediaStream
+        // nodes, as a script over `AudioContext` and `MediaDevices`.
+        mediastream::install(g);
     }
     abort::install(g, et_proto);
     // `navigator.permissions` answers from whatever `PermissionHost` the
