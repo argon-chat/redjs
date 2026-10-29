@@ -110,7 +110,11 @@
 //!
 //! ## Proxies
 //!
-//! Refused by name at the `fetch` layer rather than silently ignored.
+//! Not used. Neither transport reads the system proxy settings or
+//! `HTTP(S)_PROXY`/`ALL_PROXY`; every connection goes direct. (Earlier
+//! versions of this header said proxies were "refused by name at the `fetch`
+//! layer". No such check existed.) A page behind a mandatory proxy sees a
+//! connection error. vue-native's docs/DESKTOP.md §4.2 lists this as F-3.
 //!
 //! ## Cookies
 //!
