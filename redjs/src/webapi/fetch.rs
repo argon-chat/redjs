@@ -64,10 +64,15 @@ use super::{blob, fsutil};
 use crate::capi;
 use crate::glue;
 
-/// Simultaneous in-flight network requests. One thread each; past this a
-/// request is refused loudly rather than exhausting the thread pool of the
-/// process a game is running in.
+/// Simultaneous in-flight network requests. Without `net-h2` each one is a
+/// thread; past this a request is refused loudly rather than exhausting the
+/// thread pool of the process a game is running in. With `net-h2` a request is
+/// a task (it queues for a connection like a browser's does), so the ceiling
+/// is only a backstop against a runaway loop.
+#[cfg(not(feature = "net-h2"))]
 const MAX_INFLIGHT: usize = 64;
+#[cfg(feature = "net-h2")]
+const MAX_INFLIGHT: usize = 4096;
 static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -106,6 +111,41 @@ pub struct RespData {
     pub has_body: bool,
     /// Set by the first body read; a second one is a TypeError, as in browsers.
     pub body_used: bool,
+    /// How the network delivered it, for an embedder's devtools; `None` for a
+    /// response that never crossed a network (constructed, local, `data:`).
+    /// Not reachable from script.
+    pub net: Option<NetInfo>,
+}
+
+/// Transport facts about one network response (its final hop), for an
+/// embedder's devtools. Never reachable from script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetInfo {
+    /// `"h2"` or `"http/1.1"` (ALPN spelling, as `nextHopProtocol` reports it).
+    pub protocol: &'static str,
+    /// The connection had already carried an earlier request.
+    pub reused: bool,
+    /// Process-unique connection number: equal ids shared one connection.
+    pub connection_id: u64,
+    /// The address the connection was made to.
+    pub remote_addr: Option<std::net::SocketAddr>,
+    /// The final hop's `Set-Cookie` lines exactly as received. The jar has
+    /// stored them and the `Response` script sees has none (Fetch's forbidden
+    /// response-header names); this copy is for devtools only.
+    pub set_cookies: Vec<String>,
+}
+
+/// The [`NetInfo`] of a `Response` object, if it came off the network. For an
+/// embedder's devtools (vue-native's Network panel): `response` is the JS
+/// `Response` the app received, read on the JS thread — e.g. from a host
+/// function the devtools tee calls with it. `None` for a response that never
+/// crossed a network (constructed, local file, `data:`).
+///
+/// # Safety
+/// `g` is a live context's global object and `response` a value of its heap;
+/// call on that context's thread.
+pub unsafe fn net_info(g: *mut c_void, response: u64) -> Option<NetInfo> {
+    host_data::<RespData>(g, state(g).response_class, response).and_then(|d| d.net.clone())
 }
 
 impl RespData {
@@ -387,6 +427,7 @@ unsafe extern "sysv64" fn resp_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
         kind: d.kind,
         has_body: d.has_body,
         body_used: false,
+        net: d.net.clone(),
     };
     create_response(g, data)
 }
@@ -441,6 +482,7 @@ unsafe extern "sysv64" fn response_construct(g: *mut c_void, cf: *mut c_void) ->
         kind: "default",
         has_body,
         body_used: false,
+        net: None,
     })
 }
 
@@ -470,6 +512,7 @@ unsafe extern "sysv64" fn response_static_json(g: *mut c_void, cf: *mut c_void) 
         kind: "default",
         has_body: true,
         body_used: false,
+        net: None,
     })
 }
 
@@ -488,6 +531,7 @@ unsafe extern "sysv64" fn response_static_error(g: *mut c_void, _cf: *mut c_void
         kind: "error",
         has_body: false,
         body_used: false,
+        net: None,
     })
 }
 
@@ -578,6 +622,11 @@ unsafe fn settle(g: *mut c_void, d: Delivery) {
             // seen them (http::send, per hop); script never does, so
             // `headers.get("set-cookie")` is null and `getSetCookie()` is [].
             let mut headers = resp.headers;
+            let set_cookies: Vec<String> = headers
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+                .map(|(_, v)| v.clone())
+                .collect();
             headers.retain(|(k, _)| !k.eq_ignore_ascii_case("set-cookie") && !k.eq_ignore_ascii_case("set-cookie2"));
             let obj = create_response(g, RespData {
                 bytes: Arc::new(resp.body),
@@ -589,6 +638,13 @@ unsafe fn settle(g: *mut c_void, d: Delivery) {
                 kind: "basic",
                 has_body,
                 body_used: false,
+                net: Some(NetInfo {
+                    protocol: resp.protocol,
+                    reused: resp.reused,
+                    connection_id: resp.connection_id,
+                    remote_addr: resp.remote_addr,
+                    set_cookies,
+                }),
             });
             let _ = call(g, d.resolve, UNDEF, &[obj]);
         }
@@ -663,6 +719,7 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
             .unwrap_or(super::cookies::Credentials::SameOrigin),
         connect_timeout: CONNECT_TIMEOUT,
         io_timeout: IO_TIMEOUT,
+        observer: None,
     };
 
     let ctx = Ctx(g);
@@ -670,20 +727,26 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
     let signal = plan.signal;
     let worker_cancel = Arc::clone(&cancel);
     INFLIGHT.fetch_add(1, Ordering::SeqCst);
-    let spawned = std::thread::Builder::new().name("redjs-fetch".into()).spawn(move || {
-        let result = http::send(&req, &worker_cancel);
-        let delivery = Delivery { resolve, reject, signal, bridge, cancel: worker_cancel, result };
-        INFLIGHT.fetch_sub(1, Ordering::SeqCst);
-        // Back onto the JS thread: the pump runs this with the VM lock held,
-        // and only in the context that asked. `resolve`/`reject` are values
-        // of THAT heap; a newer context at the same address must never call
-        // them, and a torn-down one must not get its queue back.
-        crate::web::schedule_native_from(ctx.ptr(), id, 0.0, Box::new(move |g| unsafe { settle(g, delivery) }));
-    });
+    // The transport calls this once, on a network thread (a task on the
+    // pooled runtime with `net-h2`, a worker thread without).
+    let started = http::start(
+        req,
+        (*cancel).clone(),
+        Box::new(move |result| {
+            let delivery = Delivery { resolve, reject, signal, bridge, cancel: worker_cancel, result };
+            INFLIGHT.fetch_sub(1, Ordering::SeqCst);
+            // Back onto the JS thread: the pump runs this with the VM lock
+            // held, and only in the context that asked. `resolve`/`reject`
+            // are values of THAT heap; a newer context at the same address
+            // must never call them, and a torn-down one must not get its
+            // queue back.
+            crate::web::schedule_native_from(ctx.ptr(), id, 0.0, Box::new(move |g| unsafe { settle(g, delivery) }));
+        }),
+    );
 
-    if let Err(e) = spawned {
+    if let Err(e) = started {
         INFLIGHT.fetch_sub(1, Ordering::SeqCst);
-        let err = make_error(g, TYPE_ERR, "", &format!("Failed to fetch: could not start a request thread: {e}"));
+        let err = make_error(g, TYPE_ERR, "", &format!("Failed to fetch: {}", e.message));
         let _ = call(g, reject, UNDEF, &[err]);
         crate::ffi::redjs_unprotect(g, resolve);
         crate::ffi::redjs_unprotect(g, reject);
@@ -725,6 +788,7 @@ unsafe fn fetch_local(g: *mut c_void, plan: &Plan) -> u64 {
         kind: "basic",
         has_body,
         body_used: false,
+        net: None,
     });
     resolved_promise(g, resp)
 }
@@ -833,6 +897,7 @@ impl BlobDelivery {
                         kind: "basic",
                         has_body: true,
                         body_used: false,
+                        net: None,
                     });
                     let _ = call(g, self.resolve, UNDEF, &[resp]);
                 }
@@ -1317,6 +1382,33 @@ mod jsc_tests {
             ),
         );
         assert_eq!(out, "200|true|true|done");
+    }
+
+    #[test]
+    fn net_info_reports_the_transport_and_keeps_set_cookie_for_devtools_only() {
+        let c = fetch_ctx();
+        let port = serve(vec![
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1; Path=/\r\nSet-Cookie: b=2\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+        ]);
+        let out = run(
+            &c,
+            &format!(
+                "const r = await fetch('http://127.0.0.1:{port}/x'); globalThis.__resp = r; \
+                 return [String(r.headers.get('set-cookie')), await r.text()].join('|');"
+            ),
+        );
+        // Script never sees Set-Cookie (Fetch's forbidden response-header names)...
+        assert_eq!(out, "null|ok");
+        // ...the embedder's devtools do, with the rest of the transport facts.
+        let v = c.global_get("__resp").unwrap();
+        let info = unsafe { super::net_info(c.raw(), v.0) }.expect("a network response carries NetInfo");
+        assert_eq!(info.protocol, "http/1.1");
+        assert!(!info.reused);
+        assert!(info.connection_id > 0);
+        assert_eq!(info.remote_addr.map(|a| a.port()), Some(port));
+        assert_eq!(info.set_cookies, vec!["a=1; Path=/".to_string(), "b=2".to_string()]);
+        let constructed = c.eval("new Response('x')").unwrap();
+        assert!(unsafe { super::net_info(c.raw(), constructed.0) }.is_none());
     }
 
     #[test]

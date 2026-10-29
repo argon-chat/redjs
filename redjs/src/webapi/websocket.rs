@@ -32,15 +32,20 @@
 //! ## Runtime ownership: none, on purpose
 //!
 //! This module owns no async runtime and accepts no injected one. Each
-//! connection gets **one dedicated OS thread** that does blocking I/O in
-//! [`WS_POLL`]-millisecond slices — the same shape, and the same cancellation
-//! discipline, as `http.rs`'s `Cancellable`. One thread means one owner of the
+//! connection gets **one dedicated OS thread** that waits on the socket in
+//! [`WS_POLL`]-millisecond slices — a readiness wait (`WSAPoll`/`poll`) on a
+//! non-blocking socket, the same one `fetch`'s blocking transport uses
+//! (`http/sock.rs`). Never a socket timeout: until m26 the slices were
+//! `SO_RCVTIMEO`, a `recv` Windows cancels mid-flight and then calls the
+//! socket's state "indeterminate". One thread means one owner of the
 //! TLS session (a `native_tls::TlsStream` is a single state machine and cannot
 //! be read and written from two threads), so the loop alternates: flush what JS
-//! queued, then read for up to `WS_POLL`. The cost of that is a ~5 ms ceiling on
-//! send latency and ~200 no-op `recv` wakeups per second per open socket (about
-//! 0.1 % of one core); the benefit is that plaintext and TLS are one code path
-//! and nothing in the crate has to grow a reactor.
+//! queued, then wait up to `WS_POLL` for bytes. The cost of that is a ~5 ms
+//! ceiling on send latency and ~200 no-op wakeups per second per open socket
+//! (about 0.1 % of one core); the benefit is that plaintext and TLS are one code
+//! path and nothing in the crate has to grow a reactor. (`fetch`'s pooled
+//! transport does run a runtime, behind the `net-h2` feature; WebSocket stays on
+//! this path, so it does not depend on that feature.)
 //!
 //! The host workspace's voice stack (`vn-voice`) does run a tokio multi-thread
 //! runtime when voice is on. Borrowing it was considered and rejected: it would
@@ -694,7 +699,7 @@ fn io_thread(ctx: Ctx, id: u64, sh: Arc<Shared>, ws_url: url::Url, protocols: Ve
 
 fn connect_and_run(sh: &Arc<Shared>, ws_url: url::Url, protocols: Vec<String>) -> Result<LoopEnd, String> {
     let http_url = to_http_url(&ws_url)?;
-    let stream = http::connect(&http_url, CONNECT_TIMEOUT, &sh.cancel).map_err(|e| e.message)?;
+    let mut stream = http::connect(&http_url, CONNECT_TIMEOUT, &sh.cancel).map_err(|e| e.message)?;
 
     let mut key = [0u8; 16];
     let _ = getrandom::fill(&mut key);
@@ -703,19 +708,22 @@ fn connect_and_run(sh: &Arc<Shared>, ws_url: url::Url, protocols: Vec<String>) -
     let cookie = cookies::header_for(&ws_url, cookies::Api::Http);
     let req = handshake_request(&http_url, &key_b64, &protocols, cookie.as_deref());
 
-    let mut c = http::Cancellable::new(stream, &sh.cancel, HANDSHAKE_TIMEOUT);
-    c.write_all(req.as_bytes()).map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
-    c.flush().map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
-    let (head, rest) = http::read_head(&mut c, &sh.cancel).map_err(|e| e.message)?;
+    // The upgrade is an ordinary request: block (in readiness waits, abortable)
+    // with the handshake's stall budget.
+    stream.set_wait(http::Wait::Block { budget: HANDSHAKE_TIMEOUT });
+    stream.write_all(req.as_bytes()).map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
+    stream.flush().map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
+    let (head, rest) = http::read_head(&mut stream, &sh.cancel).map_err(|e| e.message)?;
     // The handshake response's Set-Cookie is stored whatever its status, as a
     // browser stores it.
     cookies::store_response(&ws_url, &head.headers);
     let (protocol, extensions) = validate_handshake(&head, &key_b64, &protocols)?;
-    let mut stream = c.into_inner();
 
-    // From here on the loop owns the cadence, not the 200 ms fetch slice.
-    let _ = stream.tcp().set_read_timeout(Some(WS_POLL));
-    let _ = stream.tcp().set_write_timeout(Some(WS_POLL));
+    // From here on the loop owns the cadence: a read waits at most one
+    // `WS_POLL` slice for the socket to become readable, then hands control
+    // back (`WouldBlock`) so the loop can flush what JS queued. A readiness
+    // wait, never a socket timeout — see `http/sock.rs`.
+    stream.set_wait(http::Wait::Slice(WS_POLL));
 
     {
         let mut m = sh.meta.lock().unwrap();

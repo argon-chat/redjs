@@ -62,13 +62,34 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # the binary does not carry ~250 KB of baked CA certificates. The alternative
 # (rustls + ring/aws-lc-rs + webpki-roots) compiles C/asm, fights `+crt-static`,
 # and pins the trust anchors to whatever we last shipped.
-# HTTP/1.1 framing itself is ours (webapi/http.rs): owning the socket is what
-# makes `AbortSignal` a real socket shutdown rather than a promise we abandon.
+# Without `net-h2` the HTTP/1.1 framing is ours (webapi/http.rs); with it,
+# hyper's, over a pool that is ours (webapi/http/pool.rs).
 native-tls = "0.2"
+# The pooled transport behind `net-h2` (see [features]). Default features off
+# everywhere: the runtime is current-thread, and nothing here wants a proxy,
+# a legacy pooled client, or a server.
+tokio = { version = "1.47", default-features = false, features = ["rt", "net", "time", "sync", "macros"], optional = true }
+hyper = { version = "1.6", default-features = false, features = ["client", "http1", "http2"], optional = true }
+hyper-util = { version = "0.1.16", default-features = false, features = ["tokio"], optional = true }
+http = { version = "1", optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+# Only to read hyper's HTTP/2 errors (GOAWAY / REFUSED_STREAM decide retries).
+h2 = { version = "0.4", optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
 # CSS front end (W-UI UI-29) — the `RedCss` host class. Path-dep, not a registry crate: the SAME
 # source compiles to wasm for the editor and the web player, so a stylesheet cannot parse one way
 # in the browser and another in the shipped game (`packages/redcss`, `.refactor/UI-CSS-ENGINE-DESIGN.md`).
 redcss = { path = "../../redcss", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# poll(2) for the blocking transport's readiness waits (webapi/http/sock.rs).
+libc = "0.2"
+
+[dev-dependencies]
+# Loopback TLS test servers that answer ALPN (webapi/http/pool/tests.rs).
+native-tls = { version = "0.2", features = ["alpn-accept"] }
 
 # Game-engine host classes are default-on (the PEWPEW player wants all of them) and
 # individually opt-out for other embedders (vue-native runs with none of these).
@@ -149,6 +170,29 @@ indexeddb = []
 # alone. OFF by default: it is a C compile and ~0.8 MB of code that a
 # consumer with no host to give it a folder would carry for nothing.
 indexeddb-sqlite = ["indexeddb"]
+
+# `fetch`'s POOLED transport (webapi/http/pool.rs): HTTP/2 over TLS through
+# ALPN, HTTP/1.1 keep-alive otherwise, per-origin pooling with a browser's
+# rules (one h2 connection per origin, six HTTP/1.1, Chromium's retry rule),
+# PING keepalive, RST_STREAM on abort. hyper 1.x's per-connection client
+# (+ h2) over tokio-native-tls — platform TLS still, now with ALPN — on ONE
+# dedicated runtime thread that redjs owns. Without it, `fetch` keeps the
+# blocking transport: a thread and a fresh HTTP/1.1 connection per request.
+# OFF by default because it brings an async runtime into the link (~35
+# crates); vue-native turns it on (its own link already has tokio/hyper/h2 at
+# the same versions). The module header of webapi/http.rs has the reasoning.
+net-h2 = [
+    "dep:tokio",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:bytes",
+    "dep:h2",
+    "dep:tokio-native-tls",
+    "native-tls/alpn",
+]
 
 # WPT IndexedDB runner (tests/wpt/README.md): its own `main`, one child
 # process per test file.

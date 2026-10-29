@@ -1,4 +1,4 @@
-//! Blocking HTTP/1.1 client — the transport behind `fetch` for `http:`/`https:`.
+//! The transport behind `fetch` for `http:`/`https:`.
 //!
 //! ## Why this exists at all
 //!
@@ -9,49 +9,108 @@
 //! exists so that a request either really happens or **fails loudly**; see
 //! [`fetch`](super::fetch) for the promise side of that contract.
 //!
-//! ## Shape
+//! ## Two transports, one contract
 //!
-//! Synchronous and blocking on purpose. The runtime is a single-threaded pump
-//! that holds the VM lock across a frame, so the *only* two designs available
-//! are "block the pump" (stalls the application for the whole round trip) and
-//! "do the I/O on a worker and hand the result back through the pump". This is
-//! the worker half: it never touches JSC, never sees an `EncodedJSValue`, and
-//! is callable from any thread. `fetch.rs` owns the handoff (a boxed task on
-//! `web::schedule_native`, exactly like image decoding does).
+//! The JS side never touches a socket: `fetch.rs` calls [`start`] and gets the
+//! outcome back through a callback on a network thread, which it hands to the
+//! pump (`web::schedule_native`, exactly like image decoding). What runs in
+//! between depends on the `net-h2` cargo feature.
 //!
-//! Being blocking is what makes that split cheap: no async runtime, no
-//! executor, no `tokio` in a shipped player's link.
+//! **With `net-h2` (vue-native turns it on): [`pool`], a browser-shaped network
+//! stack.** One dedicated thread runs a single-threaded tokio runtime; every
+//! request is a task on it. Connections are pooled per origin
+//! (scheme, host, port):
 //!
-//! ## Owning the socket
+//! - **HTTP/2 over TLS through ALPN** (`h2`, then `http/1.1`). One connection per
+//!   origin, every request a stream on it; SETTINGS and flow control are the
+//!   `h2` crate's, PING keepalive detects a connection that stopped answering,
+//!   a GOAWAY moves requests the server never started onto a new connection.
+//!   Aborting a request resets its stream (`RST_STREAM(CANCEL)`); the
+//!   connection lives on.
+//! - **HTTP/1.1 keep-alive** when the server does not offer h2: at most six
+//!   connections per origin (Chromium's and Firefox's number), reuse only after
+//!   a fully consumed, correctly framed response and never after
+//!   `Connection: close`, an idle timeout, and Chromium's retry rule — a
+//!   reused connection that turns out dead before any response byte is retried
+//!   once on a fresh one, when that is safe (idempotent method, or the request
+//!   was never written). An aborted HTTP/1.1 request closes its connection;
+//!   it is never returned to the pool.
 //!
-//! HTTP/1.1 framing is implemented here rather than taken from a client crate
-//! for one concrete reason: **`AbortSignal` has to be real**. A client crate
-//! that owns its own connection pool hands out no socket, and the honest
-//! implementation there degrades to "reject the promise and let the socket run
-//! to timeout" — a leaked connection per aborted request.
+//! Why it matters here: the Argon client on this project's machines talks to
+//! its backend through a tun2socks VPN, and every one of its requests used to
+//! open a fresh connection AND ask the server to close it
+//! (`Connection: close`). On that path 10–40 % of such exchanges lost the
+//! tail of the response and stalled for the whole read budget — curl.exe with
+//! that one header too, and never without it. A browser keeps one connection
+//! open and multiplexes everything over it; so does this.
 //!
-//! Cancellation is done by *polling*, not purely by `shutdown`: the socket
-//! carries a short [`POLL`] read/write timeout and every blocking call retries
-//! in a loop that checks the abort flag between attempts. `shutdown(Both)` is
-//! still issued (it ends the connection promptly and is what wakes a blocked
-//! `recv` on Unix), but it is not load-bearing — **on Windows `shutdown` from
-//! another thread does not reliably interrupt a `recv` already in progress**,
-//! which a test in this module measured as a 20-second wait when the poll loop
-//! was missing. Abort latency is therefore bounded by [`POLL`], on every
-//! platform, including mid-TLS-handshake.
+//! **Without `net-h2`: the blocking transport in this file.** One worker thread
+//! per request, a fresh connection each time, HTTP/1.1 only — what redjs always
+//! had, minus the timed reads (next section) and minus `Connection: close`: the
+//! client reads the framed response and closes the socket itself, because
+//! asking the SERVER to close is what stalled on this project's VPN path (the
+//! report has the curl A/B).
 //!
-//! The same loop supplies the stall budget: `io_timeout` is spent in [`POLL`]
-//! slices and reset by any byte that arrives, so a slow-but-progressing
-//! download is never cut off while a dead connection still gives up on time.
+//! ## No timed blocking I/O, on either path
 //!
-//! ## What is deliberately not here
+//! Until m26 the blocking transport waited by giving every socket a 200 ms
+//! `SO_RCVTIMEO`/`SO_SNDTIMEO` and retrying. On Windows a `recv` that hits
+//! `SO_RCVTIMEO` is cancelled mid-flight and MSDN declares the socket's state
+//! *indeterminate*; and schannel treats a timed-out read inside a TLS handshake
+//! (`TimedOut`) as a failure, where only `WouldBlock` means "try again". Both
+//! paths now wait on readiness instead: the pooled one through tokio (IOCP),
+//! the blocking one with a non-blocking socket and `WSAPoll`/`poll`
+//! ([`sock`]). A byte is either in the kernel's buffer or in ours; no wait can
+//! drop one. (Measured in research/reports/m26/net-h2-pool.md: a loopback
+//! run of ~650 000 timed-out `recv`s lost NO bytes, so this is hygiene plus
+//! the schannel fix, not the cause of the production stalls — those followed
+//! `Connection: close`, see below.)
 //!
-//! - **Keep-alive / connection pooling.** Every request sends `Connection:
-//!   close` and uses a fresh connection. Costs one handshake per request; buys
-//!   a body-framing story with no reuse hazards.
-//! - **HTTP/2.** Not offered in ALPN, so servers answer 1.1.
-//! - **Proxies**: refused by name at the `fetch` layer rather than silently
-//!   ignored.
+//! ## The design call: crates for the protocols, our own pool
+//!
+//! The pooled transport is `hyper` 1.x's per-connection client API
+//! (`client::conn::http1` / `http2`, which bring `h2`) over
+//! `tokio-native-tls`, behind the `net-h2` feature. Not a hand-rolled HTTP/2,
+//! and not hyper-util's pooled `Client`:
+//!
+//! - **Protocols are where hand-rolling goes wrong quietly.** HTTP/2 is HPACK
+//!   (with Huffman and a dynamic table), per-stream and per-connection flow
+//!   control, SETTINGS acknowledgement, stream-state rules and GOAWAY
+//!   semantics; `h2` has years of production behind it and a test suite we
+//!   would otherwise have to write. HTTP/1.1 keep-alive needs exact framing on
+//!   every path to reuse a connection safely; hyper's is the reference.
+//! - **The old objection was abort, and an async stack answers it.** The
+//!   header of this file used to say a client crate "hands out no socket", so
+//!   abort degrades to abandoning the promise. With per-connection hyper the
+//!   pool is OURS: an aborted HTTP/2 request drops its stream future, which
+//!   sends `RST_STREAM`; an aborted HTTP/1.1 request drops its connection task,
+//!   which closes the socket, and its pool slot is released.
+//! - **The pool is ours on purpose.** hyper-util's `Client` has no per-host
+//!   connection limit, opens one connection per concurrent request on first
+//!   contact before ALPN is known, and retries on its own terms. Browsers'
+//!   rules (six per host, one h2 connection that the other requests wait for,
+//!   the reuse/retry rules above) are a few hundred lines on top of
+//!   per-connection hyper, and they are the part an app can feel.
+//! - **"No tokio in a shipped player's link"** still holds for builds without
+//!   the feature. vue-native already links tokio, hyper and h2 (its LiveKit
+//!   stack) at the same versions, so the feature adds little there; the
+//!   runtime is our own (one thread, current-thread scheduler), never
+//!   borrowed from an embedder.
+//! - **TLS stays the platform's** (schannel on Windows): `native-tls` with ALPN,
+//!   no bundled roots, no second crypto stack.
+//!
+//! ## Cancellation and the stall budget
+//!
+//! [`Cancel`] is the `AbortSignal` bridge. On the pooled path an abort wakes
+//! the request's task at once; on the blocking path the socket is shut down
+//! (which ends the readiness wait) and every wait is cut into [`POLL`] slices
+//! as a backstop. `io_timeout` is a *stall* budget, not a total: it is reset by
+//! every byte that moves, so a slow-but-progressing transfer is never cut off,
+//! while a dead connection still gives up on time.
+//!
+//! ## Proxies
+//!
+//! Refused by name at the `fetch` layer rather than silently ignored.
 //!
 //! ## Cookies
 //!
@@ -59,25 +118,54 @@
 //! ([`super::cookies`]) contributes a `Cookie` header to the request going
 //! out and stores the `Set-Cookie` headers of the head that comes back. Per
 //! hop is the point: a cookie set by a redirect is on the request it points
-//! at, and a hop to another host carries only that host's cookies.
+//! at, and a hop to another host carries only that host's cookies. Redirects
+//! are followed here (not by hyper), on both transports, by one shared state
+//! machine ([`Hops`]).
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+mod sock;
+pub(crate) use sock::Wait;
+use sock::Polled;
+
+#[cfg(feature = "net-h2")]
+pub mod pool;
 
 /// Response heads larger than this are a malformed or hostile peer.
-const MAX_HEAD: usize = 64 * 1024;
+pub(crate) const MAX_HEAD: usize = 64 * 1024;
 /// Body ceiling. A cap that rejects loudly beats an allocation that takes the
 /// process down; the player streams big assets off disk, not off the network.
 pub const MAX_BODY: usize = 256 * 1024 * 1024;
 const MAX_REDIRECTS: u32 = 20;
 const MAX_CHUNK: u64 = MAX_BODY as u64;
-/// Socket timeout slice. Bounds how long an abort can take to be noticed, and
-/// is the unit `io_timeout` is spent in. Short enough to feel instant, long
-/// enough not to spin.
+/// The blocking transport's wait slice: how long a readiness wait runs before
+/// the abort flag is looked at again. Not a socket timeout — nothing is
+/// cancelled when it elapses (see [`sock`]).
 pub(crate) const POLL: Duration = Duration::from_millis(200);
+
+/// TCP connections the BLOCKING transport has opened, process-wide. The pooled
+/// transport counts its own ([`pool::stats`]).
+pub static CONNECTS: AtomicU64 = AtomicU64::new(0);
+/// Test-only override of [`POLL`] (the lost-bytes experiment amplifies waits).
+#[cfg(test)]
+pub(crate) static TEST_POLL_MS: AtomicU64 = AtomicU64::new(0);
+/// Test builds trust the loopback test identity in `http/testdata` (a
+/// self-signed `localhost` certificate; its key lives only in the .p12 the
+/// test servers load).
+#[cfg(test)]
+pub(crate) const TEST_ROOT_PEM: &[u8] = include_bytes!("http/testdata/cert.pem");
+#[cfg(test)]
+mod stress_tests;
+
+/// The protocol names a response reports — ALPN's spelling, which is also what
+/// a browser's `PerformanceResourceTiming.nextHopProtocol` says.
+pub const PROTO_H1: &str = "http/1.1";
+pub const PROTO_H2: &str = "h2";
+
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -126,18 +214,26 @@ impl std::fmt::Display for HttpError {
 // Cancellation
 // ---------------------------------------------------------------------------
 
-/// The `AbortSignal` bridge. Shared between the JS thread (which calls
-/// [`abort`](Cancel::abort) from the signal's `abort` listener) and the worker
-/// thread (which is parked in a blocking socket call).
-///
-/// `shutdown` on a duplicated handle is the mechanism: it makes the in-flight
-/// `read`/`write` return immediately instead of running to the read timeout.
 #[derive(Default)]
-pub struct Cancel {
+struct CancelState {
     aborted: AtomicBool,
-    /// A `try_clone` of the live socket, present only while one is open.
+    /// A `try_clone` of the blocking transport's live socket, present only
+    /// while one is open.
     socket: Mutex<Option<TcpStream>>,
+    /// Wakes the pooled transport's task, which is parked in a `select!`.
+    #[cfg(feature = "net-h2")]
+    wake: tokio::sync::Notify,
 }
+
+/// The `AbortSignal` bridge. Shared between the JS thread (which calls
+/// [`abort`](Cancel::abort) from the signal's `abort` listener) and whatever
+/// is carrying the request: a blocking worker parked in a readiness wait, or
+/// a task on the network runtime.
+///
+/// A cheap handle (`Clone` shares the one state): the transports keep their
+/// own copy, so a request can be cancelled from anywhere that holds one.
+#[derive(Default, Clone)]
+pub struct Cancel(Arc<CancelState>);
 
 impl Cancel {
     pub fn new() -> Arc<Cancel> {
@@ -147,14 +243,18 @@ impl Cancel {
     /// Idempotent. Safe to call before the socket exists (the flag is checked
     /// at every step) and after it is gone.
     pub fn abort(&self) {
-        self.aborted.store(true, Ordering::SeqCst);
-        if let Some(s) = self.socket.lock().unwrap().as_ref() {
+        self.0.aborted.store(true, Ordering::SeqCst);
+        // Ends the blocking path's readiness wait at once (POLLHUP); without
+        // it, the next `POLL` slice notices the flag.
+        if let Some(s) = self.0.socket.lock().unwrap().as_ref() {
             let _ = s.shutdown(Shutdown::Both);
         }
+        #[cfg(feature = "net-h2")]
+        self.0.wake.notify_waiters();
     }
 
     pub fn is_aborted(&self) -> bool {
-        self.aborted.load(Ordering::SeqCst)
+        self.0.aborted.load(Ordering::SeqCst)
     }
 
     fn check(&self) -> Result<(), HttpError> {
@@ -164,33 +264,35 @@ impl Cancel {
         Ok(())
     }
 
+    /// Resolves once the request is aborted. Registers before it looks, so an
+    /// abort that lands in between is not missed.
+    #[cfg(feature = "net-h2")]
+    pub(crate) async fn aborted(&self) {
+        loop {
+            let notified = self.0.wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_aborted() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// Publishes the socket so `abort` can reach it. Races correctly: an abort
     /// that landed between the connect and here is caught by the re-check.
     fn arm(&self, s: &TcpStream) -> Result<(), HttpError> {
         match s.try_clone() {
-            Ok(dup) => *self.socket.lock().unwrap() = Some(dup),
-            // Without a handle we cannot cancel; the read timeout is the
-            // backstop. Not fatal to the request.
+            Ok(dup) => *self.0.socket.lock().unwrap() = Some(dup),
+            // Without a handle the wait slice is the backstop. Not fatal.
             Err(_) => {}
         }
         self.check()
     }
 
+    #[cfg_attr(feature = "net-h2", allow(dead_code))]
     fn disarm(&self) {
-        *self.socket.lock().unwrap() = None;
-    }
-
-    /// Maps a socket error, preferring "aborted" when we caused it.
-    fn map_io(&self, e: std::io::Error, what: &str) -> HttpError {
-        if self.is_aborted() {
-            return HttpError::new(ErrorKind::Aborted, "the request was aborted");
-        }
-        match e.kind() {
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                HttpError::network(format!("{what} timed out"))
-            }
-            _ => HttpError::network(format!("{what} failed: {e}")),
-        }
+        *self.0.socket.lock().unwrap() = None;
     }
 }
 
@@ -221,6 +323,69 @@ pub struct Request {
     /// Per-read/per-write stall ceiling, not a total-request budget — a long
     /// download that keeps delivering bytes is never cut off.
     pub io_timeout: Duration,
+    /// Progress as it happens (XMLHttpRequest's events); `None` for `fetch`,
+    /// whose body is delivered whole.
+    pub observer: Option<Observer>,
+}
+
+/// Progress of one request while it is in flight — what XMLHttpRequest needs
+/// for `upload.onprogress`, `readyState` 2 → 3 → 4 and `onprogress`.
+///
+/// Called on a NETWORK thread, never the JS thread: an implementation records
+/// or queues what it needs and lets the pump deliver it (as `fetch.rs` does
+/// with its outcome). Calls arrive in order: `upload`* → `head` → `body`*,
+/// then [`Done`] with the whole `Response` (or the error). Only the FINAL hop
+/// is reported: a redirect's head and body are never seen here, its upload is
+/// (the body is sent again on a 307/308, and counted again from zero).
+///
+/// The blocking transport (no `net-h2`) reports upload per 64 KiB written,
+/// and the body as ONE piece once it is complete; the pooled one reports each
+/// piece as it arrives.
+pub trait Observe: Send + Sync {
+    /// Request-body bytes handed to the connection so far, of `total`.
+    fn upload(&self, sent: u64, total: u64) {
+        let _ = (sent, total);
+    }
+    /// The final response's head, before any of its body.
+    fn head(&self, head: &ProgressHead<'_>) {
+        let _ = head;
+    }
+    /// A piece of the final response's body, as received: still
+    /// content-coded when the head names a `Content-Encoding` (the `Response`
+    /// handed to [`Done`] carries the decoded whole). `received` counts every
+    /// piece so far; `total` is the declared `Content-Length`, if any.
+    fn body(&self, chunk: &[u8], received: u64, total: Option<u64>) {
+        let _ = (chunk, received, total);
+    }
+}
+
+/// What [`Observe::head`] sees.
+pub struct ProgressHead<'a> {
+    pub status: u16,
+    pub status_text: &'a str,
+    /// Lower-case names, `set-cookie` included (the jar has stored them; a
+    /// script-facing API filters them, as `fetch.rs` does).
+    pub headers: &'a [(String, String)],
+    /// The final URL, after redirects.
+    pub url: &'a str,
+    pub redirected: bool,
+    pub protocol: &'static str,
+}
+
+/// A shareable [`Observe`] (a `Request` is `Clone`).
+#[derive(Clone)]
+pub struct Observer(pub Arc<dyn Observe>);
+
+impl std::fmt::Debug for Observer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Observer")
+    }
+}
+
+/// Whether a response with this head is the request's answer: not a redirect
+/// (which is followed, or under `redirect: "error"` fails the request).
+pub(crate) fn is_final(status: u16, headers: &[(String, String)]) -> bool {
+    !(is_redirect(status) && header(headers, "location").is_some())
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +397,23 @@ pub struct Response {
     pub url: String,
     pub redirected: bool,
     pub body: Vec<u8>,
+    /// Diagnostics for the final hop (devtools' Network panel; not exposed to
+    /// script): which protocol carried it ...
+    pub protocol: &'static str,
+    /// ... whether its connection had already carried an earlier request ...
+    pub reused: bool,
+    /// ... and which connection that was (process-unique, both transports
+    /// number from [`next_connection_id`]) ...
+    pub connection_id: u64,
+    /// ... and the address it was connected to.
+    pub remote_addr: Option<std::net::SocketAddr>,
+}
+
+static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
+
+/// A process-unique connection number, for diagnostics.
+pub(crate) fn next_connection_id() -> u64 {
+    NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed)
 }
 
 pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -590,11 +772,156 @@ fn strip_sensitive(headers: &mut Vec<(String, String)>) {
     });
 }
 
+/// Request headers the transport owns: framing, connection management, and
+/// the names HTTP/2 forbids outright. A script that sets one is ignored rather
+/// than obeyed — Fetch lists every one of these as a forbidden request-header
+/// name, which a browser drops silently too.
+pub(crate) fn is_transport_header(lower: &str) -> bool {
+    matches!(
+        lower,
+        "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "keep-alive"
+            | "proxy-connection"
+            | "te"
+            | "trailer"
+            | "upgrade"
+            | "http2-settings"
+    )
+}
+
+/// The redirect loop, shared by both transports: which URL, method, body and
+/// headers the next hop carries, the jar applied per hop.
+pub(crate) struct Hops<'a> {
+    req: &'a Request,
+    pub(crate) current: String,
+    pub(crate) method: String,
+    pub(crate) body: Option<Vec<u8>>,
+    headers: Vec<(String, String)>,
+    pub(crate) redirected: bool,
+    left: u32,
+}
+
+/// One hop to make.
+pub(crate) struct Hop {
+    pub(crate) url: url::Url,
+    /// The request's headers with this hop's `Cookie` applied (when the
+    /// credentials mode says so).
+    pub(crate) headers: Vec<(String, String)>,
+    cookies: bool,
+}
+
+impl<'a> Hops<'a> {
+    pub(crate) fn new(req: &'a Request) -> Self {
+        Hops {
+            req,
+            current: req.url.clone(),
+            method: req.method.to_ascii_uppercase(),
+            body: req.body.clone(),
+            headers: req.headers.clone(),
+            redirected: false,
+            left: MAX_REDIRECTS + 1,
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> Result<Hop, HttpError> {
+        if self.left == 0 {
+            return Err(HttpError::network(format!("too many redirects (more than {MAX_REDIRECTS})")));
+        }
+        self.left -= 1;
+        let u = url::Url::parse(&self.current)
+            .map_err(|e| HttpError::refused(format!("invalid URL {:?}: {e}", self.current)))?;
+        if u.scheme() != "http" && u.scheme() != "https" {
+            return Err(HttpError::refused(format!("scheme {:?} is not supported by fetch", u.scheme())));
+        }
+        // The jar, per hop: this hop's cookies on the way out, this hop's
+        // Set-Cookie on the way back — before the redirect is followed, so the
+        // next hop already sees what this one set.
+        let cookies = self.req.credentials.applies(&u);
+        let headers = if cookies { super::cookies::with_cookies(&u, &self.headers) } else { None }
+            .unwrap_or_else(|| self.headers.clone());
+        Ok(Hop { url: u, headers, cookies })
+    }
+
+    /// After a hop's head: stores its cookies, then either sets up the next
+    /// hop (`Ok(true)`) or says this response is the answer (`Ok(false)`).
+    pub(crate) fn after(&mut self, hop: &Hop, status: u16, headers: &[(String, String)]) -> Result<bool, HttpError> {
+        if hop.cookies {
+            super::cookies::store_response(&hop.url, headers);
+        }
+        if !is_redirect(status) {
+            return Ok(false);
+        }
+        let Some(loc) = header(headers, "location") else { return Ok(false) };
+        if self.req.redirect == Redirect::Error {
+            return Err(HttpError::network(format!(
+                "redirect to {loc:?} refused: the request set redirect: \"error\""
+            )));
+        }
+        let next = resolve_location(&self.current, loc)?;
+        let (next_method, keep_body) = redirect_method(status, &self.method);
+        if !same_origin(&self.current, &next) {
+            strip_sensitive(&mut self.headers);
+        }
+        if !keep_body {
+            self.body = None;
+            self.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
+        }
+        self.method = next_method;
+        self.current = next;
+        self.redirected = true;
+        Ok(true)
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Transport
+// Entry points
 // ---------------------------------------------------------------------------
 
-/// The connected socket, plaintext or TLS.
+/// What [`start`] calls with the outcome, exactly once, on a network thread.
+pub type Done = Box<dyn FnOnce(Result<Response, HttpError>) + Send + 'static>;
+
+/// Starts `req` off the calling thread; `done` receives the outcome. This is
+/// `fetch`'s entry point: with `net-h2` the request is a task on the network
+/// runtime (no thread of its own), otherwise a worker thread runs [`send`].
+///
+/// `Err` only when the request could not be started at all (no thread); then
+/// `done` has been dropped uncalled.
+pub fn start(req: Request, cancel: Cancel, done: Done) -> Result<(), HttpError> {
+    #[cfg(feature = "net-h2")]
+    {
+        pool::start(req, cancel, done)
+    }
+    #[cfg(not(feature = "net-h2"))]
+    {
+        std::thread::Builder::new()
+            .name("redjs-fetch".into())
+            .spawn(move || done(send_blocking(&req, &cancel)))
+            .map(|_| ())
+            .map_err(|e| HttpError::network(format!("could not start a request thread: {e}")))
+    }
+}
+
+/// Performs `req`, following redirects per its policy. Blocking: call from a
+/// worker thread (tests and tools; `fetch` uses [`start`]).
+pub fn send(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
+    #[cfg(feature = "net-h2")]
+    {
+        pool::send(req, cancel)
+    }
+    #[cfg(not(feature = "net-h2"))]
+    {
+        send_blocking(req, cancel)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The blocking transport (HTTP/1.1, one fresh connection per request)
+// ---------------------------------------------------------------------------
+
+/// The connected socket, plaintext or TLS, over a non-blocking [`Polled`].
 ///
 /// `pub(crate)` because [`super::websocket`] borrows this whole transport: a
 /// WebSocket *is* an HTTP/1.1 request whose 101 response hands the socket over
@@ -603,18 +930,25 @@ fn strip_sensitive(headers: &mut Vec<(String, String)>) {
 /// (platform TLS, no bundled roots, no second crypto stack — see the module
 /// header) instead of introducing a second one.
 pub(crate) enum Stream {
-    Plain(TcpStream),
-    Tls(Box<native_tls::TlsStream<TcpStream>>),
+    Plain(Polled),
+    Tls(Box<native_tls::TlsStream<Polled>>),
 }
 
 impl Stream {
-    /// The TCP socket underneath, for timeout changes and `shutdown`. Reading
-    /// or writing it directly on a TLS connection would corrupt the session;
-    /// callers use it for socket *options* only.
+    /// The TCP socket underneath, for `shutdown`. Reading or writing it
+    /// directly on a TLS connection would corrupt the session.
     pub(crate) fn tcp(&self) -> &TcpStream {
         match self {
-            Stream::Plain(s) => s,
-            Stream::Tls(s) => s.get_ref(),
+            Stream::Plain(s) => s.tcp(),
+            Stream::Tls(s) => s.get_ref().tcp(),
+        }
+    }
+
+    /// How a read or write that cannot complete at once waits (see [`Wait`]).
+    pub(crate) fn set_wait(&mut self, wait: Wait) {
+        match self {
+            Stream::Plain(s) => s.set_wait(wait),
+            Stream::Tls(s) => s.get_mut().set_wait(wait),
         }
     }
 }
@@ -643,101 +977,60 @@ impl Write for Stream {
     }
 }
 
-/// A socket that checks the abort flag between blocking attempts.
-///
-/// Everything downstream (`read_head`, the body readers) is written against
-/// `impl Read`, so wrapping here makes every read in this module cancellable
-/// without any of them knowing about it.
-pub(crate) struct Cancellable<'a> {
-    inner: Stream,
-    cancel: &'a Cancel,
-    /// Total time spent with no bytes moving. Reset by progress.
-    stalled: Duration,
-    budget: Duration,
+/// The host to dial and to name in SNI: `host_str` keeps an IPv6 literal's
+/// brackets, which neither the resolver nor TLS wants.
+pub(crate) fn dial_host(u: &url::Url) -> Result<String, HttpError> {
+    match u.host() {
+        Some(url::Host::Domain(d)) => Ok(d.to_string()),
+        Some(url::Host::Ipv4(a)) => Ok(a.to_string()),
+        Some(url::Host::Ipv6(a)) => Ok(a.to_string()),
+        None => Err(HttpError::refused(format!("URL has no host: {u}"))),
+    }
 }
 
-impl<'a> Cancellable<'a> {
-    pub(crate) fn new(inner: Stream, cancel: &'a Cancel, budget: Duration) -> Self {
-        Cancellable { inner, cancel, stalled: Duration::ZERO, budget }
-    }
-
-    /// Hands the socket back after the head has been read — the WebSocket
-    /// upgrade continues on it with a different framing.
-    pub(crate) fn into_inner(self) -> Stream {
-        self.inner
-    }
-
-    fn aborted() -> std::io::Error {
-        std::io::Error::new(std::io::ErrorKind::Interrupted, "the request was aborted")
-    }
-
-    fn stalled_out() -> std::io::Error {
-        std::io::Error::new(std::io::ErrorKind::TimedOut, "the connection stalled")
-    }
-
-    /// Retries `op` across `POLL` slices, giving up on abort or on the stall
-    /// budget. `Ok(0)` from a read means EOF and is progress, not a stall.
-    fn poll_io(
-        &mut self,
-        mut op: impl FnMut(&mut Stream) -> std::io::Result<usize>,
-    ) -> std::io::Result<usize> {
-        loop {
-            if self.cancel.is_aborted() {
-                return Err(Self::aborted());
-            }
-            match op(&mut self.inner) {
-                Ok(n) => {
-                    self.stalled = Duration::ZERO;
-                    return Ok(n);
-                }
-                Err(e)
-                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
-                {
-                    if self.cancel.is_aborted() {
-                        return Err(Self::aborted());
-                    }
-                    self.stalled += POLL;
-                    if self.stalled >= self.budget {
-                        return Err(Self::stalled_out());
-                    }
-                }
-                Err(e) => return Err(e),
+/// Resolved addresses, ordered the way RFC 8305 (Happy Eyeballs v2) asks:
+/// families interleaved, starting with whichever the resolver put first. A
+/// family that fails (this machine's IPv6 does, fast) costs one attempt, not
+/// every address of that family.
+pub(crate) fn interleave(addrs: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    let Some(first) = addrs.first().copied() else { return addrs };
+    let (mut a, mut b): (Vec<_>, Vec<_>) = addrs.into_iter().partition(|x| x.is_ipv6() == first.is_ipv6());
+    a.reverse();
+    b.reverse();
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    loop {
+        match (a.pop(), b.pop()) {
+            (None, None) => return out,
+            (x, y) => {
+                out.extend(x);
+                out.extend(y);
             }
         }
     }
 }
 
-impl Read for Cancellable<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // The closure cannot borrow `buf` and `self` at once through `poll_io`,
-        // so the raw parts are rebuilt inside. Safe: `buf` outlives the call and
-        // nothing else aliases it.
-        let ptr = buf.as_mut_ptr();
-        let len = buf.len();
-        self.poll_io(move |s| s.read(unsafe { core::slice::from_raw_parts_mut(ptr, len) }))
-    }
+/// A TLS connector with the platform's roots (plus, in test builds, the
+/// loopback test identity's certificate).
+pub(crate) fn tls_builder() -> native_tls::TlsConnectorBuilder {
+    #[allow(unused_mut)]
+    let mut b = native_tls::TlsConnector::builder();
+    #[cfg(test)]
+    b.add_root_certificate(native_tls::Certificate::from_pem(TEST_ROOT_PEM).expect("test certificate"));
+    b
 }
 
-impl Write for Cancellable<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let ptr = buf.as_ptr();
-        let len = buf.len();
-        self.poll_io(move |s| s.write(unsafe { core::slice::from_raw_parts(ptr, len) }))
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
+/// Connect + (for `https`) TLS handshake, every wait a readiness wait. The
+/// returned stream waits in [`Wait::Block`] mode with the connect budget;
+/// callers set their own budget for what follows.
 pub(crate) fn connect(u: &url::Url, connect_timeout: Duration, cancel: &Cancel) -> Result<Stream, HttpError> {
-    let host = u.host_str().ok_or_else(|| HttpError::refused(format!("URL has no host: {u}")))?;
+    let host = dial_host(u)?;
     let port = u
         .port_or_known_default()
         .ok_or_else(|| HttpError::refused(format!("URL has no port and no default: {u}")))?;
-    let secure = u.scheme() == "https";
+    let secure = u.scheme() == "https" || u.scheme() == "wss";
 
     cancel.check()?;
-    let addrs: Vec<_> = (host, port)
+    let addrs: Vec<_> = (host.as_str(), port)
         .to_socket_addrs()
         .map_err(|e| HttpError::network(format!("could not resolve {host}: {e}")))?
         .collect();
@@ -747,7 +1040,7 @@ pub(crate) fn connect(u: &url::Url, connect_timeout: Duration, cancel: &Cancel) 
 
     let mut last: Option<std::io::Error> = None;
     let mut tcp: Option<TcpStream> = None;
-    for a in addrs {
+    for a in interleave(addrs) {
         cancel.check()?;
         match TcpStream::connect_timeout(&a, connect_timeout) {
             Ok(s) => {
@@ -764,50 +1057,38 @@ pub(crate) fn connect(u: &url::Url, connect_timeout: Duration, cancel: &Cancel) 
         })
     })?;
     let _ = tcp.set_nodelay(true);
-    // POLL, not io_timeout: the retry loop in `Cancellable` owns the real
-    // budget, and a short socket timeout is what makes abort prompt.
-    let _ = tcp.set_read_timeout(Some(POLL));
-    let _ = tcp.set_write_timeout(Some(POLL));
+    CONNECTS.fetch_add(1, Ordering::SeqCst);
 
     // Armed BEFORE the TLS handshake so an abort during it lands too.
     cancel.arm(&tcp)?;
+    let polled = Polled::new(tcp, cancel.clone(), Wait::Block { budget: connect_timeout })
+        .map_err(|e| HttpError::network(format!("could not configure the socket: {e}")))?;
 
     if !secure {
-        return Ok(Stream::Plain(tcp));
+        return Ok(Stream::Plain(polled));
     }
-    let connector = native_tls::TlsConnector::new()
-        .map_err(|e| HttpError::network(format!("TLS setup failed: {e}")))?;
-
-    // The handshake reads and writes on a socket with a POLL timeout, so it
-    // comes back as WouldBlock rather than completing in one call. Looping here
-    // is what makes a handshake against a slow or unreachable peer abortable.
-    let mut stalled = Duration::ZERO;
-    let mut attempt = connector.connect(host, tcp);
-    loop {
-        match attempt {
-            Ok(s) => return Ok(Stream::Tls(Box::new(s))),
-            Err(native_tls::HandshakeError::WouldBlock(mid)) => {
-                if cancel.is_aborted() {
-                    return Err(HttpError::new(ErrorKind::Aborted, "the request was aborted"));
-                }
-                stalled += POLL;
-                if stalled >= connect_timeout {
-                    return Err(HttpError::network(format!("TLS handshake with {host} timed out")));
-                }
-                attempt = mid.handshake();
-            }
-            Err(e) => {
-                if cancel.is_aborted() {
-                    return Err(HttpError::new(ErrorKind::Aborted, "the request was aborted"));
-                }
-                return Err(HttpError::network(format!("TLS handshake with {host} failed: {e}")));
+    let connector = tls_builder().build().map_err(|e| HttpError::network(format!("TLS setup failed: {e}")))?;
+    // The socket blocks (in readiness waits) underneath, so the handshake runs
+    // in one call: schannel never sees `WouldBlock` or a timed-out read.
+    let started = Instant::now();
+    match connector.connect(&host, polled) {
+        Ok(s) => Ok(Stream::Tls(Box::new(s))),
+        Err(_) if cancel.is_aborted() => Err(HttpError::new(ErrorKind::Aborted, "the request was aborted")),
+        Err(native_tls::HandshakeError::WouldBlock(_)) => {
+            Err(HttpError::network(format!("TLS handshake with {host} stalled")))
+        }
+        Err(native_tls::HandshakeError::Failure(e)) => {
+            if started.elapsed() >= connect_timeout {
+                Err(HttpError::network(format!("TLS handshake with {host} timed out")))
+            } else {
+                Err(HttpError::network(format!("TLS handshake with {host} failed: {e}")))
             }
         }
     }
 }
 
-/// The request line + headers exactly as they go on the wire. Split out so the
-/// framing is testable without a socket.
+/// The request line + headers exactly as they go on the wire (blocking
+/// transport). Split out so the framing is testable without a socket.
 pub fn serialize_request(
     u: &url::Url,
     method: &str,
@@ -827,9 +1108,9 @@ pub fn serialize_request(
     out.extend_from_slice(format!("{method} {target} HTTP/1.1\r\n").as_bytes());
 
     let host = u.host_str().unwrap_or("");
-    let host_header = match (u.port(), u.scheme()) {
-        (Some(p), _) => format!("{host}:{p}"),
-        (None, _) => host.to_string(),
+    let host_header = match u.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
     };
 
     let mut seen: Vec<String> = Vec::new();
@@ -837,7 +1118,7 @@ pub fn serialize_request(
         validate_header(k, v)?;
         let lower = k.to_ascii_lowercase();
         // Framing is ours; a JS-supplied one would desynchronize the parser.
-        if matches!(lower.as_str(), "host" | "content-length" | "transfer-encoding" | "connection") {
+        if is_transport_header(&lower) {
             continue;
         }
         seen.push(lower);
@@ -847,7 +1128,7 @@ pub fn serialize_request(
 
     out.extend_from_slice(format!("Host: {host_header}\r\n").as_bytes());
     if !has("user-agent") {
-        out.extend_from_slice(b"User-Agent: RedPew\r\n");
+        out.extend_from_slice(format!("User-Agent: {}\r\n", super::navigator::user_agent()).as_bytes());
     }
     if !has("accept") {
         out.extend_from_slice(b"Accept: */*\r\n");
@@ -855,11 +1136,13 @@ pub fn serialize_request(
     if !has("accept-encoding") {
         out.extend_from_slice(b"Accept-Encoding: gzip, deflate\r\n");
     }
-    // No pooling — see the module header.
-    out.extend_from_slice(b"Connection: close\r\n");
-    // Spec: a body-bearing method without a body still declares zero length.
-    let needs_length = body.is_some() || matches!(method, "POST" | "PUT" | "PATCH");
-    if needs_length {
+    // No pooling on this transport, but no `Connection: close` either: asking
+    // the SERVER to close is what stalled (measured, research/reports/m26/
+    // net-h2-pool.md §2 — on this project's VPN path the tail of a response
+    // the server closes behind is lost now and then, with curl too). The
+    // response is framed, so the client reads it whole and closes the socket
+    // itself.
+    if needs_length(method, body) {
         out.extend_from_slice(format!("Content-Length: {}\r\n", body.map_or(0, |b| b.len())).as_bytes());
     }
     out.extend_from_slice(b"\r\n");
@@ -869,13 +1152,32 @@ pub fn serialize_request(
     Ok(out)
 }
 
+/// Spec: a body-bearing method without a body still declares zero length, or
+/// the server waits for a body forever.
+pub(crate) fn needs_length(method: &str, body: Option<&[u8]>) -> bool {
+    body.is_some() || matches!(method, "POST" | "PUT" | "PATCH")
+}
+
+/// Maps a socket error, preferring "aborted" when we caused it.
+fn map_io(cancel: &Cancel, e: std::io::Error, what: &str) -> HttpError {
+    if cancel.is_aborted() {
+        return HttpError::new(ErrorKind::Aborted, "the request was aborted");
+    }
+    match e.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+            HttpError::network(format!("{what} timed out"))
+        }
+        _ => HttpError::network(format!("{what} failed: {e}")),
+    }
+}
+
 pub(crate) fn read_head<R: Read>(r: &mut R, cancel: &Cancel) -> Result<(Head, Vec<u8>), HttpError> {
     let mut acc: Vec<u8> = Vec::with_capacity(2048);
     let mut buf = [0u8; 8 * 1024];
     loop {
         // Scan only the tail that could contain a newly completed terminator.
         let scan_from = acc.len().saturating_sub(3);
-        let got = r.read(&mut buf).map_err(|e| cancel.map_io(e, "response read"))?;
+        let got = r.read(&mut buf).map_err(|e| map_io(cancel, e, "response read"))?;
         if got == 0 {
             if acc.is_empty() {
                 return Err(HttpError::network("the server closed the connection without a response"));
@@ -895,7 +1197,10 @@ pub(crate) fn read_head<R: Read>(r: &mut R, cancel: &Cancel) -> Result<(Head, Ve
     }
 }
 
-/// One hop: connect, write, read. No redirect handling.
+/// One hop on the blocking transport: connect, write, read. No redirects.
+/// `url_now`/`redirected` describe this hop for an [`Observe`]r.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(feature = "net-h2", allow(dead_code))]
 fn round_trip(
     u: &url::Url,
     method: &str,
@@ -903,13 +1208,26 @@ fn round_trip(
     body: Option<&[u8]>,
     req: &Request,
     cancel: &Cancel,
-) -> Result<(Head, Vec<u8>), HttpError> {
-    let inner = connect(u, req.connect_timeout, cancel)?;
-    let mut stream = Cancellable { inner, cancel, stalled: Duration::ZERO, budget: req.io_timeout };
+    url_now: &str,
+    redirected: bool,
+) -> Result<(Head, Vec<u8>, Option<std::net::SocketAddr>), HttpError> {
+    let mut stream = connect(u, req.connect_timeout, cancel)?;
+    stream.set_wait(Wait::Block { budget: req.io_timeout });
+    let remote = stream.tcp().peer_addr().ok();
 
     let wire = serialize_request(u, method, headers, body)?;
-    stream.write_all(&wire).map_err(|e| cancel.map_io(e, "request write"))?;
-    stream.flush().map_err(|e| cancel.map_io(e, "request write"))?;
+    let body_len = body.map_or(0, |b| b.len());
+    let (head_part, body_part) = wire.split_at(wire.len() - body_len);
+    stream.write_all(head_part).map_err(|e| map_io(cancel, e, "request write"))?;
+    let mut sent = 0usize;
+    for piece in body_part.chunks(64 * 1024) {
+        stream.write_all(piece).map_err(|e| map_io(cancel, e, "request write"))?;
+        sent += piece.len();
+        if let Some(o) = &req.observer {
+            o.0.upload(sent as u64, body_len as u64);
+        }
+    }
+    stream.flush().map_err(|e| map_io(cancel, e, "request write"))?;
 
     let (head, rest) = read_head(&mut stream, cancel)?;
 
@@ -920,6 +1238,18 @@ fn round_trip(
         (head, rest)
     };
 
+    let observed = req.observer.as_ref().filter(|_| is_final(head.status, &head.headers));
+    if let Some(o) = observed {
+        o.0.head(&ProgressHead {
+            status: head.status,
+            status_text: &head.reason,
+            headers: &head.headers,
+            url: url_now,
+            redirected,
+            protocol: PROTO_H1,
+        });
+    }
+
     let framing = framing_of(method, head.status, &head.headers)?;
     let raw = match framing {
         Framing::None => Vec::new(),
@@ -927,11 +1257,21 @@ fn round_trip(
         Framing::Chunked => read_chunked(&mut stream, &rest).map_err(|e| reclassify(e, cancel))?,
         Framing::UntilClose => read_until_close(&mut stream, &rest).map_err(|e| reclassify(e, cancel))?,
     };
+    if let Some(o) = observed {
+        if !raw.is_empty() {
+            let declared = match framing {
+                Framing::Length(n) => Some(n as u64),
+                _ => None,
+            };
+            o.0.body(&raw, raw.len() as u64, declared);
+        }
+    }
     let decoded = decode_content_encoding(header(&head.headers, "content-encoding"), raw)?;
-    Ok((head, decoded))
+    Ok((head, decoded, remote))
 }
 
 /// After a 1xx, the real head follows immediately.
+#[cfg_attr(feature = "net-h2", allow(dead_code))]
 fn read_head_after_informational<R: Read>(
     r: &mut R,
     rest: Vec<u8>,
@@ -949,7 +1289,7 @@ fn read_head_after_informational<R: Read>(
             }
             return Ok((head, tail));
         }
-        let got = r.read(&mut buf).map_err(|e| cancel.map_io(e, "response read"))?;
+        let got = r.read(&mut buf).map_err(|e| map_io(cancel, e, "response read"))?;
         if got == 0 {
             return Err(HttpError::protocol("the server closed the connection after an informational response"));
         }
@@ -961,6 +1301,7 @@ fn read_head_after_informational<R: Read>(
 }
 
 /// A body read that failed because *we* aborted is an abort, not a protocol bug.
+#[cfg_attr(feature = "net-h2", allow(dead_code))]
 fn reclassify(e: HttpError, cancel: &Cancel) -> HttpError {
     if cancel.is_aborted() {
         return HttpError::new(ErrorKind::Aborted, "the request was aborted");
@@ -968,69 +1309,42 @@ fn reclassify(e: HttpError, cancel: &Cancel) -> HttpError {
     e
 }
 
-/// Performs `req`, following redirects per its policy.
-///
-/// Blocking. Call from a worker thread; the result goes back to JS through the
-/// pump (see `fetch.rs`).
-pub fn send(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
-    let mut current = req.url.clone();
-    let mut method = req.method.to_ascii_uppercase();
-    let mut body = req.body.clone();
-    let mut headers = req.headers.clone();
-    let mut redirected = false;
-
-    for _ in 0..=MAX_REDIRECTS {
+/// The blocking transport's request: redirects, cookies per hop, a fresh
+/// connection per hop.
+#[cfg_attr(feature = "net-h2", allow(dead_code))]
+pub(crate) fn send_blocking(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
+    let mut hops = Hops::new(req);
+    loop {
         cancel.check()?;
-        let u = url::Url::parse(&current).map_err(|e| HttpError::refused(format!("invalid URL {current:?}: {e}")))?;
-        if u.scheme() != "http" && u.scheme() != "https" {
-            return Err(HttpError::refused(format!("scheme {:?} is not supported by fetch", u.scheme())));
-        }
-
-        // The jar, per hop: this hop's cookies on the way out, this hop's
-        // Set-Cookie on the way back — before the redirect is followed, so the
-        // next hop already sees what this one set.
-        let cookies = req.credentials.applies(&u);
-        let hop = if cookies { super::cookies::with_cookies(&u, &headers) } else { None };
-        let (head, bytes) =
-            round_trip(&u, &method, hop.as_deref().unwrap_or(&headers), body.as_deref(), req, cancel)?;
+        let hop = hops.next()?;
+        let result = round_trip(
+            &hop.url,
+            &hops.method,
+            &hop.headers,
+            hops.body.as_deref(),
+            req,
+            cancel,
+            &hops.current,
+            hops.redirected,
+        );
         cancel.disarm();
-        if cookies {
-            super::cookies::store_response(&u, &head.headers);
+        let (head, bytes, remote) = result?;
+        if hops.after(&hop, head.status, &head.headers)? {
+            continue;
         }
-
-        if is_redirect(head.status) {
-            if let Some(loc) = header(&head.headers, "location") {
-                if req.redirect == Redirect::Error {
-                    return Err(HttpError::network(format!(
-                        "redirect to {loc:?} refused: the request set redirect: \"error\""
-                    )));
-                }
-                let next = resolve_location(&current, loc)?;
-                let (next_method, keep_body) = redirect_method(head.status, &method);
-                if !same_origin(&current, &next) {
-                    strip_sensitive(&mut headers);
-                }
-                if !keep_body {
-                    body = None;
-                    headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
-                }
-                method = next_method;
-                current = next;
-                redirected = true;
-                continue;
-            }
-        }
-
         return Ok(Response {
             status: head.status,
             status_text: head.reason,
             headers: head.headers,
-            url: current,
-            redirected,
+            url: hops.current,
+            redirected: hops.redirected,
             body: bytes,
+            protocol: PROTO_H1,
+            reused: false,
+            connection_id: next_connection_id(),
+            remote_addr: remote,
         });
     }
-    Err(HttpError::network(format!("too many redirects (more than {MAX_REDIRECTS})")))
 }
 
 // ---------------------------------------------------------------------------
@@ -1245,7 +1559,8 @@ mod tests {
         let text = String::from_utf8(wire).unwrap();
         assert!(text.starts_with("GET /a/b?q=1&r=2 HTTP/1.1\r\n"), "{text}");
         assert!(text.contains("Host: example.com:8080\r\n"), "{text}");
-        assert!(text.contains("Connection: close\r\n"), "{text}");
+        // The client closes; it never asks the server to (see serialize_request).
+        assert!(!text.to_ascii_lowercase().contains("connection:"), "{text}");
         assert!(text.ends_with("\r\n\r\n"), "{text}");
         // A GET carries no Content-Length.
         assert!(!text.contains("Content-Length"), "{text}");
@@ -1290,6 +1605,7 @@ mod tests {
             credentials: crate::webapi::cookies::Credentials::Omit,
             connect_timeout: Duration::from_secs(5),
             io_timeout: Duration::from_secs(10),
+            observer: None,
         }
     }
 
@@ -1482,6 +1798,41 @@ mod tests {
         assert!(request.contains("Content-Type: application/x-sentry-envelope\r\n"), "{request}");
         assert!(request.contains("Content-Length: 18\r\n"), "{request}");
         assert!(request.ends_with("{\"event_id\":\"abc\"}"), "{request}");
+    }
+
+    #[derive(Default)]
+    struct Seen(std::sync::Mutex<Vec<String>>);
+
+    impl Observe for Seen {
+        fn upload(&self, sent: u64, total: u64) {
+            self.0.lock().unwrap().push(format!("up {sent}/{total}"));
+        }
+        fn head(&self, h: &ProgressHead<'_>) {
+            self.0.lock().unwrap().push(format!("head {}", h.status));
+        }
+        fn body(&self, chunk: &[u8], received: u64, _total: Option<u64>) {
+            self.0.lock().unwrap().push(format!("body {} {received}", chunk.len()));
+        }
+    }
+
+    #[test]
+    fn an_observer_hears_upload_head_and_body_in_order() {
+        // Both transports: the blocking one reports the body as one piece,
+        // the pooled one per frame; the order and the totals are the contract.
+        let (port, _seen) = serve(vec![b"HTTP/1.1 201 Created\r\nContent-Length: 7\r\n\r\ncreated".to_vec()]);
+        let seen = Arc::new(Seen::default());
+        let mut r = req(&format!("http://127.0.0.1:{port}/up"));
+        r.method = "PUT".into();
+        r.body = Some(vec![1u8; 70_000]);
+        r.observer = Some(Observer(seen.clone()));
+        let resp = send(&r, &Cancel::default()).unwrap();
+        assert_eq!(resp.status, 201);
+        let ev = seen.0.lock().unwrap().clone();
+        let head = ev.iter().position(|e| e == "head 201").expect("no head event");
+        assert_eq!(ev[head - 1], "up 70000/70000", "{ev:?}");
+        assert!(ev[..head].iter().all(|e| e.starts_with("up ")), "{ev:?}");
+        assert!(ev[head + 1..].iter().all(|e| e.starts_with("body ")), "{ev:?}");
+        assert!(ev.last().unwrap().ends_with(" 7"), "{ev:?}");
     }
 
     #[test]
