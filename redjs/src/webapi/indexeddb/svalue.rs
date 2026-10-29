@@ -414,6 +414,14 @@ impl<'a> Parsed<'a> {
                 }
                 Some((idx, None))
             }
+            tag::HOST_OBJECT => {
+                // Opaque to everyone but its host: no key path reads into it.
+                let idx = self.object(Node::Other, at);
+                r.string()?;
+                let n = r.varint()?;
+                r.skip(usize::try_from(n).ok()?)?;
+                Some((idx, None))
+            }
             _ => None, // attachment tags and reserved ones: not storage bytes
         }
     }
@@ -892,6 +900,31 @@ mod tests {
         let p = Parsed::parse(&b).expect("parses");
         assert_eq!(p.extract(&KeyPath::String(u("name"))), Err(()));
         assert_eq!(p.extract(&KeyPath::String(u("size"))), Ok(Some(Key::Number(0.0))));
+    }
+
+    #[test]
+    fn a_host_object_is_skipped_whole_and_takes_an_id() {
+        // { h: HostObject("FileSystemHandle", 3 bytes), again: ref(1), k: 4 }
+        let mut b = hdr();
+        b.push(tag::OBJECT); // id 0
+        name(&mut b, "h");
+        b.push(tag::HOST_OBJECT); // id 1
+        name(&mut b, "FileSystemHandle");
+        put_varint(&mut b, 3);
+        b.extend([tag::END, tag::OBJECT, 0xFF]); // opaque: never read as tags
+        name(&mut b, "again");
+        b.push(tag::OBJECT_REF);
+        put_varint(&mut b, 1);
+        name(&mut b, "k");
+        b.extend(number_bytes(4.0));
+        b.push(tag::END);
+        let p = Parsed::parse(&b).expect("parses");
+        assert_eq!(p.extract(&KeyPath::String(u("k"))), Ok(Some(Key::Number(4.0))));
+        assert_eq!(p.extract(&KeyPath::String(u("h"))), Ok(None), "a handle is not a key");
+        assert_eq!(p.extract(&KeyPath::String(u("h.name"))), Err(()), "nor has identifiers");
+        // Its payload cut short is corruption.
+        let cut = b.iter().position(|&x| x == 0xFF).unwrap();
+        assert!(Parsed::parse(&b[..cut]).is_none());
     }
 
     #[test]

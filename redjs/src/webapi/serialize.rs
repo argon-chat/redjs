@@ -70,7 +70,8 @@
 //! | 0x36 | DOMQuad                  | reserved                                             |
 //! | 0x37 | DOMMatrix(ReadOnly)      | u8 read-only, u8 is2D, 6 × f64 (a b c d e f) or 16 × f64 (m11…m44) |
 //! | 0x38 | DOMException             | u8 kind (0, 1 = QuotaExceededError), string name, string message, u8 mask (1 stack, 2 quota, 4 requested), [string], [f64], [f64] |
-//! | 0x39–0x3F | —                   | reserved (platform objects)                          |
+//! | 0x39 | host platform object     | string interface, varint n, n bytes (the host's own encoding; see [`HostCodec`]) |
+//! | 0x3A–0x3F | —                   | reserved (platform objects)                          |
 //! | 0x40 | transferred ArrayBuffer  | varint attachment                                    |
 //! | 0x41 | MessagePort              | reserved — varint attachment                         |
 //! | 0x42 | ImageBitmap              | varint attachment                                    |
@@ -84,7 +85,7 @@
 //! "Error"). View kinds are `RjsTaKind`: 1 Int8 … 11 BigUint64, 12 DataView,
 //! 13 Float16.
 //!
-//! **Identity.** Every object tag (0x11–0x38) takes the next object id AT THE
+//! **Identity.** Every object tag (0x11–0x39) takes the next object id AT THE
 //! TAG, before its children, in the writer and the reader alike, so a later
 //! 0x10 can point at an object still being written — cycles. Attachment tags
 //! (0x4x) take no id: the same attachment index IS the same object (the
@@ -174,6 +175,7 @@ pub mod tag {
     pub const DOMQUAD: u8 = 0x36;
     pub const DOMMATRIX: u8 = 0x37;
     pub const DOMEXCEPTION: u8 = 0x38;
+    pub const HOST_OBJECT: u8 = 0x39;
 
     pub const TRANSFERRED_BUFFER: u8 = 0x40;
     pub const MESSAGE_PORT: u8 = 0x41;
@@ -361,10 +363,36 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 // [Serializable] is a DataCloneError. So the host names the prototype, and
 // the error names the interface, with Blink's words ("FileReader object could
 // not be cloned.").
+//
+// A script class for an interface that IS [Serializable] (FileSystemHandle)
+// names its prototype with a [`HostCodec`] instead: the instance travels as
+// tag 0x39 — the interface and the host's own bytes, which no script sees —
+// and the receiving context's host makes a fresh instance from them.
 
-/// Per context: `(prototype, interface name)`, the prototypes protected.
-fn refused() -> &'static Mutex<HashMap<usize, Vec<(u64, String)>>> {
-    static R: OnceLock<Mutex<HashMap<usize, Vec<(u64, String)>>>> = OnceLock::new();
+/// How a host serializes the instances of one script-implemented platform
+/// interface. Both run on the context's thread, inside the walk; a `String`
+/// error becomes the DataCloneError's message.
+#[derive(Clone, Copy)]
+pub struct HostCodec {
+    /// The instance's bytes, opaque to this module.
+    pub encode: unsafe fn(g: *mut c_void, v: u64) -> Result<Vec<u8>, String>,
+    /// A new instance from bytes `encode` wrote (perhaps in another context,
+    /// perhaps read back from disk).
+    pub decode: unsafe fn(g: *mut c_void, bytes: &[u8]) -> Result<u64, String>,
+}
+
+/// One marked prototype: refused, or serialized by its host.
+#[derive(Clone)]
+struct Marked {
+    proto: u64,
+    interface: String,
+    codec: Option<HostCodec>,
+}
+
+/// Per context, in registration order (the first one on a chain wins); the
+/// prototypes protected.
+fn refused() -> &'static Mutex<HashMap<usize, Vec<Marked>>> {
+    static R: OnceLock<Mutex<HashMap<usize, Vec<Marked>>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -380,22 +408,46 @@ static ANY_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// # Safety
 /// `g` must be a live context with the web API installed, on its thread.
 pub unsafe fn refuse_platform_prototype(g: *mut c_void, proto: u64, interface: &str) {
+    mark(g, proto, interface, None);
+}
+
+/// Marks `proto` as the prototype of a [Serializable] platform interface the
+/// host implements in script: a value whose prototype chain reaches it is
+/// written as tag 0x39 with `codec.encode`'s bytes, for `structuredClone`,
+/// `postMessage` and IndexedDB alike, and read back with the `codec.decode`
+/// the receiving context registered under the same `interface` — or a
+/// DataCloneError where none did.
+///
+/// # Safety
+/// As [`refuse_platform_prototype`].
+pub unsafe fn serialize_platform_prototype(g: *mut c_void, proto: u64, interface: &str, codec: HostCodec) {
+    mark(g, proto, interface, Some(codec));
+}
+
+unsafe fn mark(g: *mut c_void, proto: u64, interface: &str, codec: Option<HostCodec>) {
     if !is_cell(proto) {
         return;
     }
     crate::ffi::redjs_protect(g, proto);
-    refused().lock().unwrap().entry(g as usize).or_default().push((proto, interface.to_string()));
+    let m = Marked { proto, interface: interface.to_string(), codec };
+    refused().lock().unwrap().entry(g as usize).or_default().push(m);
     ANY_REFUSED.store(true, std::sync::atomic::Ordering::Release);
 }
 
-/// The interface `v` is an instance of, if a host refused it.
-unsafe fn refused_interface(g: *mut c_void, v: u64) -> Option<String> {
+/// The marked interface `v` is an instance of, if any.
+unsafe fn marked_interface(g: *mut c_void, v: u64) -> Option<Marked> {
     if !ANY_REFUSED.load(std::sync::atomic::Ordering::Acquire) {
         return None;
     }
     // Copied out, so the walk below runs with no lock held.
     let list = refused().lock().unwrap().get(&(g as usize))?.clone();
-    list.into_iter().find(|&(p, _)| proto_chain_has(g, v, p)).map(|(_, name)| name)
+    list.into_iter().find(|m| proto_chain_has(g, v, m.proto))
+}
+
+/// This context's codec for `interface`, if its host registered one.
+fn codec_for(g: *mut c_void, interface: &str) -> Option<HostCodec> {
+    let list = refused().lock().unwrap();
+    list.get(&(g as usize))?.iter().find_map(|m| if m.interface == interface { m.codec } else { None })
 }
 
 pub unsafe fn install(g: *mut c_void) {
@@ -1041,8 +1093,18 @@ impl Enc {
                 None => Err(dce(g, "This platform object could not be cloned.")),
             },
             brand::PLAIN => {
-                if let Some(interface) = refused_interface(g, v) {
-                    return Err(dce(g, &format!("{interface} object could not be cloned.")));
+                if let Some(m) = marked_interface(g, v) {
+                    let Some(codec) = m.codec else {
+                        return Err(dce(g, &format!("{} object could not be cloned.", m.interface)));
+                    };
+                    let bytes = (codec.encode)(g, v).map_err(|msg| dce(g, &msg))?;
+                    self.memo(v);
+                    self.put(tag::HOST_OBJECT);
+                    self.rust_string(&m.interface);
+                    self.varint(bytes.len() as u64);
+                    self.reserve(bytes.len() as u64)?;
+                    self.out.extend_from_slice(&bytes);
+                    return Ok(());
                 }
                 self.memo(v);
                 self.put(tag::OBJECT);
@@ -1820,6 +1882,20 @@ impl<'a> Dec<'a> {
                 self.set_stack(e, stack);
                 Ok(e)
             }
+            tag::HOST_OBJECT => {
+                let slot = self.reserve();
+                let interface = self.rust_string()?;
+                let n = self.varint()?;
+                let bytes = self.bytes(n)?;
+                // Blink's words where a receiver cannot make the interface.
+                let Some(codec) = codec_for(g, &interface) else { return Err(dce(g, "Unable to deserialize cloned data.")) };
+                let v = (codec.decode)(g, bytes).map_err(|msg| dce(g, &msg))?;
+                if !is_object(g, v) {
+                    return self.bad();
+                }
+                self.fill(slot, v);
+                Ok(v)
+            }
             _ => self.bad(),
         }
     }
@@ -1930,6 +2006,65 @@ mod tests {
         );
         ok(&c, "(() => { const r = structuredClone({ a: 1, b: { c: [2] } }); return r.a === 1 && r.b.c[0] === 2; })()");
         ok(&c, "(() => { class Other {} return Object.getPrototypeOf(structuredClone(new Other())) === Object.prototype; })()");
+    }
+
+    /// The test host's codec: a `Tok` travels as its `tok` string, and comes
+    /// back through `makeTok` — a fresh instance, never the original.
+    unsafe fn tok_encode(g: *mut c_void, v: u64) -> Result<Vec<u8>, String> {
+        match read_string(g, get(g, v, "tok")) {
+            Some(t) if !t.is_empty() => Ok(t.into_bytes()),
+            _ => Err("Tok object could not be cloned.".into()),
+        }
+    }
+
+    unsafe fn tok_decode(g: *mut c_void, bytes: &[u8]) -> Result<u64, String> {
+        let t = std::str::from_utf8(bytes).map_err(|_| "Unable to deserialize cloned data.".to_string())?;
+        let make = get(g, glue::rjs_global(g), "makeTok");
+        call(g, make, UNDEF, &[js_string(g, t)]).map_err(|_| "Unable to deserialize cloned data.".to_string())
+    }
+
+    /// A host's script class for a [Serializable] interface (vue-native's
+    /// FileSystemHandle) round-trips through its codec, identity and storage
+    /// included; a context with no codec for it refuses to read it.
+    #[test]
+    fn a_host_serialized_platform_prototype_round_trips_through_its_codec() {
+        let c = ctx();
+        s(&c, "globalThis.Tok = class Tok { constructor(t) { this.tok = t; } }; globalThis.SubTok = class extends Tok {}; \
+               globalThis.makeTok = t => { const k = new SubTok(t); k.made = true; return k; }; 0");
+        let codec = HostCodec { encode: tok_encode, decode: tok_decode };
+        unsafe {
+            let g = c.raw();
+            let tok = get(g, glue::rjs_global(g), "Tok");
+            super::serialize_platform_prototype(g, get(g, tok, "prototype"), "Tok", codec);
+        }
+        ok(&c, "(() => { const k = new Tok('a'); const r = structuredClone({ x: k, y: [k] }); \
+                 return r.x instanceof Tok && r.x !== k && r.x.made && r.x.tok === 'a' && r.y[0] === r.x; })()");
+        // Own properties beside the host's state are the host's business: not copied.
+        ok(&c, "(() => { const k = new Tok('b'); k.extra = 1; return !('extra' in structuredClone(k)); })()");
+        // The codec's refusal is a DataCloneError with its message.
+        assert_eq!(thrown(&c, "structuredClone(new Tok(''))"), "DOMException:DataCloneError/25");
+        assert_eq!(s(&c, "(() => { try { structuredClone(new Tok('')); } catch (e) { return e.message; } })()"), "Tok object could not be cloned.");
+        unsafe {
+            let g = c.raw();
+            // For storage too (IndexedDB keeps File System Access handles).
+            let st = ser(&c, "({ k: new Tok('disk'), n: 1 })", true).unwrap();
+            assert!(st.bytes.contains(&tag::HOST_OBJECT));
+            let v = deserialize_storage(g, &st.bytes).unwrap();
+            define(g, glue::rjs_global(g), "fromDisk", v, 0);
+            ok(&c, "fromDisk.k instanceof Tok && fromDisk.k.tok === 'disk' && fromDisk.n === 1");
+            #[cfg(feature = "indexeddb")]
+            {
+                use crate::webapi::indexeddb::{key::Key, keypath::KeyPath, svalue::Parsed};
+                let p = Parsed::parse(&st.bytes).expect("key paths parse around it");
+                assert_eq!(p.extract(&KeyPath::String("n".encode_utf16().collect())), Ok(Some(Key::Number(1.0))));
+            }
+
+            // A context whose host registered no codec for the interface.
+            let other = ctx();
+            let e = deserialize_storage(other.raw(), &st.bytes).expect_err("decoded with no codec");
+            define(other.raw(), glue::rjs_global(other.raw()), "noCodec", e, 0);
+            assert_eq!(s(&other, "noCodec.name + ': ' + noCodec.message"), "DataCloneError: Unable to deserialize cloned data.");
+        }
     }
 
     #[test]
