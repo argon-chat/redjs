@@ -15,6 +15,8 @@
 //! | `AudioBufferSourceNode`  | `SamplerNode`                                |
 //! | `AudioBuffer`            | planar `f32` `SampleResource`                |
 //! | `OscillatorNode`         | `OscNode` (webapi/osc.rs): PolyBLEP-limited  |
+//! | `ChannelSplitterNode`    | `SplitterNode` (ours): output k = port k     |
+//! | `ChannelMergerNode`      | `MergerNode` (ours): input j = ports 2j, 2j+1 |
 //! | `RedStreamSourceNode`    | `StreamWriterNode` (webapi/pcm.rs) — ours     |
 //! | `decodeAudioData`        | symphonium (resampled to the stream rate)    |
 //! | `currentTime`            | the audio-stream sample clock (seconds)      |
@@ -37,10 +39,19 @@
 //!   reads may tear across a processing-block boundary (fine for meters).
 //! - Scheduling (`start`/`stop`, automation) lands on the pump tick at or after
 //!   the requested time, not on the exact sample.
+//! - The graph mixes in stereo. An output wider than two channels (a
+//!   `ChannelMergerNode` of 3+ inputs, a wide `RedStreamSourceNode`) keeps
+//!   channels 0 and 1 when it feeds anything but a splitter, where a browser
+//!   would carry every channel or down-mix them (5.1 → stereo). A one-time
+//!   advisory says so on the first such `connect`.
+//! - `channelCount` / `channelCountMode` / `channelInterpretation` exist on
+//!   `ChannelSplitterNode` and `ChannelMergerNode` only — the two nodes whose
+//!   values the spec pins (see [`SplitterNode`] / [`MergerNode`]). The other
+//!   nodes do not have the three attributes.
 //! - No `OfflineAudioContext`, `AudioWorklet`, `ConvolverNode`, `DelayNode`,
-//!   `WaveShaperNode`, `DynamicsCompressorNode`, `ChannelSplitter`/`Merger`, or
-//!   `PeriodicWave`. Each is absent rather than stubbed, so
-//!   `typeof ctx.createDelay === 'function'` tells the truth.
+//!   `WaveShaperNode`, `DynamicsCompressorNode`, or `PeriodicWave`. Each is
+//!   absent rather than stubbed, so `typeof ctx.createDelay === 'function'`
+//!   tells the truth.
 //! - `createMediaElementSource` is a silent pass-through that says so — see
 //!   `ctx_create_media_element_source`.
 
@@ -48,7 +59,7 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::ops::Range;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use firewheel::{
@@ -327,6 +338,172 @@ impl firewheel::node::AudioNodeProcessor for MonitorProcessor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ChannelSplitterNode / ChannelMergerNode backing: two custom Firewheel nodes.
+// ---------------------------------------------------------------------------
+//
+// Firewheel has channels (ports) but no node with several OUTPUTS, which is
+// what a Web Audio splitter is (n mono outputs) — nor, mirrored, with several
+// INPUTS (the merger). Both are written as ports:
+//
+// - a splitter is n ports in and n ports out, and its processor is the
+//   engine's own copy (`Bypass`). Web Audio output k IS Firewheel output port
+//   k, so `splitter.connect(dest, k)` wires port k alone (`conn_ports`). Its
+//   input is "discrete": a stereo source fills ports 0 and 1, the rest stay
+//   silent, exactly the spec's discrete up-mix;
+// - a merger's Web Audio input j is the PAIR of Firewheel input ports
+//   (2j, 2j+1). A stereo source lands on the pair, a mono one is fed into both
+//   ports, and the processor down-mixes the pair to the mono channel j of its
+//   one output: 0.5·(L+R) under "speakers" (the spec's stereo → mono), L under
+//   "discrete". Mixing is linear, so several connections that Firewheel sums
+//   on one pair come out exactly as the spec's per-connection mix-then-sum.
+//
+// Neither needs a Firewheel event: the merger's one live attribute
+// (`channelInterpretation`) is an atomic shared with its processor.
+
+/// The most `numberOfOutputs` / `numberOfInputs` a splitter / merger takes:
+/// Chromium's `BaseAudioContext::MaxNumberOfChannels()` (and `createBuffer`'s
+/// channel cap here). A merger of 32 is 64 Firewheel input ports — exactly
+/// Firewheel's `MAX_CHANNELS`.
+const MAX_SPLIT_CHANNELS: u32 = 32;
+
+/// `ChannelSplitterNode`: n ports in, n ports out, copied through.
+#[derive(Clone)]
+struct SplitterNode {
+    n: u32,
+}
+
+impl firewheel::node::AudioNode for SplitterNode {
+    type Configuration = firewheel::node::EmptyConfig;
+
+    fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
+        let n = firewheel::channel_config::ChannelCount::new(self.n).unwrap();
+        firewheel::node::AudioNodeInfo::new()
+            .debug_name("webaudio_channel_splitter")
+            .channel_config(firewheel::channel_config::ChannelConfig { num_inputs: n, num_outputs: n })
+    }
+
+    fn construct_processor(
+        &self,
+        _config: &Self::Configuration,
+        _cx: firewheel::node::ConstructProcessorContext,
+    ) -> impl firewheel::node::AudioNodeProcessor {
+        SplitterProcessor
+    }
+}
+
+struct SplitterProcessor;
+
+impl firewheel::node::AudioNodeProcessor for SplitterProcessor {
+    fn process(
+        &mut self,
+        _info: &firewheel::node::ProcInfo,
+        _buffers: firewheel::node::ProcBuffers,
+        _events: &mut firewheel::event::ProcEvents,
+        _extra: &mut firewheel::node::ProcExtra,
+    ) -> firewheel::node::ProcessStatus {
+        // Input channel k → output port k is the whole node, and the engine's
+        // own copy does it, silence mask included.
+        firewheel::node::ProcessStatus::Bypass
+    }
+}
+
+/// `ChannelMergerNode`: 2n ports in (a pair per Web Audio input), n out.
+#[derive(Clone)]
+struct MergerNode {
+    n: u32,
+    /// `channelInterpretation === "discrete"`, written by the JS setter.
+    discrete: ArcGc<AtomicBool>,
+}
+
+impl firewheel::node::AudioNode for MergerNode {
+    type Configuration = firewheel::node::EmptyConfig;
+
+    fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
+        firewheel::node::AudioNodeInfo::new()
+            .debug_name("webaudio_channel_merger")
+            .channel_config(firewheel::channel_config::ChannelConfig {
+                num_inputs: firewheel::channel_config::ChannelCount::new(2 * self.n).unwrap(),
+                num_outputs: firewheel::channel_config::ChannelCount::new(self.n).unwrap(),
+            })
+    }
+
+    fn construct_processor(
+        &self,
+        _config: &Self::Configuration,
+        _cx: firewheel::node::ConstructProcessorContext,
+    ) -> impl firewheel::node::AudioNodeProcessor {
+        MergerProcessor { discrete: ArcGc::clone(&self.discrete) }
+    }
+}
+
+struct MergerProcessor {
+    discrete: ArcGc<AtomicBool>,
+}
+
+impl firewheel::node::AudioNodeProcessor for MergerProcessor {
+    fn process(
+        &mut self,
+        info: &firewheel::node::ProcInfo,
+        buffers: firewheel::node::ProcBuffers,
+        _events: &mut firewheel::event::ProcEvents,
+        _extra: &mut firewheel::node::ProcExtra,
+    ) -> firewheel::node::ProcessStatus {
+        let discrete = self.discrete.load(Ordering::Relaxed);
+        let mask = merge_block(
+            buffers.inputs,
+            buffers.outputs,
+            info.frames,
+            |port| info.in_silence_mask.is_channel_silent(port),
+            discrete,
+        );
+        firewheel::node::ProcessStatus::outputs_modified_with_silence_mask(mask)
+    }
+}
+
+/// The merger's mix: output channel j is input j, down-mixed to mono from its
+/// port pair (2j, 2j+1) — 0.5·(L+R) for "speakers", L for "discrete" (spec
+/// "Channel up-mixing and down-mixing", stereo → mono). A port flagged silent
+/// reads as zeros. Returns the output silence mask.
+fn merge_block(
+    inputs: &[&[f32]],
+    outputs: &mut [&mut [f32]],
+    frames: usize,
+    silent: impl Fn(usize) -> bool,
+    discrete: bool,
+) -> firewheel::mask::SilenceMask {
+    let mut mask = firewheel::mask::SilenceMask::NONE_SILENT;
+    for (j, out) in outputs.iter_mut().enumerate() {
+        let out = &mut out[..frames];
+        let (l, r) = (2 * j, 2 * j + 1);
+        let l_silent = silent(l);
+        let r_silent = discrete || silent(r);
+        match (l_silent, r_silent) {
+            (true, true) => {
+                out.fill(0.0);
+                mask.set_channel(j, true);
+            }
+            (false, true) if discrete => out.copy_from_slice(&inputs[l][..frames]),
+            (false, true) => {
+                for (o, &a) in out.iter_mut().zip(&inputs[l][..frames]) {
+                    *o = 0.5 * a;
+                }
+            }
+            (true, false) => {
+                for (o, &b) in out.iter_mut().zip(&inputs[r][..frames]) {
+                    *o = 0.5 * b;
+                }
+            }
+            (false, false) => {
+                for ((o, &a), &b) in out.iter_mut().zip(&inputs[l][..frames]).zip(&inputs[r][..frames]) {
+                    *o = 0.5 * (a + b);
+                }
+            }
+        }
+    }
+    mask
+}
+
 /// Blackman window (spec α = 0.16), applied before the FFT.
 fn blackman(n: usize, len: usize) -> f32 {
     const A0: f32 = 0.42;
@@ -406,8 +583,22 @@ enum Params {
     /// RedStreamSourceNode: the graph end of a streaming-PCM push (webapi/pcm.rs).
     /// The producer end lives in `pcm`'s own registry, keyed by the node handle.
     PcmStream(PcmStreamConfig),
-    /// Generic no-op nodes: audio passes through untouched.
+    /// ChannelSplitterNode with `n` outputs (see [`SplitterNode`]).
+    Splitter(u32),
+    /// ChannelMergerNode with `n` inputs (see [`MergerNode`]); `discrete`
+    /// is the processor's copy of `channelInterpretation`.
+    Merger { n: u32, discrete: ArcGc<AtomicBool> },
+    /// The media-element source's silent pass-through
+    /// (`ctx_create_media_element_source`): no inputs, audio passes untouched.
     Passthrough,
+}
+
+/// One Web Audio connection, kept so `disconnect(…)` can find it again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Conn {
+    dst: u64,
+    output: u32,
+    input: u32,
 }
 
 /// Web Audio distance models (spec formulas implemented in `distance_gain`).
@@ -422,13 +613,14 @@ struct NodeRec {
     engine: u64,
     id: NodeID,
     params: Params,
-    /// Channel widths of the Firewheel node, mirrored here so `connect` can
+    /// Port counts of the Firewheel node, mirrored here so `connect` can
     /// build a port list Firewheel will accept without reaching into the graph.
-    /// Everything is stereo except `RedStreamSourceNode`.
+    /// Everything is stereo except `RedStreamSourceNode` and the splitter /
+    /// merger.
     out_ch: u32,
     in_ch: u32,
-    /// Outgoing connections (dst node handles) for `disconnect()`.
-    outs: Vec<u64>,
+    /// Outgoing connections, for `disconnect(…)`.
+    outs: Vec<Conn>,
     /// PannerNode world position.
     pos: [f32; 3],
     /// PannerNode orientation (cone direction; Web Audio default +x).
@@ -459,6 +651,8 @@ impl NodeRec {
             // The oscillator is a source too, but renders dual mono so it wires
             // like everything else.
             Params::Osc(_) => (0, 2),
+            Params::Splitter(n) => (*n, *n),
+            Params::Merger { n, .. } => (2 * n, *n),
             _ => (2, 2),
         };
         Self {
@@ -481,6 +675,25 @@ impl NodeRec {
             js_obj: 0,
             pending_start: None,
             pending_stop: None,
+        }
+    }
+
+    /// Web Audio `numberOfInputs`.
+    fn web_inputs(&self) -> u32 {
+        match &self.params {
+            Params::Merger { n, .. } => *n,
+            // The sources: AudioScheduledSourceNode, the stream source and the
+            // media-element source (MediaElementAudioSourceNode) take none.
+            Params::Osc(_) | Params::Sampler(_) | Params::PcmStream(_) | Params::Passthrough => 0,
+            _ => 1,
+        }
+    }
+
+    /// Web Audio `numberOfOutputs` (the destination's is 1, as in the spec).
+    fn web_outputs(&self) -> u32 {
+        match &self.params {
+            Params::Splitter(n) => *n,
+            _ => 1,
         }
     }
 }
@@ -671,6 +884,8 @@ pub struct AudioClasses {
     source: Class,
     osc: Class,
     stream_src: Class,
+    splitter: Class,
+    merger: Class,
     dest: Class,
     listener: Class,
     param: Class,
@@ -1033,6 +1248,10 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
                 Some(StreamWriterConfig { channels: ch, check_for_silence: true }),
             )
         }
+        Params::Splitter(n) => eng.fw.add_node(SplitterNode { n: *n }, None),
+        Params::Merger { n, discrete } => {
+            eng.fw.add_node(MergerNode { n: *n, discrete: ArcGc::clone(discrete) }, None)
+        }
         Params::Passthrough => eng.fw.add_node(VolumeNode::default(), None),
         Params::Dest => eng.master,
     };
@@ -1059,27 +1278,97 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
 
 const STEREO_PORTS: &[(u32, u32)] = &[(0, 0), (1, 1)];
 
-/// The port pairs to wire between a source with `src_out` output channels and a
-/// destination with `dst_in` input channels.
-///
-/// Everything in this graph is stereo except `RedStreamSourceNode`, which is as
-/// wide as the producer's frames. Firewheel's `connect` refuses the WHOLE call
-/// if any port index is out of range, so a fixed `[(0,0),(1,1)]` would make a
-/// mono stream source connect to nothing at all — silently, since the result is
-/// discarded. Deriving the pairs also gets the spec's mono up-mix right: a
-/// 1-channel source feeds BOTH inputs of a stereo destination (centre), not
-/// just the left one.
-fn ports_between(src_out: u32, dst_in: u32) -> &'static [(u32, u32)] {
-    match (src_out.max(1).min(2), dst_in.max(1).min(2)) {
-        // Mono → stereo: the spec's up-mix, one source port into both inputs.
-        (1, 2) => &[(0, 0), (0, 1)],
-        // Anything → mono: port 0 only. A true down-mix would need a summing
-        // node; nothing in this graph has a mono input today.
-        (_, 1) => &[(0, 0)],
-        _ => STEREO_PORTS,
+/// The channels Web Audio output `output` of `src` carries, as Firewheel
+/// output ports: one port per splitter output, every port otherwise.
+fn out_channels(src: &NodeRec, output: u32) -> Vec<u32> {
+    match src.params {
+        Params::Splitter(_) => vec![output],
+        _ => (0..src.out_ch.max(1)).collect(),
     }
 }
 
+/// The Firewheel port pairs one Web Audio connection — output `output` of
+/// `src` into input `input` of `dst` — occupies. `connect` and `disconnect`
+/// both go through here, so the edges they name always match.
+///
+/// Firewheel's `connect` refuses the WHOLE call if any port index is out of
+/// range, so a fixed `[(0,0),(1,1)]` would make a mono source connect to
+/// nothing at all — silently, since the result is only logged. Deriving the
+/// pairs also gets the spec's mixing right:
+/// - into a stereo input ("speakers"): a mono output feeds BOTH ports (the
+///   centre up-mix), a wider one gives ports 0 and 1 (see the module header
+///   for what that drops);
+/// - into a merger input j: the same rule onto its pair (2j, 2j+1), which the
+///   merger's processor then down-mixes to mono ([`merge_block`]);
+/// - into a splitter ("discrete"): channel k into port k, as far as both go.
+fn conn_ports(src: &NodeRec, output: u32, dst: &NodeRec, input: u32) -> Vec<(u32, u32)> {
+    let from = out_channels(src, output);
+    let pair = |l: u32, r: u32| -> Vec<(u32, u32)> {
+        match from.as_slice() {
+            [mono] => vec![(*mono, l), (*mono, r)],
+            [a, b, ..] => vec![(*a, l), (*b, r)],
+            [] => Vec::new(),
+        }
+    };
+    match &dst.params {
+        Params::Merger { .. } => pair(2 * input, 2 * input + 1),
+        Params::Splitter(n) => from.iter().copied().zip(0..*n).collect(),
+        _ => match dst.in_ch {
+            0 => Vec::new(),
+            1 => vec![(from[0], 0)],
+            _ => pair(0, 1),
+        },
+    }
+}
+
+/// WebIDL `unsigned long` (no `[EnforceRange]`): ToNumber, rethrowing, then
+/// ToUint32 — NaN and ±Infinity are 0, the rest wraps modulo 2^32. `undefined`
+/// is `default` (an omitted optional argument).
+unsafe fn idl_u32(g: *mut c_void, v: u64, default: u32) -> Result<u32, ()> {
+    if v == UNDEF {
+        return Ok(default);
+    }
+    let d = to_number(g, v)?;
+    if !d.is_finite() {
+        return Ok(0);
+    }
+    Ok(d.trunc().rem_euclid(4_294_967_296.0) as u32)
+}
+
+/// A `connect` or `disconnect` refusal, made under the graph lock and thrown
+/// after it is released.
+enum Refusal {
+    Type(String),
+    Dom(&'static str, String),
+}
+
+unsafe fn throw_refusal(g: *mut c_void, r: Refusal) -> u64 {
+    match r {
+        Refusal::Type(m) => throw_type_error(g, &m),
+        Refusal::Dom(name, m) => super::domexception::throw(g, name, &m),
+    }
+}
+
+/// Said once: the graph mixes in stereo, so a wider output loses channels 2+.
+fn advise_wide_output(channels: usize) {
+    static ONCE: OnceLock<()> = OnceLock::new();
+    ONCE.get_or_init(|| {
+        eprintln!(
+            "[audio] advisory: a {channels}-channel output was connected to a stereo input. This \
+             graph mixes in stereo, so channels 0 and 1 are kept and the rest are dropped; a \
+             browser would carry every channel or down-mix them (5.1 → stereo). A \
+             ChannelSplitterNode takes every channel."
+        );
+    });
+}
+
+/// `connect(destinationNode, output = 0, input = 0)` — the AudioNode overload
+/// (an AudioParam destination is still a TypeError here).
+///
+/// The spec's checks, in Chromium's order: another context's node is an
+/// `InvalidAccessError`, an output index past `numberOfOutputs` or an input
+/// index past the destination's `numberOfInputs` an `IndexSizeError`. A
+/// connection whose termini already exist is ignored, as the spec says.
 unsafe extern "sysv64" fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let Some(src) = this_node_handle(g, cf) else {
@@ -1089,55 +1378,235 @@ unsafe extern "sysv64" fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(dst) = host_data::<NodeHandle>(g, c.node_cls, dst_v).map(|h| h.0) else {
         return throw_type_error(g, "AudioNode.connect: destination is not an AudioNode");
     };
-    let mut gl = glob().lock().unwrap();
-    let gl = &mut *gl;
-    let (Some(sr), Some(dr)) = (gl.nodes.get(&src), gl.nodes.get(&dst)) else {
-        return throw_type_error(g, "AudioNode.connect: node is gone");
+    let Ok(output) = idl_u32(g, cf_arg(cf, 1), 0) else { return UNDEF };
+    let Ok(input) = idl_u32(g, cf_arg(cf, 2), 0) else { return UNDEF };
+
+    let step: Result<Option<usize>, Refusal> = 'step: {
+        let mut guard = glob().lock().unwrap();
+        let gl = &mut *guard;
+        let (Some(sr), Some(dr)) = (gl.nodes.get(&src), gl.nodes.get(&dst)) else {
+            break 'step Err(Refusal::Type("AudioNode.connect: node is gone".into()));
+        };
+        let refusal = if sr.engine != dr.engine {
+            Some(Refusal::Dom(
+                "InvalidAccessError",
+                "Failed to execute 'connect' on 'AudioNode': cannot connect to an AudioNode belonging \
+                 to a different audio context."
+                    .into(),
+            ))
+        } else if output >= sr.web_outputs() {
+            Some(Refusal::Dom(
+                "IndexSizeError",
+                format!(
+                    "Failed to execute 'connect' on 'AudioNode': output index ({output}) exceeds \
+                     number of outputs ({}).",
+                    sr.web_outputs()
+                ),
+            ))
+        } else if input >= dr.web_inputs() {
+            Some(Refusal::Dom(
+                "IndexSizeError",
+                format!(
+                    "Failed to execute 'connect' on 'AudioNode': input index ({input}) exceeds \
+                     number of inputs ({}).",
+                    dr.web_inputs()
+                ),
+            ))
+        } else {
+            None
+        };
+        if let Some(r) = refusal {
+            break 'step Err(r);
+        }
+        let conn = Conn { dst, output, input };
+        if sr.outs.contains(&conn) {
+            break 'step Ok(None);
+        }
+        let ports = conn_ports(sr, output, dr, input);
+        let carried = out_channels(sr, output).len();
+        let wide = (carried > 2 && !matches!(dr.params, Params::Splitter(_))).then_some(carried);
+        let (sid, did, engine) = (sr.id, dr.id, sr.engine);
+        if let Some(eng) = gl.engines.get_mut(&engine) {
+            if let Err(e) = eng.fw.connect(sid, did, &ports, true) {
+                // Loud, because the symptom of a dropped edge is silence with a
+                // graph that looks correctly wired from JS.
+                eprintln!("[audio] connect failed ({e:?}) — {sid:?} → {did:?} on ports {ports:?}");
+            }
+        }
+        gl.nodes.get_mut(&src).unwrap().outs.push(conn);
+        Ok(wide)
     };
-    if sr.engine != dr.engine {
-        return throw_type_error(g, "AudioNode.connect: nodes belong to different AudioContexts");
-    }
-    let (sid, did, engine) = (sr.id, dr.id, sr.engine);
-    let ports = ports_between(sr.out_ch, dr.in_ch);
-    if let Some(eng) = gl.engines.get_mut(&engine) {
-        if let Err(e) = eng.fw.connect(sid, did, ports, true) {
-            // Loud, because the symptom of a dropped edge is silence with a
-            // graph that looks correctly wired from JS.
-            eprintln!("[audio] connect failed ({e:?}) — {sid:?} → {did:?} on ports {ports:?}");
+    match step {
+        Err(r) => throw_refusal(g, r),
+        Ok(wide) => {
+            if let Some(channels) = wide {
+                advise_wide_output(channels);
+            }
+            dst_v
         }
     }
-    gl.nodes.get_mut(&src).unwrap().outs.push(dst);
-    dst_v
 }
 
+/// `disconnect()`, `disconnect(output)`, `disconnect(destinationNode)`,
+/// `disconnect(destinationNode, output)` and
+/// `disconnect(destinationNode, output, input)`, picked the way WebIDL's
+/// overload resolution picks them: an AudioNode first argument is a
+/// destination; anything else alone is an output index.
+///
+/// Refusals as in the spec: an index past `numberOfOutputs` / the
+/// destination's `numberOfInputs` is an `IndexSizeError`, and naming a
+/// connection that does not exist is an `InvalidAccessError`.
+/// `disconnect(audioParam)` is always the latter: `connect` refuses a param, so
+/// nothing can be connected to one.
 unsafe extern "sysv64" fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let Some(src) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioNode.disconnect called on wrong this");
     };
-    let only = host_data::<NodeHandle>(g, c.node_cls, cf_arg(cf, 0)).map(|h| h.0);
-    let mut gl = glob().lock().unwrap();
-    let gl = &mut *gl;
-    let Some(sr) = gl.nodes.get_mut(&src) else { return UNDEF };
-    let sid = sr.id;
-    let engine = sr.engine;
-    let src_ch = sr.out_ch;
-    let removed: Vec<u64> = match only {
-        Some(d) => {
-            sr.outs.retain(|&o| o != d);
-            vec![d]
-        }
-        None => core::mem::take(&mut sr.outs),
+    let argc = cf_argc(cf);
+    let a0 = cf_arg(cf, 0);
+    let dest = host_data::<NodeHandle>(g, c.node_cls, a0).map(|h| h.0);
+    let is_param = dest.is_none() && host_data::<ParamRef>(g, c.param_cls, a0).is_some();
+
+    enum Sel {
+        All,
+        Output(u32),
+        To { dst: u64, output: Option<u32>, input: Option<u32> },
+        Param,
+    }
+    let sel = if argc == 0 {
+        Sel::All
+    } else if let Some(dst) = dest {
+        let output = if argc >= 2 {
+            let Ok(o) = idl_u32(g, cf_arg(cf, 1), 0) else { return UNDEF };
+            Some(o)
+        } else {
+            None
+        };
+        let input = if argc >= 3 {
+            let Ok(i) = idl_u32(g, cf_arg(cf, 2), 0) else { return UNDEF };
+            Some(i)
+        } else {
+            None
+        };
+        Sel::To { dst, output, input }
+    } else if is_param {
+        Sel::Param
+    } else if argc >= 2 {
+        return throw_type_error(
+            g,
+            "Failed to execute 'disconnect' on 'AudioNode': parameter 1 is not of type 'AudioNode'.",
+        );
+    } else {
+        let Ok(o) = idl_u32(g, a0, 0) else { return UNDEF };
+        Sel::Output(o)
     };
-    if let Some(eng) = gl.engines.get_mut(&engine) {
-        for d in removed {
-            if let Some(dr) = gl.nodes.get(&d) {
-                // Same pairs `connect` used, or the edges do not match.
-                let _ = eng.fw.disconnect(sid, dr.id, ports_between(src_ch, dr.in_ch));
+
+    let refusal = {
+        let mut gl = glob().lock().unwrap();
+        let gl = &mut *gl;
+        let Some(sr) = gl.nodes.get(&src) else { return UNDEF };
+        let outputs = sr.web_outputs();
+        let past_outputs = |o: u32| {
+            Refusal::Dom(
+                "IndexSizeError",
+                format!(
+                    "Failed to execute 'disconnect' on 'AudioNode': output index ({o}) exceeds \
+                     number of outputs ({outputs})."
+                ),
+            )
+        };
+        let picked: Result<Vec<Conn>, Refusal> = match sel {
+            Sel::All => Ok(sr.outs.clone()),
+            Sel::Output(o) if o >= outputs => Err(past_outputs(o)),
+            Sel::Output(o) => Ok(sr.outs.iter().copied().filter(|k| k.output == o).collect()),
+            Sel::To { output: Some(o), .. } if o >= outputs => Err(past_outputs(o)),
+            Sel::To { dst, output, input } => {
+                let inputs = gl.nodes.get(&dst).map(|d| d.web_inputs()).unwrap_or(0);
+                match input {
+                    Some(i) if i >= inputs => Err(Refusal::Dom(
+                        "IndexSizeError",
+                        format!(
+                            "Failed to execute 'disconnect' on 'AudioNode': input index ({i}) \
+                             exceeds number of inputs ({inputs})."
+                        ),
+                    )),
+                    _ => {
+                        let hit: Vec<Conn> = sr
+                            .outs
+                            .iter()
+                            .copied()
+                            .filter(|k| {
+                                k.dst == dst
+                                    && output.is_none_or(|o| k.output == o)
+                                    && input.is_none_or(|i| k.input == i)
+                            })
+                            .collect();
+                        if hit.is_empty() {
+                            let what = match (output, input) {
+                                (None, _) => "the given destination is not connected.".to_string(),
+                                (Some(o), None) => format!("output ({o}) is not connected to the given destination."),
+                                (Some(o), Some(i)) => {
+                                    format!("output ({o}) is not connected to input ({i}) of the destination.")
+                                }
+                            };
+                            Err(Refusal::Dom(
+                                "InvalidAccessError",
+                                format!("Failed to execute 'disconnect' on 'AudioNode': {what}"),
+                            ))
+                        } else {
+                            Ok(hit)
+                        }
+                    }
+                }
+            }
+            Sel::Param => Err(Refusal::Dom(
+                "InvalidAccessError",
+                "Failed to execute 'disconnect' on 'AudioNode': the given AudioParam is not connected."
+                    .into(),
+            )),
+        };
+        match picked {
+            Err(r) => Some(r),
+            Ok(gone) => {
+                let (sid, engine) = (sr.id, sr.engine);
+                let pairs: Vec<(NodeID, Vec<(u32, u32)>)> = gone
+                    .iter()
+                    .filter_map(|k| gl.nodes.get(&k.dst).map(|dr| (dr.id, conn_ports(sr, k.output, dr, k.input))))
+                    .collect();
+                if let Some(eng) = gl.engines.get_mut(&engine) {
+                    for (did, ports) in pairs {
+                        // The pairs `connect` used, so the edges match.
+                        let _ = eng.fw.disconnect(sid, did, &ports);
+                    }
+                }
+                if let Some(sr) = gl.nodes.get_mut(&src) {
+                    sr.outs.retain(|k| !gone.contains(k));
+                }
+                None
             }
         }
+    };
+    match refusal {
+        Some(r) => throw_refusal(g, r),
+        None => UNDEF,
     }
-    UNDEF
+}
+
+unsafe extern "sysv64" fn node_get_number_of_inputs(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(h) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "AudioNode.numberOfInputs on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    enc_i32(gl.nodes.get(&h).map(|r| r.web_inputs()).unwrap_or(0) as i32)
+}
+
+unsafe extern "sysv64" fn node_get_number_of_outputs(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(h) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "AudioNode.numberOfOutputs on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    enc_i32(gl.nodes.get(&h).map(|r| r.web_outputs()).unwrap_or(0) as i32)
 }
 
 // ---------------------------------------------------------------------------
@@ -2191,9 +2660,15 @@ unsafe fn ctx_create_node(g: *mut c_void, cf: *mut c_void, params: Params, proto
     let Some(h) = this_engine_handle(g, cf) else {
         return throw_type_error(g, "AudioContext factory called on wrong this");
     };
+    create_node_on(g, h, params, proto, jsparams)
+}
+
+/// A node on context `engine`, wrapped — the factories' and the node
+/// constructors' common end.
+unsafe fn create_node_on(g: *mut c_void, engine: u64, params: Params, proto: u64, jsparams: &[(&str, u8, f64)]) -> u64 {
     let handle = {
         let mut gl = glob().lock().unwrap();
-        match alloc_node(&mut gl, h, params) {
+        match alloc_node(&mut gl, engine, params) {
             Some(x) => x,
             None => return throw_error(g, 0, "AudioContext is closed"),
         }
@@ -2371,6 +2846,312 @@ unsafe extern "sysv64" fn ctx_create_buffer(g: *mut c_void, cf: *mut c_void) -> 
         return throw_type_error(g, "AudioContext.createBuffer on wrong this");
     }
     wrap_buffer(g, Arc::new(PlanarBuffer { data: vec![vec![0.0; length]; channels], sample_rate: rate }))
+}
+
+// ---------------------------------------------------------------------------
+// ChannelSplitterNode / ChannelMergerNode: factories, constructors, and the
+// three attributes the spec pins on them
+// ---------------------------------------------------------------------------
+//
+// The values (spec §ChannelSplitterNode, §ChannelMergerNode; Chromium's
+// handlers are the same):
+//
+// |                         | splitter                | merger                    |
+// |-------------------------|-------------------------|---------------------------|
+// | `numberOfInputs`        | 1                       | n                         |
+// | `numberOfOutputs`       | n                       | 1                         |
+// | `channelCount`          | n, fixed                | 1 (per input), fixed      |
+// | `channelCountMode`      | "explicit", fixed       | "explicit", fixed         |
+// | `channelInterpretation` | "discrete", fixed       | "speakers", changeable    |
+//
+// Changing a fixed one to another value is an InvalidStateError; setting it
+// to the value it has is allowed. An enum assignment that is not one of the
+// enum's strings is ignored, as WebIDL says for every enum attribute.
+
+const COUNT_MODES: &[&str] = &["max", "clamped-max", "explicit"];
+const INTERPRETATIONS: &[&str] = &["speakers", "discrete"];
+
+/// The IndexSizeError text for a `numberOfOutputs` / `numberOfInputs` outside
+/// 1..=32 (Chromium's wording); `None` when it is in range.
+fn count_out_of_range(n: u32, what: &str) -> Option<String> {
+    (!(1..=MAX_SPLIT_CHANNELS).contains(&n))
+        .then(|| format!("The number of {what} provided ({n}) is outside the range [1, {MAX_SPLIT_CHANNELS}]."))
+}
+
+/// What a splitter / merger `this` is, for the pinned attributes.
+#[derive(Clone, Copy)]
+enum Pinned {
+    Splitter(u32),
+    Merger { discrete: bool },
+}
+
+impl Pinned {
+    fn who(self) -> &'static str {
+        match self {
+            Pinned::Splitter(_) => "ChannelSplitter",
+            Pinned::Merger { .. } => "ChannelMerger",
+        }
+    }
+
+    fn count(self) -> u32 {
+        match self {
+            Pinned::Splitter(n) => n,
+            Pinned::Merger { .. } => 1,
+        }
+    }
+
+    /// The spec's rule per attribute, shared by the setters and the
+    /// constructors' `AudioNodeOptions`. `Err` is the InvalidStateError text.
+    fn check_count(self, v: u32) -> Result<(), String> {
+        if v == self.count() {
+            Ok(())
+        } else {
+            Err(format!("{}: channelCount cannot be changed from {}", self.who(), self.count()))
+        }
+    }
+
+    fn check_mode(self, mode: &str) -> Result<(), String> {
+        if mode == "explicit" {
+            Ok(())
+        } else {
+            Err(format!("{}: channelCountMode cannot be changed from 'explicit'", self.who()))
+        }
+    }
+
+    fn check_interpretation(self, interp: &str) -> Result<(), String> {
+        match self {
+            Pinned::Splitter(_) if interp != "discrete" => {
+                Err("ChannelSplitter: channelInterpretation cannot be changed from 'discrete'".into())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+unsafe fn pinned_of(g: *mut c_void, cf: *mut c_void) -> Option<(u64, Pinned)> {
+    let h = this_node_handle(g, cf)?;
+    let gl = glob().lock().unwrap();
+    match gl.nodes.get(&h).map(|r| &r.params) {
+        Some(Params::Splitter(n)) => Some((h, Pinned::Splitter(*n))),
+        Some(Params::Merger { discrete, .. }) => Some((h, Pinned::Merger { discrete: discrete.load(Ordering::Relaxed) })),
+        _ => None,
+    }
+}
+
+unsafe fn set_refused(g: *mut c_void, attr: &str, msg: &str) -> u64 {
+    super::domexception::throw(
+        g,
+        "InvalidStateError",
+        &format!("Failed to set the '{attr}' property on 'AudioNode': {msg}"),
+    )
+}
+
+/// An enum attribute's new value. `Ok(None)` when it is not one of `allowed`
+/// (WebIDL ignores that assignment); `Err` when ToString threw.
+unsafe fn enum_value(g: *mut c_void, v: u64, allowed: &[&str]) -> Result<Option<String>, ()> {
+    let s = to_js_string(g, v)?;
+    let s = read_string(g, s).unwrap_or_default();
+    Ok(allowed.contains(&s.as_str()).then_some(s))
+}
+
+unsafe extern "sysv64" fn pinned_get_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match pinned_of(g, cf) {
+        Some((_, p)) => enc_i32(p.count() as i32),
+        None => throw_type_error(g, "AudioNode.channelCount on wrong this"),
+    }
+}
+
+unsafe extern "sysv64" fn pinned_set_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some((_, p)) = pinned_of(g, cf) else {
+        return throw_type_error(g, "AudioNode.channelCount on wrong this");
+    };
+    let Ok(v) = idl_u32(g, cf_arg(cf, 0), 0) else { return UNDEF };
+    match p.check_count(v) {
+        Ok(()) => UNDEF,
+        Err(m) => set_refused(g, "channelCount", &m),
+    }
+}
+
+unsafe extern "sysv64" fn pinned_get_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match pinned_of(g, cf) {
+        Some(_) => js_string(g, "explicit"),
+        None => throw_type_error(g, "AudioNode.channelCountMode on wrong this"),
+    }
+}
+
+unsafe extern "sysv64" fn pinned_set_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some((_, p)) = pinned_of(g, cf) else {
+        return throw_type_error(g, "AudioNode.channelCountMode on wrong this");
+    };
+    match enum_value(g, cf_arg(cf, 0), COUNT_MODES) {
+        Err(()) | Ok(None) => UNDEF,
+        Ok(Some(mode)) => match p.check_mode(&mode) {
+            Ok(()) => UNDEF,
+            Err(m) => set_refused(g, "channelCountMode", &m),
+        },
+    }
+}
+
+unsafe extern "sysv64" fn pinned_get_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match pinned_of(g, cf) {
+        Some((_, Pinned::Merger { discrete: false })) => js_string(g, "speakers"),
+        Some(_) => js_string(g, "discrete"),
+        None => throw_type_error(g, "AudioNode.channelInterpretation on wrong this"),
+    }
+}
+
+unsafe extern "sysv64" fn pinned_set_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some((h, p)) = pinned_of(g, cf) else {
+        return throw_type_error(g, "AudioNode.channelInterpretation on wrong this");
+    };
+    let interp = match enum_value(g, cf_arg(cf, 0), INTERPRETATIONS) {
+        Err(()) | Ok(None) => return UNDEF,
+        Ok(Some(s)) => s,
+    };
+    if let Err(m) = p.check_interpretation(&interp) {
+        return set_refused(g, "channelInterpretation", &m);
+    }
+    let gl = glob().lock().unwrap();
+    if let Some(Params::Merger { discrete, .. }) = gl.nodes.get(&h).map(|r| &r.params) {
+        // Live: the merger's processor reads it every block.
+        discrete.store(interp == "discrete", Ordering::Relaxed);
+    }
+    UNDEF
+}
+
+unsafe extern "sysv64" fn ctx_create_channel_splitter(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let c = classes(g);
+    if this_engine_handle(g, cf).is_none() {
+        return throw_type_error(g, "AudioContext.createChannelSplitter on wrong this");
+    }
+    let Ok(n) = idl_u32(g, cf_arg(cf, 0), 6) else { return UNDEF };
+    if let Some(m) = count_out_of_range(n, "outputs") {
+        return super::domexception::throw(
+            g,
+            "IndexSizeError",
+            &format!("Failed to execute 'createChannelSplitter' on 'BaseAudioContext': {m}"),
+        );
+    }
+    ctx_create_node(g, cf, Params::Splitter(n), c.splitter.proto, &[])
+}
+
+unsafe extern "sysv64" fn ctx_create_channel_merger(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let c = classes(g);
+    if this_engine_handle(g, cf).is_none() {
+        return throw_type_error(g, "AudioContext.createChannelMerger on wrong this");
+    }
+    let Ok(n) = idl_u32(g, cf_arg(cf, 0), 6) else { return UNDEF };
+    if let Some(m) = count_out_of_range(n, "inputs") {
+        return super::domexception::throw(
+            g,
+            "IndexSizeError",
+            &format!("Failed to execute 'createChannelMerger' on 'BaseAudioContext': {m}"),
+        );
+    }
+    let params = Params::Merger { n, discrete: ArcGc::new(AtomicBool::new(false)) };
+    ctx_create_node(g, cf, params, c.merger.proto, &[])
+}
+
+/// `AudioNodeOptions` plus the count member, as the constructors read them.
+struct PinnedOptions {
+    count: Option<u32>,
+    mode: Option<String>,
+    interpretation: Option<String>,
+    n: u32,
+}
+
+/// An enum dictionary member: absent → `None`; a value outside the enum is a
+/// TypeError (a dictionary, unlike an attribute, does not ignore it).
+unsafe fn enum_member(g: *mut c_void, dict: u64, member: &str, allowed: &[&str], ty: &str, iface: &str) -> Result<Option<String>, ()> {
+    let v = try_get(g, dict, member)?;
+    if v == UNDEF {
+        return Ok(None);
+    }
+    let s = to_js_string(g, v)?;
+    let s = read_string(g, s).unwrap_or_default();
+    if !allowed.contains(&s.as_str()) {
+        throw_type_error(
+            g,
+            &format!(
+                "Failed to construct '{iface}': Failed to read the '{member}' property from \
+                 'AudioNodeOptions': The provided value '{s}' is not a valid enum value of type {ty}."
+            ),
+        );
+        return Err(());
+    }
+    Ok(Some(s))
+}
+
+/// The options dictionary, converted in WebIDL order: the inherited
+/// `AudioNodeOptions` members first, then `numberOfOutputs` / `numberOfInputs`,
+/// each dictionary's members in lexicographic order. `undefined` / `null` are
+/// the empty dictionary.
+unsafe fn pinned_options(g: *mut c_void, v: u64, n_member: &str, iface: &str, dict: &str) -> Result<PinnedOptions, ()> {
+    let mut o = PinnedOptions { count: None, mode: None, interpretation: None, n: 6 };
+    if v == UNDEF || v == NULL {
+        return Ok(o);
+    }
+    if !super::blob::is_object(g, v) {
+        throw_type_error(g, &format!("Failed to construct '{iface}': The provided value is not of type '{dict}'."));
+        return Err(());
+    }
+    let count = try_get(g, v, "channelCount")?;
+    if count != UNDEF {
+        o.count = Some(idl_u32(g, count, 0)?);
+    }
+    o.mode = enum_member(g, v, "channelCountMode", COUNT_MODES, "ChannelCountMode", iface)?;
+    o.interpretation = enum_member(g, v, "channelInterpretation", INTERPRETATIONS, "ChannelInterpretation", iface)?;
+    o.n = idl_u32(g, try_get(g, v, n_member)?, 6)?;
+    Ok(o)
+}
+
+/// `new ChannelSplitterNode(context, options)` / `new ChannelMergerNode(…)`.
+/// Chromium's order: the dictionary converts (TypeError), the count is checked
+/// (IndexSizeError), then the `AudioNodeOptions` go through the attributes'
+/// rules (InvalidStateError) — the spec's "initialize the AudioNode".
+unsafe fn construct_pinned(g: *mut c_void, cf: *mut c_void, splitter: bool) -> u64 {
+    let c = classes(g);
+    let (iface, dict, n_member, what) = if splitter {
+        ("ChannelSplitterNode", "ChannelSplitterOptions", "numberOfOutputs", "outputs")
+    } else {
+        ("ChannelMergerNode", "ChannelMergerOptions", "numberOfInputs", "inputs")
+    };
+    let Some(engine) = host_data::<CtxHandle>(g, c.ctx_cls, cf_arg(cf, 0)).map(|h| h.0) else {
+        return throw_type_error(g, &format!("Failed to construct '{iface}': parameter 1 is not of type 'BaseAudioContext'."));
+    };
+    let Ok(o) = pinned_options(g, cf_arg(cf, 1), n_member, iface, dict) else { return UNDEF };
+    if let Some(m) = count_out_of_range(o.n, what) {
+        return super::domexception::throw(g, "IndexSizeError", &format!("Failed to construct '{iface}': {m}"));
+    }
+    let p = if splitter { Pinned::Splitter(o.n) } else { Pinned::Merger { discrete: false } };
+    let checks = [
+        o.count.map(|v| p.check_count(v)),
+        o.mode.as_deref().map(|m| p.check_mode(m)),
+        o.interpretation.as_deref().map(|i| p.check_interpretation(i)),
+    ];
+    if let Some(refused) = checks.into_iter().flatten().find_map(Result::err) {
+        return super::domexception::throw(g, "InvalidStateError", &format!("Failed to construct '{iface}': {refused}"));
+    }
+    let nt = cf_new_target(cf);
+    let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    if !is_cell(proto) {
+        proto = if splitter { c.splitter.proto } else { c.merger.proto };
+    }
+    let params = if splitter {
+        Params::Splitter(o.n)
+    } else {
+        let discrete = o.interpretation.as_deref() == Some("discrete");
+        Params::Merger { n: o.n, discrete: ArcGc::new(AtomicBool::new(discrete)) }
+    };
+    create_node_on(g, engine, params, proto, &[])
+}
+
+unsafe extern "sysv64" fn splitter_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+    construct_pinned(g, cf, true)
+}
+
+unsafe extern "sysv64" fn merger_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+    construct_pinned(g, cf, false)
 }
 
 // ---- decodeAudioData -------------------------------------------------------
@@ -2669,8 +3450,8 @@ pub unsafe fn install(g: *mut c_void) {
         arity: 0,
         construct: None,
         parent_proto: 0,
-        methods: &[("connect", 1, node_connect), ("disconnect", 1, node_disconnect)],
-        getters: &[],
+        methods: &[("connect", 1, node_connect), ("disconnect", 0, node_disconnect)],
+        getters: &[("numberOfInputs", node_get_number_of_inputs), ("numberOfOutputs", node_get_number_of_outputs)],
         accessors: &[],
     });
 
@@ -2862,6 +3643,31 @@ pub unsafe fn install(g: *mut c_void) {
         accessors: &[],
     });
 
+    // The three attributes the spec pins on these two (see `Pinned`).
+    let pinned: &[(&str, HostFn, HostFn)] = &[
+        ("channelCount", pinned_get_count, pinned_set_count),
+        ("channelCountMode", pinned_get_mode, pinned_set_mode),
+        ("channelInterpretation", pinned_get_interpretation, pinned_set_interpretation),
+    ];
+    let splitter = define_class(g, &ClassSpec {
+        name: "ChannelSplitterNode",
+        arity: 1,
+        construct: Some(splitter_construct),
+        parent_proto: node_base.proto,
+        methods: &[],
+        getters: &[],
+        accessors: pinned,
+    });
+    let merger = define_class(g, &ClassSpec {
+        name: "ChannelMergerNode",
+        arity: 1,
+        construct: Some(merger_construct),
+        parent_proto: node_base.proto,
+        methods: &[],
+        getters: &[],
+        accessors: pinned,
+    });
+
     let ctx = define_class(g, &ClassSpec {
         name: "AudioContext",
         arity: 0,
@@ -2875,6 +3681,8 @@ pub unsafe fn install(g: *mut c_void) {
             ("createAnalyser", 0, ctx_create_analyser),
             ("createBufferSource", 0, ctx_create_buffer_source),
             ("createOscillator", 0, ctx_create_oscillator),
+            ("createChannelSplitter", 0, ctx_create_channel_splitter),
+            ("createChannelMerger", 0, ctx_create_channel_merger),
             ("createBuffer", 3, ctx_create_buffer),
             ("createMediaElementSource", 1, ctx_create_media_element_source),
             // Non-standard by name on purpose — see ctx_create_red_stream_source.
@@ -2917,6 +3725,8 @@ pub unsafe fn install(g: *mut c_void) {
         source,
         osc,
         stream_src,
+        splitter,
+        merger,
         dest,
         listener,
         param,
@@ -3487,6 +4297,544 @@ mod jsc_tests {
             ),
             r#"["running","suspended","running","closed"]"#
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ChannelSplitterNode / ChannelMergerNode (the signal itself is checked
+    // sample by sample in `split_merge_graph_tests`, with no device)
+    // -----------------------------------------------------------------------
+
+    /// `stmt` must throw a DOMException named `name`.
+    fn dom_throw(c: &Context, stmt: &str, name: &str) {
+        ok(
+            c,
+            &format!(
+                "(() => {{ try {{ {stmt}; return false; }} \
+                   catch (e) {{ return e instanceof DOMException && e.name === '{name}'; }} }})()"
+            ),
+        );
+    }
+
+    #[test]
+    fn splitter_and_merger_have_the_spec_shape() {
+        let c = ctx();
+        ok(&c, "AudioContext.prototype.createChannelSplitter.length === 0 && AudioContext.prototype.createChannelMerger.length === 0");
+        assert_eq!(
+            s(
+                &c,
+                "{ const a = new AudioContext();
+                   const d = a.createChannelSplitter(), m = a.createChannelMerger(), d2 = a.createChannelSplitter(2);
+                   const r = JSON.stringify([
+                     d instanceof ChannelSplitterNode && d instanceof AudioNode,
+                     d.numberOfInputs, d.numberOfOutputs, d.channelCount, d.channelCountMode, d.channelInterpretation,
+                     m instanceof ChannelMergerNode && m instanceof AudioNode,
+                     m.numberOfInputs, m.numberOfOutputs, m.channelCount, m.channelCountMode, m.channelInterpretation,
+                     d2.numberOfOutputs, d2.channelCount]);
+                   a.close(); r }"
+            ),
+            r#"[true,1,6,6,"explicit","discrete",true,6,1,1,"explicit","speakers",2,2]"#
+        );
+        // Every node answers the two counts now, and they are the spec's.
+        ok(
+            &c,
+            "{ const a = new AudioContext();
+               const g = a.createGain(), o = a.createOscillator(), an = a.createAnalyser(), b = a.createBufferSource();
+               const r = g.numberOfInputs === 1 && g.numberOfOutputs === 1
+                      && o.numberOfInputs === 0 && o.numberOfOutputs === 1
+                      && b.numberOfInputs === 0 && an.numberOfInputs === 1
+                      && a.destination.numberOfInputs === 1
+                      && AudioNode.prototype.connect.length === 1 && AudioNode.prototype.disconnect.length === 0;
+               a.close(); r }",
+        );
+    }
+
+    #[test]
+    fn the_constructors_take_a_context_and_options() {
+        let c = ctx();
+        ok(
+            &c,
+            "{ const a = new AudioContext();
+               const d = new ChannelSplitterNode(a, { numberOfOutputs: 2 });
+               const m = new ChannelMergerNode(a, { numberOfInputs: 3, channelInterpretation: 'discrete' });
+               const e = new ChannelSplitterNode(a);
+               const r = d instanceof ChannelSplitterNode && d.numberOfOutputs === 2
+                      && m.numberOfInputs === 3 && m.channelInterpretation === 'discrete'
+                      && e.numberOfOutputs === 6
+                      && ChannelSplitterNode.length === 1 && ChannelMergerNode.length === 1;
+               a.close(); r }",
+        );
+        ok(
+            &c,
+            "{ const a = new AudioContext(); class Mine extends ChannelMergerNode {}
+               const m = new Mine(a, { numberOfInputs: 2 });
+               const r = m instanceof Mine && m instanceof ChannelMergerNode && m.numberOfInputs === 2; a.close(); r }",
+        );
+        assert!(throws(&c, "new ChannelSplitterNode()").contains("BaseAudioContext"));
+        assert!(throws(&c, "new ChannelMergerNode({})").contains("BaseAudioContext"));
+        assert!(throws(&c, "ChannelSplitterNode({})").contains("new"));
+        // A non-dictionary options is a TypeError, and so is a member outside its enum.
+        ok(
+            &c,
+            "(() => { const a = new AudioContext();
+               try { new ChannelSplitterNode(a, 2); return false; } catch (e) { return e instanceof TypeError; }
+               finally { a.close(); } })()",
+        );
+        ok(
+            &c,
+            "(() => { const a = new AudioContext();
+               try { new ChannelMergerNode(a, { channelCountMode: 'bogus' }); return false; }
+               catch (e) { return e instanceof TypeError && /ChannelCountMode/.test(e.message); }
+               finally { a.close(); } })()",
+        );
+    }
+
+    #[test]
+    fn a_count_outside_1_to_32_is_an_index_size_error() {
+        let c = ctx();
+        s(&c, "globalThis.__a = new AudioContext(); 0");
+        for call in [
+            "__a.createChannelSplitter(0)",
+            "__a.createChannelSplitter(33)",
+            "__a.createChannelMerger(0)",
+            "__a.createChannelMerger(33)",
+            "__a.createChannelSplitter(-1)",
+            "__a.createChannelMerger(NaN)",
+            "new ChannelSplitterNode(__a, { numberOfOutputs: 0 })",
+            "new ChannelMergerNode(__a, { numberOfInputs: 40 })",
+        ] {
+            dom_throw(&c, call, "IndexSizeError");
+        }
+        let msg = throws(&c, "__a.createChannelSplitter(33)");
+        assert!(msg.contains("outside the range [1, 32]"), "{msg}");
+        ok(
+            &c,
+            "__a.createChannelSplitter(32).numberOfOutputs === 32 && __a.createChannelMerger(32).numberOfInputs === 32
+             && __a.createChannelSplitter(1).numberOfOutputs === 1",
+        );
+        // The IDL `unsigned long`: 2.9 is 2 and '3' is 3.
+        ok(&c, "__a.createChannelSplitter(2.9).numberOfOutputs === 2 && __a.createChannelMerger('3').numberOfInputs === 3");
+        s(&c, "__a.close(); 0");
+    }
+
+    #[test]
+    fn the_pinned_attributes_refuse_a_change_and_accept_their_own_value() {
+        let c = ctx();
+        s(&c, "globalThis.__a = new AudioContext(); globalThis.__d = __a.createChannelSplitter(4); globalThis.__m = __a.createChannelMerger(2); 0");
+        for stmt in [
+            "__d.channelCount = 2",
+            "__d.channelCountMode = 'max'",
+            "__d.channelInterpretation = 'speakers'",
+            "__m.channelCount = 2",
+            "__m.channelCountMode = 'clamped-max'",
+            "new ChannelSplitterNode(__a, { numberOfOutputs: 2, channelCount: 3 })",
+            "new ChannelSplitterNode(__a, { channelCountMode: 'max' })",
+            "new ChannelSplitterNode(__a, { channelInterpretation: 'speakers' })",
+            "new ChannelMergerNode(__a, { channelCount: 2 })",
+            "new ChannelMergerNode(__a, { channelCountMode: 'max' })",
+        ] {
+            dom_throw(&c, stmt, "InvalidStateError");
+        }
+        let msg = throws(&c, "__d.channelCount = 6");
+        assert!(msg.contains("cannot be changed from 4"), "{msg}");
+        // Their own value is allowed.
+        ok(
+            &c,
+            "{ __d.channelCount = 4; __d.channelCountMode = 'explicit'; __d.channelInterpretation = 'discrete';
+               __m.channelCount = 1; __m.channelCountMode = 'explicit';
+               new ChannelSplitterNode(__a, { numberOfOutputs: 3, channelCount: 3, channelCountMode: 'explicit',
+                                              channelInterpretation: 'discrete' }).channelCount === 3 }",
+        );
+        // Not one of the enum's strings: ignored, as WebIDL says for an attribute.
+        ok(
+            &c,
+            "{ __d.channelCountMode = 'bogus'; __d.channelInterpretation = 'nope';
+               __d.channelCountMode === 'explicit' && __d.channelInterpretation === 'discrete' }",
+        );
+        // The merger's interpretation is the one that may change.
+        ok(
+            &c,
+            "{ __m.channelInterpretation = 'discrete'; const was = __m.channelInterpretation;
+               __m.channelInterpretation = 'speakers'; was === 'discrete' && __m.channelInterpretation === 'speakers' }",
+        );
+        // The accessors are brand-checked.
+        assert!(throws(&c, "Object.getOwnPropertyDescriptor(ChannelSplitterNode.prototype, 'channelCount').get.call(__a.createGain())")
+            .contains("wrong this"));
+        s(&c, "__a.close(); 0");
+    }
+
+    #[test]
+    fn connect_and_disconnect_use_the_output_and_input_indices() {
+        let c = ctx();
+        s(&c, "globalThis.__a = new AudioContext(); 0");
+        // The client's AudioManager.initVirtualOutputStream, verbatim in shape:
+        // the call that used to be a TypeError at module scope.
+        ok(
+            &c,
+            "{ const ctx = __a;
+               const outputAnalyserNode = ctx.createAnalyser();
+               outputAnalyserNode.fftSize = 256; outputAnalyserNode.smoothingTimeConstant = 0.3;
+               outputAnalyserNode.connect(ctx.destination);
+               const outputSplitter = ctx.createChannelSplitter(2);
+               const left = ctx.createAnalyser(); left.fftSize = 256; left.smoothingTimeConstant = 0.3;
+               const right = ctx.createAnalyser(); right.fftSize = 256; right.smoothingTimeConstant = 0.3;
+               const l = outputSplitter.connect(left, 0);
+               const r = outputSplitter.connect(right, 1);
+               const masterGainNode = ctx.createGain();
+               masterGainNode.connect(outputAnalyserNode);
+               masterGainNode.connect(outputSplitter);
+               const voiceBusNode = ctx.createGain();
+               voiceBusNode.connect(masterGainNode);
+               l === left && r === right }",
+        );
+        s(
+            &c,
+            "globalThis.__d = __a.createChannelSplitter(2); globalThis.__m = __a.createChannelMerger(2);
+             globalThis.__g = __a.createGain(); globalThis.__o = __a.createOscillator(); 0",
+        );
+        for stmt in [
+            "__d.connect(__g, 2)",
+            "__g.connect(__a.destination, 1)",
+            "__g.connect(__m, 0, 2)",
+            "__g.connect(__o)",
+            "__d.disconnect(2)",
+            "__g.disconnect(__m, 1)",
+            "__d.disconnect(__m, 0, 2)",
+        ] {
+            dom_throw(&c, stmt, "IndexSizeError");
+        }
+        ok(&c, "__d.connect(__m, 0, 1) === __m && __d.connect(__m, 1, 0) === __m && __m.connect(__g) === __g");
+        // The same termini twice are one connection: the second disconnect finds nothing.
+        s(&c, "__d.connect(__m, 0, 1); __d.disconnect(__m, 0, 1); 0");
+        dom_throw(&c, "__d.disconnect(__m, 0, 1)", "InvalidAccessError");
+        // disconnect(output) takes only that output.
+        s(&c, "__d.connect(__g, 0); __d.connect(__g, 1); __d.disconnect(1); 0");
+        dom_throw(&c, "__d.disconnect(__g, 1)", "InvalidAccessError");
+        s(&c, "__d.disconnect(__g, 0); 0");
+        dom_throw(&c, "__g.disconnect(__o)", "InvalidAccessError");
+        dom_throw(&c, "__g.disconnect(__g.gain)", "InvalidAccessError");
+        dom_throw(&c, "{ const b = new AudioContext(); try { __g.connect(b.destination); } finally { b.close(); } }", "InvalidAccessError");
+        // disconnect() still takes everything, and is then a no-op.
+        ok(&c, "{ __m.disconnect(); __m.disconnect(); __d.disconnect(); true }");
+        s(&c, "__a.close(); 0");
+    }
+
+    #[test]
+    fn a_split_stereo_signal_reaches_each_channel_s_analyser_and_merges_back() {
+        // The same graph `split_merge_graph_tests` renders by hand, through the
+        // JS surface and a live device: L a ±0.5 square, R a ±0.25 one, each
+        // read back off its own analyser (RMS = amplitude), then merged back
+        // swapped and split again. Output muted.
+        let c = ctx();
+        s(
+            &c,
+            "globalThis.__ctx = new AudioContext();
+             const a = __ctx, rate = a.sampleRate, n = rate;
+             const buf = a.createBuffer(2, n, rate);
+             const L = new Float32Array(n), R = new Float32Array(n);
+             for (let i = 0; i < n; i++) { L[i] = (i % 100) < 50 ? 0.5 : -0.5; R[i] = (i % 60) < 30 ? 0.25 : -0.25; }
+             buf.copyToChannel(L, 0); buf.copyToChannel(R, 1);
+             const src = a.createBufferSource(); src.buffer = buf; src.loop = true;
+             const sp = a.createChannelSplitter(2);
+             globalThis.__l = a.createAnalyser(); globalThis.__r = a.createAnalyser();
+             src.connect(sp); sp.connect(__l, 0); sp.connect(__r, 1);
+             const m = a.createChannelMerger(2); sp.connect(m, 0, 1); sp.connect(m, 1, 0);
+             const sp2 = a.createChannelSplitter(2); m.connect(sp2);
+             globalThis.__l2 = a.createAnalyser(); globalThis.__r2 = a.createAnalyser();
+             sp2.connect(__l2, 0); sp2.connect(__r2, 1);
+             const mute = a.createGain(); mute.gain.value = 0; m.connect(mute); mute.connect(a.destination);
+             src.start(); 'wired'",
+        );
+        let live = pump_for(&c, 400);
+        let (l, r) = (analyser_rms(&c, "__l"), analyser_rms(&c, "__r"));
+        let (l2, r2) = (analyser_rms(&c, "__l2"), analyser_rms(&c, "__r2"));
+        if !live {
+            eprintln!("[splitter] no output stream on this machine — signal assertions skipped");
+            s(&c, "__ctx.close(); 'closed'");
+            return;
+        }
+        assert!((l - 0.5).abs() < 0.02, "left channel's analyser: RMS {l}, want 0.5");
+        assert!((r - 0.25).abs() < 0.02, "right channel's analyser: RMS {r}, want 0.25");
+        assert!((l2 - 0.25).abs() < 0.02, "merged-swapped left: RMS {l2}, want 0.25");
+        assert!((r2 - 0.5).abs() < 0.02, "merged-swapped right: RMS {r2}, want 0.5");
+        s(&c, "__ctx.close(); 'closed'");
+    }
+}
+
+#[cfg(test)]
+mod split_merge_graph_tests {
+    //! The splitter and merger through a REAL Firewheel graph, rendered by
+    //! hand: an offline backend hands the test the processor, so every sample
+    //! is known and the test means the same on a machine with no sound card.
+    //! The port maps are `conn_ports` itself — exactly what `connect` wires.
+    use super::*;
+    use core::time::Duration;
+    use firewheel::backend::{AudioBackend, BackendProcessInfo};
+    use firewheel::node::StreamStatus;
+    use firewheel::processor::FirewheelProcessor;
+    use firewheel::{FirewheelConfig, FirewheelCtx, StreamInfo};
+
+    const RATE: u32 = 48_000;
+    const BLOCK: usize = 128;
+
+    #[derive(Debug)]
+    struct Never;
+
+    impl core::fmt::Display for Never {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("never")
+        }
+    }
+
+    impl std::error::Error for Never {}
+
+    /// No device: `set_processor` keeps the processor for the test to drive.
+    struct Offline {
+        processor: Option<FirewheelProcessor<Offline>>,
+    }
+
+    impl AudioBackend for Offline {
+        type Enumerator = ();
+        type Config = ();
+        type StartStreamError = Never;
+        type StreamError = Never;
+        type Instant = ();
+
+        fn enumerator() -> Self::Enumerator {}
+
+        fn start_stream(_config: ()) -> Result<(Self, StreamInfo), Never> {
+            let info = StreamInfo {
+                sample_rate: NonZeroU32::new(RATE).unwrap(),
+                prev_sample_rate: NonZeroU32::new(RATE).unwrap(),
+                max_block_frames: NonZeroU32::new(BLOCK as u32).unwrap(),
+                num_stream_out_channels: 2,
+                ..Default::default()
+            };
+            Ok((Offline { processor: None }, info))
+        }
+
+        fn set_processor(&mut self, processor: FirewheelProcessor<Self>) {
+            self.processor = Some(processor);
+        }
+
+        fn poll_status(&mut self) -> Result<(), Never> {
+            Ok(())
+        }
+
+        fn delay_from_last_process(&self, _process_timestamp: ()) -> Option<Duration> {
+            None
+        }
+    }
+
+    /// The known stereo signal, by sample clock: L a ±0.5 square of period 64,
+    /// R a sawtooth over [-0.25, 0.24].
+    fn left(t: u64) -> f32 {
+        if (t / 32) % 2 == 0 { 0.5 } else { -0.5 }
+    }
+
+    fn right(t: u64) -> f32 {
+        (t % 50) as f32 / 100.0 - 0.25
+    }
+
+    #[derive(Clone)]
+    struct Known;
+
+    impl firewheel::node::AudioNode for Known {
+        type Configuration = firewheel::node::EmptyConfig;
+
+        fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
+            firewheel::node::AudioNodeInfo::new().debug_name("test_known_stereo").channel_config(
+                firewheel::channel_config::ChannelConfig {
+                    num_inputs: firewheel::channel_config::ChannelCount::ZERO,
+                    num_outputs: firewheel::channel_config::ChannelCount::STEREO,
+                },
+            )
+        }
+
+        fn construct_processor(
+            &self,
+            _config: &Self::Configuration,
+            _cx: firewheel::node::ConstructProcessorContext,
+        ) -> impl firewheel::node::AudioNodeProcessor {
+            KnownProcessor { t: 0 }
+        }
+    }
+
+    struct KnownProcessor {
+        t: u64,
+    }
+
+    impl firewheel::node::AudioNodeProcessor for KnownProcessor {
+        fn process(
+            &mut self,
+            info: &firewheel::node::ProcInfo,
+            buffers: firewheel::node::ProcBuffers,
+            _events: &mut firewheel::event::ProcEvents,
+            _extra: &mut firewheel::node::ProcExtra,
+        ) -> firewheel::node::ProcessStatus {
+            for i in 0..info.frames {
+                let t = self.t + i as u64;
+                buffers.outputs[0][i] = left(t);
+                buffers.outputs[1][i] = right(t);
+            }
+            self.t += info.frames as u64;
+            firewheel::node::ProcessStatus::OutputsModified
+        }
+    }
+
+    type Fw = FirewheelCtx<Offline>;
+
+    fn rec(id: NodeID, params: Params) -> NodeRec {
+        NodeRec::new(0, id, params)
+    }
+
+    fn splitter(fw: &mut Fw, n: u32) -> NodeRec {
+        rec(fw.add_node(SplitterNode { n }, None), Params::Splitter(n))
+    }
+
+    fn merger(fw: &mut Fw, n: u32, discrete: bool) -> NodeRec {
+        let d = ArcGc::new(AtomicBool::new(discrete));
+        rec(fw.add_node(MergerNode { n, discrete: ArcGc::clone(&d) }, None), Params::Merger { n, discrete: d })
+    }
+
+    /// An analyser's monitor: it records the mono mix of its stereo input, so
+    /// a mono output fed into both ports reads back as itself, exactly.
+    fn monitor(fw: &mut Fw) -> (NodeRec, ArcGc<MonitorRing>) {
+        let ring = ArcGc::new(MonitorRing::new());
+        let id = fw.add_node(MonitorNode { ring: ArcGc::clone(&ring) }, None);
+        (rec(id, Params::Analyser { ring: ArcGc::clone(&ring), smooth: Vec::new() }), ring)
+    }
+
+    fn wire(fw: &mut Fw, src: &NodeRec, output: u32, dst: &NodeRec, input: u32) {
+        let ports = conn_ports(src, output, dst, input);
+        fw.connect(src.id, dst.id, &ports, true).unwrap_or_else(|e| panic!("connect {ports:?}: {e:?}"));
+    }
+
+    fn tap(fw: &mut Fw, src: &NodeRec, output: u32) -> ArcGc<MonitorRing> {
+        let (m, ring) = monitor(fw);
+        wire(fw, src, output, &m, 0);
+        ring
+    }
+
+    fn render(fw: &mut Fw, blocks: usize) {
+        let mut out = vec![0.0f32; BLOCK * 2];
+        for b in 0..blocks {
+            fw.update().expect("firewheel update");
+            let p = fw.active_backend_mut().unwrap().processor.as_mut().expect("the processor was handed over");
+            p.process_interleaved(
+                &[],
+                &mut out,
+                BackendProcessInfo {
+                    num_in_channels: 0,
+                    num_out_channels: 2,
+                    frames: BLOCK,
+                    process_timestamp: (),
+                    duration_since_stream_start: Duration::from_secs_f64((b * BLOCK) as f64 / RATE as f64),
+                    input_stream_status: StreamStatus::empty(),
+                    output_stream_status: StreamStatus::empty(),
+                    dropped_frames: 0,
+                },
+            );
+        }
+    }
+
+    /// The last 1024 samples `ring` saw, against `want(t)` on the sample clock.
+    fn assert_signal(ring: &MonitorRing, total: u64, what: &str, want: impl Fn(u64) -> f32) {
+        assert_eq!(ring.cursor.load(Ordering::Acquire) as u64, total, "{what}: the monitor missed frames");
+        let n = 1024usize;
+        let mut got = vec![0.0f32; n];
+        ring.read_latest(&mut got);
+        for (i, v) in got.iter().enumerate() {
+            let t = total - n as u64 + i as u64;
+            let w = want(t);
+            assert!((v - w).abs() < 1e-6, "{what}: sample {t} is {v}, want {w}");
+        }
+    }
+
+    #[test]
+    fn a_known_stereo_signal_splits_into_its_channels_and_merges_back() {
+        let mut fw = Fw::new(FirewheelConfig::default());
+        // A stand-in record for the source: `conn_ports` reads only its shape
+        // (two output ports, not a splitter).
+        let src = rec(fw.add_node(Known, None), Params::Passthrough);
+
+        // Split: each output is one channel.
+        let split = splitter(&mut fw, 2);
+        wire(&mut fw, &src, 0, &split, 0);
+        let split_l = tap(&mut fw, &split, 0);
+        let split_r = tap(&mut fw, &split, 1);
+
+        // Merged back with the two swapped, then split again.
+        let swap = merger(&mut fw, 2, false);
+        wire(&mut fw, &split, 0, &swap, 1);
+        wire(&mut fw, &split, 1, &swap, 0);
+        let split2 = splitter(&mut fw, 2);
+        wire(&mut fw, &swap, 0, &split2, 0);
+        let swapped_l = tap(&mut fw, &split2, 0);
+        let swapped_r = tap(&mut fw, &split2, 1);
+
+        // A stereo connection into one merger input is down-mixed to mono:
+        // "speakers" 0.5·(L+R), "discrete" L.
+        let speakers = merger(&mut fw, 1, false);
+        wire(&mut fw, &src, 0, &speakers, 0);
+        let speakers_mix = tap(&mut fw, &speakers, 0);
+        let discrete = merger(&mut fw, 1, true);
+        wire(&mut fw, &src, 0, &discrete, 0);
+        let discrete_mix = tap(&mut fw, &discrete, 0);
+
+        // Two connections into one input sum.
+        let summed = merger(&mut fw, 1, false);
+        wire(&mut fw, &split, 0, &summed, 0);
+        wire(&mut fw, &split, 1, &summed, 0);
+        let sum = tap(&mut fw, &summed, 0);
+
+        // A one-output splitter keeps channel 0 of a stereo input (discrete).
+        let narrow = splitter(&mut fw, 1);
+        wire(&mut fw, &src, 0, &narrow, 0);
+        let narrow_0 = tap(&mut fw, &narrow, 0);
+
+        // An unconnected merger input is silence beside a connected one.
+        let half = merger(&mut fw, 2, false);
+        wire(&mut fw, &split, 1, &half, 1);
+        let split3 = splitter(&mut fw, 2);
+        wire(&mut fw, &half, 0, &split3, 0);
+        let half_0 = tap(&mut fw, &split3, 0);
+        let half_1 = tap(&mut fw, &split3, 1);
+
+        fw.start_stream(()).expect("the offline stream starts");
+        let blocks = 40;
+        render(&mut fw, blocks);
+        let total = (blocks * BLOCK) as u64;
+
+        assert_signal(&split_l, total, "splitter output 0", left);
+        assert_signal(&split_r, total, "splitter output 1", right);
+        assert_signal(&swapped_l, total, "merged back swapped, channel 0", right);
+        assert_signal(&swapped_r, total, "merged back swapped, channel 1", left);
+        assert_signal(&speakers_mix, total, "speakers down-mix", |t| 0.5 * (left(t) + right(t)));
+        assert_signal(&discrete_mix, total, "discrete down-mix", left);
+        assert_signal(&sum, total, "two connections into one input", |t| left(t) + right(t));
+        assert_signal(&narrow_0, total, "one-output splitter", left);
+        assert_signal(&half_0, total, "unconnected merger input", |_| 0.0);
+        assert_signal(&half_1, total, "connected merger input", right);
+    }
+
+    #[test]
+    fn merge_block_mixes_each_pair_and_reports_silence() {
+        // The processor's arithmetic on its own, including the silence mask
+        // the engine optimises on.
+        let (a, b) = ([0.5f32, -0.5, 0.25], [0.25f32, 0.25, -0.75]);
+        let z = [0.0f32; 3];
+        let inputs: [&[f32]; 4] = [&a, &b, &z, &z];
+        let (mut o0, mut o1) = ([9.0f32; 3], [9.0f32; 3]);
+        let mut outputs: [&mut [f32]; 2] = [&mut o0, &mut o1];
+        let mask = merge_block(&inputs, &mut outputs, 3, |p| p >= 2, false);
+        assert_eq!(o0, [0.375, -0.125, -0.25]);
+        assert_eq!(o1, [0.0; 3]);
+        assert!(!mask.is_channel_silent(0) && mask.is_channel_silent(1));
+
+        let (mut d0, mut d1) = ([9.0f32; 3], [9.0f32; 3]);
+        let mut outputs: [&mut [f32]; 2] = [&mut d0, &mut d1];
+        merge_block(&inputs, &mut outputs, 3, |p| p >= 2, true);
+        assert_eq!(d0, a, "discrete keeps the left port");
     }
 }
 
