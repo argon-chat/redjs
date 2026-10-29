@@ -22,8 +22,8 @@
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
 //! window (+ host hooks), UIEvent / MouseEvent / KeyboardEvent / WheelEvent /
 //! FocusEvent / InputEvent / PointerEvent / DragEvent / DataTransfer,
-//! `navigator` (a real Navigator whose `userAgent` the embedder sets, see
-//! [`navigator`]), DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, `structuredClone`
+//! `navigator` (a real Navigator whose `userAgent` and `onLine` the embedder
+//! sets, see [`navigator`]), DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, `structuredClone`
 //! over a byte-level structured serializer (see [`serialize`]), the
 //! Streams queueing cores and the gzip/deflate codec, and the alert / confirm /
 //! prompt host hooks. Only genuinely dumb stubs remain in the embedded

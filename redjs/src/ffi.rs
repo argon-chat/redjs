@@ -914,6 +914,20 @@ pub unsafe extern "C" fn redjs_navigator_set_user_agent(ua: *const u16, len: usi
     crate::webapi::navigator::set_user_agent(Some(&s));
 }
 
+/// Sets what `navigator.onLine` reports, for every context in the process,
+/// from any thread: `1` online, `0` offline, negative = no provider (reads
+/// `true`, Chromium's answer when it cannot tell). A change queues an
+/// `online` / `offline` event for every context's next pump; repeating the
+/// current state is not a change. See `webapi::navigator`.
+#[no_mangle]
+pub extern "C" fn redjs_navigator_set_on_line(state: i32) {
+    crate::webapi::navigator::set_on_line(match state {
+        s if s < 0 => None,
+        0 => Some(false),
+        _ => Some(true),
+    });
+}
+
 /// The per-pump delivery budget, process-wide, in microseconds: how long one
 /// `redjs_pump` may keep delivering — and waiting for — results produced on
 /// other threads (IndexedDB) while any are still in flight. Default 4000.

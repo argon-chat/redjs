@@ -224,6 +224,7 @@ hacks, no JS megashim:
 | `fetch` / `Response` / `Headers` | local files (scripts→assets root resolution) + `data:` URIs; http(s) → network-error response |
 | `ImageBitmap` / `HTMLImageElement` / `Image` / `createImageBitmap` | decode via the `image` crate (png/jpeg/webp/bmp/gif); `img.src` loads async on the pump tick and fires `load`/`error`; region-crop overload for sprite atlases |
 | `document` / `window` | EventTarget-backed; `window === globalThis` (proxy-normalized) |
+| `navigator` | a real `Navigator`: NavigatorID (`userAgent` set by the embedder), `hardwareConcurrency`, and `onLine` + trusted `online`/`offline` events on the global in every context. `onLine` is what the embedder's OS notifier says (`navigator::set_on_line` / `redjs_navigator_set_on_line`, any thread; Chromium's meaning: "the OS believes there is a network", not reachability); with no provider it is `true` and says so once on stderr |
 | `crypto` | **OS CSPRNG** (`getrandom` → BCryptGenRandom): getRandomValues (spec type/quota checks) + randomUUID v4; `subtle.digest` SHA-1/256/384/512 (RustCrypto) |
 | `structuredClone` | HTML StructuredSerialize/Deserialize over a **byte-level serializer** (`webapi/serialize.rs`: frozen wire format, attachment table, no JSC value in the output, so bytes decode in another context on another thread): primitives incl. BigInt and lone surrogates, objects/arrays (holes, key order, getters run once), Date/RegExp/Map/Set/wrappers, the 7 Error types (+ `stack`, `cause`), ArrayBuffer (resizable too) and every view, Blob (by reference), ImageBitmap, ImageData, DOMPoint/DOMMatrix (+ ReadOnly), DOMException/QuotaExceededError, identity and cycles; `{ transfer }` with HTML's validate → serialize → detach order. Everything else → a real `DataCloneError` DOMException; too-deep graphs → RangeError |
 | `AbortController` / `AbortSignal` | real EventTarget signals: `abort` event + `onabort`, `reason`, `throwIfAborted()`, statics `AbortSignal.abort()` / `AbortSignal.timeout(ms)` (scheduler-driven TimeoutError) |
@@ -247,6 +248,9 @@ Host integration:
 - Hooks instead of the old C# objects: `redjs_dom_resize`,
   `redjs_dom_set_visibility`, `redjs_dom_content_loaded`,
   `redjs_dom_register_element` (the WebGPU canvas wrapper).
+- `redjs_navigator_set_on_line(state)` (1 online, 0 offline, <0 no
+  provider) — from the host's OS network-change notifier, any thread; each
+  change becomes an `online`/`offline` event at every context's next pump.
 - **`redjs_image_pixels(value)`** → direct RGBA8 pointer of an
   ImageBitmap/loaded image — the zero-copy `copyExternalImageToTexture`
   upload path (C#: `TryGetImagePixels` → `ReadOnlySpan<byte>`).
