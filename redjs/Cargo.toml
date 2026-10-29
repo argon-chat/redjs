@@ -25,6 +25,11 @@ sha1 = "0.10"
 sha2 = "0.10"
 zstd-sys = { version = "2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+# SVG images (`new Image().src = "data:image/svg+xml,..."`, an SVG Blob):
+# rasterized with resvg at their intrinsic size. The version and features
+# are the ones gpui builds for its own SVG rendering, so an embedder that
+# has gpui (vue-native) compiles nothing new.
+resvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"], optional = true }
 # Audio: the native Web Audio implementation (webapi/audio.rs) maps the
 # WebAudio node graph onto Firewheel's; symphonium (the same decoder firewheel
 # uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the game formats.
@@ -97,7 +102,7 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 # dep regardless of features, so `../../redcss` must exist on disk even with
 # `css-host` off — a stub crate at that path satisfies it.
 [features]
-default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb"]
+default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
 # decodeAudioData beyond the game formats: AAC-LC + the MP4/M4A, CAF, MKV and
@@ -130,6 +135,8 @@ css-host = ["dep:redcss"]
 # RedYoga host class over the vendored Yoga C++ (build.rs skips the yoga
 # compile — and the vendored-sources requirement — when this is off).
 yoga-host = []
+# SVG decoding for Image / createImageBitmap (webapi/image.rs).
+svg-images = ["dep:resvg"]
 
 # ---------------------------------------------------------------------------
 # Web platform surfaces that need something only the EMBEDDER has.

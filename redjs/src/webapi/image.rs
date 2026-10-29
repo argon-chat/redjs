@@ -168,7 +168,7 @@ unsafe extern "sysv64" fn image_set_src(g: *mut c_void, cf: *mut c_void) -> u64 
     }
     crate::web::schedule_native(g, 0.0, Box::new(move |g| {
         let fetched = fsutil::fetch_url(g, &src);
-        let decoded = if fetched.ok { decode_rgba(&fetched.bytes) } else { None };
+        let decoded = if fetched.ok { decode_typed(&fetched.bytes, Some(&fetched.mime)) } else { None };
         finish_load(g, this, &src, decoded);
     }));
     UNDEF
@@ -180,8 +180,14 @@ unsafe fn finish_load(g: *mut c_void, this: u64, src: &str, decoded: Option<Bitm
     let st = state(g);
     match decoded {
         Some(data) => {
-            define(g, this, "width", enc_i32(data.width as i32), 0);
-            define(g, this, "height", enc_i32(data.height as i32), 0);
+            // `new Image(32, 32)`'s presentational size stays; an unsized
+            // image takes its natural one.
+            if dec_f64(get(g, this, "width")).unwrap_or(0.0) == 0.0 {
+                define(g, this, "width", enc_i32(data.width as i32), 0);
+            }
+            if dec_f64(get(g, this, "height")).unwrap_or(0.0) == 0.0 {
+                define(g, this, "height", enc_i32(data.height as i32), 0);
+            }
             define(g, this, "naturalWidth", enc_i32(data.width as i32), 0);
             define(g, this, "naturalHeight", enc_i32(data.height as i32), 0);
             let bmp = create_bitmap(g, data);
@@ -263,11 +269,110 @@ unsafe extern "sysv64" fn image_decode_method(g: *mut c_void, cf: *mut c_void) -
     p
 }
 
+/// Decode an image's bytes to straight RGBA: a raster format through `image`,
+/// SVG through resvg (by its type, or by its first bytes when the type is
+/// missing or generic, as a Blob's or a file's often is).
 fn decode_rgba(bytes: &[u8]) -> Option<BitmapData> {
+    decode_typed(bytes, None)
+}
+
+fn decode_typed(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
+    if is_svg(bytes, mime) {
+        return svg::rasterize(bytes);
+    }
     let img = image::load_from_memory(bytes).ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     Some(BitmapData { width: w, height: h, rgba: rgba.into_raw() })
+}
+
+/// `image/svg+xml`, or markup that opens an `<svg>` element (after a BOM,
+/// whitespace, an XML declaration, comments or a doctype).
+fn is_svg(bytes: &[u8], mime: Option<&str>) -> bool {
+    if let Some(m) = mime {
+        let m = m.split(';').next().unwrap_or("").trim();
+        if m.eq_ignore_ascii_case("image/svg+xml") {
+            return true;
+        }
+    }
+    let head = &bytes[..bytes.len().min(1024)];
+    let head = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
+    let start = head.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(head.len());
+    let head = &head[start..];
+    if !head.starts_with(b"<") {
+        return false;
+    }
+    head.windows(4).any(|w| w.eq_ignore_ascii_case(b"<svg"))
+}
+
+#[cfg(feature = "svg-images")]
+mod svg {
+    use super::BitmapData;
+    use resvg::{tiny_skia, usvg};
+    use std::sync::{Arc, OnceLock};
+
+    /// The largest side a rasterized SVG gets; a bigger one is scaled down to
+    /// fit, keeping its aspect ratio.
+    const MAX_SIDE: f32 = 8192.0;
+
+    /// System fonts, loaded once and only for an SVG with `<text>` in it: icon
+    /// SVGs (paths only) never pay for the font scan.
+    fn fonts() -> Arc<usvg::fontdb::Database> {
+        static DB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+        Arc::clone(DB.get_or_init(|| {
+            let mut db = usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            Arc::new(db)
+        }))
+    }
+
+    /// Rasterize at the SVG's intrinsic size (its `width`/`height`, else its
+    /// `viewBox`), which is what `naturalWidth`/`naturalHeight` then report.
+    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> {
+        let mut opt = usvg::Options::default();
+        if bytes.windows(5).any(|w| w == b"<text") {
+            opt.fontdb = fonts();
+        }
+        let tree = match usvg::Tree::from_data(bytes, &opt) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[js:image] SVG parse failed: {e}");
+                return None;
+            }
+        };
+        let size = tree.size();
+        let scale = (MAX_SIDE / size.width().max(size.height())).min(1.0);
+        let w = (size.width() * scale).round().max(1.0) as u32;
+        let h = (size.height() * scale).round().max(1.0) as u32;
+        let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
+        let sx = w as f32 / size.width();
+        let sy = h as f32 / size.height();
+        resvg::render(&tree, tiny_skia::Transform::from_scale(sx, sy), &mut pixmap.as_mut());
+        // tiny-skia is premultiplied; a bitmap here is straight RGBA.
+        let mut rgba = pixmap.take();
+        for px in rgba.chunks_exact_mut(4) {
+            let a = px[3] as u32;
+            if a != 0 && a != 255 {
+                for c in &mut px[..3] {
+                    *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+                }
+            }
+        }
+        Some(BitmapData { width: w, height: h, rgba })
+    }
+}
+
+#[cfg(not(feature = "svg-images"))]
+mod svg {
+    use super::BitmapData;
+
+    pub(super) fn rasterize(_bytes: &[u8]) -> Option<BitmapData> {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            eprintln!("[js:image] advisory: this build has no SVG decoder (redjs feature `svg-images`); SVG images fire `error`");
+        });
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +505,7 @@ unsafe fn acquire_pixels(g: *mut c_void, source: u64) -> Result<BitmapData, Stri
         if !fetched.ok {
             return Err(format!("createImageBitmap: not found: {path}"));
         }
-        return decode_rgba(&fetched.bytes).ok_or_else(|| "createImageBitmap: image decode failed".to_string());
+        return decode_typed(&fetched.bytes, Some(&fetched.mime)).ok_or_else(|| "createImageBitmap: image decode failed".to_string());
     }
     Err("createImageBitmap: unsupported source".to_string())
 }
@@ -507,6 +612,61 @@ mod jsc_tests {
         s(&c, "globalThis.u = URL.createObjectURL(picked); 0");
         std::fs::write(&t.0, b"no longer the picked file").unwrap();
         assert_eq!(run(&c, &format!("{LOAD} return await load(u);")), "error");
+    }
+
+    /// `data:image/svg+xml;charset=utf-8,` + `encodeURIComponent(svg)` — the
+    /// Argon client's taskbar icons (client sweep 1, #26) — and the other
+    /// spellings of an SVG image: base64, a Blob without a type.
+    #[test]
+    fn an_svg_image_loads_at_its_intrinsic_size_and_draws() {
+        let c = file_ctx();
+        let red = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' fill='#ff0000'/></svg>";
+        s(&c, &format!("globalThis.RED = {red:?}; 0"));
+        assert_eq!(
+            run(&c, &format!("{LOAD} return await load('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(RED));")),
+            "load,24,24,true"
+        );
+        assert_eq!(
+            run(&c, &format!("{LOAD} return await load('data:image/svg+xml;base64,' + btoa(RED));")),
+            "load,24,24,true"
+        );
+        // width/height win over the viewBox, as for an <img>.
+        assert_eq!(
+            run(&c, &format!("{LOAD} return await load('data:image/svg+xml,' + encodeURIComponent(\
+                 \"<svg xmlns='http://www.w3.org/2000/svg' width='40' height='20' viewBox='0 0 4 2'/>\"));")),
+            "load,40,20,true"
+        );
+        // A Blob with no type is sniffed.
+        assert_eq!(
+            run(&c, &format!("{LOAD} return await load(URL.createObjectURL(new Blob([RED])));")),
+            "load,24,24,true"
+        );
+        // The pixels are the drawing, straight RGBA, and new Image(w, h) keeps its size.
+        assert_eq!(
+            run(
+                &c,
+                "const i = new Image(32, 32); \
+                 await new Promise((r, j) => { i.onload = r; i.onerror = j; \
+                   i.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(RED); }); \
+                 const px = __rjs_sourcePixels(i); \
+                 return [i.width, i.naturalWidth, px.length, px[0], px[1], px[2], px[3]].join();"
+            ),
+            "32,24,2304,255,0,0,255"
+        );
+        // Not an SVG at all: `error`, as a browser reports a broken image.
+        assert_eq!(
+            run(&c, &format!("{LOAD} return await load('data:image/svg+xml,' + encodeURIComponent('<svg'));")),
+            "error"
+        );
+    }
+
+    #[test]
+    fn svg_is_recognised_by_type_or_by_its_first_bytes() {
+        assert!(super::is_svg(b"anything", Some("image/svg+xml; charset=utf-8")));
+        assert!(super::is_svg(b"\xEF\xBB\xBF  <?xml version='1.0'?><!-- x --><svg/>", None));
+        assert!(super::is_svg(b"<!DOCTYPE svg><svg xmlns='http://www.w3.org/2000/svg'/>", Some("text/plain")));
+        assert!(!super::is_svg(b"\x89PNG\r\n\x1a\n", Some("image/png")));
+        assert!(!super::is_svg(b"GIF89a <svg", None), "markup must come first");
     }
 
     #[test]
