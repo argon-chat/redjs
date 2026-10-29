@@ -843,7 +843,7 @@ path_method!(m_ellipse, "ellipse", |p, g, cf| p.ellipse(
 
 /// Spec §"roundRect": `radii` is a number, a `{x,y}`-ish, or a list of 1..4 of
 /// either, expanded by the CSS `border-radius` shorthand rules.
-unsafe fn read_radii(g: *mut c_void, v: u64) -> Result<[(f64, f64); 4], String> {
+pub(crate) unsafe fn read_radii(g: *mut c_void, v: u64) -> Result<[(f64, f64); 4], String> {
     unsafe fn one(g: *mut c_void, v: u64) -> (f64, f64) {
         if is_cell(v) && get(g, v, "x") != UNDEF {
             let rx = read_number(g, get(g, v, "x"));
@@ -873,7 +873,7 @@ unsafe fn read_radii(g: *mut c_void, v: u64) -> Result<[(f64, f64); 4], String> 
 
 /// The geometry layer's refusals are spelled `"IndexSizeError: why"` — the
 /// spec's "throw an IndexSizeError DOMException" — and become exactly that.
-unsafe fn throw_geometry_error(g: *mut c_void, e: &str) -> u64 {
+pub(crate) unsafe fn throw_geometry_error(g: *mut c_void, e: &str) -> u64 {
     match e.strip_prefix("IndexSizeError: ") {
         Some(why) => super::domexception::throw(g, "IndexSizeError", why),
         None => throw_type_error(g, e),

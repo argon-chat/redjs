@@ -72,7 +72,8 @@ unsafe extern "sysv64" fn bitmap_close(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// RGBA pixels + dimensions of any drawable source: ImageBitmap,
-/// HTMLImageElement (its loaded bitmap), or ImageData-shaped {data,width,height}.
+/// HTMLImageElement (its loaded bitmap), a canvas (feature `canvas`), or
+/// ImageData-shaped {data,width,height}.
 pub unsafe fn source_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u32, u32)> {
     let st = state(g);
     if let Some(b) = host_data::<BitmapData>(g, st.bitmap_class, v) {
@@ -84,6 +85,11 @@ pub unsafe fn source_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u32, u32
         if let Some(b) = host_data::<BitmapData>(g, st.bitmap_class, bmp) {
             return Some((b.rgba.clone(), b.width, b.height));
         }
+    }
+    // A canvas: an OffscreenCanvas, a 2D context, or an embedder's element.
+    #[cfg(feature = "canvas")]
+    if let Some(px) = super::canvas2d::canvas_pixels(g, v) {
+        return Some(px);
     }
     // ImageData-shaped.
     let data = get(g, v, "data");

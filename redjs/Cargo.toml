@@ -30,6 +30,15 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # are the ones gpui builds for its own SVG rendering, so an embedder that
 # has gpui (vue-native) compiles nothing new.
 resvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"], optional = true }
+# Canvas 2D (`webapi/canvas2d`): the context records a backend-neutral command
+# stream in kurbo/peniko terms, and vello_cpu rasterizes it when the embedder
+# installs no `CanvasHost` of its own. Single-threaded on purpose (no rayon
+# pool): the canvases a page draws are small, and an embedder with a GPU
+# replaces the backend anyway. vello_gpu (same vello_common, same API) is the
+# GPU counterpart an embedder can install.
+vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline"], optional = true }
+kurbo = { version = "0.13.1", default-features = false, features = ["std"], optional = true }
+peniko = { version = "0.6.1", default-features = false, features = ["std"], optional = true }
 # Audio: the native Web Audio implementation (webapi/audio.rs) maps the
 # WebAudio node graph onto Firewheel's; symphonium (the same decoder firewheel
 # uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the game formats.
@@ -102,7 +111,7 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 # dep regardless of features, so `../../redcss` must exist on disk even with
 # `css-host` off — a stub crate at that path satisfies it.
 [features]
-default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images"]
+default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
 # decodeAudioData beyond the game formats: AAC-LC + the MP4/M4A, CAF, MKV and
@@ -137,6 +146,9 @@ css-host = ["dep:redcss"]
 yoga-host = []
 # SVG decoding for Image / createImageBitmap (webapi/image.rs).
 svg-images = ["dep:resvg"]
+# CanvasRenderingContext2D + a real OffscreenCanvas (webapi/canvas2d). Off,
+# bootstrap.js keeps its pixel-copy OffscreenCanvas stub.
+canvas = ["dep:vello_cpu", "dep:kurbo", "dep:peniko"]
 
 # ---------------------------------------------------------------------------
 # Web platform surfaces that need something only the EMBEDDER has.

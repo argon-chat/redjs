@@ -55,6 +55,8 @@ pub mod abort;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod blob;
+#[cfg(feature = "canvas")]
+pub mod canvas2d;
 #[cfg(feature = "clipboard")]
 pub mod clipboard;
 pub mod compression;
@@ -178,6 +180,8 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     util::forget_state(gone);
     abort::forget(gone);
     blob::forget(gone);
+    #[cfg(feature = "canvas")]
+    canvas2d::forget(gone);
     domexception::forget(gone);
     file::forget(gone);
     #[cfg(feature = "audio")]
@@ -398,6 +402,12 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     #[cfg(feature = "indexeddb")]
     indexeddb::install(g, ev_proto, et_proto);
     platform::install(g, et_proto);
+    // `CanvasRenderingContext2D`, `OffscreenCanvas` & co. After `platform`
+    // (getImageData builds ImageData), `image`, `path2d` and `geometry`, and
+    // BEFORE bootstrap.js, whose pixel-copy OffscreenCanvas stub only fills
+    // in when there is none.
+    #[cfg(feature = "canvas")]
+    canvas2d::install(g, et_proto);
     #[cfg(feature = "physics")]
     crate::physics::install(g);
     crate::ui::install(g);
