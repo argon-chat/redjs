@@ -420,16 +420,131 @@ fn serialize_query(list: &[(String, String)]) -> String {
     s.finish()
 }
 
+/// `GetMethod(v, @@iterator)`: `Ok(None)` for undefined / null, a TypeError
+/// for anything else that cannot be called. An exception is left pending.
+unsafe fn iterator_method(g: *mut c_void, v: u64) -> Result<Option<u64>, ()> {
+    let a = glue::rjs_atom_iterator(g);
+    let mut method = UNDEF;
+    let rc = glue::rjs_get(g, v, a, &mut method);
+    glue::rjs_atom_free(g, a);
+    if rc != 0 {
+        glue::rjs_throw(g, method);
+        return Err(());
+    }
+    if method == UNDEF || method == NULL {
+        return Ok(None);
+    }
+    if glue::rjs_kind(g, method) != 9 {
+        throw_type_error(g, "Failed to construct 'URLSearchParams': @@iterator is not a function.");
+        return Err(());
+    }
+    Ok(Some(method))
+}
+
+/// WebIDL `sequence<T>` through the iteration protocol, each element handed
+/// to `each` as it comes (so nothing is held where the collector cannot see).
+unsafe fn for_each_of(g: *mut c_void, v: u64, method: u64, mut each: impl FnMut(u64) -> Result<(), ()>) -> Result<(), ()> {
+    let iter = call(g, method, v, &[]).map_err(|e| {
+        glue::rjs_throw(g, e);
+    })?;
+    if !super::blob::is_object(g, iter) {
+        throw_type_error(g, "Result of the Symbol.iterator method is not an object");
+        return Err(());
+    }
+    let next = try_get(g, iter, "next")?;
+    loop {
+        let r = call(g, next, iter, &[]).map_err(|e| {
+            glue::rjs_throw(g, e);
+        })?;
+        if !super::blob::is_object(g, r) {
+            throw_type_error(g, "Iterator result is not an object");
+            return Err(());
+        }
+        if glue::rjs_to_boolean(g, try_get(g, r, "done")?) != 0 {
+            return Ok(());
+        }
+        each(try_get(g, r, "value")?)?;
+    }
+}
+
+/// ToUSVString, rethrowing (a Symbol, a throwing `toString`).
+unsafe fn usv(g: *mut c_void, v: u64) -> Result<String, ()> {
+    let s = to_js_string(g, v)?;
+    Ok(read_string(g, s).unwrap_or_default())
+}
+
+/// URL §6.2 "URLSearchParams(init)": `init` is a
+/// `(sequence<sequence<USVString>> or record<USVString, USVString> or
+/// USVString)`. An object with `@@iterator` (an array of pairs, a Map, another
+/// URLSearchParams) is the sequence, any other object the record, anything
+/// else a query string whose leading `?` is dropped.
+unsafe fn usp_init(g: *mut c_void, init: u64) -> Result<Vec<(String, String)>, ()> {
+    if init == UNDEF {
+        return Ok(Vec::new());
+    }
+    if !super::blob::is_object(g, init) {
+        let s = usv(g, init)?;
+        return Ok(parse_query(s.strip_prefix('?').unwrap_or(&s)));
+    }
+    let mut list = Vec::new();
+    if let Some(method) = iterator_method(g, init)? {
+        for_each_of(g, init, method, |pair| {
+            let not_a_sequence = || {
+                throw_type_error(
+                    g,
+                    "Failed to construct 'URLSearchParams': The provided value cannot be converted to a sequence.",
+                );
+            };
+            if !super::blob::is_object(g, pair) {
+                not_a_sequence();
+                return Err(());
+            }
+            let Some(inner) = iterator_method(g, pair)? else {
+                not_a_sequence();
+                return Err(());
+            };
+            let mut items: Vec<String> = Vec::new();
+            for_each_of(g, pair, inner, |item| {
+                items.push(usv(g, item)?);
+                Ok(())
+            })?;
+            if items.len() != 2 {
+                throw_type_error(
+                    g,
+                    "Failed to construct 'URLSearchParams': Sequence initializer must only contain pair elements",
+                );
+                return Err(());
+            }
+            let value = items.pop().unwrap_or_default();
+            let name = items.pop().unwrap_or_default();
+            list.push((name, value));
+            Ok(())
+        })?;
+        return Ok(list);
+    }
+    // The record: own enumerable string keys, in [[OwnPropertyKeys]] order.
+    let mut keys = UNDEF;
+    if glue::rjs_own_keys(g, init, &mut keys) != 0 || !is_cell(keys) {
+        // A Proxy's `ownKeys` trap threw: that exception is the answer.
+        if keys != UNDEF {
+            glue::rjs_throw(g, keys);
+        } else {
+            throw_type_error(g, "Failed to construct 'URLSearchParams': the record could not be enumerated.");
+        }
+        return Err(());
+    }
+    for i in 0..array_len(g, keys) {
+        let k = get_i(g, keys, i);
+        let name = usv(g, k)?;
+        let value = usv(g, try_get(g, init, &name)?)?;
+        list.push((name, value));
+    }
+    Ok(list)
+}
+
 unsafe extern "sysv64" fn usp_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
-    let init = cf_arg(cf, 0);
-    let mut list: Vec<(String, String)> = Vec::new();
-    if init != UNDEF && init != NULL {
-        if let Some(s) = read_string(g, init) {
-            let q = s.strip_prefix('?').unwrap_or(&s);
-            list = parse_query(q);
-        }
-    }
+    let Ok(list) = usp_init(g, cf_arg(cf, 0)) else { return UNDEF };
     let nt = cf_new_target(cf);
     let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
     if !is_cell(proto) {
@@ -847,5 +962,59 @@ mod jsc_tests {
         );
         s(&c, "URL.revokeObjectURL(whole); 0");
         assert!(resolve_blob_url(g, &whole).is_none());
+    }
+
+    /// URL §6.2: `init` is a record, a sequence of pairs (an array, a Map,
+    /// another URLSearchParams: anything with `@@iterator`) or a string. Until
+    /// m26 every object was read as a string, so `new URLSearchParams({ a: 1 })`
+    /// was `"%5Bobject+Object%5D="` and a copy of another one was empty.
+    #[test]
+    fn the_init_is_a_record_a_sequence_of_pairs_or_a_string() {
+        let c = ctx();
+        let q = |init: &str| s(&c, &format!("new URLSearchParams({init}).toString()"));
+        // The record: own enumerable string keys in property order, values
+        // stringified.
+        assert_eq!(q("{ b: 1, a: 'x y', c: null, d: undefined }"), "b=1&a=x+y&c=null&d=undefined");
+        assert_eq!(
+            q("Object.defineProperty({ shown: 1 }, 'hidden', { value: 2, enumerable: false })"),
+            "shown=1"
+        );
+        assert_eq!(q("Object.create({ inherited: 1 })"), "");
+        // Sequences: an array of pairs, a Map, another URLSearchParams (a copy,
+        // not a view), a generator of pairs.
+        assert_eq!(q("[['a', '1'], ['a', '2'], ['b', 3]]"), "a=1&a=2&b=3");
+        assert_eq!(q("new Map([['k', 'v'], ['x', 'y']])"), "k=v&x=y");
+        ok(&c, "(() => { const a = new URLSearchParams('p=1&q=2'); const b = new URLSearchParams(a); \
+                 b.append('r', '3'); return a.toString() === 'p=1&q=2' && b.toString() === 'p=1&q=2&r=3'; })()");
+        assert_eq!(q("(function* () { yield ['g', '1']; yield new Set(['h', '2']); })()"), "g=1&h=2");
+        // Strings: a leading `?` is dropped (once), and anything that is not an
+        // object is stringified, `null` included (WebIDL picks USVString).
+        assert_eq!(q("'?a=1&b=2'"), "a=1&b=2");
+        assert_eq!(q("'??a=1'"), "%3Fa=1");
+        assert_eq!(q("null"), "null=");
+        assert_eq!(q("undefined"), "");
+        assert_eq!(q("42"), "42=");
+        // What a browser refuses, refused the same way.
+        for bad in ["[['a']]", "[['a', 'b', 'c']]", "[1]", "['ab']"] {
+            let m = throws(&c, &format!("new URLSearchParams({bad})"));
+            assert!(m.contains("URLSearchParams"), "{bad}: {m}");
+        }
+        assert_eq!(
+            throws(&c, "new URLSearchParams({ [Symbol.iterator]: 5 })"),
+            "Failed to construct 'URLSearchParams': @@iterator is not a function."
+        );
+        // A throwing getter or iterator is the constructor's exception.
+        assert_eq!(throws(&c, "new URLSearchParams({ get a() { throw new RangeError('getter'); } })"), "getter");
+        assert_eq!(
+            throws(&c, "new URLSearchParams(new Proxy({}, { ownKeys() { throw new RangeError('trap'); } }))"),
+            "trap"
+        );
+        assert_eq!(
+            throws(&c, "new URLSearchParams({ *[Symbol.iterator]() { throw new RangeError('iter'); } })"),
+            "iter"
+        );
+        ok(&c, "new URLSearchParams({ a: 1 }) instanceof URLSearchParams");
+        // The URL a URLSearchParams body makes (fetch / XHR send) is unchanged.
+        ok(&c, "new URLSearchParams([['x', '1 2']]).toString() === 'x=1+2'");
     }
 }
