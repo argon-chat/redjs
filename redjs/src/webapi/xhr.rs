@@ -35,7 +35,9 @@
 //!   `load` and `loadend`.
 //! - A response with no `Content-Type` makes a `Blob` with type `""`.
 //!
-//! ## Divergences (each said once, on stderr, when it is met)
+//! ## Divergences
+//!
+//! The first four are said once on stderr, when they are first met.
 //!
 //! - **Synchronous requests are refused**: `open(method, url, false)` throws
 //!   `InvalidAccessError`. A sync request would freeze the UI thread for the
@@ -43,11 +45,17 @@
 //! - **No XML**: `responseXML` is `null`, and so is `response` under
 //!   `responseType = "document"`.
 //! - **http: and https: only**: any other scheme is a network error.
+//! - **`open()`'s user and password are not sent** (no HTTP authentication).
 //! - **No origin, no CORS**: as for `fetch` (this runtime has no web origin),
 //!   so every header is readable and no preflight is sent.
-//! - **`open()`'s user and password are not sent** (no HTTP authentication).
 //! - During `LOADING`, `responseText` grows only for a body with no
 //!   `Content-Encoding`: a coded body is decoded at the end.
+//! - The transport's budgets apply as they do to `fetch`: a connect that takes
+//!   15 s, or a request on which no byte moves for 60 s, is a network
+//!   (`error`) event even with `timeout` 0. A browser leaves both to the OS.
+//! - Without `net-h2` the body is reported as one piece once it is complete,
+//!   so a download fires one `progress` and `LOADING` is brief. Upload
+//!   progress is reported per 64 KiB on both transports.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -431,17 +439,19 @@ macro_rules! handler_accessor {
                 return NULL;
             }
             let v = get(g, bag, $name);
-            if is_cell(v) {
+            if blob::is_object(g, v) {
                 v
             } else {
                 NULL
             }
         }
+        // WebIDL `[LegacyTreatNonObjectAsNull]`: anything but an object
+        // (a string, a number) is stored as null.
         unsafe extern "sysv64" fn $set_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             let bag = handler_bag(g, cf_this(cf), true);
             if is_cell(bag) {
                 let v = cf_arg(cf, 0);
-                define(g, bag, $name, if is_cell(v) { v } else { NULL }, 0);
+                define(g, bag, $name, if blob::is_object(g, v) { v } else { NULL }, 0);
             }
             UNDEF
         }

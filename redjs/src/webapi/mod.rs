@@ -17,7 +17,8 @@
 //! DOMException" in this tree is a real one — see [`domexception`]),
 //! Event / CustomEvent / EventTarget, TextEncoder / TextDecoder,
 //! Blob / File / FileList (in memory or path-backed, see [`blob`] and
-//! [`file`]), URL / URLSearchParams, Headers / Request / Response / fetch (over a
+//! [`file`]), URL / URLSearchParams, Headers / Request / Response / fetch and
+//! XMLHttpRequest / ProgressEvent (see [`xhr`]; both over a
 //! real HTTP/1.1 + TLS client, see [`http`], with an RFC 6265bis cookie store
 //! behind `credentials` and the WebSocket handshake, see [`cookies`]),
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
@@ -96,6 +97,7 @@ pub mod uievents;
 pub mod url;
 pub mod util;
 pub mod websocket;
+pub mod xhr;
 pub mod xmlser;
 
 use core::ffi::c_void;
@@ -200,6 +202,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     uievents::forget(gone);
     url::forget(gone);
     websocket::forget(gone);
+    xhr::forget(gone);
 }
 
 pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> i32 {
@@ -363,6 +366,10 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // must follow `events::install`. Nothing connects at install time; the
     // first socket is the first `new WebSocket(...)`.
     websocket::install(g, ev_proto, et_proto);
+    // `XMLHttpRequest` / `XMLHttpRequestUpload` / `ProgressEvent`, over the
+    // transport `fetch` uses. Same needs as `WebSocket`: `Event.prototype`
+    // (ProgressEvent) and `EventTarget.prototype`.
+    xhr::install(g, ev_proto, et_proto);
     // `navigator.clipboard` answers from whatever `ClipboardHost` the embedder
     // installed. AFTER `dom::install`, because it also lands `execCommand` on
     // `document`; the hook itself is read per call, so nothing else orders it.
