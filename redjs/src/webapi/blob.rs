@@ -1102,13 +1102,6 @@ unsafe extern "sysv64" fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe fn to_string_tag(g: *mut c_void, proto: u64, tag: &str) {
-    let a = glue::rjs_atom_wellknown(g, 1);
-    if !a.is_null() {
-        glue::rjs_define(g, proto, a, js_string(g, tag), 1 | 2);
-        glue::rjs_atom_free(g, a);
-    }
-}
 
 pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class) {
     let cls = make_host_class::<BlobData>("Blob");
@@ -1127,7 +1120,6 @@ pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class) {
         getters: &[("size", get_size), ("type", get_type)],
         accessors: &[],
     });
-    to_string_tag(g, class.proto, "Blob");
     let keep = |v: u64| {
         crate::ffi::redjs_protect(g, v);
         v

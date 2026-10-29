@@ -321,8 +321,6 @@ pub unsafe fn install(g: *mut c_void) {
         ],
         accessors: &[],
     });
-    let to_string_tag = glue::rjs_atom_wellknown(g, 1);
-    glue::rjs_define(g, class.proto, to_string_tag, js_string(g, "Navigator"), 1 | 2);
 
     // A host that put its own `navigator` up before install keeps its object
     // (and whatever it hung on it); it just becomes a Navigator underneath.

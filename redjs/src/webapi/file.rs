@@ -350,13 +350,6 @@ unsafe extern "sysv64" fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     get_i(g, get_a(g, this, c.s_items), i)
 }
 
-unsafe fn to_string_tag(g: *mut c_void, proto: u64, tag: &str) {
-    let a = glue::rjs_atom_wellknown(g, 1);
-    if !a.is_null() {
-        glue::rjs_define(g, proto, a, js_string(g, tag), 1 | 2);
-        glue::rjs_atom_free(g, a);
-    }
-}
 
 /// After `blob::install` (File.prototype's prototype is Blob.prototype).
 pub unsafe fn install(g: *mut c_void) {
@@ -377,7 +370,6 @@ pub unsafe fn install(g: *mut c_void) {
     });
     // `Object.getPrototypeOf(File) === Blob`, as for every derived interface.
     crate::capi::JSObjectSetPrototype(g, file.ctor as usize as crate::capi::JSObjectRef, st.blob.ctor as usize as crate::capi::JSValueRef);
-    to_string_tag(g, file.proto, "File");
     // A File instance is of its own host class, whose parent is the Blob
     // class: `JSValueIsObjectOfClass` walks the parent chain, so every Blob
     // brand check accepts a File, while JSC names the object after its own
@@ -403,7 +395,6 @@ pub unsafe fn install(g: *mut c_void) {
         getters: &[("length", list_length)],
         accessors: &[],
     });
-    to_string_tag(g, list.proto, "FileList");
     // WebIDL: an interface with an indexed getter and `length` iterates as
     // an array does — its @@iterator IS %Array.prototype.values%.
     let global = glue::rjs_global(g);

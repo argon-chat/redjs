@@ -76,6 +76,7 @@ pub mod http;
 pub mod image;
 #[cfg(feature = "indexeddb")]
 pub mod indexeddb;
+mod interface_tags;
 #[cfg(feature = "audio")]
 pub mod mediadevices;
 pub mod mime;

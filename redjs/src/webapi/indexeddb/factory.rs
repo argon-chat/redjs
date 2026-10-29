@@ -443,19 +443,13 @@ unsafe fn sub_class(name: &str, parent: capi::JSClassRef) -> capi::JSClassRef {
     capi::JSClassCreate(&def)
 }
 
-unsafe fn tag(g: *mut c_void, proto: u64, name: &str) {
-    let t = glue::rjs_atom_wellknown(g, 1);
-    glue::rjs_define(g, proto, t, js_string(g, name), 1 | 2);
-}
-
 unsafe fn inherit(g: *mut c_void, child: &Class, parent: &Class) {
     capi::JSObjectSetPrototype(g, child.ctor as usize as capi::JSObjectRef, parent.ctor as usize as capi::JSValueRef);
 }
 
+/// `define_class` gives every prototype its `@@toStringTag`.
 unsafe fn class(g: *mut c_void, spec: &ClassSpec) -> Class {
-    let c = define_class(g, spec);
-    tag(g, c.proto, spec.name);
-    c
+    define_class(g, spec)
 }
 
 /// Every IDB interface object, prototype chains as in a browser (prototype

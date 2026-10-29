@@ -64,10 +64,12 @@
         try { return obj.__brand === 'HTMLCanvasElement'; } catch (e) { return false; }
       },
     });
+    Object.defineProperty(fn.prototype, Symbol.toStringTag, { value: 'HTMLCanvasElement', configurable: true });
     g.HTMLCanvasElement = fn;
   })();
   if (typeof g.HTMLVideoElement !== 'function') {
     g.HTMLVideoElement = class HTMLVideoElement {};
+    Object.defineProperty(g.HTMLVideoElement.prototype, Symbol.toStringTag, { value: 'HTMLVideoElement', configurable: true });
   }
 
   // ── location ──
@@ -120,6 +122,8 @@
       getContext(type) { return (type === '2d') ? new Ctx2D(this.width, this.height) : null; }
       transferToImageBitmap() { return null; }
     };
+    Object.defineProperty(Ctx2D.prototype, Symbol.toStringTag, { value: 'OffscreenCanvasRenderingContext2D', configurable: true });
+    Object.defineProperty(g.OffscreenCanvas.prototype, Symbol.toStringTag, { value: 'OffscreenCanvas', configurable: true });
   }
 
 })(globalThis);

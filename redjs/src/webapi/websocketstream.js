@@ -211,6 +211,10 @@
     }
   }
 
+  Object.defineProperty(WebSocketStream.prototype, Symbol.toStringTag, {
+    value: "WebSocketStream",
+    configurable: true,
+  });
   Object.defineProperty(g, "WebSocketStream", {
     value: WebSocketStream,
     writable: true,

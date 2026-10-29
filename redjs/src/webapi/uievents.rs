@@ -1353,7 +1353,6 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
             ("effectAllowed", dt_get_effect, dt_set_effect),
         ],
     });
-    to_string_tag(g, dt.proto, "DataTransfer");
 
     let list_cls = make_host_class::<DtListData>("DataTransferItemList");
     let list = define_class(g, &ClassSpec {
@@ -1365,7 +1364,6 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
         getters: &[("length", list_length)],
         accessors: &[],
     });
-    to_string_tag(g, list.proto, "DataTransferItemList");
     // An indexed getter and `length`: it iterates as an array does (WebIDL).
     let global = glue::rjs_global(g);
     let values = get(g, get(g, get(g, global, "Array"), "prototype"), "values");
@@ -1383,7 +1381,6 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
         getters: &[("kind", item_kind), ("type", item_type)],
         accessors: &[],
     });
-    to_string_tag(g, item.proto, "DataTransferItem");
 
     let object = get(g, global, "Object");
     let define_property = get(g, object, "defineProperty");
@@ -1428,13 +1425,6 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     }
 }
 
-unsafe fn to_string_tag(g: *mut c_void, proto: u64, tag: &str) {
-    let a = glue::rjs_atom_wellknown(g, 1);
-    if !a.is_null() {
-        glue::rjs_define(g, proto, a, js_string(g, tag), 1 | 2);
-        glue::rjs_atom_free(g, a);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests

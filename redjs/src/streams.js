@@ -898,6 +898,9 @@
     CompressionStream, DecompressionStream,
   };
   for (const name of Object.keys(exports)) {
+    // WebIDL: every interface prototype says its name to
+    // `Object.prototype.toString` (webapi/interface_tags.rs).
+    Object.defineProperty(exports[name].prototype, Symbol.toStringTag, { value: name, configurable: true });
     Object.defineProperty(g, name, { value: exports[name], writable: true, configurable: true });
   }
 

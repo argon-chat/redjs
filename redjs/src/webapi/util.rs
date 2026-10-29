@@ -424,12 +424,31 @@ pub unsafe fn make_fn(g: *mut c_void, name: &str, arity: u32, f: HostFn) -> u64 
     out
 }
 
+/// `proto[Symbol.toStringTag] = tag`, with WebIDL's attributes: not
+/// writable, not enumerable, configurable.
+pub unsafe fn to_string_tag(g: *mut c_void, proto: u64, tag: &str) {
+    let a = glue::rjs_atom_wellknown(g, 1);
+    if !a.is_null() {
+        glue::rjs_define(g, proto, a, js_string(g, tag), 1 | 2);
+        glue::rjs_atom_free(g, a);
+    }
+}
+
 /// Builds a standards-shaped class: prototype object (methods + accessors,
 /// all non-enumerable per spec), a constructable native function, `.prototype`
 /// (RO/DontEnum/DontDelete) and `prototype.constructor` (DontEnum) wiring,
 /// and defines it on the global object.
+///
+/// The prototype carries `Symbol.toStringTag` = the class name, as every
+/// WebIDL interface prototype does (WebIDL §3.7.3 "interface prototype
+/// object"). Without it `Object.prototype.toString` says `[object Object]`,
+/// and code that classifies objects that way treats a platform object as a
+/// plain one: Vue's `reactive()` wrapped a `MediaDeviceInfo` in a Proxy, and
+/// its native getters then refused the Proxy as a foreign `this`
+/// (research/reports/m26/client-sweep-1.md, finding 6).
 pub unsafe fn define_class(g: *mut c_void, spec: &ClassSpec) -> Class {
     let proto = new_object(g, if spec.parent_proto != 0 { spec.parent_proto } else { UNDEF });
+    to_string_tag(g, proto, spec.name);
 
     for (name, arity, f) in spec.methods {
         define(g, proto, name, make_fn(g, name, *arity, *f), 2 /* DontEnum */);

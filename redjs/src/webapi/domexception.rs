@@ -379,13 +379,6 @@ unsafe fn attribute(g: *mut c_void, proto: u64, name: &str, f: HostFn) {
     glue::rjs_atom_free(g, a);
 }
 
-unsafe fn to_string_tag(g: *mut c_void, proto: u64, tag: &str) {
-    let a = glue::rjs_atom_wellknown(g, 1);
-    if !a.is_null() {
-        glue::rjs_define(g, proto, a, js_string(g, tag), 1 | 2);
-        glue::rjs_atom_free(g, a);
-    }
-}
 
 pub unsafe fn install(g: *mut c_void) {
     let s_dom = atom_priv(g, "redjs#domexception");
@@ -409,7 +402,6 @@ pub unsafe fn install(g: *mut c_void) {
         define(g, dom.ctor, name, enc_i32(*value as i32), 1 | 4);
         define(g, dom.proto, name, enc_i32(*value as i32), 1 | 4);
     }
-    to_string_tag(g, dom.proto, "DOMException");
 
     let quota = define_class(g, &ClassSpec {
         name: "QuotaExceededError",
@@ -422,7 +414,6 @@ pub unsafe fn install(g: *mut c_void) {
     });
     attribute(g, quota.proto, "quota", get_quota);
     attribute(g, quota.proto, "requested", get_requested);
-    to_string_tag(g, quota.proto, "QuotaExceededError");
     // The interface object inherits from its parent's (WebIDL §3.7.1).
     capi::JSObjectSetPrototype(g, quota.ctor as usize as capi::JSObjectRef, dom.ctor as usize as capi::JSValueRef);
 
