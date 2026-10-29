@@ -3,7 +3,7 @@
 //! assertions hold on both. The two transports differ only in how finely they
 //! report progress, and these tests pin only what both guarantee.
 
-use crate::webapi::file::testing::{file_ctx as xhr_ctx, run};
+use crate::webapi::file::testing::{file_ctx as xhr_ctx, run, TempFile};
 use crate::webapi::testing::*;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -572,4 +572,88 @@ fn an_unreferenced_request_still_completes() {
         ),
     );
     assert_eq!(out, "kept");
+}
+
+// ---------------------------------------------------------------------------
+// The URLs `fetch` answers without the network
+// ---------------------------------------------------------------------------
+
+/// A blob: URL is read from the store, as `fetch` reads it: the entry is the
+/// one `open()` saw, the type is the Blob's, a Range is honoured, and only
+/// GET is allowed. FileSaver-style `responseType = "blob"` round-trips.
+#[test]
+fn a_blob_url_is_read_from_the_store() {
+    let c = xhr_ctx();
+    s(&c, "globalThis.u = URL.createObjectURL(new Blob(['0123456789'], { type: 'text/x' })); 0");
+    let get = |setup: &str, send: &str, done: &str| xhr(&c, &format!("xhr.open('GET', u); {setup}"), send, done);
+    assert_eq!(
+        get(
+            "xhr.onreadystatechange = () => log.push(xhr.readyState); xhr.onprogress = (e) => log.push('p' + e.loaded + '/' + e.total);",
+            "",
+            "[log.join(), xhr.status, xhr.statusText, xhr.responseText, xhr.getResponseHeader('content-type'), \
+              xhr.getResponseHeader('content-length'), xhr.responseURL === u].join('|')"
+        ),
+        "2,3,p10/10,4|200|OK|0123456789|text/x|10|true"
+    );
+    assert_eq!(
+        get("xhr.setRequestHeader('Range', 'bytes=2-4');", "", "[xhr.status, xhr.getResponseHeader('content-range'), xhr.responseText].join()"),
+        "206,bytes 2-4/10,234"
+    );
+    assert_eq!(
+        get("xhr.responseType = 'blob';", "", "xhr.response.size + ':' + xhr.response.type"),
+        "10:text/x"
+    );
+    // Revoked after open(): the entry open() resolved still loads.
+    assert_eq!(get("URL.revokeObjectURL(u);", "", "xhr.status + ':' + xhr.responseText"), "200:0123456789");
+    // Revoked before open(), and a POST: network errors.
+    for setup in ["xhr.open('GET', u);", "xhr.open('POST', URL.createObjectURL(new Blob(['x'])));"] {
+        assert_eq!(
+            xhr(&c, &format!("{setup} xhr.onerror = () => log.push('error');"), "", "log.join() + ':' + xhr.status"),
+            "error:0",
+            "{setup}"
+        );
+    }
+    // A path-backed File, read off the JS thread.
+    let t = TempFile::new("notes.txt", b"from disk");
+    t.expose(&c, "picked");
+    assert_eq!(
+        xhr(&c, "xhr.open('GET', URL.createObjectURL(picked));", "", "xhr.status + ':' + xhr.responseText"),
+        "200:from disk"
+    );
+}
+
+/// A `data:` URL and a path the app ships are read as `fetch` reads them.
+#[test]
+fn data_urls_and_app_files_are_read_locally() {
+    let c = xhr_ctx();
+    assert_eq!(
+        xhr(
+            &c,
+            "xhr.open('GET', 'data:text/plain;charset=utf-8,h%C3%A9llo');",
+            "",
+            "[xhr.status, xhr.responseText, xhr.getResponseHeader('content-type')].join('|')"
+        ),
+        // The type as `fetch` reports it here (fsutil keeps the essence only).
+        "200|héllo|text/plain"
+    );
+    let t = TempFile::new("app.json", br#"{"ok":true}"#);
+    let path = t.0.to_string_lossy().replace('\\', "/");
+    assert_eq!(
+        xhr(
+            &c,
+            &format!("xhr.open('GET', 'file:///{path}'); xhr.responseType = 'json';"),
+            "",
+            "xhr.status + ':' + xhr.response.ok"
+        ),
+        "200:true"
+    );
+    // Not there: a 404 response, as `fetch` gives, not a network error.
+    assert_eq!(
+        xhr(&c, "xhr.open('GET', 'no/such/file.json'); xhr.onerror = () => log.push('error');", "", "log.join() + xhr.status"),
+        "404"
+    );
+    assert_eq!(
+        xhr(&c, "xhr.open('PUT', 'data:,x'); xhr.onerror = () => log.push('error');", "'y'", "log.join()"),
+        "error"
+    );
 }

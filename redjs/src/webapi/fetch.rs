@@ -867,6 +867,39 @@ fn parse_single_range(v: &str) -> Option<(Option<u64>, Option<u64>)> {
     }
 }
 
+/// The window the blob scheme serves of a `full`-byte Blob, given the request
+/// `headers`: `(start, len, Content-Range)`, the last `None` when no `Range`
+/// was asked for. `Err` is why the request is a network error. Shared by
+/// `fetch` and `XMLHttpRequest` (super::xhr).
+pub(crate) fn blob_range(full: u64, headers: &[(String, String)]) -> Result<(u64, u64, Option<String>), String> {
+    // "Get `Range`" combines every value with ", ", so two Range headers are
+    // a list of ranges, which is a network error.
+    let values: Vec<&str> =
+        headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("range")).map(|(_, v)| v.as_str()).collect();
+    if values.is_empty() {
+        return Ok((0, full, None));
+    }
+    let v = values.join(", ");
+    let Some(r) = parse_single_range(&v) else {
+        return Err(format!("the Range header {v:?} is not a single byte range"));
+    };
+    let (s, e) = match r {
+        // A suffix: the last n bytes (all of them when n is larger).
+        (None, Some(n)) => (full.saturating_sub(n), full.saturating_sub(1)),
+        (Some(s), e) => {
+            if s >= full {
+                return Err(format!("the Range {v:?} starts past the end of a {full}-byte Blob"));
+            }
+            (s, e.map_or(full - 1, |e| e.min(full - 1)))
+        }
+        (None, None) => unreachable!(),
+    };
+    if full == 0 || e < s {
+        return Err(format!("the Range {v:?} selects nothing in an empty Blob"));
+    }
+    Ok((s, e - s + 1, Some(format!("bytes {s}-{e}/{full}"))))
+}
+
 /// What a blob fetch settles with, all of it `Send`.
 struct BlobDelivery {
     resolve: u64,
@@ -929,33 +962,9 @@ unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
     let Some(entry) = super::url::lookup(g, &plan.url) else {
         return reject_refusal(g, "Failed to fetch: this blob: URL is not in the blob URL store (it was revoked, or never created in this context)");
     };
-    let full = entry.range.len;
-    // "Get `Range`" combines every value with ", ", so two Range headers are
-    // a list of ranges, which is a network error.
-    let values: Vec<&str> = plan.headers.iter().filter(|(k, _)| k == "range").map(|(_, v)| v.as_str()).collect();
-    let range = (!values.is_empty()).then(|| values.join(", "));
-    let (start, len, content_range) = match range {
-        None => (0, full, None),
-        Some(v) => {
-            let Some(r) = parse_single_range(&v) else {
-                return reject_refusal(g, &format!("Failed to fetch: the Range header {v:?} is not a single byte range"));
-            };
-            let (s, e) = match r {
-                // A suffix: the last n bytes (all of them when n is larger).
-                (None, Some(n)) => (full.saturating_sub(n), full.saturating_sub(1)),
-                (Some(s), e) => {
-                    if s >= full {
-                        return reject_refusal(g, &format!("Failed to fetch: the Range {v:?} starts past the end of a {full}-byte Blob"));
-                    }
-                    (s, e.map_or(full - 1, |e| e.min(full - 1)))
-                }
-                (None, None) => unreachable!(),
-            };
-            if full == 0 || e < s {
-                return reject_refusal(g, &format!("Failed to fetch: the Range {v:?} selects nothing in an empty Blob"));
-            }
-            (s, e - s + 1, Some(format!("bytes {s}-{e}/{full}")))
-        }
+    let (start, len, content_range) = match blob_range(entry.range.len, &plan.headers) {
+        Ok(r) => r,
+        Err(m) => return reject_refusal(g, &format!("Failed to fetch: {m}")),
     };
     let mut headers = vec![("content-length".to_string(), len.to_string()), ("content-type".to_string(), entry.mime.clone())];
     if let Some(cr) = &content_range {
@@ -995,7 +1004,7 @@ unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
 
 /// A scheme we recognise as a scheme but will not serve. Anything without a
 /// scheme is a local path and goes to `fetch_local`.
-fn unsupported_scheme(lower_url: &str) -> Option<&'static str> {
+pub(crate) fn unsupported_scheme(lower_url: &str) -> Option<&'static str> {
     for s in ["ws", "wss", "ftp", "ftps", "about", "chrome", "javascript"] {
         if lower_url.starts_with(s) && lower_url[s.len()..].starts_with(':') {
             return Some(s);

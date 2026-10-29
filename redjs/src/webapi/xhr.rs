@@ -8,6 +8,13 @@
 //! carry a second code path. This is the real class, with the spec's state
 //! machine, events and errors, not a wrapper over `fetch`.
 //!
+//! A URL reaches what `fetch` would reach with it. `http:` and `https:` go
+//! over the transport, with the cookie jar (`withCredentials` is `include`,
+//! otherwise `same-origin`) and redirects. `blob:` reads the blob URL store,
+//! with `fetch`'s `Range` rules (resolved at `open()`). `data:` URLs and the
+//! app's own files (a relative URL) are read locally. ws:, ftp: and the other
+//! schemes `fetch` refuses are refused here too.
+//!
 //! ## Threading
 //!
 //! `send()` returns at once. The transport reports progress through
@@ -44,7 +51,8 @@
 //!   whole round trip; the pump cannot block.
 //! - **No XML**: `responseXML` is `null`, and so is `response` under
 //!   `responseType = "document"`.
-//! - **http: and https: only**: any other scheme is a network error.
+//! - **The schemes `fetch` refuses** (`ws:`, `ftp:`, `about:`, `javascript:`,
+//!   …) are network errors.
 //! - **`open()`'s user and password are not sent** (no HTTP authentication).
 //! - **No origin, no CORS**: as for `fetch` (this runtime has no web origin),
 //!   so every header is readable and no preflight is sent.
@@ -139,6 +147,12 @@ pub struct XhrData {
     timed_out: bool,
     method: String,
     url: String,
+    /// The URL as `open()` was given it, for a non-network read: `fetch`
+    /// reads a relative path off the app's own files, and so does this.
+    raw_url: String,
+    /// A blob: URL's store entry, resolved at `open()` as the spec says, so
+    /// a URL revoked between `open()` and `send()` still loads.
+    blob: Option<super::url::BlobEntry>,
     /// Author request headers, names as given, same-name values combined.
     headers: Vec<(String, String)>,
     timeout_ms: u32,
@@ -182,6 +196,8 @@ impl XhrData {
             timed_out: false,
             method: String::new(),
             url: String::new(),
+            raw_url: String::new(),
+            blob: None,
             headers: Vec::new(),
             timeout_ms: 0,
             with_credentials: false,
@@ -842,6 +858,126 @@ unsafe fn check_timeout(g: *mut c_void, flight: u64, timer: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// The URLs that never touch the network
+// ---------------------------------------------------------------------------
+
+fn refused(message: String) -> http::HttpError {
+    http::HttpError { kind: http::ErrorKind::Refused, message }
+}
+
+fn failed(message: String) -> http::HttpError {
+    http::HttpError { kind: http::ErrorKind::Network, message }
+}
+
+/// A complete answer made here rather than by the transport, delivered the
+/// way the transport delivers one: the head, the body as one piece, the end.
+/// So the events are a network response's: `readystatechange` 2, 3 and 4,
+/// one `progress`, then `load`.
+fn answer(sh: &Arc<Shared>, status: u16, status_text: &str, headers: Vec<(String, String)>, url: &str, body: Vec<u8>) {
+    // `responseURL` excludes the fragment, as for a network response.
+    let url = url.split('#').next().unwrap_or_default().to_string();
+    let len = body.len() as u64;
+    let resp = http::Response {
+        status,
+        status_text: status_text.to_string(),
+        headers: headers.clone(),
+        url: url.clone(),
+        redirected: false,
+        body: body.clone(),
+        protocol: "",
+        reused: false,
+        connection_id: 0,
+        remote_addr: None,
+    };
+    let head = HeadMsg { status, status_text: status_text.to_string(), headers, url };
+    sh.post(move |i| {
+        i.identity = true;
+        i.head = Some(head);
+        if len > 0 {
+            i.chunk = body;
+            i.received = len;
+            i.total = Some(len);
+            i.body_moved = true;
+        }
+        i.done = Some(Ok(resp));
+    });
+}
+
+/// Fetch's blob scheme, as `fetch` serves it (fetch.rs `fetch_blob`): GET
+/// only, the entry `open()` resolved, `200` with `Content-Length` and the
+/// Blob's type, or `206` for one valid `Range`. A path-backed Blob is read on
+/// a read thread.
+unsafe fn local_blob(
+    g: *mut c_void,
+    sh: &Arc<Shared>,
+    method: &str,
+    url: &str,
+    entry: Option<super::url::BlobEntry>,
+    headers: &[(String, String)],
+) {
+    if method != "GET" {
+        sh.post(|i| i.done = Some(Err(failed(format!("a blob: URL can only be fetched with GET, not {method}")))));
+        return;
+    }
+    let Some(entry) = entry else {
+        sh.post(|i| {
+            i.done = Some(Err(failed(
+                "this blob: URL is not in the blob URL store (it was revoked before open(), or never created in this context)"
+                    .into(),
+            )))
+        });
+        return;
+    };
+    let (start, len, content_range) = match super::fetch::blob_range(entry.range.len, headers) {
+        Ok(r) => r,
+        Err(m) => {
+            sh.post(|i| i.done = Some(Err(failed(m))));
+            return;
+        }
+    };
+    let status: u16 = if content_range.is_some() { 206 } else { 200 };
+    let status_text = if status == 206 { "Partial Content" } else { "OK" };
+    let mut hs = vec![("content-length".to_string(), len.to_string()), ("content-type".to_string(), entry.mime.clone())];
+    if let Some(cr) = content_range {
+        hs.push(("content-range".to_string(), cr));
+    }
+    let window = blob::Range { source: entry.range.source.clone(), offset: entry.range.offset + start, len };
+    if let Some(bytes) = window.in_memory() {
+        answer(sh, status, status_text, hs, url, bytes.to_vec());
+        return;
+    }
+    let (sh, url) = (Arc::clone(sh), url.to_string());
+    blob::read_async(
+        g,
+        window,
+        Box::new(move |_g, r| match r {
+            Ok(bytes) => answer(&sh, status, status_text, hs, &url, bytes),
+            Err(e) => sh.post(|i| i.done = Some(Err(failed(format!("{}: {}", e.name(), e.message()))))),
+        }),
+    );
+}
+
+/// Every other URL `fetch` would read locally (fetch.rs `fetch_local`): a
+/// `data:` URL, or a path the app ships (`xhr.open("GET", "data/x.json")`).
+/// GET and HEAD only. The raw URL is what is read, as `fetch` is given it:
+/// the resolved one would be under `location.href`'s made-up origin.
+unsafe fn local_read(g: *mut c_void, sh: &Arc<Shared>, method: &str, raw_url: &str, url: &str) {
+    if method != "GET" && method != "HEAD" {
+        sh.post(|i| {
+            i.done = Some(Err(failed(format!("{method} is not supported for local and data: URLs; only GET and HEAD are"))))
+        });
+        return;
+    }
+    let f = super::fsutil::fetch_url(g, raw_url);
+    if f.status == 0 {
+        sh.post(|i| i.done = Some(Err(failed("the URL could not be read".into()))));
+        return;
+    }
+    let body = if method == "GET" { f.bytes } else { Vec::new() };
+    answer(sh, f.status as u16, f.status_text, vec![("content-type".to_string(), f.mime)], url, body);
+}
+
+// ---------------------------------------------------------------------------
 // Request headers
 // ---------------------------------------------------------------------------
 
@@ -1032,6 +1168,8 @@ unsafe extern "sysv64" fn xhr_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     d.upload_listened = false;
     d.method = method;
     d.url = parsed.to_string();
+    d.blob = if parsed.scheme() == "blob" { super::url::lookup(g, parsed.as_str()) } else { None };
+    d.raw_url = raw_url;
     d.headers.clear();
     d.network_error();
     d.timed_out = false;
@@ -1166,21 +1304,31 @@ unsafe extern "sysv64" fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
         inbox: Mutex::new(Inbox::default()),
     });
     let lower = d.url.to_ascii_lowercase();
-    let refusal = if !(lower.starts_with("http://") || lower.starts_with("https://")) {
-        let scheme = lower.split(':').next().unwrap_or("").to_string();
+    let network = lower.starts_with("http://") || lower.starts_with("https://");
+    // Everything but http(s) is answered as `fetch` answers the same URL: the
+    // blob URL store, a `data:` URL, or the app's own files.
+    let refusal = if network {
+        (INFLIGHT.load(Ordering::SeqCst) >= MAX_INFLIGHT)
+            .then(|| format!("more than {MAX_INFLIGHT} requests are already in flight"))
+    } else if let Some(scheme) = super::fetch::unsupported_scheme(&lower) {
         advise(
             &format!("scheme:{scheme}"),
-            &format!("{scheme}: URLs are not supported (only http: and https: are); the request is a network error"),
+            &format!("{scheme}: URLs are not supported (as for fetch); the request is a network error"),
         );
         Some(format!("the {scheme}: scheme is not supported"))
-    } else if INFLIGHT.load(Ordering::SeqCst) >= MAX_INFLIGHT {
-        Some(format!("more than {MAX_INFLIGHT} requests are already in flight"))
     } else {
         None
     };
     if let Some(m) = refusal {
         // The network error is reported asynchronously, as a browser does.
-        sh.post(|i| i.done = Some(Err(http::HttpError { kind: http::ErrorKind::Refused, message: m })));
+        sh.post(|i| i.done = Some(Err(refused(m))));
+    } else if lower.starts_with("blob:") {
+        let entry = d.blob.clone();
+        let (method, url) = (d.method.clone(), d.url.clone());
+        local_blob(g, &sh, &method, &url, entry, &req_headers);
+    } else if !network {
+        let (method, raw, url) = (d.method.clone(), d.raw_url.clone(), d.url.clone());
+        local_read(g, &sh, &method, &raw, &url);
     } else {
         let req = http::Request {
             method: d.method.clone(),
