@@ -50,8 +50,16 @@
 //!   close` and uses a fresh connection. Costs one handshake per request; buys
 //!   a body-framing story with no reuse hazards.
 //! - **HTTP/2.** Not offered in ALPN, so servers answer 1.1.
-//! - **Proxies** and **cookies**: refused by name at the `fetch` layer rather
-//!   than silently ignored.
+//! - **Proxies**: refused by name at the `fetch` layer rather than silently
+//!   ignored.
+//!
+//! ## Cookies
+//!
+//! [`Request::credentials`] decides, PER HOP, whether the jar
+//! ([`super::cookies`]) contributes a `Cookie` header to the request going
+//! out and stores the `Set-Cookie` headers of the head that comes back. Per
+//! hop is the point: a cookie set by a redirect is on the request it points
+//! at, and a hop to another host carries only that host's cookies.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
@@ -204,6 +212,9 @@ pub struct Request {
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
     pub redirect: Redirect,
+    /// Fetch's credentials mode: whether each hop sends the jar's cookies and
+    /// stores the `Set-Cookie` it gets back (see the module header).
+    pub credentials: super::cookies::Credentials,
     /// Ceiling on the TCP connect only. Kept separate from `io_timeout`: a dead
     /// host must fail fast, while a live-but-slow transfer deserves patience.
     pub connect_timeout: Duration,
@@ -975,8 +986,17 @@ pub fn send(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
             return Err(HttpError::refused(format!("scheme {:?} is not supported by fetch", u.scheme())));
         }
 
-        let (head, bytes) = round_trip(&u, &method, &headers, body.as_deref(), req, cancel)?;
+        // The jar, per hop: this hop's cookies on the way out, this hop's
+        // Set-Cookie on the way back — before the redirect is followed, so the
+        // next hop already sees what this one set.
+        let cookies = req.credentials.applies(&u);
+        let hop = if cookies { super::cookies::with_cookies(&u, &headers) } else { None };
+        let (head, bytes) =
+            round_trip(&u, &method, hop.as_deref().unwrap_or(&headers), body.as_deref(), req, cancel)?;
         cancel.disarm();
+        if cookies {
+            super::cookies::store_response(&u, &head.headers);
+        }
 
         if is_redirect(head.status) {
             if let Some(loc) = header(&head.headers, "location") {
@@ -1267,9 +1287,78 @@ mod tests {
             headers: vec![],
             body: None,
             redirect: Redirect::Follow,
+            credentials: crate::webapi::cookies::Credentials::Omit,
             connect_timeout: Duration::from_secs(5),
             io_timeout: Duration::from_secs(10),
         }
+    }
+
+    // -- cookies, per hop (webapi::cookies holds the rules; this is the wiring) --
+
+    fn cookie_line(request: &[u8]) -> Option<String> {
+        String::from_utf8_lossy(request)
+            .lines()
+            .find_map(|l| l.strip_prefix("cookie: ").or_else(|| l.strip_prefix("Cookie: ")).map(str::to_string))
+    }
+
+    #[test]
+    fn include_stores_a_redirects_set_cookie_and_sends_it_on_the_next_hop() {
+        use crate::webapi::cookies;
+        let _g = cookies::test_lock();
+        cookies::reset_for_tests();
+        let (port, seen) = serve(vec![
+            b"HTTP/1.1 302 Found\r\nSet-Cookie: hop=1; Path=/\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: done=2; Path=/\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+        ]);
+        let mut r = req(&format!("http://127.0.0.1:{port}/start"));
+        r.credentials = cookies::Credentials::Include;
+        let resp = send(&r, &Cancel::default()).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(cookie_line(&seen.recv().unwrap()), None, "nothing in the jar for the first hop");
+        assert_eq!(cookie_line(&seen.recv().unwrap()).as_deref(), Some("hop=1"), "the 302's cookie rode the next hop");
+        let jar = cookies::header_for(&url::Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), cookies::Api::Http);
+        assert_eq!(jar.as_deref(), Some("hop=1; done=2"));
+        cookies::reset_for_tests();
+    }
+
+    #[test]
+    fn a_hop_to_another_host_carries_only_that_hosts_cookies() {
+        use crate::webapi::cookies;
+        let _g = cookies::test_lock();
+        cookies::reset_for_tests();
+        let (b, seen_b) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec()]);
+        let (a, seen_a) = serve(vec![format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://localhost:{b}/there\r\nContent-Length: 0\r\n\r\n"
+        )
+        .into_bytes()]);
+        cookies::set_from_header(&url::Url::parse("http://127.0.0.1/").unwrap(), "only-ip=1", cookies::Api::Http).unwrap();
+        cookies::set_from_header(&url::Url::parse("http://localhost/").unwrap(), "only-lh=1", cookies::Api::Http).unwrap();
+        let mut r = req(&format!("http://127.0.0.1:{a}/start"));
+        r.credentials = cookies::Credentials::Include;
+        r.headers.push(("cookie".into(), "script=1".into()));
+        send(&r, &Cancel::default()).unwrap();
+        assert_eq!(cookie_line(&seen_a.recv().unwrap()).as_deref(), Some("script=1; only-ip=1"));
+        // Cross-origin: the script's header is stripped, the jar re-decides.
+        assert_eq!(cookie_line(&seen_b.recv().unwrap()).as_deref(), Some("only-lh=1"));
+        cookies::reset_for_tests();
+    }
+
+    #[test]
+    fn omit_and_same_origin_neither_send_nor_store() {
+        use crate::webapi::cookies;
+        let _g = cookies::test_lock();
+        cookies::reset_for_tests();
+        cookies::set_from_header(&url::Url::parse("http://127.0.0.1/").unwrap(), "pre=1", cookies::Api::Http).unwrap();
+        for mode in [cookies::Credentials::Omit, cookies::Credentials::SameOrigin] {
+            let (port, seen) = serve(vec![b"HTTP/1.1 200 OK\r\nSet-Cookie: nope=1\r\nContent-Length: 0\r\n\r\n".to_vec()]);
+            let mut r = req(&format!("http://127.0.0.1:{port}/"));
+            r.credentials = mode;
+            send(&r, &Cancel::default()).unwrap();
+            assert_eq!(cookie_line(&seen.recv().unwrap()), None, "{mode:?} sent the jar");
+        }
+        let jar = cookies::header_for(&url::Url::parse("http://127.0.0.1/").unwrap(), cookies::Api::Http);
+        assert_eq!(jar.as_deref(), Some("pre=1"), "neither mode stored the response's cookie");
+        cookies::reset_for_tests();
     }
 
     #[test]

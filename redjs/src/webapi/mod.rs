@@ -18,7 +18,8 @@
 //! Event / CustomEvent / EventTarget, TextEncoder / TextDecoder,
 //! Blob / File / FileList (in memory or path-backed, see [`blob`] and
 //! [`file`]), URL / URLSearchParams, Headers / Request / Response / fetch (over a
-//! real HTTP/1.1 + TLS client, see [`http`]),
+//! real HTTP/1.1 + TLS client, see [`http`], with an RFC 6265bis cookie store
+//! behind `credentials` and the WebSocket handshake, see [`cookies`]),
 //! ImageBitmap / HTMLImageElement / Image / createImageBitmap, document /
 //! window (+ host hooks), UIEvent / MouseEvent / KeyboardEvent / WheelEvent /
 //! FocusEvent / InputEvent / PointerEvent / DragEvent / DataTransfer,
@@ -56,6 +57,7 @@ pub mod blob;
 #[cfg(feature = "clipboard")]
 pub mod clipboard;
 pub mod compression;
+pub mod cookies;
 pub mod crypto;
 pub mod dialogs;
 pub mod dom;

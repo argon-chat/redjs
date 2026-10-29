@@ -77,6 +77,12 @@
 //!   the honest description of this client.
 //! - **No automatic reconnection, no heartbeat.** Pings from the server are
 //!   answered with pongs (RFC 6455 §5.5.2 requires it); we never ping first.
+//!
+//! ## Cookies
+//!
+//! The opening handshake carries the jar's cookies for the URL and stores the
+//! response's `Set-Cookie`, as a browser's does (its handshake's credentials
+//! mode is always "include"). The rules are `webapi::cookies`'.
 
 use core::ffi::c_void;
 use std::collections::{HashMap, VecDeque};
@@ -89,7 +95,7 @@ use std::time::{Duration, Instant};
 use sha1::Digest;
 
 use super::util::*;
-use super::{blob, events, http};
+use super::{blob, cookies, events, http};
 use crate::capi;
 use crate::glue;
 
@@ -378,7 +384,10 @@ pub fn accept_key(key_b64: &str) -> String {
 /// The upgrade request exactly as it goes on the wire. `u` is the *http/https*
 /// form of the URL (see [`to_http_url`]) so the `Host` header and default ports
 /// come out of the same code paths `fetch` uses.
-pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String]) -> String {
+///
+/// `cookie` is the jar's `Cookie` value for the URL (`webapi::cookies`): a
+/// browser's WebSocket handshake always carries credentials.
+pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String], cookie: Option<&str>) -> String {
     let mut target = u.path().to_string();
     if target.is_empty() {
         target.push('/');
@@ -401,6 +410,9 @@ pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String]) -> S
     s.push_str("Sec-WebSocket-Version: 13\r\n");
     if !protocols.is_empty() {
         s.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", protocols.join(", ")));
+    }
+    if let Some(c) = cookie.filter(|c| !c.is_empty() && !c.contains(['\r', '\n'])) {
+        s.push_str(&format!("Cookie: {c}\r\n"));
     }
     s.push_str("User-Agent: RedPew\r\n");
     s.push_str("\r\n");
@@ -687,12 +699,17 @@ fn connect_and_run(sh: &Arc<Shared>, ws_url: url::Url, protocols: Vec<String>) -
     let mut key = [0u8; 16];
     let _ = getrandom::fill(&mut key);
     let key_b64 = b64_encode(&key);
-    let req = handshake_request(&http_url, &key_b64, &protocols);
+    // The jar is asked with the ws(s) URL itself, so `Secure` follows `wss:`.
+    let cookie = cookies::header_for(&ws_url, cookies::Api::Http);
+    let req = handshake_request(&http_url, &key_b64, &protocols, cookie.as_deref());
 
     let mut c = http::Cancellable::new(stream, &sh.cancel, HANDSHAKE_TIMEOUT);
     c.write_all(req.as_bytes()).map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
     c.flush().map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
     let (head, rest) = http::read_head(&mut c, &sh.cancel).map_err(|e| e.message)?;
+    // The handshake response's Set-Cookie is stored whatever its status, as a
+    // browser stores it.
+    cookies::store_response(&ws_url, &head.headers);
     let (protocol, extensions) = validate_handshake(&head, &key_b64, &protocols)?;
     let mut stream = c.into_inner();
 
@@ -1801,7 +1818,7 @@ mod tests {
     #[test]
     fn the_upgrade_request_carries_every_required_header() {
         let u = url::Url::parse("http://example.com:8080/socket?room=1").unwrap();
-        let req = handshake_request(&u, "dGhlIHNhbXBsZSBub25jZQ==", &["ion".into(), "cbor".into()]);
+        let req = handshake_request(&u, "dGhlIHNhbXBsZSBub25jZQ==", &["ion".into(), "cbor".into()], None);
         assert!(req.starts_with("GET /socket?room=1 HTTP/1.1\r\n"), "{req}");
         assert!(req.contains("Host: example.com:8080\r\n"), "{req}");
         assert!(req.contains("Upgrade: websocket\r\n"), "{req}");
@@ -1812,12 +1829,16 @@ mod tests {
         assert!(req.ends_with("\r\n\r\n"), "{req}");
         // No extensions are offered, so none may be accepted.
         assert!(!req.contains("Sec-WebSocket-Extensions"), "{req}");
+        assert!(!req.contains("Cookie"), "no jar value, no Cookie header: {req}");
+        let with = handshake_request(&u, "k", &[], Some("sid=1; t=2"));
+        assert!(with.contains("Cookie: sid=1; t=2\r\n"), "{with}");
+        assert!(!handshake_request(&u, "k", &[], Some("a=1\r\nX: y")).contains("X: y"), "no injection");
     }
 
     #[test]
     fn a_default_port_is_not_repeated_in_the_host_header() {
         let u = url::Url::parse("https://example.com/s").unwrap();
-        assert!(handshake_request(&u, "k", &[]).contains("Host: example.com\r\n"));
+        assert!(handshake_request(&u, "k", &[], None).contains("Host: example.com\r\n"));
     }
 
     fn head(status: u16, headers: &[(&str, &str)]) -> http::Head {
@@ -2017,6 +2038,10 @@ mod jsc_tests {
         push: Vec<Vec<u8>>,
         /// Accept the TCP connection and then never answer.
         silent: bool,
+        /// Push the client's upgrade request head as the first text message.
+        echo_head: bool,
+        /// A `Set-Cookie` value for the 101.
+        set_cookie: Option<String>,
     }
 
     /// Decodes a *client* frame: the mask is mandatory in that direction, which
@@ -2115,12 +2140,18 @@ mod jsc_tests {
             if cfg.rogue_extension {
                 resp.push_str("Sec-WebSocket-Extensions: permessage-deflate\r\n");
             }
+            if let Some(c) = &cfg.set_cookie {
+                resp.push_str(&format!("Set-Cookie: {c}\r\n"));
+            }
             resp.push_str("\r\n");
             // ONE write for the 101 and the pushed frames, on purpose: that
             // puts whole frames into the client's handshake over-read, which is
             // the path where a read-before-parse loop deadlocks until the
             // socket times out. Separate writes would make it a coin flip.
             let mut first = resp.into_bytes();
+            if cfg.echo_head {
+                first.extend_from_slice(&server_frame(true, OP_TEXT, head.as_bytes()));
+            }
             for f in &cfg.push {
                 first.extend_from_slice(f);
             }
@@ -2239,6 +2270,33 @@ mod jsc_tests {
             ),
         );
         assert_eq!(out, format!("0|1|ws://127.0.0.1:{port}/rpc|||ws://127.0.0.1:{port}"));
+    }
+
+    #[test]
+    fn the_handshake_carries_the_jars_cookies_and_stores_the_101s() {
+        let _g = crate::webapi::cookies::test_lock();
+        crate::webapi::cookies::reset_for_tests();
+        let jar_url = url::Url::parse("http://127.0.0.1/").unwrap();
+        crate::webapi::cookies::set_from_header(&jar_url, "sid=ws1; Path=/", crate::webapi::cookies::Api::Http).unwrap();
+        crate::webapi::cookies::set_from_header(&jar_url, "other=1; Path=/elsewhere", crate::webapi::cookies::Api::Http)
+            .unwrap();
+        let port = serve(Cfg { echo_head: true, set_cookie: Some("fromws=2; Path=/".into()), ..Cfg::default() });
+        let c = ws_ctx();
+        let out = run(
+            &c,
+            &format!(
+                "const ws = new WebSocket('ws://127.0.0.1:{port}/rpc'); \
+                 const m = nextMessage(ws); \
+                 await opened(ws); \
+                 const head = (await m).data; \
+                 ws.close(); \
+                 return head.split('\\r\\n').filter(l => /^cookie:/i.test(l)).join('|');"
+            ),
+        );
+        assert_eq!(out, "Cookie: sid=ws1", "the path-matching cookie, and only it");
+        let now = crate::webapi::cookies::header_for(&jar_url, crate::webapi::cookies::Api::Http);
+        assert_eq!(now.as_deref(), Some("sid=ws1; fromws=2"), "the 101's Set-Cookie was stored");
+        crate::webapi::cookies::reset_for_tests();
     }
 
     #[test]

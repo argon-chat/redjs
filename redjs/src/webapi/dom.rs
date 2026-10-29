@@ -12,6 +12,29 @@ use super::events;
 use super::util::*;
 use crate::glue;
 
+fn advise_document_cookie(write: bool) {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        eprintln!(
+            "[redjs] document.cookie (cookies C-4): the page is {}, a URL with no cookies, so it \
+             reads \"\" and a write is dropped ({}). Cookies here belong to fetch(…, {{ credentials: \
+             \"include\" }}) and WebSocket, and script never sees them.",
+            super::cookies::PAGE_ORIGIN,
+            if write { "this was a write" } else { "this was a read" }
+        );
+    });
+}
+
+unsafe extern "sysv64" fn document_cookie_get(g: *mut c_void, _cf: *mut c_void) -> u64 {
+    advise_document_cookie(false);
+    js_string(g, "")
+}
+
+unsafe extern "sysv64" fn document_cookie_set(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+    advise_document_cookie(true);
+    UNDEF
+}
+
 unsafe extern "sysv64" fn get_element_by_id(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let id = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
@@ -191,6 +214,18 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     def_fn(document, "getElementById", 1, get_element_by_id);
     def_fn(document, "querySelector", 1, query_selector);
     def_fn(document, "createElement", 1, create_element);
+
+    // `document.cookie` (cookies.rs C-4): the document's URL is
+    // `app://redpew/`, a scheme with no cookies, so — as for a browser
+    // document with an opaque origin — it reads "" and a write is dropped.
+    // The jar itself is never reachable from script (HttpOnly or not).
+    {
+        let getter = make_fn(g, "get cookie", 0, document_cookie_get);
+        let setter = make_fn(g, "set cookie", 1, document_cookie_set);
+        let a = atom(g, "cookie");
+        glue::rjs_define_accessor(g, document, a, getter, setter, 0);
+        glue::rjs_atom_free(g, a);
+    }
 
     // body/head/documentElement: dumb elements.
     let mk_el = |tag: &str| -> u64 {

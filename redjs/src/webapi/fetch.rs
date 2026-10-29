@@ -574,9 +574,14 @@ unsafe fn settle(g: *mut c_void, d: Delivery) {
         }
         Ok(resp) => {
             let has_body = !matches!(resp.status, 204 | 205 | 304);
+            // Fetch's "forbidden response-header names": the jar has already
+            // seen them (http::send, per hop); script never does, so
+            // `headers.get("set-cookie")` is null and `getSetCookie()` is [].
+            let mut headers = resp.headers;
+            headers.retain(|(k, _)| !k.eq_ignore_ascii_case("set-cookie") && !k.eq_ignore_ascii_case("set-cookie2"));
             let obj = create_response(g, RespData {
                 bytes: Arc::new(resp.body),
-                headers: resp.headers,
+                headers,
                 url: resp.url,
                 status: resp.status as i32,
                 status_text: resp.status_text,
@@ -653,6 +658,9 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
         headers: plan.headers,
         body: plan.body,
         redirect: if plan.redirect == "error" { http::Redirect::Error } else { http::Redirect::Follow },
+        // `check_supported` already refused anything else.
+        credentials: super::cookies::Credentials::parse(&plan.credentials)
+            .unwrap_or(super::cookies::Credentials::SameOrigin),
         connect_timeout: CONNECT_TIMEOUT,
         io_timeout: IO_TIMEOUT,
     };
@@ -1137,7 +1145,7 @@ mod jsc_tests {
         let c = fetch_ctx();
         let cases = [
             ("{ redirect: 'manual' }", "manual"),
-            ("{ credentials: 'include' }", "include"),
+            ("{ credentials: 'bogus' }", "bogus"),
             ("{ mode: 'no-cors' }", "no-cors"),
             ("{ cache: 'only-if-cached' }", "only-if-cached"),
             ("{ integrity: 'sha256-abc' }", "integrity"),
@@ -1175,6 +1183,92 @@ mod jsc_tests {
             ),
         );
         assert_eq!(out, "true|200|OK|basic|abc|application/json|eu|true");
+    }
+
+    // -- credentials and the jar (webapi::cookies has the rules) --------------
+
+    /// A loopback server that answers each of `n` connections with
+    /// `reply(request head)` — so a reply can echo the Cookie it received.
+    fn serve_fn(n: usize, reply: impl Fn(&str) -> String + Send + 'static) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for _ in 0..n {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut got = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(k) => got.extend_from_slice(&buf[..k]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&got).into_owned();
+                let _ = sock.write_all(reply(&head).as_bytes());
+                let _ = sock.flush();
+                let _ = sock.shutdown(std::net::Shutdown::Write);
+            }
+        });
+        port
+    }
+
+    /// The reply: echo the request's Cookie header as the body, plus `extra`
+    /// response headers.
+    fn echo_cookie(head: &str, extra: &str) -> String {
+        let cookie = head
+            .lines()
+            .find_map(|l| l.strip_prefix("cookie: ").or_else(|| l.strip_prefix("Cookie: ")))
+            .unwrap_or("-")
+            .to_string();
+        format!("HTTP/1.1 200 OK\r\n{extra}Content-Length: {}\r\n\r\n{cookie}", cookie.len())
+    }
+
+    #[test]
+    fn include_stores_set_cookie_and_sends_it_back_and_omit_does_neither() {
+        let _g = super::super::cookies::test_lock();
+        super::super::cookies::reset_for_tests();
+        let c = fetch_ctx();
+        let port = serve_fn(4, |head| {
+            if head.starts_with("GET /login") {
+                echo_cookie(head, "Set-Cookie: sid=abc; Path=/; HttpOnly\r\nSet-Cookie: theme=dark; Path=/\r\n")
+            } else {
+                echo_cookie(head, "")
+            }
+        });
+        let out = run(
+            &c,
+            &format!(
+                "const base = 'http://127.0.0.1:{port}'; \
+                 const a = await fetch(base + '/login', {{ credentials: 'include' }}); \
+                 const first = await a.text(); \
+                 const hidden = [String(a.headers.get('set-cookie')), a.headers.getSetCookie().length, \
+                                 [...a.headers.keys()].includes('set-cookie')].join(','); \
+                 const b = await (await fetch(base + '/me', {{ credentials: 'include' }})).text(); \
+                 const c = await (await fetch(base + '/me', {{ credentials: 'omit' }})).text(); \
+                 const d = await (await fetch(base + '/me')).text(); \
+                 return [first, hidden, b, c, d].join('|');"
+            ),
+        );
+        assert_eq!(out, "-|null,0,false|sid=abc; theme=dark|-|-");
+        super::super::cookies::reset_for_tests();
+    }
+
+    #[test]
+    fn document_cookie_is_empty_and_ignores_writes() {
+        let _g = super::super::cookies::test_lock();
+        super::super::cookies::reset_for_tests();
+        super::super::cookies::set_from_header(
+            &url::Url::parse("https://example.com/").unwrap(),
+            "visible=1",
+            super::super::cookies::Api::Http,
+        )
+        .unwrap();
+        let c = fetch_ctx();
+        let out = s(&c, "document.cookie = 'x=1'; JSON.stringify([typeof document.cookie, document.cookie])");
+        assert_eq!(out, "[\"string\",\"\"]");
+        assert!(super::super::cookies::get(None).iter().all(|k| k.name != "x"), "the write went nowhere");
+        super::super::cookies::reset_for_tests();
     }
 
     #[test]

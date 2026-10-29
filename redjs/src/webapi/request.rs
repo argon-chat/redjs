@@ -32,8 +32,10 @@
 //! [`check_supported`] is the single place where an unsupported request shape is
 //! turned away, and every arm names the option and says why. The rule it
 //! encodes: an option this runtime cannot honour must never be *ignored*,
-//! because a request that quietly omits the caller's cookies, integrity hash or
-//! redirect policy succeeds while doing the wrong thing.
+//! because a request that quietly omits the caller's integrity hash or
+//! redirect policy succeeds while doing the wrong thing. (`credentials:
+//! "include"` used to be on that list; the cookie jar in `cookies.rs` took it
+//! off.)
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -382,17 +384,11 @@ pub fn check_supported(plan: &Plan) -> Result<(), String> {
         other => return Err(format!("redirect: {other:?} is not a valid redirect mode")),
     }
 
-    match plan.credentials.as_str() {
-        "omit" | "same-origin" => {}
-        // There is no cookie jar in the player. Accepting this would send the
-        // request WITHOUT the cookies the caller believes it attached.
-        "include" => {
-            return Err("credentials: \"include\" is not supported by this runtime — \
-                        it has no cookie store, so cookies would be silently omitted. \
-                        Set the Cookie header explicitly if you need one"
-                .into())
-        }
-        other => return Err(format!("credentials: {other:?} is not a valid credentials mode")),
+    // All three modes are real: `webapi::cookies` is the jar `include` reads
+    // and writes (and `same-origin`, against the opaque page origin, means no
+    // cookies for any network URL — see that module's header).
+    if super::cookies::Credentials::parse(&plan.credentials).is_none() {
+        return Err(format!("credentials: {:?} is not a valid credentials mode", plan.credentials));
     }
 
     match plan.mode.as_str() {
