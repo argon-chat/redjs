@@ -11,9 +11,21 @@
 //! nobody looked at.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use super::cmd::{unpremultiply, Cmd, Image, ImageRef};
+
+/// Generations are unique across every surface of the process, so a
+/// presenter's `since` can never match a different surface that took the
+/// same key.
+fn next_generation() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Set when a presented surface changes; see [`take_presented_changed`].
+static PRESENTED_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// A raster backend: owns one bitmap and replays commands onto it.
 ///
@@ -81,9 +93,13 @@ pub struct Surface {
     width: u32,
     height: u32,
     pending: Vec<Cmd>,
-    /// Bumped by every change; what a presenter compares.
+    /// Moved by every change, to a number no other surface has had; what a
+    /// presenter compares.
     generation: u64,
     snap: Option<(u64, ImageRef)>,
+    /// Published with [`register_present`]: a change sets
+    /// [`PRESENTED_CHANGED`].
+    presented: bool,
     /// HTML's origin-clean flag: false once a cross-origin image was drawn.
     pub origin_clean: bool,
     pub options: Options,
@@ -114,10 +130,19 @@ impl Surface {
             width,
             height,
             pending: Vec::new(),
-            generation: 1,
+            generation: next_generation(),
             snap: None,
+            presented: false,
             origin_clean: true,
             options,
+        }
+    }
+
+    /// The bitmap changed (or is about to, once the queue is flushed).
+    fn bump(&mut self) {
+        self.generation = next_generation();
+        if self.presented {
+            PRESENTED_CHANGED.store(true, Ordering::Release);
         }
     }
 
@@ -143,7 +168,7 @@ impl Surface {
             self.pending.clear();
         }
         self.pending.push(cmd);
-        self.generation += 1;
+        self.bump();
         if self.pending.len() >= FLUSH_AT {
             self.flush();
         }
@@ -165,7 +190,7 @@ impl Surface {
         self.width = width;
         self.height = height;
         self.backend.reset(width, height);
-        self.generation += 1;
+        self.bump();
         self.snap = None;
         self.origin_clean = true;
     }
@@ -241,23 +266,52 @@ fn presented() -> &'static Mutex<HashMap<u64, Weak<Mutex<Surface>>>> {
     P.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Marks `surface` presented or not; either way the embedder has something
+/// new to paint. The caller holds no lock (the registry's is always taken
+/// before a surface's, never inside one).
+fn set_presented(surface: &Mutex<Surface>, on: bool) {
+    surface.lock().unwrap().presented = on;
+    PRESENTED_CHANGED.store(true, Ordering::Release);
+}
+
 /// Publishes `surface` under the embedder's `key` (vue-native: the host node
 /// id of the `<canvas>`). A later registration under the same key wins.
 pub fn register_present(key: u64, surface: &SurfaceRef) {
-    presented().lock().unwrap().insert(key, Arc::downgrade(surface));
+    let old = presented().lock().unwrap().insert(key, Arc::downgrade(surface));
+    if let Some(old) = old.and_then(|w| w.upgrade()) {
+        if !Arc::ptr_eq(&old, surface) {
+            set_presented(&old, false);
+        }
+    }
+    set_presented(surface, true);
 }
 
 pub fn unregister_present(key: u64) {
-    presented().lock().unwrap().remove(&key);
+    let old = presented().lock().unwrap().remove(&key);
+    if let Some(old) = old.and_then(|w| w.upgrade()) {
+        set_presented(&old, false);
+    }
 }
 
 /// Unregisters `key` only while it still names `surface` (a newer canvas may
 /// have taken the key since).
 pub(crate) fn unregister_present_if(key: u64, surface: &SurfaceRef) {
-    let mut p = presented().lock().unwrap();
-    if p.get(&key).map(|w| std::ptr::eq(w.as_ptr(), Arc::as_ptr(surface))).unwrap_or(false) {
-        p.remove(&key);
+    let removed = {
+        let mut p = presented().lock().unwrap();
+        let ours = p.get(&key).map(|w| std::ptr::eq(w.as_ptr(), Arc::as_ptr(surface))).unwrap_or(false);
+        ours && p.remove(&key).is_some()
+    };
+    if removed {
+        set_presented(surface, false);
     }
+}
+
+/// True once after any presented surface changed — drew, was resized, or was
+/// published or withdrawn — since the last call. What an embedder's frame
+/// loop polls to decide that a canvas needs a repaint: one atomic swap a
+/// frame, whatever the number of canvases, and nothing for an offscreen one.
+pub fn take_presented_changed() -> bool {
+    PRESENTED_CHANGED.swap(false, Ordering::AcqRel)
 }
 
 /// The bitmap published under `key`, flushed, when it changed after
@@ -284,4 +338,59 @@ pub fn present_size(key: u64) -> Option<(u32, u32)> {
     let s = weak.upgrade()?;
     let s = s.lock().unwrap();
     Some((s.width(), s.height()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn put(rgba: [u8; 4]) -> Cmd {
+        Cmd::Put { x: 0, y: 0, image: Arc::new(Image::from_premul(1, 1, rgba.to_vec(), true)) }
+    }
+
+    /// The presenter's protocol, as vue-native's host drives it: a frame that
+    /// asks again without a change gets nothing, a draw on a presented surface
+    /// raises the flag once, and an offscreen one never does.
+    #[test]
+    fn a_presenter_sees_each_change_once() {
+        // Only this test reads the flag in this binary; the key is out of the
+        // way of anything else that registers.
+        let key = u64::MAX - 7;
+        let shown: SurfaceRef = Arc::new(Mutex::new(Surface::new(2, 1, Options::default())));
+        register_present(key, &shown);
+        assert!(take_presented_changed(), "publishing is a change");
+        assert!(!take_presented_changed());
+
+        let (g1, img) = present(key, 0).expect("published");
+        assert_eq!((img.width, img.height), (2, 1));
+        assert!(present(key, g1).is_none(), "nothing moved since g1");
+        assert_eq!(present_size(key), Some((2, 1)));
+
+        let hidden = Arc::new(Mutex::new(Surface::new(2, 1, Options::default())));
+        hidden.lock().unwrap().push(put([9, 9, 9, 255]));
+        assert!(!take_presented_changed(), "an offscreen surface never asks for a frame");
+
+        shown.lock().unwrap().push(put([0, 0, 255, 255]));
+        shown.lock().unwrap().push(put([255, 0, 0, 255]));
+        assert!(take_presented_changed());
+        assert!(!take_presented_changed(), "two draws, one frame");
+        let (g2, img) = present(key, g1).expect("moved");
+        assert!(g2 != g1);
+        assert_eq!(&img.data[..4], &[255, 0, 0, 255]);
+
+        // A new surface under the same key never matches the old one's
+        // generation, even if its own count happened to line up.
+        let next: SurfaceRef = Arc::new(Mutex::new(Surface::new(1, 1, Options::default())));
+        register_present(key, &next);
+        assert!(take_presented_changed());
+        assert!(present(key, g2).is_some());
+        shown.lock().unwrap().push(put([1, 1, 1, 255]));
+        assert!(!take_presented_changed(), "the replaced surface is not presented any more");
+
+        unregister_present_if(key, &shown);
+        assert_eq!(present_size(key), Some((1, 1)), "only the surface the key names is withdrawn");
+        unregister_present(key);
+        assert!(take_presented_changed(), "withdrawing is a change");
+        assert!(present(key, 0).is_none() && present_size(key).is_none());
+    }
 }

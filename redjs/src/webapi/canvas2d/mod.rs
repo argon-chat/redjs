@@ -20,7 +20,9 @@
 //!   element of its own, an embedder builds one from the hidden natives
 //!   (`__rjs_canvas_context`, `_resize`, `_data_url`, `_blob`,
 //!   `_source_hook`, `_info`; see `context.rs`), and paints it from
-//!   [`present`] under the key it registered.
+//!   [`present`] under the key it registered. [`take_presented_changed`]
+//!   tells its frame loop that some presented canvas drew since the last
+//!   frame, so an idle canvas costs one atomic load a frame.
 //!
 //! ## Not yet (each says so once, on stderr, when used)
 //!
@@ -40,7 +42,10 @@ use core::ffi::c_void;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
-pub use surface::{present, present_size, register_present, set_host, unregister_present, Backend, CanvasHost, Options};
+pub use surface::{
+    present, present_size, register_present, set_host, take_presented_changed, unregister_present, Backend, CanvasHost,
+    Options,
+};
 
 fn advised() -> &'static Mutex<(HashSet<String>, Vec<String>)> {
     static A: OnceLock<Mutex<(HashSet<String>, Vec<String>)>> = OnceLock::new();
