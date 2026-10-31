@@ -1922,7 +1922,7 @@ impl<'a> Dec<'a> {
                 if width == 0 || height == 0 || rgba.len() as u64 != width as u64 * height as u64 * 4 {
                     return self.bad();
                 }
-                super::image::create_bitmap(g, super::image::BitmapData { width, height, rgba })
+                super::image::create_bitmap(g, super::image::BitmapData::new(width, height, rgba))
             }
             (tag::BLOB_REF, Some(Attachment::BlobRef { range, mime })) => {
                 if !range.fits() {
@@ -2275,7 +2275,7 @@ mod tests {
         let c = ctx();
         unsafe {
             let g = c.raw();
-            let bm = super::super::image::create_bitmap(g, super::super::image::BitmapData { width: 1, height: 1, rgba: vec![1, 2, 3, 4] });
+            let bm = super::super::image::create_bitmap(g, super::super::image::BitmapData::new(1, 1, vec![1, 2, 3, 4]));
             define(g, glue::rjs_global(g), "bm", bm, 0);
         }
         ok(&c, "(() => { const r = structuredClone(bm); return r instanceof ImageBitmap && r !== bm && r.width === 1 && bm.width === 1; })()");
@@ -2324,7 +2324,7 @@ mod tests {
             define(g, glue::rjs_global(g), "fromDisk", v, 0);
             ok(&c, "fromDisk.b instanceof Blob && fromDisk.b.type === 'a/b' && fromDisk.b.size === 3 && fromDisk.m.get(1).has(2)");
 
-            let bm = super::super::image::create_bitmap(g, super::super::image::BitmapData { width: 1, height: 1, rgba: vec![0; 4] });
+            let bm = super::super::image::create_bitmap(g, super::super::image::BitmapData::new(1, 1, vec![0; 4]));
             define(g, glue::rjs_global(g), "bm2", bm, 0);
             let e = ser(&c, "({ bm2 })", true).unwrap_err();
             assert!(e.contains("storage"), "{e}");

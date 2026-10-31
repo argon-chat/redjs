@@ -362,7 +362,8 @@ pub(crate) unsafe fn image_source(g: *mut c_void, v: u64) -> Result<Source, ()> 
             domexception_throw(g, "InvalidStateError", "The image source is detached (a closed ImageBitmap)");
             return Err(());
         }
-        return Ok(Source::Pixels(Arc::new(Image::from_straight(b.width, b.height, b.rgba.clone(), true)), true));
+        let clean = b.origin_clean;
+        return Ok(Source::Pixels(Arc::new(Image::from_straight(b.width, b.height, b.rgba.clone(), clean)), clean));
     }
     if is_cell(v) && proto_chain_has(g, v, st.image.proto) {
         let bmp = get_a(g, v, st.s_image);
@@ -458,7 +459,8 @@ pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u
         if got == v || !is_cell(got) {
             return None;
         }
-        return canvas_pixels(g, got);
+        // A context, or an ImageBitmap the embedder made of its own image.
+        return super::super::image::source_pixels(g, got);
     };
     let mut s = surface.lock().unwrap();
     let _ = s.readable();
@@ -1766,7 +1768,7 @@ unsafe extern "sysv64" fn off_transfer(g: *mut c_void, cf: *mut c_void) -> u64 {
         s.reset(w, h);
         px
     };
-    super::super::image::create_bitmap(g, super::super::image::BitmapData { width: w, height: h, rgba: px })
+    super::super::image::create_bitmap(g, super::super::image::BitmapData::new(w, h, px))
 }
 
 // ---------------------------------------------------------------------------
@@ -1846,7 +1848,7 @@ unsafe extern "sysv64" fn h_source_hook(g: *mut c_void, cf: *mut c_void) -> u64 
     UNDEF
 }
 
-/// `__rjs_canvas_info(ctx)` → `{ backend, width, height, generation }` (tests, devtools).
+/// `__rjs_canvas_info(ctx)` → `{ backend, width, height, generation, originClean }` (tests, devtools).
 unsafe extern "sysv64" fn h_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(cx) = ctx_of(g, cf_arg(cf, 0)) else { return NULL };
     let s = cx.surface.lock().unwrap();
@@ -1855,6 +1857,7 @@ unsafe extern "sysv64" fn h_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     define(g, out, "width", enc_f64(s.width() as f64), 0);
     define(g, out, "height", enc_f64(s.height() as f64), 0);
     define(g, out, "generation", enc_f64(s.generation() as f64), 0);
+    define(g, out, "originClean", if s.origin_clean { TRUE } else { FALSE }, 0);
     out
 }
 

@@ -14,6 +14,9 @@
 //! threads under the snapshot rule, and an unknown or revoked URL is an
 //! `error` (a rejection). `createImageBitmap(file)` of a path-backed File
 //! reads it the same way rather than on the UI thread.
+//!
+//! A raster is decoded upright, its EXIF orientation applied, as a browser
+//! draws and measures it (`decode`, which an embedder can call too).
 
 use core::ffi::c_void;
 
@@ -26,6 +29,18 @@ pub struct BitmapData {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// HTML's origin-clean flag: false for pixels that came from a
+    /// cross-origin image fetched without CORS. A canvas that draws such a
+    /// bitmap loses its own flag (recorded and advised, not enforced; see
+    /// canvas2d `Surface::readable`). A structured clone comes out clean.
+    pub origin_clean: bool,
+}
+
+impl BitmapData {
+    /// Straight RGBA pixels from this origin.
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> BitmapData {
+        BitmapData { width, height, rgba, origin_clean: true }
+    }
 }
 
 unsafe fn this_bitmap<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut BitmapData> {
@@ -283,13 +298,34 @@ fn decode_rgba(bytes: &[u8]) -> Option<BitmapData> {
 }
 
 fn decode_typed(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
+    decode(bytes, mime)
+}
+
+/// An image file's bytes decoded to straight RGBA, synchronously: a raster
+/// format through `image`, turned upright by its EXIF orientation (CSS
+/// `image-orientation: from-image`, the default every browser draws and
+/// measures with), or an SVG rasterized at its intrinsic size. `mime` may be
+/// `None`: the raster format is sniffed from the bytes. `None` when the bytes
+/// are no image this build decodes.
+///
+/// For an embedder that holds an image's bytes and needs its pixels now
+/// (vue-native's `drawImage` of an `<img>` the host loaded).
+pub fn decode(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
+    use image::ImageDecoder;
     if is_svg(bytes, mime) {
         return svg::rasterize(bytes);
     }
-    let img = image::load_from_memory(bytes).ok()?;
-    let rgba = img.to_rgba8();
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    let rgba = img.into_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
-    Some(BitmapData { width: w, height: h, rgba: rgba.into_raw() })
+    Some(BitmapData::new(w, h, rgba.into_raw()))
 }
 
 /// `image/svg+xml`, or markup that opens an `<svg>` element (after a BOM,
@@ -364,7 +400,7 @@ mod svg {
                 }
             }
         }
-        Some(BitmapData { width: w, height: h, rgba })
+        Some(BitmapData::new(w, h, rgba))
     }
 }
 
@@ -402,7 +438,7 @@ fn crop(src: &BitmapData, sx: i64, sy: i64, sw: u32, sh: u32) -> BitmapData {
             out[di..di + 4].copy_from_slice(&src.rgba[si..si + 4]);
         }
     }
-    BitmapData { width: sw, height: sh, rgba: out }
+    BitmapData { width: sw, height: sh, rgba: out, origin_clean: src.origin_clean }
 }
 
 unsafe extern "sysv64" fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -492,7 +528,7 @@ unsafe extern "sysv64" fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -
 unsafe fn acquire_pixels(g: *mut c_void, source: u64) -> Result<BitmapData, String> {
     // Drawable sources first (ImageBitmap / HTMLImageElement / ImageData).
     if let Some((px, w, h)) = source_pixels(g, source) {
-        return Ok(BitmapData { width: w, height: h, rgba: px });
+        return Ok(BitmapData::new(w, h, px));
     }
     // Blob.
     if let Some(r) = super::blob::bytes_of(g, source, "createImageBitmap") {
@@ -697,5 +733,47 @@ mod jsc_tests {
         std::fs::write(&t.0, b"changed").unwrap();
         let r = run(&c, "await createImageBitmap(picked);");
         assert!(r.starts_with("ERROR: TypeError") && r.contains("NotReadableError"), "{r}");
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::decode;
+
+    /// A 32x16 JPEG, red on the left and blue on the right (wide enough that
+    /// chroma subsampling keeps the halves apart), with an APP1 Exif segment
+    /// carrying `orientation` when given.
+    fn jpeg(orientation: Option<u16>) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(32, 16, |x, _| if x < 16 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) });
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
+        let jpeg = out.into_inner();
+        let Some(o) = orientation else { return jpeg };
+        // TIFF, big-endian: one IFD entry, Orientation (0x0112), SHORT, 1.
+        let mut tiff = vec![0x4D, 0x4D, 0, 0x2A, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1];
+        tiff.extend_from_slice(&[(o >> 8) as u8, o as u8, 0, 0, 0, 0, 0, 0]);
+        let len = (2 + 6 + tiff.len()) as u16;
+        let mut app1 = vec![0xFF, 0xE1, (len >> 8) as u8, len as u8];
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(&tiff);
+        let mut with = jpeg[..2].to_vec();
+        with.extend_from_slice(&app1);
+        with.extend_from_slice(&jpeg[2..]);
+        with
+    }
+
+    /// A photo is decoded upright, as a browser draws and measures it: EXIF
+    /// orientation 6 (rotate 90 degrees clockwise) turns 32x16 into 16x32, red on top.
+    #[test]
+    fn a_photo_decodes_upright_by_its_exif_orientation() {
+        let plain = decode(&jpeg(None), None).unwrap();
+        assert_eq!((plain.width, plain.height), (32, 16));
+        let turned = decode(&jpeg(Some(6)), Some("image/jpeg")).unwrap();
+        assert_eq!((turned.width, turned.height), (16, 32));
+        let at = |x: usize, y: usize| &turned.rgba[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4];
+        assert!(at(8, 4)[0] > 200 && at(8, 4)[2] < 60, "{:?}", at(8, 4));
+        assert!(at(8, 27)[0] < 60 && at(8, 27)[2] > 200, "{:?}", at(8, 27));
+        assert!(turned.origin_clean);
+        assert!(decode(b"not an image", None).is_none());
     }
 }

@@ -279,6 +279,42 @@ fn an_embedder_element_gets_a_context_its_pixels_and_a_source_hook() {
     assert_eq!(s(&c, "px(0, 0)"), "0,0,0,0");
 }
 
+/// The embedder's own `<img>`: its hook hands back an ImageBitmap of the
+/// decoded pixels, which drawImage and createImageBitmap both take, and a
+/// cross-origin one takes the canvas's origin-clean flag with it.
+#[test]
+fn an_embedder_image_is_a_bitmap_from_the_hook_and_carries_its_origin() {
+    use crate::webapi::image::{create_bitmap, BitmapData};
+    let c = ctx();
+    unsafe {
+        let g = c.raw();
+        glue::rjs_lock(g);
+        let near = create_bitmap(g, BitmapData::new(1, 1, vec![0, 0, 255, 255]));
+        crate::webapi::util::define(g, glue::rjs_global(g), "nearBmp", near, 0);
+        let mut far = BitmapData::new(1, 1, vec![0, 255, 0, 255]);
+        far.origin_clean = false;
+        let far = create_bitmap(g, far);
+        crate::webapi::util::define(g, glue::rjs_global(g), "farBmp", far, 0);
+        glue::rjs_unlock(g);
+    }
+    s(
+        &c,
+        "globalThis.near = { tagName: 'IMG' }; globalThis.far = { tagName: 'IMG' }; \
+         __rjs_canvas_source_hook(v => v === near ? nearBmp : v === far ? farBmp : undefined); 0",
+    );
+    canvas(&c, 2, 1);
+    s(&c, "cx.drawImage(near, 0, 0); 0");
+    assert_eq!(s(&c, "px(0, 0)"), "0,0,255,255");
+    ok(&c, "__rjs_canvas_info(cx).originClean === true");
+    // Recorded, not enforced: the readback goes ahead (with an advisory).
+    s(&c, "cx.drawImage(far, 1, 0); 0");
+    assert_eq!(s(&c, "px(1, 0)"), "0,255,0,255");
+    ok(&c, "__rjs_canvas_info(cx).originClean === false");
+    assert_eq!(run(&c, "const b = await createImageBitmap(near); return b.width + 'x' + b.height;"), "1x1");
+    let r = run(&c, "await createImageBitmap({ tagName: 'IMG' });");
+    assert!(r.starts_with("ERROR:"), "{r}");
+}
+
 #[test]
 fn text_measures_and_draws_nothing_without_throwing() {
     let c = ctx();
