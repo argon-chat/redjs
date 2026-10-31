@@ -109,5 +109,14 @@ mod tests {
         ok(&c, "MediaDeviceInfo.prototype[Symbol.toStringTag] === 'MediaDeviceInfo'");
         ok(&c, "AudioContext.prototype[Symbol.toStringTag] === 'AudioContext'");
         ok(&c, "GainNode.prototype[Symbol.toStringTag] === 'GainNode'");
+        // An instance too: JSC tags an API object with its JSClass's name
+        // ahead of its prototype chain (audio.rs `node_class_for`).
+        ok(
+            &c,
+            "(() => { const ctx = new AudioContext(); const tag = v => Object.prototype.toString.call(v).slice(8, -1); \
+             return tag(ctx.createGain()) === 'GainNode' && tag(ctx.createOscillator()) === 'OscillatorNode' \
+               && tag(ctx.createAnalyser()) === 'AnalyserNode' && tag(ctx.destination) === 'AudioDestinationNode' \
+               && tag(new ChannelSplitterNode(ctx)) === 'ChannelSplitterNode' && ctx.createGain() instanceof AudioNode; })()",
+        );
     }
 }

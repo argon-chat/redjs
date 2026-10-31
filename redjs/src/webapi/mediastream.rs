@@ -688,6 +688,25 @@ fn open_microphone(owner: usize, token: u32, req: AudioRequest) {
     }
 }
 
+/// The format a capture of `device_id` (an `enumerateDevices` id, or
+/// `"default"`) would run at, `(sample rate, channels)`: the device's own mix
+/// format, which [`capture::open`] opens it with. Read off the endpoint without
+/// starting a stream. `None` when the device is gone or reports no input
+/// format. For `InputDeviceInfo.getCapabilities()` (webapi/mediadevices.rs).
+pub(crate) fn input_format(owner: usize, device_id: &str) -> Option<(u32, u32)> {
+    #[cfg(test)]
+    {
+        // The fake microphone's; a test never touches a real endpoint.
+        let _ = device_id;
+        fake::enabled(owner).then_some((48_000, 1))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = owner;
+        capture::format(device_id)
+    }
+}
+
 #[cfg(not(test))]
 mod capture {
     use super::*;
@@ -695,6 +714,22 @@ mod capture {
     use firewheel::cpal::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     type Park = Box<dyn FnOnce()>;
+
+    /// See [`super::input_format`]: the device [`open`] would pick for this
+    /// id, and its default input config.
+    pub(super) fn format(device_id: &str) -> Option<(u32, u32)> {
+        let host = cpal::default_host();
+        let device = if device_id.is_empty() || device_id == super::super::mediadevices::DEFAULT_SINK {
+            host.default_input_device()
+        } else {
+            <cpal::DeviceId as std::str::FromStr>::from_str(device_id)
+                .ok()
+                .and_then(|did| host.device_by_id(&did))
+                .filter(|d| d.supports_input())
+        }?;
+        let config = device.default_input_config().ok()?.config();
+        Some((config.sample_rate, config.channels as u32))
+    }
 
     fn fail(name: &'static str, msg: String) -> (OpenResult, Park) {
         (OpenResult::Err(name, msg), Box::new(|| {}))
@@ -1500,6 +1535,34 @@ mod jsc_tests {
         assert_eq!(
             run(&c, "const ms = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: 'nope' } }); ms.getTracks()[0].stop(); return 'ok';"),
             "ok"
+        );
+    }
+
+    /// `Object.prototype.toString` of the two nodes names their own
+    /// interfaces, as Chromium's do (fixes-host-media-1 §4: the source node
+    /// said `[object AudioNode]`), and a track's capabilities are the ones
+    /// its device's `InputDeviceInfo` reports (webapi/mediadevices.rs).
+    #[test]
+    fn the_nodes_are_tagged_as_themselves_and_a_track_has_its_devices_capabilities() {
+        let c = ctx();
+        fake::enable(c.raw());
+        assert_eq!(
+            run(
+                &c,
+                "const ctx = globalThis.__ctx = new AudioContext();
+                 const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
+                 const tag = v => Object.prototype.toString.call(v);
+                 const src = ctx.createMediaStreamSource(ms);
+                 const made = new MediaStreamAudioSourceNode(ctx, { mediaStream: ms });
+                 const dst = ctx.createMediaStreamDestination();
+                 const out = [tag(src), tag(made), tag(dst), tag(ctx.createGain()), JSON.stringify(ms.getAudioTracks()[0].getCapabilities())].join('|');
+                 ms.getTracks()[0].stop();
+                 return out;"
+            ),
+            format!(
+                "[object MediaStreamAudioSourceNode]|[object MediaStreamAudioSourceNode]|[object MediaStreamAudioDestinationNode]|[object GainNode]|{}",
+                crate::webapi::mediadevices::FAKE_CAPABILITIES
+            )
         );
     }
 

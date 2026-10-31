@@ -1253,11 +1253,53 @@ unsafe fn this_engine_handle(g: *mut c_void, cf: *mut c_void) -> Option<u64> {
     host_data::<CtxHandle>(g, classes(g).ctx_cls, cf_this(cf)).map(|h| h.0)
 }
 
+/// The JSClass a node with prototype `proto` is made with: a child of
+/// `node_cls` named after the node's interface (the tag its prototype chain
+/// carries: `GainNode`, or mediastream.js's `MediaStreamAudioSourceNode`).
+///
+/// JSC answers an API object's `Symbol.toStringTag` with its JSClass's name
+/// BEFORE it looks at the prototype chain (JSCallbackObject's
+/// `getOwnPropertySlot`), so with the one `AudioNode` class every node said
+/// `[object AudioNode]` where a browser says `[object GainNode]`. A child
+/// class still passes the `node_cls` brand check (JSC follows `parentClass`)
+/// and has no finalizer of its own: JSC runs every class's in the chain, and
+/// the parent's frees the handle.
+unsafe fn node_class_for(g: *mut c_void, proto: u64) -> crate::capi::JSClassRef {
+    let base = classes(g).node_cls;
+    if !is_cell(proto) {
+        return base;
+    }
+    let a = glue::rjs_atom_wellknown(g, 1); // Symbol.toStringTag
+    if a.is_null() {
+        return base;
+    }
+    let tag = read_string(g, get_a(g, proto, a));
+    glue::rjs_atom_free(g, a);
+    let Some(name) = tag.filter(|t| !t.is_empty() && t != "AudioNode") else {
+        return base;
+    };
+    static SUBCLASSES: OnceLock<Mutex<HashMap<(usize, String), usize>>> = OnceLock::new();
+    let mut map = SUBCLASSES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    let key = (base as usize, name);
+    if let Some(&cls) = map.get(&key) {
+        return cls as crate::capi::JSClassRef;
+    }
+    let Ok(cname) = std::ffi::CString::new(key.1.as_str()) else {
+        return base;
+    };
+    let mut def = crate::capi::JSClassDefinition::empty();
+    def.class_name = cname.as_ptr();
+    def.parent_class = base;
+    let cls = crate::capi::JSClassCreate(&def);
+    map.insert(key, cls as usize);
+    cls
+}
+
 /// Creates the JS wrapper for a node: host object + private slot bag with
 /// its eagerly created AudioParam objects (stable identity, GC-tied).
 unsafe fn wrap_node(g: *mut c_void, proto: u64, handle: u64, params: &[(&str, u8, f64)]) -> u64 {
     let c = classes(g);
-    let obj = host_create(g, c.node_cls, proto, NodeHandle(handle));
+    let obj = host_create(g, node_class_for(g, proto), proto, NodeHandle(handle));
     let slots = new_object(g, UNDEF);
     glue::rjs_define(g, obj, c.s_audio, slots, 0);
     for &(name, kind, initial) in params {

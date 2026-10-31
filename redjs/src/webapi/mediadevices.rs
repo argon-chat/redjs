@@ -23,6 +23,10 @@
 //!
 //! `videoinput` is omitted: this runtime captures no video.
 //!
+//! Every `audioinput` entry is an `InputDeviceInfo` (a `MediaDeviceInfo` with
+//! `getCapabilities()`), as in a browser; `audiooutput` entries are plain
+//! `MediaDeviceInfo`s.
+//!
 //! ## Shape notes (deviations, all deliberate)
 //!
 //! - A synthetic `deviceId: "default"` entry always leads the list, mirroring
@@ -145,6 +149,8 @@ fn snapshot_now() -> Vec<(String, bool)> {
 
 struct MdClasses {
     info: Class,
+    /// `InputDeviceInfo`: the class of every `audioinput` entry.
+    input: Class,
     /// Private slot bag on a MediaDeviceInfo ({deviceId, kind, label, groupId}).
     s_md: *mut c_void,
 }
@@ -192,7 +198,9 @@ unsafe fn info_slots(g: *mut c_void, obj: u64) -> u64 {
 
 unsafe fn new_device_info(g: *mut c_void, kind: &str, device_id: &str, label: &str) -> u64 {
     let c = classes(g);
-    let obj = new_object(g, c.info.proto);
+    // mediacapture-main §9.2.1: an input device is an InputDeviceInfo.
+    let proto = if kind == "audioinput" || kind == "videoinput" { c.input.proto } else { c.info.proto };
+    let obj = new_object(g, proto);
     let slots = new_object(g, UNDEF);
     define(g, slots, "deviceId", js_string(g, device_id), 0);
     define(g, slots, "kind", js_string(g, kind), 0);
@@ -229,6 +237,51 @@ unsafe extern "sysv64" fn info_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let out = new_object(g, UNDEF);
     for key in ["deviceId", "kind", "label", "groupId"] {
         define(g, out, key, get(g, slots, key), 0);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// InputDeviceInfo
+// ---------------------------------------------------------------------------
+
+/// `getCapabilities()` (mediacapture-main §9.2.2): what the audio track of
+/// `getUserMedia({ audio: { deviceId } })` would report from its own
+/// `getCapabilities()`, in the shape and order mediastream.js builds there,
+/// from the format a capture of this device runs at. `{}` for the anonymous
+/// entry listed while capture is not allowed (no id: nothing to describe), and
+/// only the ids when the device is gone.
+unsafe extern "sysv64" fn input_get_capabilities(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let this = cf_this(cf);
+    let slots = info_slots(g, this);
+    if !is_cell(slots) || !proto_chain_has(g, this, classes(g).input.proto) {
+        return throw_type_error(g, "InputDeviceInfo.getCapabilities on wrong this");
+    }
+    let out = new_object(g, UNDEF);
+    let id = read_string(g, get(g, slots, "deviceId")).unwrap_or_default();
+    if id.is_empty() {
+        return out;
+    }
+    define(g, out, "deviceId", js_string(g, &id), 0);
+    define(g, out, "groupId", get(g, slots, "groupId"), 0);
+    let Some((rate, channels)) = super::mediastream::input_format(g as usize, &id) else {
+        return out;
+    };
+    let range = |name: &str, min: f64, max: f64| {
+        let r = new_object(g, UNDEF);
+        define(g, r, "min", enc_f64(min), 0);
+        define(g, r, "max", enc_f64(max), 0);
+        define(g, out, name, r, 0);
+    };
+    range("sampleRate", rate as f64, rate as f64);
+    range("sampleSize", 16.0, 16.0);
+    range("channelCount", 1.0, channels as f64);
+    range("latency", 0.01, 0.01);
+    // The capture does no processing of its own (see mediastream.js).
+    for name in ["echoCancellation", "noiseSuppression", "autoGainControl"] {
+        let a = new_array(g);
+        set_i(g, a, 0, FALSE);
+        define(g, out, name, a, 0);
     }
     out
 }
@@ -370,6 +423,18 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         accessors: &[],
     });
 
+    let input = define_class(g, &ClassSpec {
+        name: "InputDeviceInfo",
+        arity: 0,
+        construct: None,
+        parent_proto: info.proto,
+        methods: &[("getCapabilities", 0, input_get_capabilities)],
+        getters: &[],
+        accessors: &[],
+    });
+    // WebIDL: an interface object's [[Prototype]] is its parent's.
+    crate::capi::JSObjectSetPrototype(g, input.ctor as usize as crate::capi::JSObjectRef, info.ctor as usize as crate::capi::JSValueRef);
+
     let md_class = define_class(g, &ClassSpec {
         name: "MediaDevices",
         arity: 0,
@@ -383,7 +448,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         accessors: &[],
     });
 
-    let boxed: &'static MdClasses = Box::leak(Box::new(MdClasses { info, s_md }));
+    let boxed: &'static MdClasses = Box::leak(Box::new(MdClasses { info, input, s_md }));
     classes_reg().lock().unwrap().insert(g as usize, boxed);
 
     // The singleton. `navigator` may already exist (the host is free to define
@@ -408,6 +473,15 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         PollState { obj: md, snapshot: Vec::new(), armed: false, last_poll: Instant::now() },
     );
 }
+
+/// The capabilities of the fake microphone (48 kHz mono), as its track
+/// reports them: mediastream.rs pins the track to the same text.
+#[cfg(test)]
+pub(crate) const FAKE_CAPABILITIES: &str = concat!(
+    r#"{"deviceId":"default","groupId":"","sampleRate":{"min":48000,"max":48000},"#,
+    r#""sampleSize":{"min":16,"max":16},"channelCount":{"min":1,"max":1},"latency":{"min":0.01,"max":0.01},"#,
+    r#""echoCancellation":[false],"noiseSuppression":[false],"autoGainControl":[false]}"#
+);
 
 #[cfg(test)]
 mod tests {
@@ -579,6 +653,37 @@ mod jsc_tests {
         let before = ids.len();
         ids.dedup();
         assert_eq!(before, ids.len(), "duplicate input ids in {devices:?}");
+    }
+
+    /// An `audioinput` entry is an InputDeviceInfo, as in a browser (the
+    /// client's device picker classifies entries that way). Entries are made
+    /// directly: what enumerateDevices lists depends on the machine.
+    #[test]
+    fn an_input_entry_is_an_input_device_info_with_capabilities() {
+        let c = ctx();
+        ok(&c, "Object.getPrototypeOf(InputDeviceInfo) === MediaDeviceInfo && InputDeviceInfo.prototype instanceof MediaDeviceInfo");
+        ok(&c, "Object.prototype.toString.call(InputDeviceInfo.prototype) === '[object InputDeviceInfo]'");
+        assert!(throws(&c, "new InputDeviceInfo()").contains("Illegal constructor"));
+        unsafe {
+            let g = c.raw();
+            crate::glue::rjs_lock(g);
+            for (name, kind, id) in [("anon", "audioinput", ""), ("mic", "audioinput", "default"), ("spk", "audiooutput", "default")] {
+                let d = super::new_device_info(g, kind, id, id);
+                crate::webapi::util::define(g, crate::glue::rjs_global(g), name, d, 0);
+            }
+            crate::glue::rjs_unlock(g);
+        }
+        ok(&c, "anon instanceof InputDeviceInfo && mic instanceof InputDeviceInfo && !(spk instanceof InputDeviceInfo) && spk instanceof MediaDeviceInfo");
+        ok(&c, "Object.prototype.toString.call(mic) === '[object InputDeviceInfo]' && Object.prototype.toString.call(spk) === '[object MediaDeviceInfo]'");
+        ok(&c, "mic.kind === 'audioinput' && mic.toJSON().deviceId === 'default'");
+        // The anonymous entry has nothing to describe.
+        assert_eq!(s(&c, "JSON.stringify(anon.getCapabilities())"), "{}");
+        // Capture not allowed: no format to read, the ids only.
+        assert_eq!(s(&c, "JSON.stringify(mic.getCapabilities())"), r#"{"deviceId":"default","groupId":""}"#);
+        assert!(throws(&c, "InputDeviceInfo.prototype.getCapabilities.call(spk)").contains("wrong this"));
+        assert!(throws(&c, "InputDeviceInfo.prototype.getCapabilities.call({})").contains("wrong this"));
+        crate::webapi::mediastream::fake::enable(c.raw());
+        assert_eq!(s(&c, "JSON.stringify(mic.getCapabilities())"), super::FAKE_CAPABILITIES);
     }
 
     #[test]
