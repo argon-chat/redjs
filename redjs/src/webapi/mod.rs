@@ -434,3 +434,27 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     }
     0
 }
+
+/// The console as stderr gets it (bootstrap.js): the Console Standard's
+/// formatter, and errors that say what they are.
+#[cfg(test)]
+mod console_tests {
+    use super::testing::{ctx, ok};
+
+    #[test]
+    fn console_formats_like_a_browser_console() {
+        let c = ctx();
+        // Capture what the console hands the native printer.
+        ok(&c, "Object.defineProperty(globalThis, '__rjs_print', { value: function (l, m) { globalThis.__got = m; }, configurable: true, writable: true }), true");
+        // %c consumes its CSS and prints nothing (consola's shape).
+        ok(&c, "console.log('%cinfo%c %s', 'background:#0BC;\\n  color:white', '', 'hello'), __got === 'info hello'");
+        // An Error is its header, then its frames, never JSON's {}.
+        ok(&c, "console.error('boom:', new TypeError('bad')), __got.indexOf('boom: TypeError: bad\\n') === 0");
+        // Inside an object: the header; a BigInt does not throw.
+        ok(&c, "console.log({ e: new Error('x'), n: 1n }), __got === '{\"e\":\"Error: x\",\"n\":\"1n\"}'");
+        // %d, %%, leftover arguments, and a lone format string left as written.
+        ok(&c, "console.log('%d items', '42.9', 'extra'), __got === '42 items extra'");
+        ok(&c, "console.log('100%% %s', 'done'), __got === '100% done'");
+        ok(&c, "console.log('%c'), __got === '%c'");
+    }
+}
