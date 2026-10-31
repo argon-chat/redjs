@@ -1483,6 +1483,50 @@ extern "C" uintptr_t rjs_stack_soft_limit(void* g)
 
 #include <wtf/FastMalloc.h>
 
+// ---------------------------------------------------------------------------
+// JSC's own timers.
+//
+// The incremental sweeper, the eden/full GC activity callbacks and the
+// stop-if-necessary timer are JSRunLoopTimers: RunLoop timers on the thread
+// that created the VM. This prebuilt's RunLoop (USE_BUN_EVENT_LOOP, with
+// Bun's hooks left at their defaults) is the GENERIC one, whose timers fire
+// only when something runs that RunLoop — and nothing did. So no timer-driven
+// collection ever ran: the heap grew by allocation-triggered eden collections,
+// was never swept in the background, and never shrank. The Argon client sat
+// at a 280 MB GC heap capacity for 85 MB of live objects after two idle
+// minutes; one full collection took it to 110 MB and 175 MB of RAM went back
+// (vue-native research/reports/m26/perf-mem-2.md).
+//
+// One non-blocking turn (RunMode::Iterate: the due timers and the dispatched
+// functions, then return) from the pump, between waves, is how a host that
+// owns the loop services them; the timers then decide WHEN to collect and
+// sweep, exactly as in Safari or Bun.
+// ---------------------------------------------------------------------------
+
+#include <wtf/RunLoop.h>
+
+extern "C" void rjs_run_loop_cycle()
+{
+    WTF::RunLoop::cycle();
+}
+
+// rjs_release_memory, after throwing away all compiled code (bytecode, JIT)
+// that is not running — what JSC's VM::shrinkFootprintWhenIdle does. Every
+// function compiles again from its source the next time it is called. A
+// measuring tool: what is left after it is the program's DATA, and the
+// difference is what its CODE held.
+extern "C" void rjs_release_memory_and_code(void* g)
+{
+    VM& vm = G(g)->vm();
+    {
+        JSLockHolder lock(vm);
+        vm.deleteAllCode(DeleteAllCodeIfNotCollecting);
+        vm.heap.collectNow(Sync, CollectionScope::Full);
+        vm.heap.collectNow(Sync, CollectionScope::Full);
+    }
+    WTF::releaseFastMallocFreeMemory();
+}
+
 extern "C" void rjs_release_memory(void* g)
 {
     VM& vm = G(g)->vm();

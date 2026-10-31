@@ -414,9 +414,22 @@ Same pipeline as miniaudio (`csharp/codegen` with csbindgen), but richer:
   reaches mimalloc through bmalloc's shim, `mi_collect`) is no longer an
   accelerator but **the** way to shed a workload's peak: call it on loading
   screens, blur and minimize (the player already does on blur). JSC's own
-  helper threads call `mi_on_thread_idle` when they park; the thread that runs
-  JS is the embedder's, and nothing calls it there yet — wiring it into the
-  pump's idle path is a follow-up, not done.
+  helper threads call `mi_on_thread_idle` when they park; on the thread that
+  runs JS, `redjs_web_pump` does, between waves, at most every 250 ms
+  (`web.rs` `idle_sweep`).
+
+  **JSC's timers run from the pump, too.** The incremental sweeper and the
+  eden/full GC activity callbacks are RunLoop timers, and this prebuilt's
+  RunLoop is the generic one: its timers fire only when something cycles it,
+  and until vue-native m26 nothing did — the heap never shrank on its own (the
+  Argon client: 280 MB of GC heap capacity for 85 MB live after two idle
+  minutes). `redjs_web_pump` now turns it once between waves
+  (`rjs_run_loop_cycle`); the same client settles at 96 MB capacity, its
+  private working set 655 → 440 MB, frame time unchanged (p50 6.1 ms, p95
+  6.7 ms). Cost over that 4-minute run: 55 ms of RunLoop turns in all, 4 ms the
+  longest (a collection the timers started); 962 idle sweeps, 0.26 ms on
+  average, 8 ms the longest. `redjs_release_memory_and_code` (also drops all
+  compiled code) is a measuring tool: what it leaves is the program's data.
 
   The pre-m24 note, measured on the libpas engine (c9ad5813/2a51deeb) with a
   different staged probe, for the record: ~162 MB private per VM, explained as

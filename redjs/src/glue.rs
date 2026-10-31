@@ -112,6 +112,11 @@ extern "C" {
     pub fn rjs_report_extra_memory(g: *mut c_void, bytes: u64);
     /// Full GC ×2 + release free malloc pages to the OS (bmalloc scavenge).
     pub fn rjs_release_memory(g: *mut c_void);
+    /// One non-blocking turn of this thread's WTF RunLoop: fires the due JSC
+    /// timers (incremental sweeper, GC activity callbacks) — see glue.cpp.
+    pub fn rjs_run_loop_cycle();
+    /// rjs_release_memory after deleting all compiled code that is not running.
+    pub fn rjs_release_memory_and_code(g: *mut c_void);
 
     pub fn rjs_eval16(g: *mut c_void, src: *const u16, len: usize, url: *const u16, url_len: usize, out: *mut u64) -> i32;
     pub fn rjs_eval8(g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize, out: *mut u64) -> i32;

@@ -1103,6 +1103,16 @@ pub unsafe extern "C" fn redjs_release_memory(ctx: *mut c_void) {
     glue::rjs_release_memory(ctx)
 }
 
+/// [`redjs_release_memory`], after deleting every piece of compiled code
+/// (bytecode, JIT) that is not running, as JSC's own `shrinkFootprintWhenIdle`
+/// does; each function compiles again from its source when next called. For
+/// measuring how much of a heap is code rather than data, and for a host that
+/// wants the deepest release (a long-minimised window).
+#[no_mangle]
+pub unsafe extern "C" fn redjs_release_memory_and_code(ctx: *mut c_void) {
+    glue::rjs_release_memory_and_code(ctx)
+}
+
 // ---------------------------------------------------------------------------
 // Simple dialogs (alert / confirm / prompt) — host hook
 // ---------------------------------------------------------------------------

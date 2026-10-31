@@ -850,6 +850,71 @@ pub unsafe fn checkpoint(g: *mut c_void) -> Checkpoint {
     if full { Checkpoint::Full } else { Checkpoint::DrainedInJs }
 }
 
+extern "C" {
+    /// mimalloc (cpp/mimalloc, oven-sh's fork): see `idle_sweep`.
+    fn mi_on_thread_idle();
+}
+
+/// How often the JS thread's idle sweep runs, at most.
+const IDLE_SWEEP_MS: f64 = 250.0;
+
+thread_local! {
+    static LAST_IDLE_SWEEP: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::NEG_INFINITY) };
+}
+static IDLE_SWEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static IDLE_SWEEP_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static IDLE_SWEEP_MAX_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RUN_LOOP_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RUN_LOOP_MAX_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `mi_on_thread_idle` on the thread that runs JS, at most every
+/// [`IDLE_SWEEP_MS`].
+///
+/// mimalloc gives pages back on allocator activity or when a thread says it
+/// is idle; JSC's helper threads say so when they park, but the JS thread is
+/// the embedder's and nothing said it there (README "Memory"). So a GC freed
+/// objects and the pages stayed resident: what the collection freed went back
+/// to the OS only if this thread happened to allocate again. The sweep
+/// collects the thread's pending frees, discards the free blocks inside its
+/// still-used pages and drains the arena purge queue.
+fn idle_sweep() {
+    let now = now_ms();
+    if LAST_IDLE_SWEEP.with(|l| now - l.get() < IDLE_SWEEP_MS) {
+        return;
+    }
+    let started = Instant::now();
+    unsafe { mi_on_thread_idle() };
+    // From when it RETURNED, as mimalloc's own interval counts.
+    LAST_IDLE_SWEEP.with(|l| l.set(now_ms()));
+    let us = started.elapsed().as_micros() as u64;
+    IDLE_SWEEPS.fetch_add(1, Ordering::Relaxed);
+    IDLE_SWEEP_US.fetch_add(us, Ordering::Relaxed);
+    IDLE_SWEEP_MAX_US.fetch_max(us, Ordering::Relaxed);
+}
+
+/// What the pump's between-wave memory work has cost since the process
+/// started: the JS thread's idle sweeps ([`idle_sweep`]) and the turns of the
+/// RunLoop that fire JSC's GC and sweeper timers (which include the GC work
+/// those timers do).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IdleWorkStats {
+    pub sweeps: u64,
+    pub sweep_us: u64,
+    pub sweep_max_us: u64,
+    pub run_loop_us: u64,
+    pub run_loop_max_us: u64,
+}
+
+pub fn idle_work_stats() -> IdleWorkStats {
+    IdleWorkStats {
+        sweeps: IDLE_SWEEPS.load(Ordering::Relaxed),
+        sweep_us: IDLE_SWEEP_US.load(Ordering::Relaxed),
+        sweep_max_us: IDLE_SWEEP_MAX_US.load(Ordering::Relaxed),
+        run_loop_us: RUN_LOOP_US.load(Ordering::Relaxed),
+        run_loop_max_us: RUN_LOOP_MAX_US.load(Ordering::Relaxed),
+    }
+}
+
 pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
     let now = now_ms();
     let key = g as usize;
@@ -1011,6 +1076,18 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
 
     if flags & PUMP_MICROTASKS != 0 {
         checkpoint(g);
+    }
+
+    // Between waves, with no JS on the stack: JSC's own timers (the GC and the
+    // sweeper that shrinks the heap — glue.cpp `rjs_run_loop_cycle`), then the
+    // allocator's idle sweep of this thread's heaps.
+    if glue::rjs_in_js(g) == 0 {
+        let started = Instant::now();
+        glue::rjs_run_loop_cycle();
+        let us = started.elapsed().as_micros() as u64;
+        RUN_LOOP_US.fetch_add(us, Ordering::Relaxed);
+        RUN_LOOP_MAX_US.fetch_max(us, Ordering::Relaxed);
+        idle_sweep();
     }
 
     if !stats.is_null() {
