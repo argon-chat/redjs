@@ -12,7 +12,7 @@
 //! | `StereoPannerNode`       | `VolumePanNode`                              |
 //! | `PannerNode` + listener  | `WebPannerNode` (webapi/hrtf.rs): spec distance models + cones + listener basis; REAL HRTF via Chromium's HRIR set, or equal-power |
 //! | `BiquadFilterNode`       | `SvfNode<2>`                                 |
-//! | `AudioBufferSourceNode`  | `SamplerNode`                                |
+//! | `AudioBufferSourceNode`  | `SamplerNode` reading a `SourceSample` view (offset, duration, loop region) |
 //! | `AudioBuffer`            | planar `f32` `SampleResource`                |
 //! | `OscillatorNode`         | `OscNode` (webapi/osc.rs): PolyBLEP-limited  |
 //! | `ChannelSplitterNode`    | `SplitterNode` (ours): output k = port k     |
@@ -61,7 +61,7 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use firewheel::{
@@ -127,32 +127,179 @@ pub struct PlanarBuffer {
     pub sample_rate: u32,
 }
 
-/// The sampler-facing view of a buffer (`ArcGc` needs a sized owner).
-struct SharedSample(Arc<PlanarBuffer>);
-
-impl SampleResourceInfo for SharedSample {
-    fn num_channels(&self) -> NonZeroUsize {
-        NonZeroUsize::new(self.0.data.len().max(1)).unwrap()
-    }
-
+impl PlanarBuffer {
     fn len_frames(&self) -> u64 {
-        self.0.data.first().map(|c| c.len() as u64).unwrap_or(0)
-    }
-
-    fn sample_rate(&self) -> Option<NonZeroU32> {
-        NonZeroU32::new(self.0.sample_rate)
+        self.data.first().map(|c| c.len() as u64).unwrap_or(0)
     }
 }
 
-impl SampleResource for SharedSample {
-    fn fill_buffers(&self, buffers: &mut [&mut [f32]], buffer_range: Range<usize>, start_frame: u64) {
-        for (ch, out) in self.0.data.iter().zip(buffers.iter_mut()) {
-            let out = &mut out[buffer_range.clone()];
-            let start = (start_frame as usize).min(ch.len());
-            let n = out.len().min(ch.len() - start);
-            out[..n].copy_from_slice(&ch[start..start + n]);
-            out[n..].fill(0.0);
+/// Seconds of buffer content → whole frames at `rate`.
+fn secs_to_frames(s: f64, rate: f64) -> u64 {
+    if s.is_finite() && s > 0.0 {
+        (s * rate).round() as u64
+    } else {
+        0
+    }
+}
+
+/// The `loop` / `loopStart` / `loopEnd` attributes of one
+/// `AudioBufferSourceNode`, shared with the audio thread so a change made
+/// while the source plays takes effect from the current playhead, as it does
+/// in a browser.
+#[derive(Default)]
+struct SourceCtl {
+    looping: AtomicBool,
+    /// `loopStart`, seconds (f64 bits).
+    loop_start: AtomicU64,
+    /// `loopEnd`, seconds (f64 bits).
+    loop_end: AtomicU64,
+    /// Raised by the audio thread when the walk is over: a non-looping walk
+    /// went past the end of the buffer, or `duration` worth of content has
+    /// been played. The pump ends the node on it.
+    done: AtomicBool,
+}
+
+impl SourceCtl {
+    fn loop_start(&self) -> f64 {
+        f64::from_bits(self.loop_start.load(Ordering::Relaxed))
+    }
+
+    fn loop_end(&self) -> f64 {
+        f64::from_bits(self.loop_end.load(Ordering::Relaxed))
+    }
+
+    /// The spec's `actualLoopStart`..`actualLoopEnd` in frames of a
+    /// `len`-frame buffer at `rate`, or `None` when the source is not looping.
+    /// A `loopStart`/`loopEnd` pair that is not a forward range inside the
+    /// buffer loops the whole buffer, as the spec's defaults (0, 0) do.
+    fn region(&self, len: u64, rate: f64) -> Option<(u64, u64)> {
+        if !self.looping.load(Ordering::Relaxed) || len == 0 {
+            return None;
         }
+        let (ls, le) = (self.loop_start(), self.loop_end());
+        if ls >= 0.0 && le > 0.0 && ls < le {
+            let (a, b) = (secs_to_frames(ls, rate).min(len), secs_to_frames(le, rate).min(len));
+            if a < b {
+                return Some((a, b));
+            }
+        }
+        Some((0, len))
+    }
+}
+
+/// What a started `AudioBufferSourceNode` hands the sampler: its buffer as the
+/// spec's playback algorithm walks it — from `offset`, for `duration` seconds of
+/// content (loop iterations included), wrapping `loopEnd` → `loopStart` while
+/// `loop` is set.
+///
+/// The sampler sees a plain sample of `len` frames, played once from frame 0
+/// (`len` = `duration`, or unbounded); this view maps each of those frames onto
+/// the buffer. So `start(when, offset, duration)` plays exactly that slice —
+/// an audio sprite out of an atlas — and a loop region loops only itself.
+struct SourceSample {
+    buf: Arc<PlanarBuffer>,
+    ctl: Arc<SourceCtl>,
+    /// The buffer frame `start(when, offset)` begins at.
+    start: u64,
+    /// Frames to output in all: `duration`, or [`SourceSample::UNBOUNDED`].
+    len: u64,
+    /// Audio-thread cursor: the next sampler frame expected, and the buffer
+    /// frame that plays there. A sequential read continues the walk (so a loop
+    /// change mid-play applies from the current playhead); any other read
+    /// re-derives the position from `start` with the current attributes.
+    next_v: AtomicU64,
+    pos: AtomicU64,
+}
+
+impl SourceSample {
+    /// "Until stopped": a looping source without a `duration`, or one whose
+    /// end is the end of the buffer (found by the walk, so that `loop` set
+    /// during playback still loops).
+    const UNBOUNDED: u64 = u64::MAX / 4;
+
+    fn new(buf: Arc<PlanarBuffer>, ctl: Arc<SourceCtl>, start: u64, len: u64) -> Self {
+        Self { buf, ctl, start, len, next_v: AtomicU64::new(0), pos: AtomicU64::new(start) }
+    }
+
+    fn rate(&self) -> f64 {
+        self.buf.sample_rate.max(1) as f64
+    }
+
+    /// The buffer frame `v` sampler frames after the start, the attributes
+    /// assumed constant.
+    fn walk(&self, v: u64) -> u64 {
+        let blen = self.buf.len_frames();
+        match self.ctl.region(blen, self.rate()) {
+            None => self.start.saturating_add(v).min(blen),
+            Some((a, b)) => {
+                // Starting at or past `loopEnd` begins at `loopStart`.
+                let p = if self.start >= b { a } else { self.start }.saturating_add(v);
+                if p < b { p } else { a + (p - b) % (b - a) }
+            }
+        }
+    }
+}
+
+impl SampleResourceInfo for SourceSample {
+    fn num_channels(&self) -> NonZeroUsize {
+        NonZeroUsize::new(self.buf.data.len().max(1)).unwrap()
+    }
+
+    fn len_frames(&self) -> u64 {
+        self.len
+    }
+
+    fn sample_rate(&self) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.buf.sample_rate)
+    }
+}
+
+impl SampleResource for SourceSample {
+    fn fill_buffers(&self, buffers: &mut [&mut [f32]], buffer_range: Range<usize>, start_frame: u64) {
+        let frames = buffer_range.len();
+        let blen = self.buf.len_frames();
+        let rate = self.rate();
+        let mut pos = if start_frame == self.next_v.load(Ordering::Relaxed) {
+            self.pos.load(Ordering::Relaxed)
+        } else {
+            self.walk(start_frame)
+        };
+        let mut filled = 0usize;
+        while filled < frames {
+            let region = self.ctl.region(blen, rate);
+            let end = match region {
+                Some((a, b)) => {
+                    if pos >= b {
+                        pos = a;
+                    }
+                    b
+                }
+                None => blen,
+            };
+            let at = buffer_range.start + filled;
+            if pos >= end {
+                // Not looping and past the end of the buffer: silence, and the
+                // node has ended.
+                for out in buffers.iter_mut() {
+                    out[at..buffer_range.end].fill(0.0);
+                }
+                self.ctl.done.store(true, Ordering::Relaxed);
+                break;
+            }
+            let n = ((end - pos) as usize).min(frames - filled);
+            let p = pos as usize;
+            for (ch, out) in self.buf.data.iter().zip(buffers.iter_mut()) {
+                out[at..at + n].copy_from_slice(&ch[p..p + n]);
+            }
+            pos += n as u64;
+            filled += n;
+        }
+        let next = start_frame + frames as u64;
+        if next >= self.len || (pos >= blen && self.ctl.region(blen, rate).is_none()) {
+            self.ctl.done.store(true, Ordering::Relaxed);
+        }
+        self.next_v.store(next, Ordering::Relaxed);
+        self.pos.store(pos, Ordering::Relaxed);
     }
 }
 
@@ -715,13 +862,14 @@ struct NodeRec {
     dist: [f32; 3],
     // -- sampler bookkeeping --
     buffer: Option<Arc<PlanarBuffer>>,
-    loop_: bool,
+    /// `loop` / `loopStart` / `loopEnd`, shared with the playing [`SourceSample`].
+    src: Arc<SourceCtl>,
     started: bool,
     saw_playing: bool,
     ended: bool,
     /// The JS node object, protected while playing (spec keeps it alive).
     js_obj: u64,
-    pending_start: Option<(f64, f64)>, // (when, offset)
+    pending_start: Option<(f64, f64, Option<f64>)>, // (when, offset, duration)
     pending_stop: Option<f64>,
 }
 
@@ -753,7 +901,7 @@ impl NodeRec {
             dist_model: DistModel::Inverse,
             dist: [1.0, 10_000.0, 1.0], // Web Audio defaults: ref, max, rolloff
             buffer: None,
-            loop_: false,
+            src: Arc::new(SourceCtl::default()),
             started: false,
             saw_playing: false,
             ended: false,
@@ -1202,7 +1350,7 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
 
 /// Start a scheduled source: the sampler pushes its full state, the oscillator
 /// opens its gate. Both are driven by `src_start` / the pump's `pending_start`.
-fn do_start(eng: &mut Engine, rec: &mut NodeRec, offset: f64) {
+fn do_start(eng: &mut Engine, rec: &mut NodeRec, offset: f64, duration: Option<f64>) {
     if let Params::Osc(sh) = &rec.params {
         // `offset` is meaningless for an oscillator (the spec's `start(when)`
         // takes no offset), so it is ignored rather than misinterpreted.
@@ -1212,10 +1360,10 @@ fn do_start(eng: &mut Engine, rec: &mut NodeRec, offset: f64) {
     }
     let Params::Sampler(s) = &mut rec.params else { return };
     alog!(
-        "do_start node={:?} buffer_frames={:?} loop={} speed={} offset={offset}",
+        "do_start node={:?} buffer_frames={:?} loop={} speed={} offset={offset} duration={duration:?}",
         rec.id,
-        rec.buffer.as_ref().map(|b| b.data.first().map(|c| c.len()).unwrap_or(0)),
-        rec.loop_,
+        rec.buffer.as_ref().map(|b| b.len_frames()),
+        rec.src.looping.load(Ordering::Relaxed),
         s.speed
     );
     // Param changes go through Diff (NOT the sync_*_event helpers): in
@@ -1225,13 +1373,37 @@ fn do_start(eng: &mut Engine, rec: &mut NodeRec, offset: f64) {
     // silently dropped, so the sampler never starts. Diff emits the correct
     // payloads for every field (Notify's DerefMut bumps its counter).
     let baseline = (**s).clone();
-    if let Some(buf) = &rec.buffer {
-        let arc = buf.clone();
-        s.set_sample(ArcGc::new_unsized(|| Arc::new(SharedSample(arc)) as Arc<dyn SampleResource>));
-    }
-    s.repeat_mode = if rec.loop_ { RepeatMode::RepeatEndlessly } else { RepeatMode::PlayOnce };
-    s.start_from(if offset > 0.0 { PlayFrom::Seconds(offset) } else { PlayFrom::Seconds(0.0) });
+    arm_source(s, rec.buffer.as_ref(), &rec.src, offset, duration);
     unsafe { queue_diff(&mut eng.fw, rec.id, &baseline, &**s) };
+}
+
+/// Point a sampler at `start(when, offset, duration)`'s walk of `buffer`.
+fn arm_source(
+    s: &mut SamplerNode,
+    buffer: Option<&Arc<PlanarBuffer>>,
+    ctl: &Arc<SourceCtl>,
+    offset: f64,
+    duration: Option<f64>,
+) {
+    if let Some(buf) = buffer {
+        // `offset` is clamped to the buffer; `duration` counts content
+        // frames, loop iterations included (the spec's wording), which is
+        // exactly what the sampler counts.
+        let rate = buf.sample_rate.max(1) as f64;
+        let start = secs_to_frames(offset, rate).min(buf.len_frames());
+        let len = duration.map(|d| secs_to_frames(d, rate)).unwrap_or(SourceSample::UNBOUNDED);
+        let looping = ctl.region(buf.len_frames(), rate).is_some();
+        if len == 0 || (!looping && start >= buf.len_frames()) {
+            // Nothing to play: the sampler would finish without ever being
+            // seen playing, so the end is raised here.
+            ctl.done.store(true, Ordering::Relaxed);
+        }
+        let view = SourceSample::new(buf.clone(), ctl.clone(), start, len);
+        s.set_sample(ArcGc::new_unsized(|| Arc::new(view) as Arc<dyn SampleResource>));
+    }
+    // The view does the looping; the sampler plays it once from its start.
+    s.repeat_mode = RepeatMode::PlayOnce;
+    s.start_from(PlayFrom::BEGINNING);
 }
 
 fn do_stop(eng: &mut Engine, rec: &mut NodeRec) {
@@ -1981,27 +2153,71 @@ unsafe extern "sysv64" fn src_get_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "AudioBufferSourceNode.loop on wrong this");
     };
     let gl = glob().lock().unwrap();
-    enc_bool(gl.nodes.get(&handle).map(|r| r.loop_).unwrap_or(false))
+    enc_bool(gl.nodes.get(&handle).map(|r| r.src.looping.load(Ordering::Relaxed)).unwrap_or(false))
 }
 
+/// `loop` — read by the playing [`SourceSample`] on every block, so setting it
+/// during playback loops (or stops looping) from the current playhead.
 unsafe extern "sysv64" fn src_set_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = cf_arg(cf, 0) == 0x7; // true
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioBufferSourceNode.loop on wrong this");
     };
-    let mut gl = glob().lock().unwrap();
-    let gl = &mut *gl;
-    if let Some(rec) = gl.nodes.get_mut(&handle) {
-        rec.loop_ = v;
-        if rec.started {
-            if let (Params::Sampler(s), Some(eng)) = (&mut rec.params, gl.engines.get_mut(&rec.engine)) {
-                let baseline = (**s).clone();
-                s.repeat_mode = if v { RepeatMode::RepeatEndlessly } else { RepeatMode::PlayOnce };
-                queue_diff(&mut eng.fw, rec.id, &baseline, &**s);
-            }
-        }
+    let gl = glob().lock().unwrap();
+    if let Some(rec) = gl.nodes.get(&handle) {
+        rec.src.looping.store(v, Ordering::Relaxed);
     }
     UNDEF
+}
+
+/// `loopStart` / `loopEnd` (seconds; both default 0, which loops the whole
+/// buffer). Live, like `loop`.
+unsafe fn src_loop_point(g: *mut c_void, cf: *mut c_void, end: bool) -> u64 {
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "AudioBufferSourceNode.loopStart/loopEnd on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    let ctl = gl.nodes.get(&handle).map(|r| r.src.clone());
+    drop(gl);
+    let v = ctl.map(|c| if end { c.loop_end() } else { c.loop_start() }).unwrap_or(0.0);
+    enc_f64(v)
+}
+
+unsafe fn src_set_loop_point(g: *mut c_void, cf: *mut c_void, end: bool) -> u64 {
+    let name = if end { "loopEnd" } else { "loopStart" };
+    let Some(handle) = this_node_handle(g, cf) else {
+        return throw_type_error(g, &format!("AudioBufferSourceNode.{name} on wrong this"));
+    };
+    // WebIDL `double`: ToNumber, then a non-finite value is a TypeError.
+    let Ok(v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
+    if !v.is_finite() {
+        return throw_type_error(
+            g,
+            &format!("Failed to set the '{name}' property on 'AudioBufferSourceNode': The provided double value is non-finite."),
+        );
+    }
+    let gl = glob().lock().unwrap();
+    if let Some(rec) = gl.nodes.get(&handle) {
+        let slot = if end { &rec.src.loop_end } else { &rec.src.loop_start };
+        slot.store(v.to_bits(), Ordering::Relaxed);
+    }
+    UNDEF
+}
+
+unsafe extern "sysv64" fn src_get_loop_start(g: *mut c_void, cf: *mut c_void) -> u64 {
+    src_loop_point(g, cf, false)
+}
+
+unsafe extern "sysv64" fn src_set_loop_start(g: *mut c_void, cf: *mut c_void) -> u64 {
+    src_set_loop_point(g, cf, false)
+}
+
+unsafe extern "sysv64" fn src_get_loop_end(g: *mut c_void, cf: *mut c_void) -> u64 {
+    src_loop_point(g, cf, true)
+}
+
+unsafe extern "sysv64" fn src_set_loop_end(g: *mut c_void, cf: *mut c_void) -> u64 {
+    src_set_loop_point(g, cf, true)
 }
 
 unsafe extern "sysv64" fn src_get_onended(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -2015,12 +2231,15 @@ unsafe extern "sysv64" fn src_set_onended(g: *mut c_void, cf: *mut c_void) -> u6
     UNDEF
 }
 
-/// `AudioScheduledSourceNode.start(when[, offset])` — shared by
+/// `AudioScheduledSourceNode.start(when[, offset[, duration]])` — shared by
 /// `AudioBufferSourceNode` and `OscillatorNode`; `do_start` dispatches on the
-/// node's `Params` (`offset` is ignored for an oscillator, which has none).
+/// node's `Params` (`offset` and `duration` are ignored for an oscillator,
+/// whose `start(when)` has neither).
 unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     let when = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
     let offset = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0);
+    // Absent = play to the end (or loop until stopped).
+    let duration = dec_f64(cf_arg(cf, 2));
     let this = cf_this(cf);
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioScheduledSourceNode.start on wrong this");
@@ -2028,6 +2247,19 @@ unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
     let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
+    // Spec: a negative `when` is a RangeError, and so is a negative `offset`
+    // or `duration` on a buffer source (an oscillator's `start` has neither).
+    let (iface, checks) = match rec.params {
+        Params::Sampler(_) => ("AudioBufferSourceNode", [("when", when), ("offset", offset), ("duration", duration.unwrap_or(0.0))]),
+        _ => ("OscillatorNode", [("when", when), ("offset", 0.0), ("duration", 0.0)]),
+    };
+    if let Some((name, v)) = checks.into_iter().find(|&(_, v)| v < 0.0) {
+        return throw_error(
+            g,
+            2,
+            &format!("Failed to execute 'start' on '{iface}': The {name} provided ({v}) is less than the minimum bound (0)."),
+        );
+    }
     if rec.started {
         // Spec: InvalidStateError. A source is start-once, restarting it means
         // creating another one — cheap, by design.
@@ -2039,9 +2271,9 @@ unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     crate::ffi::redjs_protect(g, this);
     let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
     if when <= eng.now() || !eng.running {
-        do_start(eng, rec, offset);
+        do_start(eng, rec, offset, duration);
     } else {
-        rec.pending_start = Some((when, offset));
+        rec.pending_start = Some((when, offset, duration));
     }
     UNDEF
 }
@@ -3561,16 +3793,30 @@ pub unsafe fn pump(g: *mut c_void) {
             // Scheduled starts/stops + ended detection.
             let eng = engines.get_mut(&eh).unwrap();
             for rec in nodes.values_mut().filter(|r| r.engine == eh) {
-                if let Some((when, offset)) = rec.pending_start {
+                if let Some((when, offset, duration)) = rec.pending_start {
                     if when <= now {
                         rec.pending_start = None;
-                        do_start(eng, rec, offset);
+                        do_start(eng, rec, offset, duration);
                     }
                 }
                 if let Some(when) = rec.pending_stop {
                     if when <= now {
                         rec.pending_stop = None;
                         do_stop(eng, rec);
+                    }
+                }
+                if rec.started && !rec.ended && rec.src.done.load(Ordering::Relaxed) {
+                    // The walk is over (`SourceSample`): past the end of the
+                    // buffer without `loop`, or `duration` played. The sampler
+                    // itself only ends at its view's length, so it is stopped
+                    // here — and the node ends whether or not a tick ever saw
+                    // it playing (a sprite shorter than a frame).
+                    do_stop(eng, rec);
+                    rec.ended = true;
+                    alog!("source walk done node={:?}", rec.id);
+                    if rec.js_obj != 0 {
+                        ended.push(rec.js_obj);
+                        rec.js_obj = 0;
                     }
                 }
                 if rec.started && !rec.ended && matches!(rec.params, Params::Sampler(_)) {
@@ -3806,11 +4052,13 @@ pub unsafe fn install(g: *mut c_void) {
         arity: 0,
         construct: None,
         parent_proto: node_base.proto,
-        methods: &[("start", 2, src_start), ("stop", 1, src_stop)],
+        methods: &[("start", 0, src_start), ("stop", 0, src_stop)],
         getters: &[("playbackRate", get_slot_playback_rate), ("detune", get_slot_detune)],
         accessors: &[
             ("buffer", src_get_buffer, src_set_buffer),
             ("loop", src_get_loop, src_set_loop),
+            ("loopStart", src_get_loop_start, src_set_loop_start),
+            ("loopEnd", src_get_loop_end, src_set_loop_end),
             ("onended", src_get_onended, src_set_onended),
         ],
     });
@@ -4482,6 +4730,73 @@ mod jsc_tests {
         s(&c, "__ctx.close(); 'closed'");
     }
 
+    #[test]
+    fn a_buffer_source_has_loop_points_and_start_checks_its_range() {
+        let c = ctx();
+        ok(
+            &c,
+            "{ const a = new AudioContext(); const s = a.createBufferSource();
+               const fresh = s.loopStart === 0 && s.loopEnd === 0;
+               s.loopStart = 1.5; s.loopEnd = '2.25';
+               const r = fresh && s.loopStart === 1.5 && s.loopEnd === 2.25
+                      && 'loopStart' in AudioBufferSourceNode.prototype
+                      && 'loopEnd' in AudioBufferSourceNode.prototype
+                      && AudioBufferSourceNode.prototype.start.length === 0;
+               a.close(); r }",
+        );
+        let msg =
+            throws(&c, "{ const a = new AudioContext(); try { a.createBufferSource().loopEnd = NaN; } finally { a.close(); } }");
+        assert!(msg.contains("non-finite"), "{msg}");
+        for call in ["s.start(-1)", "s.start(0, -0.5)", "s.start(0, 0, -1)"] {
+            ok(
+                &c,
+                &format!(
+                    "(() => {{ const a = new AudioContext(); const s = a.createBufferSource();
+                       try {{ {call}; return false; }} catch (e) {{ return e instanceof RangeError; }}
+                       finally {{ a.close(); }} }})()"
+                ),
+            );
+        }
+        // An oscillator's `start(when)` has no offset: a second argument is ignored.
+        ok(
+            &c,
+            "{ const a = new AudioContext(); const o = a.createOscillator();
+               o.start(0, -1); o.stop(); a.close(); true }",
+        );
+    }
+
+    #[test]
+    fn a_sprite_ends_after_its_duration() {
+        // `start(0, offset, duration)` on a 1 s buffer: `onended` fires after
+        // the 20 ms slice, not after the rest of the buffer. Output muted.
+        let c = ctx();
+        let wav = wav_fixture(48_000, 48_000);
+        s(&c, &format!("globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'", as_js_bytes(&wav)));
+        let started = run(
+            &c,
+            "globalThis.__ctx = new AudioContext();
+             const a = globalThis.__ctx;
+             const mute = a.createGain(); mute.gain.value = 0; mute.connect(a.destination);
+             const buf = await a.decodeAudioData(__wav);
+             globalThis.__ended = 0;
+             const src = a.createBufferSource();
+             src.buffer = buf; src.connect(mute);
+             src.onended = () => { globalThis.__ended = a.currentTime; };
+             globalThis.__t0 = a.currentTime;
+             src.start(0, 0.5, 0.02);
+             return 'started';",
+        );
+        assert_eq!(started, "started", "{started}");
+        let live = pump_for(&c, 300);
+        if !live {
+            eprintln!("[sprite] no output stream — the end is not asserted");
+            s(&c, "__ctx.close(); 'closed'");
+            return;
+        }
+        ok(&c, "__ended > 0 && __ended - __t0 < 0.25");
+        s(&c, "__ctx.close(); 'closed'");
+    }
+
     // -----------------------------------------------------------------------
     // suspend / resume
     // -----------------------------------------------------------------------
@@ -5039,6 +5354,232 @@ mod split_merge_graph_tests {
         let mut outputs: [&mut [f32]; 2] = [&mut d0, &mut d1];
         merge_block(&inputs, &mut outputs, 3, |p| p >= 2, true);
         assert_eq!(d0, a, "discrete keeps the left port");
+    }
+
+    // -----------------------------------------------------------------------
+    // AudioBufferSourceNode: start(when, offset, duration) and the loop region
+    // -----------------------------------------------------------------------
+
+    /// A mono ramp: frame `i` holds `(i + 1) / 8192` (exact in f32), so every
+    /// rendered sample names the buffer frame it came from, and frame 0 is not
+    /// silence.
+    fn ramp(frames: u64) -> Arc<PlanarBuffer> {
+        Arc::new(PlanarBuffer { data: vec![(0..frames).map(ramp_at).collect()], sample_rate: RATE })
+    }
+
+    fn ramp_at(frame: u64) -> f32 {
+        (frame + 1) as f32 / 8192.0
+    }
+
+    fn secs(frames: u64) -> f64 {
+        frames as f64 / RATE as f64
+    }
+
+    /// A sampler armed exactly as `src_start` arms one, tapped by a monitor.
+    fn source(
+        fw: &mut Fw,
+        buffer: &Arc<PlanarBuffer>,
+        ctl: &Arc<SourceCtl>,
+        offset: f64,
+        duration: Option<f64>,
+        speed: f64,
+    ) -> ArcGc<MonitorRing> {
+        let mut s = SamplerNode { speed, ..SamplerNode::default() };
+        let id = fw.add_node(s.clone(), Some(SamplerConfig::default()));
+        let baseline = s.clone();
+        arm_source(&mut s, Some(buffer), ctl, offset, duration);
+        let mut evs: Vec<NodeEventType> = Vec::new();
+        s.diff(&baseline, PathBuilder::default(), &mut evs);
+        for e in evs {
+            fw.queue_event_for(id, e);
+        }
+        tap(fw, &rec(id, Params::Sampler(Box::new(s))), 0)
+    }
+
+    /// Everything `ring` recorded from the start of the stream (`total` < the
+    /// monitor window).
+    fn recorded(ring: &MonitorRing, total: usize) -> Vec<f32> {
+        assert!(total <= MONITOR_WINDOW);
+        assert_eq!(ring.cursor.load(Ordering::Acquire), total, "the monitor missed frames");
+        let mut got = vec![0.0f32; total];
+        ring.read_latest(&mut got);
+        got
+    }
+
+    #[test]
+    fn a_sprite_renders_only_its_slice_of_the_buffer() {
+        // The audio-atlas case (@argon/soundfx): `start(0, offset, duration)`
+        // on a buffer holding many sounds must play that one slice and stop —
+        // not run on through the rest of the atlas.
+        let mut fw = Fw::new(FirewheelConfig::default());
+        let atlas = ramp(4_000);
+        let ctl = Arc::new(SourceCtl::default());
+        let ring = source(&mut fw, &atlas, &ctl, secs(1_000), Some(secs(500)), 1.0);
+        fw.start_stream(()).expect("the offline stream starts");
+        let blocks = 16;
+        render(&mut fw, blocks);
+        let got = recorded(&ring, blocks * BLOCK);
+        for (t, &v) in got.iter().enumerate() {
+            let want = if t < 500 { ramp_at(1_000 + t as u64) } else { 0.0 };
+            assert!((v - want).abs() < 1e-6, "frame {t}: {v}, want {want} (buffer frame {})", v * 8192.0 - 1.0);
+        }
+        assert!(ctl.done.load(Ordering::Relaxed), "the walk did not report its end");
+    }
+
+    #[test]
+    fn a_sprite_at_another_playback_rate_still_stays_inside_its_slice() {
+        // `duration` is buffer content, not wall time: at rate 2 the 500-frame
+        // slice lasts 250 output frames, and nothing outside it is ever read.
+        let mut fw = Fw::new(FirewheelConfig::default());
+        let atlas = ramp(4_000);
+        let ctl = Arc::new(SourceCtl::default());
+        let ring = source(&mut fw, &atlas, &ctl, secs(1_000), Some(secs(500)), 2.0);
+        fw.start_stream(()).expect("the offline stream starts");
+        let blocks = 16;
+        render(&mut fw, blocks);
+        let got = recorded(&ring, blocks * BLOCK);
+        let (lo, hi) = (ramp_at(1_000), ramp_at(1_499));
+        let mut last = 0;
+        for (t, &v) in got.iter().enumerate() {
+            if v != 0.0 {
+                // Linear interpolation may blend toward the silence after the
+                // slice on its very last frame, never past the slice's end.
+                assert!(v <= hi + 1e-6 && (v >= lo - 1e-6 || t >= 248), "frame {t}: {v} is outside the slice");
+                last = t;
+            }
+        }
+        assert!((245..=252).contains(&last), "the slice should last ~250 output frames, last sound at {last}");
+    }
+
+    #[test]
+    fn a_loop_region_loops_only_itself_after_the_lead_in() {
+        // `loop` with `loopStart`/`loopEnd`: playback from `offset` (before the
+        // region) runs into it, then wraps loopEnd → loopStart forever.
+        let mut fw = Fw::new(FirewheelConfig::default());
+        let atlas = ramp(4_000);
+        let ctl = Arc::new(SourceCtl::default());
+        ctl.looping.store(true, Ordering::Relaxed);
+        ctl.loop_start.store(secs(1_000).to_bits(), Ordering::Relaxed);
+        ctl.loop_end.store(secs(1_200).to_bits(), Ordering::Relaxed);
+        let ring = source(&mut fw, &atlas, &ctl, secs(900), None, 1.0);
+        fw.start_stream(()).expect("the offline stream starts");
+        let blocks = 24;
+        render(&mut fw, blocks);
+        let got = recorded(&ring, blocks * BLOCK);
+        for (t, &v) in got.iter().enumerate() {
+            let t = t as u64;
+            let frame = if t < 300 { 900 + t } else { 1_000 + (t - 300) % 200 };
+            let want = ramp_at(frame);
+            assert!((v - want).abs() < 1e-6, "frame {t}: {v}, want buffer frame {frame}");
+        }
+        assert!(!ctl.done.load(Ordering::Relaxed), "a loop without a duration never ends by itself");
+    }
+}
+
+#[cfg(test)]
+mod source_walk_tests {
+    //! [`SourceSample`] read directly, block by block, as the sampler reads
+    //! it: the cases the graph tests do not reach.
+    use super::*;
+
+    const RATE: u32 = 48_000;
+
+    /// Frame `i` holds `i + 1`, so silence (0.0) reads back as frame `-1`.
+    fn ramp(frames: usize) -> Arc<PlanarBuffer> {
+        Arc::new(PlanarBuffer { data: vec![(0..frames).map(|i| (i + 1) as f32).collect()], sample_rate: RATE })
+    }
+
+    fn secs(frames: u64) -> f64 {
+        frames as f64 / RATE as f64
+    }
+
+    /// Reads `frames` frames from sampler frame `v`; returns the buffer
+    /// frames they came from, `-1` for silence.
+    fn read(view: &SourceSample, v: u64, frames: usize) -> Vec<i64> {
+        let mut out = vec![f32::NAN; frames];
+        {
+            let mut bufs: [&mut [f32]; 1] = [&mut out];
+            view.fill_buffers(&mut bufs, 0..frames, v);
+        }
+        assert!(out.iter().all(|x| !x.is_nan()), "frames left unwritten: {out:?}");
+        out.iter().map(|&x| x as i64 - 1).collect()
+    }
+
+    fn looping(ctl: &SourceCtl, start: u64, end: u64) {
+        ctl.loop_start.store(secs(start).to_bits(), Ordering::Relaxed);
+        ctl.loop_end.store(secs(end).to_bits(), Ordering::Relaxed);
+        ctl.looping.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_duration_counts_loop_iterations() {
+        let ctl = Arc::new(SourceCtl::default());
+        looping(&ctl, 10, 14);
+        // From 8, 10 frames of content: 8 9 | 10 11 12 13 | 10 11 12 13.
+        let view = SourceSample::new(ramp(100), ctl.clone(), 8, 10);
+        assert_eq!(read(&view, 0, 10), [8, 9, 10, 11, 12, 13, 10, 11, 12, 13]);
+        assert!(ctl.done.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn turning_loop_off_mid_play_runs_on_to_the_end_of_the_buffer() {
+        let ctl = Arc::new(SourceCtl::default());
+        looping(&ctl, 2, 4);
+        let view = SourceSample::new(ramp(8), ctl.clone(), 0, SourceSample::UNBOUNDED);
+        assert_eq!(read(&view, 0, 6), [0, 1, 2, 3, 2, 3]);
+        ctl.looping.store(false, Ordering::Relaxed);
+        // The playhead is at loopEnd, not yet wrapped (the spec wraps when the
+        // next frame is read): with `loop` off it runs on to the end.
+        assert_eq!(read(&view, 6, 8), [4, 5, 6, 7, -1, -1, -1, -1]);
+        assert!(ctl.done.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn turning_loop_on_mid_play_loops_the_region_from_the_playhead() {
+        let ctl = Arc::new(SourceCtl::default());
+        let view = SourceSample::new(ramp(8), ctl.clone(), 0, SourceSample::UNBOUNDED);
+        assert_eq!(read(&view, 0, 3), [0, 1, 2]);
+        looping(&ctl, 2, 5);
+        assert_eq!(read(&view, 3, 6), [3, 4, 2, 3, 4, 2]);
+        assert!(!ctl.done.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn an_offset_past_loop_end_begins_at_loop_start() {
+        let ctl = Arc::new(SourceCtl::default());
+        looping(&ctl, 2, 4);
+        let view = SourceSample::new(ramp(8), ctl.clone(), 6, SourceSample::UNBOUNDED);
+        assert_eq!(read(&view, 0, 5), [2, 3, 2, 3, 2]);
+    }
+
+    #[test]
+    fn a_region_that_is_not_a_forward_range_loops_the_whole_buffer() {
+        // The spec's defaults (0, 0), and loopStart ≥ loopEnd, both mean "all".
+        for (a, b) in [(0, 0), (5, 3)] {
+            let ctl = Arc::new(SourceCtl::default());
+            looping(&ctl, a, b);
+            let view = SourceSample::new(ramp(4), ctl.clone(), 1, SourceSample::UNBOUNDED);
+            assert_eq!(read(&view, 0, 7), [1, 2, 3, 0, 1, 2, 3], "loopStart {a}, loopEnd {b}");
+        }
+    }
+
+    #[test]
+    fn a_non_sequential_read_rederives_the_position() {
+        // The sampler re-reads from 0 after a stop; the view must not carry
+        // the old playhead into it.
+        let ctl = Arc::new(SourceCtl::default());
+        let view = SourceSample::new(ramp(10), ctl, 3, SourceSample::UNBOUNDED);
+        assert_eq!(read(&view, 0, 4), [3, 4, 5, 6]);
+        assert_eq!(read(&view, 0, 2), [3, 4]);
+        assert_eq!(read(&view, 5, 2), [8, 9]);
+    }
+
+    #[test]
+    fn a_slice_ending_inside_a_block_is_silence_after_it() {
+        let ctl = Arc::new(SourceCtl::default());
+        let view = SourceSample::new(ramp(6), ctl.clone(), 3, SourceSample::UNBOUNDED);
+        assert_eq!(read(&view, 0, 5), [3, 4, 5, -1, -1]);
+        assert!(ctl.done.load(Ordering::Relaxed), "past the end without loop is the end");
     }
 }
 
