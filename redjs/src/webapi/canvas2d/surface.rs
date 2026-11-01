@@ -100,6 +100,10 @@ pub struct Surface {
     /// Published with [`register_present`]: a change sets
     /// [`PRESENTED_CHANGED`].
     presented: bool,
+    /// The bitmap is known to be fully transparent: new, resized, or last
+    /// cleared whole. Clearing it whole again changes no pixel, so it is not a
+    /// change (see [`Surface::push`]).
+    blank: bool,
     /// HTML's origin-clean flag: false once a cross-origin image was drawn.
     pub origin_clean: bool,
     pub options: Options,
@@ -133,6 +137,7 @@ impl Surface {
             generation: next_generation(),
             snap: None,
             presented: false,
+            blank: true,
             origin_clean: true,
             options,
         }
@@ -160,14 +165,26 @@ impl Surface {
     }
 
     /// Records one command.
+    ///
+    /// A whole-bitmap `clearRect` on a bitmap that is already transparent is
+    /// dropped, and the generation does not move: not one pixel changes, so a
+    /// presenter has nothing to repaint and a snapshot stays valid. The case is
+    /// the animation loop that clears and then draws nothing (a source with no
+    /// frame yet): vue-native redrew the whole window for it at the display rate.
     pub fn push(&mut self, cmd: Cmd) {
         if self.width == 0 || self.height == 0 {
             return;
         }
-        if cmd.covers_all(self.width, self.height) {
+        let covers_all = cmd.covers_all(self.width, self.height);
+        let clears_all = covers_all && matches!(cmd, Cmd::Clear { .. });
+        if clears_all && self.blank {
+            return;
+        }
+        if covers_all {
             self.pending.clear();
         }
         self.pending.push(cmd);
+        self.blank = clears_all;
         self.bump();
         if self.pending.len() >= FLUSH_AT {
             self.flush();
@@ -190,6 +207,7 @@ impl Surface {
         self.width = width;
         self.height = height;
         self.backend.reset(width, height);
+        self.blank = true;
         self.bump();
         self.snap = None;
         self.origin_clean = true;
@@ -392,5 +410,40 @@ mod tests {
         unregister_present(key);
         assert!(take_presented_changed(), "withdrawing is a change");
         assert!(present(key, 0).is_none() && present_size(key).is_none());
+    }
+
+    /// Clearing a transparent bitmap whole is not a change; anything else is,
+    /// including the first clear after a draw, a partial clear, and a resize.
+    #[test]
+    fn clearing_a_blank_bitmap_is_not_a_change() {
+        let clear = |w: f64, h: f64| Cmd::Clear {
+            rect: kurbo::Rect::new(0.0, 0.0, w, h),
+            transform: kurbo::Affine::IDENTITY,
+            clip: None,
+        };
+        let mut s = Surface::new(4, 4, Options::default());
+        let g0 = s.generation();
+        s.push(clear(4.0, 4.0));
+        assert_eq!(s.generation(), g0, "a new bitmap is already clear");
+
+        s.push(put([255, 0, 0, 255]));
+        let g1 = s.generation();
+        assert_ne!(g1, g0);
+        s.push(clear(4.0, 4.0));
+        let g2 = s.generation();
+        assert_ne!(g2, g1, "the clear after a draw is a change");
+        s.push(clear(4.0, 4.0));
+        assert_eq!(s.generation(), g2, "…the one after that is not");
+        assert_eq!(&s.snapshot().data[..4], &[0, 0, 0, 0]);
+
+        s.push(clear(2.0, 2.0));
+        assert_ne!(s.generation(), g2, "a partial clear does not prove the bitmap blank");
+        s.push(clear(4.0, 4.0));
+        let g3 = s.generation();
+        s.reset(4, 4);
+        assert_ne!(s.generation(), g3, "a resize is a change, as it always was");
+        let g4 = s.generation();
+        s.push(clear(4.0, 4.0));
+        assert_eq!(s.generation(), g4, "and leaves the bitmap blank");
     }
 }
