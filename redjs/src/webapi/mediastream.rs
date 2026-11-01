@@ -282,6 +282,9 @@ pub enum SourceKind {
     Microphone { device_id: String },
     /// A `MediaStreamAudioDestinationNode`.
     Graph,
+    /// Frames an embedder receives from the network and delivers itself
+    /// ([`remote_source`]): vue-native's remote call participants.
+    Remote,
 }
 
 /// The three processing switches of an audio track. In an [`AudioRequest`],
@@ -799,6 +802,65 @@ fn fit_channels(data: &[f32], channels: usize, want: usize, out: &mut Vec<f32>) 
 pub fn unpipe(node: u64) {
     let s = pipes().lock().unwrap().remove(&node);
     drop(s);
+}
+
+// ---------------------------------------------------------------------------
+// Remote tracks: an embedder's network audio as a page's MediaStreamTrack
+// ---------------------------------------------------------------------------
+//
+// A browser hands a page every remote WebRTC track as a `MediaStreamTrack`:
+// the page can put it in a `MediaStream`, read it with an analyser, or play it
+// through its own graph. An embedder that receives such audio itself
+// (vue-native's LiveKit rooms) makes a [`remote_source`], delivers the
+// decoded frames to it ([`Source::deliver`], from any thread, never
+// blocking), and hands the page a track of it with [`js_track`].
+// [`Source::fail`] ends every track of it when the network track goes away.
+//
+// [`page_plays`] says whether the page plays the source itself, so an
+// embedder that would otherwise play it can step aside rather than play it
+// twice.
+
+/// A source whose frames the embedder delivers.
+pub fn remote_source(label: &str, channels: u32, rate: u32) -> Arc<Source> {
+    Source::new(SourceKind::Remote, label.to_string(), channels, rate, Settings::default())
+}
+
+/// A new track of `source`, owned by context `g`'s page, as a
+/// `MediaStreamTrack` object; `undefined` when the context has no
+/// `MediaStreamTrack` (mediastream.js did not install).
+///
+/// # Safety
+/// `g` is a live context, on its thread.
+pub unsafe fn js_track(g: *mut c_void, source: &Arc<Source>) -> u64 {
+    let Some(st) = state_of(g) else { return UNDEF };
+    let wrap = get(g, st.hooks, "wrap");
+    if !is_cell(wrap) {
+        return UNDEF;
+    }
+    let id = new_track(source, owner_of(g));
+    let h = new_handle(g, id);
+    match call(g, wrap, st.hooks, &[h]) {
+        Ok(v) => v,
+        Err(e) => {
+            report(g, e);
+            UNDEF
+        }
+    }
+}
+
+/// Whether the page plays `source` itself: a `MediaStreamAudioSourceNode`
+/// reads a live track of it and is connected, through any chain of nodes, to
+/// its context's destination. A gain of 0 on the way still counts (the page
+/// muted it); an analyser that leads nowhere does not.
+pub fn page_plays(source: &Arc<Source>) -> bool {
+    let nodes: Vec<u64> = pipes()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, s)| Arc::ptr_eq(&s.track().source, source) && s.track().is_live())
+        .map(|(n, _)| *n)
+        .collect();
+    nodes.into_iter().any(super::audio::reaches_destination)
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,6 +1509,7 @@ unsafe extern "sysv64" fn n_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (kind, device) = match &t.source.kind {
         SourceKind::Microphone { device_id } => ("microphone", device_id.as_str()),
         SourceKind::Graph => ("graph", ""),
+        SourceKind::Remote => ("remote", ""),
     };
     define(g, o, "kind", js_string(g, kind), 0);
     define(g, o, "label", js_string(g, &t.source.label), 0);
@@ -1704,6 +1767,24 @@ mod tests {
         assert!(info(id).unwrap().ended);
         assert_eq!(drain_ended(owner), vec![id]);
         assert!(drain_ended(owner).is_empty());
+        release(id);
+    }
+
+    #[test]
+    fn a_remote_source_ends_its_tracks_and_then_carries_nothing() {
+        // The network track was unsubscribed while the page still holds a
+        // track of it: `ended` once, and a graph reading it hears silence.
+        let owner = 0xD00D;
+        let src = remote_source("Remote Bob", 1, 48_000);
+        let id = new_track(&src, owner);
+        let (_sub, got) = collect(id);
+        src.deliver(&[0.5; 480], 1, 48_000);
+        assert_eq!(got.lock().unwrap().len(), 480);
+        assert_eq!(info(id).unwrap().kind, SourceKind::Remote);
+        src.fail();
+        assert_eq!(drain_ended(owner), vec![id]);
+        src.deliver(&[0.5; 480], 1, 48_000);
+        assert_eq!(got.lock().unwrap().len(), 480, "an ended track delivers nothing");
         release(id);
     }
 
@@ -2069,6 +2150,56 @@ mod jsc_tests {
                 crate::webapi::mediadevices::FAKE_CAPABILITIES
             )
         );
+    }
+
+    /// A remote source's track, handed to the page as `globalThis[name]`.
+    fn hand_over(c: &Context, src: &Arc<Source>, name: &str) {
+        unsafe {
+            glue::rjs_lock(c.raw());
+            let t = js_track(c.raw(), src);
+            define(c.raw(), glue::rjs_global(c.raw()), name, t, 0);
+            glue::rjs_unlock(c.raw());
+        }
+    }
+
+    #[test]
+    fn a_remote_track_is_the_pages_and_its_playing_it_is_seen() {
+        let c = ctx();
+        let src = remote_source("Remote Bob", 1, 48_000);
+        hand_over(&c, &src, "__rt");
+        ok(
+            &c,
+            "__rt instanceof MediaStreamTrack && __rt.kind === 'audio' && __rt.label === 'Remote Bob' \
+             && __rt.readyState === 'live' && JSON.stringify(__rt.getSettings()) === '{\"channelCount\":1,\"sampleRate\":48000}'",
+        );
+        // Argon's remote graph: a stream, a source node, an analyser.
+        s(
+            &c,
+            "globalThis.__ctx = new AudioContext();
+             globalThis.__ms = new MediaStream([__rt]);
+             globalThis.__src = __ctx.createMediaStreamSource(__ms);
+             globalThis.__an = __ctx.createAnalyser();
+             __src.connect(__an); 0",
+        );
+        assert!(!page_plays(&src), "an analyser that leads nowhere does not play it");
+        // ... into a gain the page mutes, then the destination: the page
+        // plays it (silently: that is its deafen).
+        s(&c, "globalThis.__g = __ctx.createGain(); __g.gain.value = 0; __an.connect(__g); __g.connect(__ctx.destination); 0");
+        assert!(page_plays(&src), "muted by a gain of 0 is still the page's");
+        // Disconnected mid-call: the embedder plays it again.
+        s(&c, "__g.disconnect(); 0");
+        assert!(!page_plays(&src));
+        s(&c, "__g.connect(__ctx.destination); 0");
+        assert!(page_plays(&src));
+        // A second, independent source is not mistaken for this one.
+        assert!(!page_plays(&remote_source("Remote Carol", 1, 48_000)));
+        // Unsubscribed while the graph is alive: `ended`, and no longer played.
+        s(&c, "globalThis.__ended = 0; __rt.addEventListener('ended', () => __ended++); 0");
+        src.fail();
+        unsafe { pump_locked(&c) };
+        ok(&c, "__rt.readyState === 'ended' && __ended === 1");
+        assert!(!page_plays(&src), "an ended track is nobody's to play");
+        s(&c, "__ctx.close(); 0");
     }
 
     #[test]

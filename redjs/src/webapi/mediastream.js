@@ -191,7 +191,7 @@
       var s = trackState(this, "getSettings");
       var info = N.info(s.h);
       if (!info) return {};
-      if (s.source === "graph") return { channelCount: info.channelCount, sampleRate: info.sampleRate };
+      if (s.source !== "microphone") return { channelCount: info.channelCount, sampleRate: info.sampleRate };
       return {
         deviceId: info.deviceId,
         groupId: "",
@@ -211,7 +211,7 @@
     getCapabilities() {
       var s = trackState(this, "getCapabilities");
       var info = N.info(s.h);
-      if (!info || s.source === "graph") return {};
+      if (!info || s.source !== "microphone") return {};
       return {
         deviceId: info.deviceId,
         groupId: "",
@@ -432,6 +432,12 @@
       });
     }
   }
+
+  // A track an embedder hands the page (mediastream.rs `js_track`): a remote
+  // call participant's audio, say.
+  hooks.wrap = function (handle) {
+    return new MediaStreamTrack(NEW, handle, {});
+  };
 
   hooks.settle = function (token, handle, name, message) {
     var p = pending.get(token);

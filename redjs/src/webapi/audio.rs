@@ -3323,13 +3323,15 @@ pub(crate) unsafe extern "sysv64" fn ms_source_node(g: *mut c_void, cf: *mut c_v
     let Some(info) = super::mediastream::info(track) else {
         return super::domexception::throw(g, "InvalidStateError", "MediaStreamAudioSourceNode: the track is gone.");
     };
+    // A live device: a short queue keeps the monitor latency near a
+    // browser's. A network track arrives in the network's bursts and needs
+    // the jitter room the room's own playout has (vue-native's livekit.ts).
+    let remote = info.kind == super::mediastream::SourceKind::Remote;
     let cfg = PcmStreamConfig {
         sample_rate: info.sample_rate,
         channels: info.channels.min(2),
-        // A live device, not a network: a short queue keeps the monitor
-        // latency near a browser's.
-        latency_seconds: 0.03,
-        capacity_seconds: 0.2,
+        latency_seconds: if remote { 0.08 } else { 0.03 },
+        capacity_seconds: if remote { 0.4 } else { 0.2 },
     }
     .sanitized();
     let proto = cf_arg(cf, 2);
@@ -3344,6 +3346,26 @@ pub(crate) unsafe extern "sysv64" fn ms_source_node(g: *mut c_void, cf: *mut c_v
         }
     }
     obj
+}
+
+/// Whether node `start` (a node handle) feeds its context's destination along
+/// node connections, whatever the gains on the way. For
+/// [`super::mediastream::page_plays`]. Called on the context's thread.
+pub(crate) fn reaches_destination(start: u64) -> bool {
+    let gl = glob().lock().unwrap();
+    let mut seen = std::collections::HashSet::new();
+    let mut todo = vec![start];
+    while let Some(n) = todo.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        let Some(rec) = gl.nodes.get(&n) else { continue };
+        if matches!(rec.params, Params::Dest) {
+            return true;
+        }
+        todo.extend(rec.outs.iter().map(|c| c.dst));
+    }
+    false
 }
 
 /// mediastream.js: `destNode(context, proto, channelCount)` → `[node,
