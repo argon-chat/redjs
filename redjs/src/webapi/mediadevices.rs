@@ -42,11 +42,22 @@
 //! - `groupId` is `""`. CPAL exposes no grouping of an input and an output that
 //!   belong to the same physical device, and inventing one would be a guess.
 //! - `devicechange` is polled (CPAL has no hot-plug callback), and only while
-//!   something is actually listening — see [`pump`].
+//!   something is actually listening — see [`pump`]. An embedder that hears
+//!   the OS's own notifications reports them instead
+//!   ([`set_host_notifications`]), and then nothing polls: the devices are
+//!   read again only after a change.
+//!
+//! ## Following the system default
+//!
+//! An `AudioContext` whose sink is the default, and a microphone opened on
+//! the default, move to the new endpoint when the user changes the system
+//! default, as Chrome's do. Both need the embedder's notifications
+//! ([`notify_default_changed`]); without them they stay where they opened.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -64,6 +75,70 @@ pub const DEFAULT_SINK: &str = "default";
 
 /// How often the `devicechange` poll re-enumerates, while listening.
 const POLL_INTERVAL: Duration = Duration::from_millis(2000);
+
+/// With host notifications: how long a burst of them must go quiet before
+/// the devices are read. Plugging in a headset reports each endpoint and
+/// each default role on its own, and one read covers them all.
+const SETTLE: Duration = Duration::from_millis(150);
+
+/// With host notifications: how often the pump checks whether anything
+/// listens for `devicechange`. The check reads no device.
+const LISTEN_CHECK: Duration = Duration::from_millis(250);
+
+// ---------------------------------------------------------------------------
+// Change notifications from the embedder
+// ---------------------------------------------------------------------------
+
+/// Which side of the audio path a default-device change is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flow {
+    Output,
+    Input,
+}
+
+/// The embedder reports device changes ([`set_host_notifications`]).
+static HOST_NOTIFIES: AtomicBool = AtomicBool::new(false);
+/// Bumped on every reported change.
+static CHANGES: AtomicU64 = AtomicU64::new(0);
+/// Bumped each time the system default output moves.
+static DEFAULT_OUTPUT: AtomicU64 = AtomicU64::new(0);
+/// Bumped each time the system default input moves.
+static DEFAULT_INPUT: AtomicU64 = AtomicU64::new(0);
+
+/// From now on the embedder reports device changes itself, from the OS's own
+/// notifications (vue-native: Windows' `IMMNotificationClient`, in vn-voice).
+/// Nothing polls any more.
+pub fn set_host_notifications() {
+    HOST_NOTIFIES.store(true, Ordering::Release);
+}
+
+/// An endpoint was added, removed, enabled or disabled. Lock-free, so it is
+/// safe from any thread, the OS's notification thread included.
+pub fn notify_devices_changed() {
+    CHANGES.fetch_add(1, Ordering::AcqRel);
+}
+
+/// The system default endpoint for `flow` moved (on Windows, the "console"
+/// role's, which is the one CPAL reports as default). `AudioContext`s on the
+/// default sink and microphones opened on the default follow it, and
+/// `devicechange` fires as for any other change. Lock-free, like
+/// [`notify_devices_changed`].
+pub fn notify_default_changed(flow: Flow) {
+    match flow {
+        Flow::Output => DEFAULT_OUTPUT.fetch_add(1, Ordering::AcqRel),
+        Flow::Input => DEFAULT_INPUT.fetch_add(1, Ordering::AcqRel),
+    };
+    notify_devices_changed();
+}
+
+/// How many times the default for `flow` has moved. A follower keeps the
+/// value it last acted on and compares.
+pub fn default_generation(flow: Flow) -> u64 {
+    match flow {
+        Flow::Output => DEFAULT_OUTPUT.load(Ordering::Acquire),
+        Flow::Input => DEFAULT_INPUT.load(Ordering::Acquire),
+    }
+}
 
 /// One system audio endpoint, in the terms the JS side needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,6 +261,89 @@ struct PollState {
     snapshot: Vec<(String, bool)>,
     armed: bool,
     last_poll: Instant,
+    /// Host notifications: `CHANGES` as last seen.
+    seen: u64,
+    /// Host notifications: when `CHANGES` last moved, while not yet read.
+    moved_at: Option<Instant>,
+}
+
+impl PollState {
+    fn new(obj: u64) -> PollState {
+        PollState {
+            obj,
+            snapshot: Vec::new(),
+            armed: false,
+            last_poll: Instant::now(),
+            seen: CHANGES.load(Ordering::Acquire),
+            moved_at: None,
+        }
+    }
+
+    /// One pump's work at `now`. `host`: the embedder reports changes, the
+    /// last one numbered `changes`. `listening` asks whether anything listens
+    /// for `devicechange`; `read` enumerates. Each is called only when due.
+    /// Returns whether `devicechange` fires.
+    fn step(
+        &mut self,
+        now: Instant,
+        host: bool,
+        changes: u64,
+        listening: impl FnOnce() -> bool,
+        read: impl FnOnce() -> Vec<(String, bool)>,
+    ) -> bool {
+        if !host {
+            if now.duration_since(self.last_poll) < POLL_INTERVAL {
+                return false;
+            }
+            self.last_poll = now;
+            if !listening() {
+                // Disarm: the snapshot goes stale while unobserved, so the
+                // next listener must take a fresh baseline instead of being
+                // told that everything changed the moment it subscribed.
+                self.armed = false;
+                self.snapshot.clear();
+                return false;
+            }
+            let next = read();
+            let fire = self.armed && devices_changed(&self.snapshot, &next);
+            self.snapshot = next;
+            self.armed = true;
+            return fire;
+        }
+
+        if changes != self.seen {
+            self.seen = changes;
+            self.moved_at = Some(now);
+        }
+        if let Some(at) = self.moved_at {
+            if now.duration_since(at) >= SETTLE {
+                self.moved_at = None;
+                // Without a baseline there is nothing to compare with; one is
+                // taken when a listener arrives.
+                if self.armed {
+                    let next = read();
+                    let fire = devices_changed(&self.snapshot, &next);
+                    self.snapshot = next;
+                    return fire;
+                }
+            }
+        }
+        if now.duration_since(self.last_poll) >= LISTEN_CHECK {
+            self.last_poll = now;
+            match (listening(), self.armed) {
+                (true, false) => {
+                    self.snapshot = read();
+                    self.armed = true;
+                }
+                (false, true) => {
+                    self.armed = false;
+                    self.snapshot.clear();
+                }
+                _ => {}
+            }
+        }
+        false
+    }
 }
 
 fn polls() -> &'static Mutex<HashMap<usize, PollState>> {
@@ -387,36 +545,18 @@ unsafe fn has_device_change_listener(g: *mut c_void, obj: u64) -> bool {
 }
 
 /// Called once per pump. Cheap when nobody listens: no enumeration at all.
+/// With host notifications, cheap when nothing changed, too.
 pub unsafe fn pump(g: *mut c_void) {
-    let (obj, prev, armed) = {
-        let mut reg = polls().lock().unwrap();
-        let Some(p) = reg.get_mut(&(g as usize)) else {
-            return;
-        };
-        if p.last_poll.elapsed() < POLL_INTERVAL {
-            return;
-        }
-        p.last_poll = Instant::now();
-        (p.obj, p.snapshot.clone(), p.armed)
-    };
-
-    if !has_device_change_listener(g, obj) {
-        // Disarm: the snapshot goes stale while unobserved, so the next
-        // listener must take a fresh baseline instead of being told that
-        // everything changed the moment it subscribed.
-        if let Some(p) = polls().lock().unwrap().get_mut(&(g as usize)) {
-            p.armed = false;
-            p.snapshot.clear();
-        }
+    let host = HOST_NOTIFIES.load(Ordering::Acquire);
+    let changes = CHANGES.load(Ordering::Acquire);
+    // Taken out of the registry for the step, which may read JS properties
+    // and enumerate; no lock is held meanwhile.
+    let Some(mut p) = polls().lock().unwrap().remove(&(g as usize)) else {
         return;
-    }
-
-    let next = snapshot_now();
-    let fire = armed && devices_changed(&prev, &next);
-    if let Some(p) = polls().lock().unwrap().get_mut(&(g as usize)) {
-        p.snapshot = next;
-        p.armed = true;
-    }
+    };
+    let obj = p.obj;
+    let fire = p.step(Instant::now(), host, changes, || has_device_change_listener(g, obj), snapshot_now);
+    polls().lock().unwrap().insert(g as usize, p);
     if fire {
         let ev = events::new_trusted_event(g, "devicechange");
         events::dispatch(g, obj, ev);
@@ -490,10 +630,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     };
     define(g, navigator, "mediaDevices", md, 2);
 
-    polls().lock().unwrap().insert(
-        g as usize,
-        PollState { obj: md, snapshot: Vec::new(), armed: false, last_poll: Instant::now() },
-    );
+    polls().lock().unwrap().insert(g as usize, PollState::new(md));
 }
 
 /// The capabilities of the fake microphone (48 kHz mono), as its track
@@ -563,6 +700,119 @@ mod tests {
         // the flag moved, and an implementation comparing ids alone misses it.
         let redefaulted = vec![("a".to_string(), false), ("b".to_string(), true)];
         assert!(devices_changed(&a, &redefaulted), "a new system default must fire");
+    }
+
+    fn list(ids: &[(&str, bool)]) -> Vec<(String, bool)> {
+        ids.iter().map(|(id, d)| (id.to_string(), *d)).collect()
+    }
+
+    /// Drives `step` the way the pump does, with a device list and a count
+    /// of the reads it caused.
+    struct Rig {
+        p: PollState,
+        t: Instant,
+        host: bool,
+        changes: u64,
+        listening: bool,
+        devices: Vec<(String, bool)>,
+        reads: usize,
+    }
+
+    impl Rig {
+        fn new(host: bool) -> Rig {
+            let t = Instant::now();
+            let mut p = PollState::new(0);
+            p.seen = 0;
+            p.last_poll = t;
+            Rig { p, t, host, changes: 0, listening: true, devices: list(&[("a", true)]), reads: 0 }
+        }
+
+        /// Advances the clock by `ms` and runs one step.
+        fn at(&mut self, ms: u64) -> bool {
+            self.t += Duration::from_millis(ms);
+            let reads = &mut self.reads;
+            let devices = self.devices.clone();
+            let listening = self.listening;
+            self.p.step(self.t, self.host, self.changes, || listening, || {
+                *reads += 1;
+                devices
+            })
+        }
+
+        /// Steps every 16 ms for `ms`, and counts the fires.
+        fn run(&mut self, ms: u64) -> usize {
+            (0..ms / 16).filter(|_| self.at(16)).count()
+        }
+    }
+
+    #[test]
+    fn with_host_notifications_the_devices_are_read_only_after_a_change() {
+        let mut r = Rig::new(true);
+        // A listener arrives: one baseline read, and then nothing for as long
+        // as nothing changes, however long that is.
+        assert_eq!(r.run(300), 0);
+        assert_eq!(r.reads, 1, "the baseline");
+        assert_eq!(r.run(10_000), 0);
+        assert_eq!(r.reads, 1, "no change, no read");
+
+        // A headset: a burst of five notifications inside the settle time is
+        // one read, and one event.
+        r.devices = list(&[("a", false), ("h", true)]);
+        for _ in 0..5 {
+            r.changes += 1;
+            assert!(!r.at(20));
+        }
+        assert_eq!(r.reads, 1, "nothing is read while the burst goes on");
+        assert_eq!(r.run(300), 1);
+        assert_eq!(r.reads, 2);
+    }
+
+    #[test]
+    fn a_notified_change_that_leaves_the_list_as_it_was_fires_nothing() {
+        // A role this runtime does not list (Windows' "communications"
+        // default) moved, or a disabled endpoint changed state.
+        let mut r = Rig::new(true);
+        r.run(300);
+        r.changes += 1;
+        assert_eq!(r.run(300), 0);
+        assert_eq!(r.reads, 2, "read once, and found the same list");
+    }
+
+    #[test]
+    fn without_a_listener_a_change_is_not_read() {
+        let mut r = Rig::new(true);
+        r.listening = false;
+        r.changes += 3;
+        r.devices = list(&[("b", true)]);
+        assert_eq!(r.run(1_000), 0);
+        assert_eq!(r.reads, 0);
+        // The listener that arrives later takes the list as it is now: what
+        // changed before it subscribed is not reported to it.
+        r.listening = true;
+        assert_eq!(r.run(300), 0);
+        assert_eq!(r.reads, 1);
+    }
+
+    #[test]
+    fn without_host_notifications_the_poll_runs_every_two_seconds() {
+        let mut r = Rig::new(false);
+        assert_eq!(r.run(1_900), 0);
+        assert_eq!(r.reads, 0);
+        assert_eq!(r.run(200), 0);
+        assert_eq!(r.reads, 1, "the first poll is the baseline");
+        r.devices = list(&[("a", true), ("b", false)]);
+        assert_eq!(r.run(2_100), 1);
+        assert_eq!(r.reads, 2);
+    }
+
+    #[test]
+    fn a_default_change_moves_its_flows_generation_and_counts_as_a_change() {
+        let (out0, in0, ch0) =
+            (default_generation(Flow::Output), default_generation(Flow::Input), CHANGES.load(Ordering::Acquire));
+        notify_default_changed(Flow::Input);
+        assert_eq!(default_generation(Flow::Input), in0 + 1);
+        assert_eq!(default_generation(Flow::Output), out0, "only the input moved");
+        assert!(CHANGES.load(Ordering::Acquire) > ch0, "devicechange fires for it too");
     }
 }
 

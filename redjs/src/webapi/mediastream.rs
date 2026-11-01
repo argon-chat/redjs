@@ -76,6 +76,19 @@
 //!   (`audio::set_render_reference`). `getSettings()` reports what runs; a
 //!   processed track is mono at the device's rate.
 //! - The tracks are not transferable, and `MediaStreamTrack` has no `stats`.
+//!
+//! ## A microphone on the default follows it
+//!
+//! A track opened without a `deviceId` (or with `"default"`) captures the
+//! system default input, and keeps doing so when the user changes it, as
+//! Chrome's does: its capture thread reopens the stream on the new default
+//! and the source carries on, with the same tracks, at the new device's
+//! format. When its device goes away, it moves to whichever input is default
+//! then, and its tracks end only when no input is left. A track opened on a
+//! chosen device stays on it and ends when it goes away. Following needs the
+//! embedder's notifications (`mediadevices::notify_default_changed`).
+//! Without them, a capture whose device goes away still tries the default
+//! once before its tracks end.
 
 use core::ffi::c_void;
 use std::collections::{HashMap, HashSet};
@@ -765,16 +778,25 @@ fn pipes() -> &'static Mutex<HashMap<u64, Subscription>> {
 pub fn pipe(node: u64, track_id: u64) -> bool {
     let Some(sink) = super::pcm::sink(node) else { return false };
     let want = sink.channels() as usize;
+    let node_rate = sink.sample_rate();
     let mut fit: Vec<f32> = Vec::new();
+    let mut rerate = Rerate::default();
     let sub = subscribe(
         track_id,
-        Box::new(move |data, channels, _rate| {
-            if channels == want {
+        Box::new(move |data, channels, rate| {
+            let data = if channels == want {
+                data
+            } else {
+                fit_channels(data, channels, want, &mut fit);
+                &fit[..]
+            };
+            if rate == node_rate {
                 let _ = sink.push_interleaved(data);
-                return;
+            } else {
+                // The source changed its rate under the node: a microphone
+                // that followed the default to another device.
+                let _ = sink.push_interleaved(rerate.run(data, want, rate, node_rate));
             }
-            fit_channels(data, channels, want, &mut fit);
-            let _ = sink.push_interleaved(&fit);
         }),
     );
     match sub {
@@ -783,6 +805,49 @@ pub fn pipe(node: u64, track_id: u64) -> bool {
             true
         }
         None => false,
+    }
+}
+
+/// Converts interleaved blocks from one rate to another by linear
+/// interpolation, carrying its phase and the last frame across blocks.
+#[derive(Default)]
+struct Rerate {
+    from: u32,
+    to: u32,
+    channels: usize,
+    /// The next output frame's position, in input frames from the start of
+    /// the current block. -1.0 is `last`.
+    pos: f64,
+    last: Vec<f32>,
+    out: Vec<f32>,
+}
+
+impl Rerate {
+    fn run(&mut self, data: &[f32], channels: usize, from: u32, to: u32) -> &[f32] {
+        let channels = channels.max(1);
+        if (from, to, channels) != (self.from, self.to, self.channels) {
+            *self = Rerate { from, to, channels, pos: 0.0, last: vec![0.0; channels], out: std::mem::take(&mut self.out) };
+        }
+        self.out.clear();
+        let frames = data.len() / channels;
+        if frames == 0 || from == 0 || to == 0 {
+            return &self.out;
+        }
+        let step = from as f64 / to as f64;
+        let frame = |i: isize, c: usize| if i < 0 { self.last[c] } else { data[i as usize * channels + c] };
+        while self.pos <= (frames - 1) as f64 {
+            let i = self.pos.floor() as isize;
+            let k = (self.pos - i as f64) as f32;
+            let j = (i + 1).min(frames as isize - 1);
+            for c in 0..channels {
+                let a = frame(i, c);
+                self.out.push(a + (frame(j, c) - a) * k);
+            }
+            self.pos += step;
+        }
+        self.pos -= frames as f64;
+        self.last.copy_from_slice(&data[(frames - 1) * channels..frames * channels]);
+        &self.out
     }
 }
 
@@ -1058,8 +1123,43 @@ pub(crate) fn input_format(owner: usize, device_id: &str) -> Option<(u32, u32)> 
     }
 }
 
+// ---------------------------------------------------------------------------
+// A microphone on the default follows it
+// ---------------------------------------------------------------------------
+
+/// How often a capture on the system default wakes to see whether the
+/// default moved or its device went away. Each wake reads two atomics.
+#[cfg_attr(test, allow(dead_code))] // read by the capture thread, which tests never start
+const FOLLOW_WAKE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// What a capture on the system default does when it wakes.
+#[derive(Debug, PartialEq, Eq)]
+enum Follow {
+    /// Keep the stream it has.
+    Stay,
+    /// Open the default and move the source onto it.
+    Move,
+    /// No input is left: the source fails, and its tracks end.
+    End,
+}
+
+/// `on`: the endpoint the stream runs on. `default`: the system's default
+/// input now, if there is one. `moved`: the default moved since the last
+/// wake. `lost`: the stream reported its device gone.
+fn follow(on: &str, default: Option<&str>, moved: bool, lost: bool) -> Follow {
+    match default {
+        None if lost => Follow::End,
+        None => Follow::Stay,
+        // Even the same id: a device that came back after a reset reopens.
+        Some(_) if lost => Follow::Move,
+        Some(d) if moved && d != on => Follow::Move,
+        Some(_) => Follow::Stay,
+    }
+}
+
 #[cfg(not(test))]
 mod capture {
+    use super::super::mediadevices::{self, Flow};
     use super::*;
     use firewheel::cpal::cpal;
     use firewheel::cpal::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -1086,9 +1186,14 @@ mod capture {
         (OpenResult::Err(name, msg), Box::new(|| {}))
     }
 
+    /// The endpoint id of `device`, as `enumerateDevices` spells it.
+    fn id_of(device: &cpal::Device) -> String {
+        device.id().map(|i| i.to_string()).unwrap_or_default()
+    }
+
     /// Open the device and start its stream. On success the returned closure
     /// keeps the stream alive on the calling thread until the source is
-    /// released.
+    /// released. A capture on the default follows it there.
     pub(super) fn open(owner: usize, req: AudioRequest) -> (OpenResult, Park) {
         let host = cpal::default_host();
         let wanted = req
@@ -1115,35 +1220,93 @@ mod capture {
             return fail("NotFoundError", "Requested device not found".into());
         };
         let label = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "Microphone".into());
-        let device_id = match &wanted {
-            Some(_) => device.id().map(|i| i.to_string()).unwrap_or_default(),
-            None => super::super::mediadevices::DEFAULT_SINK.to_string(),
-        };
-        let supported = match device.default_input_config() {
+        let following = wanted.is_none();
+        let device_id = if following { super::super::mediadevices::DEFAULT_SINK.to_string() } else { id_of(&device) };
+        let (config, sample) = match input_config(&device) {
             Ok(c) => c,
-            Err(e) => return fail("NotReadableError", format!("The device has no usable input format: {e}")),
+            Err(msg) => return fail("NotReadableError", msg),
         };
-        let config = supported.config();
-        let channels = config.channels as usize;
         let rate = config.sample_rate;
         let (chunker, settings) = processing_for(owner, rate, &req.settings);
-        // A processed track is mono, as Chrome's is.
-        let track_channels = if chunker.is_some() { 1 } else { channels as u32 };
-        let source = Source::new(SourceKind::Microphone { device_id }, label, track_channels, rate, settings);
-        let mut feeder = Feeder { source: Arc::downgrade(&source), chunker, channels, rate };
+        let channels = track_channels(&config, &chunker);
+        let source = Source::new(SourceKind::Microphone { device_id }, label, channels, rate, settings);
+        let lost = Arc::new(AtomicBool::new(false));
+        let feeder = Feeder { source: Arc::downgrade(&source), chunker, channels: config.channels as usize, rate };
+        let on_lost = if following { Lost::Flag(Arc::clone(&lost)) } else { Lost::Fail(Arc::downgrade(&source)) };
+        let stream = match build(&device, &config, sample, feeder, on_lost) {
+            Ok(s) => s,
+            Err((name, msg)) => return fail(name, msg),
+        };
+        if let Err(e) = stream.play() {
+            return fail("NotReadableError", format!("The microphone could not be started: {e}"));
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        source.set_stop(tx);
+        let id = new_track(&source, owner);
+        let park: Park = if following {
+            let on = id_of(&device);
+            let asked = req.settings;
+            Box::new(move || follow_default(owner, &asked, &source, stream, on, lost, &rx))
+        } else {
+            Box::new(move || {
+                let _keep = source;
+                let _ = rx.recv();
+                drop(stream);
+            })
+        };
+        (OpenResult::Ok(id), park)
+    }
 
-        let failed = Arc::downgrade(&source);
+    /// The device's own mix format, which a capture opens it with.
+    fn input_config(device: &cpal::Device) -> Result<(cpal::StreamConfig, cpal::SampleFormat), String> {
+        match device.default_input_config() {
+            Ok(c) => Ok((c.config(), c.sample_format())),
+            Err(e) => Err(format!("The device has no usable input format: {e}")),
+        }
+    }
+
+    /// What the source carries: mono when processed, as Chrome's processed
+    /// track is, the device's channels otherwise.
+    fn track_channels(config: &cpal::StreamConfig, chunker: &Option<Chunker>) -> u32 {
+        if chunker.is_some() {
+            1
+        } else {
+            config.channels as u32
+        }
+    }
+
+    /// What a stream does when its device goes away.
+    enum Lost {
+        /// A capture on a chosen device: its tracks end.
+        Fail(Weak<Source>),
+        /// A capture on the default: its thread moves it ([`follow_default`]).
+        Flag(Arc<AtomicBool>),
+    }
+
+    /// A stream on `device` feeding `feeder`, not yet started.
+    fn build(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        sample: cpal::SampleFormat,
+        mut feeder: Feeder,
+        lost: Lost,
+    ) -> Result<cpal::Stream, (&'static str, String)> {
         let on_error = move |e: cpal::StreamError| {
             eprintln!("[redjs] microphone stream error: {e}");
             if matches!(e, cpal::StreamError::DeviceNotAvailable) {
-                if let Some(s) = failed.upgrade() {
-                    s.fail();
+                match &lost {
+                    Lost::Fail(source) => {
+                        if let Some(s) = source.upgrade() {
+                            s.fail();
+                        }
+                    }
+                    Lost::Flag(flag) => flag.store(true, Ordering::Release),
                 }
             }
         };
-        let stream = match supported.sample_format() {
+        let stream = match sample {
             cpal::SampleFormat::F32 => device.build_input_stream(
-                &config,
+                config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| feeder.push(data),
                 on_error,
                 None,
@@ -1151,7 +1314,7 @@ mod capture {
             cpal::SampleFormat::I16 => {
                 let mut buf: Vec<f32> = Vec::new();
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         buf.clear();
                         buf.extend(data.iter().map(|&v| v as f32 / 32768.0));
@@ -1164,7 +1327,7 @@ mod capture {
             cpal::SampleFormat::I32 => {
                 let mut buf: Vec<f32> = Vec::new();
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[i32], _: &cpal::InputCallbackInfo| {
                         buf.clear();
                         buf.extend(data.iter().map(|&v| v as f32 / 2_147_483_648.0));
@@ -1177,7 +1340,7 @@ mod capture {
             cpal::SampleFormat::U16 => {
                 let mut buf: Vec<f32> = Vec::new();
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         buf.clear();
                         buf.extend(data.iter().map(|&v| (v as f32 - 32768.0) / 32768.0));
@@ -1187,34 +1350,96 @@ mod capture {
                     None,
                 )
             }
-            other => return fail("NotReadableError", format!("Unsupported input sample format {other:?}.")),
+            other => return Err(("NotReadableError", format!("Unsupported input sample format {other:?}."))),
         };
-        let stream = match stream {
-            Ok(s) => s,
-            Err(e) => {
-                // WASAPI's E_ACCESSDENIED is the privacy settings refusing
-                // desktop apps the microphone.
-                let text = e.to_string();
-                let name = if text.contains("0x80070005") || text.to_ascii_lowercase().contains("access is denied") {
-                    "NotAllowedError"
-                } else {
-                    "NotReadableError"
-                };
-                return fail(name, format!("The microphone could not be opened: {text}"));
+        stream.map_err(|e| {
+            // WASAPI's E_ACCESSDENIED is the privacy settings refusing
+            // desktop apps the microphone.
+            let text = e.to_string();
+            let name = if text.contains("0x80070005") || text.to_ascii_lowercase().contains("access is denied") {
+                "NotAllowedError"
+            } else {
+                "NotReadableError"
+            };
+            (name, format!("The microphone could not be opened: {text}"))
+        })
+    }
+
+    /// The capture thread of a microphone on the default, until the source is
+    /// released (see "A microphone on the default follows it" above). `on` is
+    /// the endpoint the stream runs on, `lost` its device-gone flag.
+    fn follow_default(
+        owner: usize,
+        wanted: &Settings,
+        source: &Arc<Source>,
+        mut stream: cpal::Stream,
+        mut on: String,
+        mut lost: Arc<AtomicBool>,
+        rx: &std::sync::mpsc::Receiver<()>,
+    ) {
+        let mut seen = mediadevices::default_generation(Flow::Input);
+        loop {
+            match rx.recv_timeout(FOLLOW_WAKE) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // Stopped, or the source released.
+                _ => break,
             }
-        };
-        if let Err(e) = stream.play() {
-            return fail("NotReadableError", format!("The microphone could not be started: {e}"));
+            let generation = mediadevices::default_generation(Flow::Input);
+            let moved = generation != seen;
+            seen = generation;
+            let gone = lost.load(Ordering::Acquire);
+            if !moved && !gone {
+                continue;
+            }
+            let device = cpal::default_host().default_input_device();
+            let id = device.as_ref().map(id_of);
+            let device = match (follow(&on, id.as_deref(), moved, gone), device) {
+                (Follow::Move, Some(d)) => d,
+                (Follow::End, _) => {
+                    eprintln!("[redjs] the microphone went away and no input is left: its tracks end");
+                    source.fail();
+                    break;
+                }
+                _ => continue,
+            };
+            // A new stream is built before the old one goes, so a failure
+            // keeps the old one, and the old one goes before the new one
+            // starts, so the two never feed the source at once.
+            let next = (|| {
+                let (config, sample) = input_config(&device)?;
+                let rate = config.sample_rate;
+                let (chunker, _) = processing_for(owner, rate, wanted);
+                let channels = track_channels(&config, &chunker);
+                let flag = Arc::new(AtomicBool::new(false));
+                let feeder =
+                    Feeder { source: Arc::downgrade(source), chunker, channels: config.channels as usize, rate };
+                let s = build(&device, &config, sample, feeder, Lost::Flag(Arc::clone(&flag))).map_err(|(_, m)| m)?;
+                Ok::<_, String>((s, flag, channels, rate))
+            })();
+            match next {
+                Ok((s, flag, channels, rate)) => {
+                    drop(std::mem::replace(&mut stream, s));
+                    source.set_format(channels, rate);
+                    if let Err(e) = stream.play() {
+                        eprintln!("[redjs] the default microphone could not be started: {e}; its tracks end");
+                        source.fail();
+                        break;
+                    }
+                    lost = flag;
+                    on = id.unwrap_or_default();
+                    let name = device.description().map(|d| d.name().to_string()).unwrap_or_default();
+                    eprintln!("[redjs] the microphone follows the system default to {name:?} ({rate} Hz x {channels})");
+                }
+                Err(e) => {
+                    eprintln!("[redjs] the default microphone could not be opened: {e}");
+                    if gone {
+                        source.fail();
+                        break;
+                    }
+                }
+            }
         }
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        source.set_stop(tx);
-        let id = new_track(&source, owner);
-        let park: Park = Box::new(move || {
-            let _keep = source;
-            let _ = rx.recv();
-            drop(stream);
-        });
-        (OpenResult::Ok(id), park)
+        drop(stream);
     }
 }
 
@@ -1768,6 +1993,55 @@ mod tests {
         assert_eq!(drain_ended(owner), vec![id]);
         assert!(drain_ended(owner).is_empty());
         release(id);
+    }
+
+    #[test]
+    fn a_capture_on_the_default_moves_with_it_and_ends_only_when_no_input_is_left() {
+        // Nothing happened.
+        assert_eq!(follow("mic-a", Some("mic-a"), false, false), Follow::Stay);
+        // The user picked another default: the capture moves.
+        assert_eq!(follow("mic-a", Some("mic-b"), true, false), Follow::Move);
+        // A default "change" back to the endpoint it is on (another role, or
+        // A -> B -> A between two wakes) does not reopen it.
+        assert_eq!(follow("mic-a", Some("mic-a"), true, false), Follow::Stay);
+        // The default is gone but the stream still runs: it keeps running,
+        // and ends when its own device reports itself gone.
+        assert_eq!(follow("mic-a", None, true, false), Follow::Stay);
+        // Its device went away: it moves to whichever input is default now...
+        assert_eq!(follow("mic-a", Some("mic-b"), false, true), Follow::Move);
+        // ...including the same one, back after a device reset...
+        assert_eq!(follow("mic-a", Some("mic-a"), false, true), Follow::Move);
+        // ...and its tracks end only when no input is left.
+        assert_eq!(follow("mic-a", None, true, true), Follow::End);
+    }
+
+    #[test]
+    fn a_node_reading_a_source_that_changed_its_rate_hears_it_at_its_own() {
+        // A microphone that followed the default from a 48 kHz device to a
+        // 16 kHz headset: the node was built at 48 kHz.
+        let mut r = Rerate::default();
+        let mut out: Vec<f32> = Vec::new();
+        // A ramp, 160 frames per 10 ms block, stereo: left = t, right = -t.
+        for b in 0..10 {
+            let block: Vec<f32> =
+                (0..160).flat_map(|i| [(b * 160 + i) as f32, -((b * 160 + i) as f32)]).collect();
+            out.extend_from_slice(r.run(&block, 2, 16_000, 48_000));
+        }
+        // Three times the frames, give or take the one the phase holds back.
+        let frames = out.len() / 2;
+        assert!((4_797..=4_800).contains(&frames), "{frames} frames");
+        // A ramp stays a ramp across every block boundary: each output frame
+        // is a third of an input frame further on, on both channels.
+        for (n, f) in out.chunks_exact(2).enumerate() {
+            let t = n as f32 / 3.0;
+            assert!((f[0] - t).abs() < 1e-3 && (f[1] + t).abs() < 1e-3, "frame {n}: {f:?}, expected {t}");
+        }
+        // Down again, 48 kHz to 16 kHz: a third of the frames.
+        let mut d = Rerate::default();
+        let block: Vec<f32> = (0..480).map(|i| i as f32).collect();
+        let got = d.run(&block, 1, 48_000, 16_000).to_vec();
+        assert_eq!(got.len(), 160);
+        assert_eq!(got[1], 3.0);
     }
 
     #[test]

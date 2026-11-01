@@ -1047,6 +1047,9 @@ struct Engine {
     /// Kept as the string rather than the resolved device so the getter can
     /// return what was assigned, per spec.
     sink_id: String,
+    /// The system default output's generation this engine last followed
+    /// (`mediadevices::default_generation`).
+    default_seen: u64,
 }
 
 impl Engine {
@@ -1113,6 +1116,32 @@ fn restart_stream(eng: &mut Engine, device: Option<firewheel::cpal::cpal::Device
         Err(e) => {
             eng.running = false;
             Err(format!("{e:?}"))
+        }
+    }
+}
+
+/// An engine on the default sink follows the system default output when it
+/// moves (webapi/mediadevices.rs, "Following the system default"), as
+/// Chrome's `AudioContext` does: its stream reopens on the new default and
+/// the graph and the clock carry over (`restart_stream`). One with a chosen
+/// sink stays on it. An engine whose stream could not open (no device at
+/// all) retries on each move. Returns whether it reopened.
+fn follow_default_output(eng: &mut Engine, generation: u64) -> bool {
+    if eng.default_seen == generation {
+        return false;
+    }
+    eng.default_seen = generation;
+    if eng.state == ST_CLOSED || !(eng.sink_id.is_empty() || eng.sink_id == mediadevices::DEFAULT_SINK) {
+        return false;
+    }
+    match restart_stream(eng, None) {
+        Ok(()) => {
+            eprintln!("[audio] the system default output moved: the context follows it ({} Hz)", eng.sample_rate);
+            true
+        }
+        Err(e) => {
+            eprintln!("[audio] the system default output moved, and it could not be opened: {e}");
+            false
         }
     }
 }
@@ -2914,6 +2943,7 @@ unsafe extern "sysv64" fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 
                 listener_up: [0.0, 1.0, 0.0],
                 sample_rate,
                 sink_id: String::new(),
+                default_seen: mediadevices::default_generation(mediadevices::Flow::Output),
             },
         );
         dest_handle = alloc_node(&mut gl, engine_handle, Params::Dest).unwrap();
@@ -3896,9 +3926,11 @@ pub unsafe fn pump(g: *mut c_void) {
             .map(|(&h, _)| h)
             .collect();
 
+        let default_output = mediadevices::default_generation(mediadevices::Flow::Output);
         for eh in handles {
             let now = {
                 let eng = engines.get_mut(&eh).unwrap();
+                follow_default_output(eng, default_output);
                 if let Err(e) = eng.fw.update() {
                     // Always loud: a swallowed update error is silent audio.
                     eprintln!("[audio] firewheel update error (engine {eh}): {e:?}");
@@ -4486,6 +4518,44 @@ mod jsc_tests {
         );
         assert!(got.starts_with("ok:"), "{got}");
         eprintln!("[setSinkId] round-tripped {} real output device(s)", &got[3..]);
+    }
+
+    #[test]
+    fn a_context_on_the_default_sink_follows_the_default_and_a_chosen_sink_stays() {
+        // Driven per engine, not through the process-wide generation, so the
+        // other tests' contexts are not reopened under them. The reopen itself
+        // is `restart_stream`, which the setSinkId tests above cover.
+        let c = ctx();
+        s(&c, "globalThis.__a = new AudioContext(); globalThis.__b = new AudioContext(); 'ok'");
+        let mut gl = super::glob().lock().unwrap();
+        let mut mine: Vec<u64> = gl.engines.iter().filter(|(_, e)| e.g == c.raw() as usize).map(|(&h, _)| h).collect();
+        mine.sort_unstable();
+        assert_eq!(mine.len(), 2);
+        let (a, b) = (mine[0], mine[1]);
+        // `b` was given a sink of its own (the id only has to be one that is
+        // not the default; nothing reopens it).
+        gl.engines.get_mut(&b).unwrap().sink_id = "chosen-endpoint".into();
+
+        let next = gl.engines[&a].default_seen + 1;
+        let ea = gl.engines.get_mut(&a).unwrap();
+        let had_device = ea.running;
+        let reopened = super::follow_default_output(ea, next);
+        // Hardware-conditional: with no output device, the reopen fails and
+        // the context keeps running silent, as it was created.
+        assert_eq!(reopened, had_device, "a default-sink context reopens on the new default");
+        assert_eq!(ea.default_seen, next);
+        assert!(!super::follow_default_output(ea, next), "the same move is followed once");
+
+        let eb = gl.engines.get_mut(&b).unwrap();
+        let next_b = eb.default_seen + 1;
+        assert!(!super::follow_default_output(eb, next_b), "a chosen sink stays where it is");
+        assert_eq!(eb.default_seen, next_b);
+
+        eb.sink_id = super::mediadevices::DEFAULT_SINK.into();
+        eb.state = super::ST_CLOSED;
+        assert!(!super::follow_default_output(eb, next_b + 1), "a closed context is not reopened");
+        drop(gl);
+        s(&c, "__a.close(); __b.close(); 'ok'");
     }
 
     // -----------------------------------------------------------------------
