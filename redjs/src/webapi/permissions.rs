@@ -54,9 +54,17 @@
 //! part of `navigator.permissions` calls it. An embedder that wants a
 //! standalone request exposes it under its own namespace and documents the
 //! divergence.
+//!
+//! The runtime itself asks in exactly one place, the browser's: `getUserMedia`
+//! on a microphone whose state is `prompt` ([`request_for_runtime`],
+//! webapi/mediastream.rs). Its settlements and the embedder's come out of the
+//! one host queue, so they are sorted here: the runtime's go to
+//! `getUserMedia`, and the embedder drains its own through [`take_settled`],
+//! never through [`PermissionHost::drain_settled`] directly (which would take
+//! both and leave a `getUserMedia` waiting forever).
 
 use core::ffi::c_void;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use super::events;
@@ -208,6 +216,18 @@ pub trait PermissionHost: Send + Sync {
     fn drain_changes(&self) -> Option<Vec<Capability>> {
         None
     }
+
+    /// Whether a `Denied` from [`status`](Self::status) comes from the
+    /// operating system's own settings rather than from the user's answer to
+    /// a prompt this host showed. Only asked about a capability that is
+    /// `Denied`. It decides what `getUserMedia` rejects with: Chrome's
+    /// "Permission denied by system" or "Permission denied".
+    ///
+    /// The default is `true`: a host with no prompt of its own has only the
+    /// system to deny anything.
+    fn denied_by_system(&self, _cap: Capability) -> bool {
+        true
+    }
 }
 
 static HOST: RwLock<Option<&'static dyn PermissionHost>> = RwLock::new(None);
@@ -220,7 +240,23 @@ pub fn set_host(host: &'static dyn PermissionHost) {
 
 /// The installed backend, if any.
 pub fn host() -> Option<&'static dyn PermissionHost> {
+    #[cfg(test)]
+    if let Some(h) = THREAD_HOST.with(|c| c.get()) {
+        return Some(h);
+    }
     *HOST.read().unwrap()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own host, seen only from its thread: [`set_host`] is
+    /// process-wide and the tests run in parallel.
+    static THREAD_HOST: core::cell::Cell<Option<&'static dyn PermissionHost>> = const { core::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_thread_host(h: Option<&'static dyn PermissionHost>) {
+    THREAD_HOST.with(|c| c.set(h));
 }
 
 /// The state to report with no host installed, plus a one-shot note on stderr
@@ -239,6 +275,82 @@ fn status_of(cap: Capability) -> PermissionState {
             PermissionState::Unsupported
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Settlements: the runtime's own requests and the embedder's
+// ---------------------------------------------------------------------------
+
+/// The host's settlements, sorted by who asked (module header, "`request()`
+/// is not here").
+#[derive(Default)]
+struct Settlements {
+    /// Tokens of requests the runtime made itself, not yet settled.
+    runtime: HashSet<u32>,
+    for_runtime: Vec<(u32, PermissionState)>,
+    for_embedder: Vec<(u32, PermissionState)>,
+}
+
+fn settlements() -> &'static Mutex<Settlements> {
+    static S: OnceLock<Mutex<Settlements>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(Settlements::default()))
+}
+
+impl Settlements {
+    fn drain(&mut self, h: &dyn PermissionHost) {
+        for (token, state) in h.drain_settled() {
+            if self.runtime.remove(&token) {
+                self.for_runtime.push((token, state));
+            } else {
+                self.for_embedder.push((token, state));
+            }
+        }
+    }
+
+    fn request(&mut self, h: &dyn PermissionHost, cap: Capability) -> RequestOutcome {
+        let out = h.request(cap);
+        if let RequestOutcome::Pending(token) = out {
+            self.runtime.insert(token);
+        }
+        out
+    }
+}
+
+fn drain_host(s: &mut Settlements) {
+    if let Some(h) = host() {
+        s.drain(h);
+    }
+}
+
+/// Ask on the runtime's own behalf, as a browser asks when `getUserMedia`
+/// meets a capability nobody has decided on. A `Pending` request's settlement
+/// is kept for the runtime ([`take_runtime_settled`]) and never reaches
+/// [`take_settled`]. With no host there is nobody to ask: `Unsupported`.
+pub(crate) fn request_for_runtime(cap: Capability) -> RequestOutcome {
+    let Some(h) = host() else {
+        return RequestOutcome::Settled(PermissionState::Unsupported);
+    };
+    // Held across `request` so that no drain can see the token settle before
+    // it is known to be the runtime's.
+    settlements().lock().unwrap().request(h, cap)
+}
+
+/// The runtime's own requests that have settled since the last call.
+pub(crate) fn take_runtime_settled() -> Vec<(u32, PermissionState)> {
+    let mut s = settlements().lock().unwrap();
+    drain_host(&mut s);
+    core::mem::take(&mut s.for_runtime)
+}
+
+/// The settlements of the embedder's own requests: what
+/// [`PermissionHost::drain_settled`] returned, less the requests the runtime
+/// made itself. An embedder that calls [`PermissionHost::request`] and
+/// delivers the result drains through this, never through the host's
+/// `drain_settled`, which would also take `getUserMedia`'s.
+pub fn take_settled() -> Vec<(u32, PermissionState)> {
+    let mut s = settlements().lock().unwrap();
+    drain_host(&mut s);
+    core::mem::take(&mut s.for_embedder)
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +678,56 @@ mod tests {
             h.request(Capability::Geolocation),
             RequestOutcome::Settled(PermissionState::Unsupported)
         );
+    }
+
+    /// A host whose every request is pending and settles on the next drain,
+    /// granted, with tokens 1, 2, 3, … — one queue for every asker, as the
+    /// real backends have.
+    struct QueueHost {
+        next: Mutex<u32>,
+        settled: Mutex<Vec<(u32, PermissionState)>>,
+    }
+    impl PermissionHost for QueueHost {
+        fn platform(&self) -> &'static str {
+            "queue"
+        }
+        fn status(&self, _: Capability) -> PermissionState {
+            PermissionState::Prompt
+        }
+        fn request(&self, _: Capability) -> RequestOutcome {
+            let mut n = self.next.lock().unwrap();
+            *n += 1;
+            self.settled.lock().unwrap().push((*n, PermissionState::Granted));
+            RequestOutcome::Pending(*n)
+        }
+        fn drain_settled(&self) -> Vec<(u32, PermissionState)> {
+            core::mem::take(&mut *self.settled.lock().unwrap())
+        }
+    }
+
+    #[test]
+    fn the_runtimes_settlements_and_the_embedders_are_sorted_apart() {
+        // One host queue, two askers: getUserMedia (the runtime) and the
+        // embedder's own request API. Whichever drains first, each gets its
+        // own settlement and never the other's.
+        let h = QueueHost { next: Mutex::new(0), settled: Mutex::new(Vec::new()) };
+        let mut s = Settlements::default();
+        assert_eq!(s.request(&h, Capability::Microphone), RequestOutcome::Pending(1));
+        // The embedder's request, made directly on the host.
+        assert_eq!(h.request(Capability::Microphone), RequestOutcome::Pending(2));
+        assert_eq!(s.request(&h, Capability::Microphone), RequestOutcome::Pending(3));
+        s.drain(&h);
+        assert_eq!(core::mem::take(&mut s.for_runtime), vec![(1, PermissionState::Granted), (3, PermissionState::Granted)]);
+        assert_eq!(core::mem::take(&mut s.for_embedder), vec![(2, PermissionState::Granted)]);
+        assert!(s.runtime.is_empty(), "a settled runtime token is forgotten");
+        // Nothing is delivered twice.
+        s.drain(&h);
+        assert!(s.for_runtime.is_empty() && s.for_embedder.is_empty());
+    }
+
+    #[test]
+    fn a_host_without_a_prompt_has_only_the_system_to_deny() {
+        assert!(TableHost(&[]).denied_by_system(Capability::Microphone));
     }
 
     #[test]

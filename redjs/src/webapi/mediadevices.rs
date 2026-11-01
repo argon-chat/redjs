@@ -13,13 +13,16 @@
 //! so every id in them is one `setSinkId` or `getUserMedia` can select: the
 //! enumeration and the selection cannot disagree.
 //!
-//! Inputs are **named only when they could be opened**, i.e. when the capture
-//! gate is open (see "The capture gate" in mediastream.rs). Otherwise the list
+//! Inputs are **named only when they could be opened without asking**, i.e.
+//! when the capture gate is open (see "The capture gate" in mediastream.rs).
+//! Otherwise (capture refused, or the host's prompt not yet answered) the list
 //! carries one `audioinput` with an empty `deviceId` and `label`, the shape a
 //! browser reports before the user has granted the microphone: the page can
-//! tell a microphone exists, and `getUserMedia` then says `NotAllowedError`.
-//! A picker never offers a device that cannot be opened.
-//! `jsc_tests::the_input_boundary_is_pinned` pins that.
+//! tell a microphone exists, and `getUserMedia` then asks or says
+//! `NotAllowedError`. A picker never offers a device that cannot be opened.
+//! `jsc_tests::the_input_boundary_is_pinned` pins that. A fake capture
+//! (`mediastream::set_fake_capture`) lists its one synthetic input instead of
+//! the machine's.
 //!
 //! `videoinput` is omitted: this runtime captures no video.
 //!
@@ -33,9 +36,9 @@
 //!   what Chrome reports on Windows. It is what the application persists when
 //!   the user has not pinned a specific endpoint, and it is the reason the list
 //!   is never empty even on a machine with no audio hardware at all.
-//! - `label` is always populated. In a browser it is empty until a capture
-//!   permission is granted; there is no such gate here, and hiding the names
-//!   would only break the picker.
+//! - An output's `label` is always populated. In a browser it is empty until a
+//!   capture permission is granted; outputs have no gate here, and hiding
+//!   their names would only break the picker. Inputs follow the browser (above).
 //! - `groupId` is `""`. CPAL exposes no grouping of an input and an output that
 //!   belong to the same physical device, and inventing one would be a guess.
 //! - `devicechange` is polled (CPAL has no hot-plug callback), and only while
@@ -85,6 +88,12 @@ pub fn input_devices() -> Vec<AudioDevice> {
             is_default: d.is_default,
         })
         .collect()
+}
+
+/// What a fake capture lists (webapi/mediastream.rs, `set_fake_capture`).
+fn fake_inputs() -> Vec<AudioDevice> {
+    use super::mediastream::fake::{DEVICE_ID, LABEL};
+    vec![AudioDevice { id: DEVICE_ID.to_string(), label: LABEL.to_string(), is_default: true }]
 }
 
 /// The system's audio output endpoints, default first.
@@ -139,7 +148,8 @@ fn snapshot_of(devices: &[AudioDevice]) -> Vec<(String, bool)> {
 /// `devicechange` as much as its speakers are.
 fn snapshot_now() -> Vec<(String, bool)> {
     let mut s = snapshot_of(&output_devices());
-    s.extend(input_devices().into_iter().map(|d| (format!("in:{}", d.id), d.is_default)));
+    let inputs = if super::mediastream::fake_capture() { fake_inputs() } else { input_devices() };
+    s.extend(inputs.into_iter().map(|d| (format!("in:{}", d.id), d.is_default)));
     s
 }
 
@@ -315,10 +325,15 @@ unsafe extern "sysv64" fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void)
     let mut i = 0u32;
 
     // Inputs first, as Chrome orders them. Named only when `getUserMedia`
-    // could open them (webapi/mediastream.rs, "The capture gate"); otherwise
-    // one entry with no id and no label, which is what a browser lists before
-    // the user has granted the microphone.
-    let inputs = input_devices();
+    // could open them without asking (webapi/mediastream.rs, "The capture
+    // gate"); otherwise one entry with no id and no label, which is what a
+    // browser lists before the user has granted the microphone. A fake
+    // capture lists its one synthetic input and nothing of the machine's.
+    let inputs = if super::mediastream::fake::enabled(g as usize) {
+        fake_inputs()
+    } else {
+        input_devices()
+    };
     if !inputs.is_empty() {
         if super::mediastream::inputs_visible(g as usize) {
             push_kind(g, arr, &mut i, "audioinput", &inputs);

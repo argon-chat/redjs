@@ -35,18 +35,32 @@
 //!
 //! ## The capture gate
 //!
-//! A browser asks the user before it opens a microphone. This runtime has no
-//! prompt of its own, so it opens one only when **all** of these hold:
+//! A browser asks the user before it opens a microphone. The asking is the
+//! embedder's (its `PermissionHost`, `permissions.rs`); the order is this
+//! runtime's ([`gate`]):
 //!
 //! 1. the process has not been forbidden capture ([`forbid_capture`], a latch
-//!    an embedder sets from its own kill switch);
+//!    an embedder sets from its own kill switch): otherwise a refusal, never
+//!    a prompt;
 //! 2. the embedder enabled capture ([`set_capture_allowed`]; off by default,
 //!    so an application cannot reach a device unless its host decided it may);
-//! 3. the platform's consent store, read through the `PermissionHost`
-//!    (`permissions.rs`), does not say `Denied`.
+//! 3. the host's state for `microphone`:
+//!    - `Denied` refuses, as Chrome does, with "Permission denied by system"
+//!      when the OS's own settings say no ([`set_system_denied_hint`] adds
+//!      where to change them, in an advisory) and "Permission denied" when
+//!      the user said no to the host's prompt;
+//!    - `Prompt` asks: `getUserMedia` calls the host's `request`, waits for
+//!      the answer (the pump settles it) and opens on `Granted`. Any other
+//!      answer is a `NotAllowedError`, "Permission dismissed" when nothing
+//!      was decided;
+//!    - `Granted` and `Unsupported` (no notion of consent) open.
 //!
 //! A refusal is a `NotAllowedError`, which is what a page sees when the user
-//! says no. See [`gate`].
+//! says no.
+//!
+//! [`set_fake_capture`] swaps every device for a synthetic one (a 440 Hz
+//! sine), for automated runs that exercise the whole path without a
+//! microphone: the gate still applies.
 //!
 //! ## Divergences
 //!
@@ -96,6 +110,28 @@ pub fn forbid_capture() {
     FORBIDDEN.store(true, Ordering::Release);
 }
 
+/// Has [`forbid_capture`] latched? An embedder's permission layer reads it so
+/// that it never prompts for what this process will refuse anyway.
+pub fn capture_forbidden() -> bool {
+    FORBIDDEN.load(Ordering::Acquire)
+}
+
+static FAKE: AtomicBool = AtomicBool::new(false);
+
+/// Capture from a synthetic microphone (a 440 Hz sine at 48 kHz, mono)
+/// instead of any device, for the whole process. `enumerateDevices` lists
+/// that one input (`"fake"`, "Fake Microphone"), and no device is ever
+/// opened. The gate is unchanged: a test of the consent path runs it as a
+/// user would meet it. A latch, like [`forbid_capture`].
+pub fn set_fake_capture() {
+    FAKE.store(true, Ordering::Release);
+}
+
+/// Has [`set_fake_capture`] latched?
+pub fn fake_capture() -> bool {
+    FAKE.load(Ordering::Acquire)
+}
+
 /// What the embedder adds to a "not enabled" refusal, so the developer reading
 /// it knows which switch is theirs (vue-native names its config key).
 fn hint() -> &'static Mutex<String> {
@@ -105,6 +141,18 @@ fn hint() -> &'static Mutex<String> {
 
 pub fn set_capture_hint(text: &str) {
     *hint().lock().unwrap() = text.to_string();
+}
+
+/// Where the user changes the operating system's microphone setting, for the
+/// advisory a "Permission denied by system" refusal logs (vue-native names the
+/// Windows Settings page). The rejection's own message stays Chrome's.
+fn system_hint() -> &'static Mutex<String> {
+    static H: OnceLock<Mutex<String>> = OnceLock::new();
+    H.get_or_init(|| Mutex::new(String::new()))
+}
+
+pub fn set_system_denied_hint(text: &str) {
+    *system_hint().lock().unwrap() = text.to_string();
 }
 
 /// Per-context overrides of [`set_capture_allowed`] (tests).
@@ -121,23 +169,29 @@ pub enum Gate {
     Forbidden,
     /// The embedder never enabled capture.
     NotEnabled,
-    /// The platform's consent store says no.
-    OsDenied,
+    /// The host says no: the OS's own settings (`system`), or the user's
+    /// answer to the host's prompt.
+    Denied { system: bool },
+    /// Nobody has decided: ask the host, open on a grant.
+    Ask,
 }
 
-/// The gate, as a pure function of its three inputs. `os` is `None` with no
-/// `PermissionHost` installed. `Prompt` and `Unsupported` are open: where the
-/// OS has a prompt, opening the device raises it, and where it has no notion
-/// of consent there is nothing to ask.
-pub fn gate(forbidden: bool, allowed: bool, os: Option<PermissionState>) -> Gate {
+/// The gate, as a pure function of its inputs. `os` is the host's state for
+/// `microphone` (`None` with no `PermissionHost` installed) and `system`
+/// whether a `Denied` is the OS's ([`permissions::PermissionHost::denied_by_system`]).
+/// `Unsupported` is open: where there is no notion of consent there is
+/// nothing to ask.
+pub fn gate(forbidden: bool, allowed: bool, os: Option<PermissionState>, system: bool) -> Gate {
     if forbidden {
         Gate::Forbidden
     } else if !allowed {
         Gate::NotEnabled
-    } else if os == Some(PermissionState::Denied) {
-        Gate::OsDenied
     } else {
-        Gate::Open
+        match os {
+            Some(PermissionState::Denied) => Gate::Denied { system },
+            Some(PermissionState::Prompt) => Gate::Ask,
+            _ => Gate::Open,
+        }
     }
 }
 
@@ -148,17 +202,30 @@ fn gate_for(ctx: usize) -> Gate {
         .get(&ctx)
         .copied()
         .unwrap_or_else(|| ALLOWED.load(Ordering::Acquire));
-    gate(
-        FORBIDDEN.load(Ordering::Acquire),
-        allowed,
-        permissions::host().map(|h| h.status(Capability::Microphone)),
-    )
+    let forbidden = FORBIDDEN.load(Ordering::Acquire);
+    // The host is not asked at all when the answer cannot matter.
+    if forbidden || !allowed {
+        return gate(forbidden, allowed, None, true);
+    }
+    let host = permissions::host();
+    let os = host.map(|h| h.status(Capability::Microphone));
+    let system = match (host, os) {
+        (Some(h), Some(PermissionState::Denied)) => h.denied_by_system(Capability::Microphone),
+        _ => true,
+    };
+    gate(forbidden, allowed, os, system)
 }
 
+/// Chrome's messages, verbatim: what a page already matches on.
+const DENIED: &str = "Permission denied";
+const DENIED_BY_SYSTEM: &str = "Permission denied by system";
+const DISMISSED: &str = "Permission dismissed";
+
 /// The refusal a closed gate turns into: `(DOMException name, message)`.
+/// `None` for a gate that opens or asks.
 fn refusal(g: Gate) -> Option<(&'static str, String)> {
     match g {
-        Gate::Open => None,
+        Gate::Open | Gate::Ask => None,
         Gate::Forbidden => Some((
             "NotAllowedError",
             "Permission denied: microphone capture is switched off for this process.".into(),
@@ -174,18 +241,27 @@ fn refusal(g: Gate) -> Option<(&'static str, String)> {
                 },
             ))
         }
-        Gate::OsDenied => Some((
-            "NotAllowedError",
-            "Permission denied: the operating system's privacy settings do not let this app use \
-             the microphone."
-                .into(),
-        )),
+        Gate::Denied { system: true } => {
+            let h = system_hint().lock().unwrap().clone();
+            advise_once(&if h.is_empty() {
+                "getUserMedia: the operating system's privacy settings do not let this app use the \
+                 microphone (NotAllowedError: Permission denied by system)."
+                    .to_string()
+            } else {
+                format!(
+                    "getUserMedia: the operating system's privacy settings do not let this app use the \
+                     microphone (NotAllowedError: Permission denied by system). {h}"
+                )
+            });
+            Some(("NotAllowedError", DENIED_BY_SYSTEM.into()))
+        }
+        Gate::Denied { system: false } => Some(("NotAllowedError", DENIED.into())),
     }
 }
 
-/// Should `enumerateDevices` name the inputs? Only when they could be opened;
-/// otherwise it lists them the way a browser does before permission (one
-/// entry, no id, no label).
+/// Should `enumerateDevices` name the inputs? Only when they could be opened
+/// without asking; otherwise it lists them the way a browser does before
+/// permission (one entry, no id, no label).
 pub(crate) fn inputs_visible(ctx: usize) -> bool {
     gate_for(ctx) == Gate::Open
 }
@@ -660,11 +736,19 @@ fn drain_opened(owner: usize) -> Vec<(u32, OpenResult)> {
     mine
 }
 
-/// Start opening a microphone for context `owner`. The gate has been checked.
-/// The result arrives through [`pump`] under `token`.
+/// Start opening a microphone for context `owner`. The gate is open. The
+/// result arrives through [`pump`] under `token`.
 fn open_microphone(owner: usize, token: u32, req: AudioRequest) {
     opens().lock().unwrap().inflight.insert((owner, token));
-    #[cfg(test)]
+    start_open(owner, token, req);
+}
+
+/// The open itself, for an `(owner, token)` already in flight. One the page
+/// abandoned meanwhile (it unloaded while the prompt was up) never starts.
+fn start_open(owner: usize, token: u32, req: AudioRequest) {
+    if !opens().lock().unwrap().inflight.contains(&(owner, token)) {
+        return;
+    }
     if fake::enabled(owner) {
         fake::open(owner, token, req);
         return;
@@ -688,21 +772,97 @@ fn open_microphone(owner: usize, token: u32, req: AudioRequest) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Asking first (Gate::Ask)
+// ---------------------------------------------------------------------------
+
+/// A `getUserMedia` waiting for the host's prompt: the host's request token,
+/// and what to open once it is answered.
+struct Asking {
+    perm: u32,
+    owner: usize,
+    token: u32,
+    req: AudioRequest,
+}
+
+fn asking() -> &'static Mutex<Vec<Asking>> {
+    static A: OnceLock<Mutex<Vec<Asking>>> = OnceLock::new();
+    A.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Something is waiting for an answer: the pump looks for one.
+static ASKING: AtomicBool = AtomicBool::new(false);
+
+/// `getUserMedia` on a microphone nobody has decided on: ask the host, as a
+/// browser shows its prompt, and open once it says yes. The open is in
+/// flight from now, so a page that goes away meanwhile abandons it like any
+/// other ([`forget`], [`stop_all`]).
+fn ask_then_open(owner: usize, token: u32, req: AudioRequest) {
+    opens().lock().unwrap().inflight.insert((owner, token));
+    match permissions::request_for_runtime(Capability::Microphone) {
+        permissions::RequestOutcome::Settled(state) => answered(owner, token, req, state),
+        permissions::RequestOutcome::Pending(perm) => {
+            asking().lock().unwrap().push(Asking { perm, owner, token, req });
+            ASKING.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// The host answered: open, or refuse the way Chrome does.
+fn answered(owner: usize, token: u32, req: AudioRequest, state: PermissionState) {
+    match state {
+        PermissionState::Granted | PermissionState::Unsupported => start_open(owner, token, req),
+        PermissionState::Denied => {
+            let system = permissions::host().is_none_or(|h| h.denied_by_system(Capability::Microphone));
+            finish(owner, token, OpenResult::Err("NotAllowedError", (if system { DENIED_BY_SYSTEM } else { DENIED }).into()));
+        }
+        PermissionState::Prompt => finish(owner, token, OpenResult::Err("NotAllowedError", DISMISSED.into())),
+    }
+}
+
+/// Answers that have come in, for every context (each open then reaches its
+/// own page through `finish` and [`pump`]). One relaxed load when nothing is
+/// waiting.
+fn settle_asked() {
+    if !ASKING.load(Ordering::Acquire) {
+        return;
+    }
+    let settled = permissions::take_runtime_settled();
+    let ready: Vec<(Asking, PermissionState)> = {
+        let mut a = asking().lock().unwrap();
+        let mut ready = Vec::new();
+        for (perm, state) in settled {
+            if let Some(i) = a.iter().position(|x| x.perm == perm) {
+                ready.push((a.remove(i), state));
+            }
+        }
+        if a.is_empty() {
+            ASKING.store(false, Ordering::Release);
+        }
+        ready
+    };
+    for (x, state) in ready {
+        answered(x.owner, x.token, x.req, state);
+    }
+}
+
 /// The format a capture of `device_id` (an `enumerateDevices` id, or
 /// `"default"`) would run at, `(sample rate, channels)`: the device's own mix
 /// format, which [`capture::open`] opens it with. Read off the endpoint without
 /// starting a stream. `None` when the device is gone or reports no input
 /// format. For `InputDeviceInfo.getCapabilities()` (webapi/mediadevices.rs).
 pub(crate) fn input_format(owner: usize, device_id: &str) -> Option<(u32, u32)> {
+    if fake::enabled(owner) {
+        // The fake microphone's; nothing touches a real endpoint.
+        return Some((48_000, 1));
+    }
     #[cfg(test)]
     {
-        // The fake microphone's; a test never touches a real endpoint.
         let _ = device_id;
-        fake::enabled(owner).then_some((48_000, 1))
+        None
     }
     #[cfg(not(test))]
     {
-        let _ = owner;
         capture::format(device_id)
     }
 }
@@ -875,24 +1035,36 @@ mod capture {
     }
 }
 
-/// A synthetic input for the tests: `cargo test` never opens a device.
-#[cfg(test)]
+/// The synthetic input: [`set_fake_capture`] for a whole process (vue-native's
+/// `VN_MEDIA_CAPTURE=fake`), or one context in a test. `cargo test` never
+/// opens a device.
 pub(crate) mod fake {
     use super::*;
 
+    /// The one device a fake capture lists and opens.
+    pub(crate) const DEVICE_ID: &str = "fake";
+    pub(crate) const LABEL: &str = "Fake Microphone";
+
+    #[cfg(test)]
     fn on() -> &'static Mutex<HashSet<usize>> {
         static S: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
         S.get_or_init(|| Mutex::new(HashSet::new()))
     }
 
     /// Context `g` captures from a 440 Hz, 48 kHz mono sine, gate open.
+    #[cfg(test)]
     pub(crate) fn enable(g: *mut c_void) {
         on().lock().unwrap().insert(g as usize);
         ctx_allowed().lock().unwrap().insert(g as usize, true);
     }
 
-    pub(super) fn enabled(owner: usize) -> bool {
-        on().lock().unwrap().contains(&owner)
+    pub(crate) fn enabled(owner: usize) -> bool {
+        #[cfg(test)]
+        if on().lock().unwrap().contains(&owner) {
+            return true;
+        }
+        let _ = owner;
+        fake_capture()
     }
 
     /// Fake devices open right now, per owner.
@@ -901,18 +1073,20 @@ pub(crate) mod fake {
         S.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
+    #[cfg(test)]
     pub(crate) fn open_devices(g: *mut c_void) -> usize {
         open_count().lock().unwrap().get(&(g as usize)).copied().unwrap_or(0)
     }
 
     pub(super) fn open(owner: usize, token: u32, req: AudioRequest) {
-        if req.exact && req.device_id.as_deref().is_some_and(|d| d != "fake") {
+        if req.exact && req.device_id.as_deref().is_some_and(|d| d != DEVICE_ID) {
             finish(owner, token, OpenResult::Err("OverconstrainedError", "No such device.".into()));
             return;
         }
+        let device_id = if req.device_id.as_deref() == Some(DEVICE_ID) { DEVICE_ID } else { "default" };
         let source = Source::new(
-            SourceKind::Microphone { device_id: "default".into() },
-            "Fake Microphone".into(),
+            SourceKind::Microphone { device_id: device_id.into() },
+            LABEL.into(),
             1,
             48_000,
             req.settings.clone(),
@@ -921,7 +1095,8 @@ pub(crate) mod fake {
         source.set_stop(tx);
         let id = new_track(&source, owner);
         *open_count().lock().unwrap().entry(owner).or_default() += 1;
-        std::thread::spawn(move || {
+        let spawned = std::thread::Builder::new().name("redjs-fake-mic".into()).spawn(move || {
+            const TAU: f32 = 2.0 * std::f32::consts::PI;
             let mut phase = 0.0f32;
             let mut block = vec![0.0f32; 480];
             while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
@@ -929,12 +1104,21 @@ pub(crate) mod fake {
             {
                 for s in block.iter_mut() {
                     *s = 0.25 * phase.sin();
-                    phase += 2.0 * std::f32::consts::PI * 440.0 / 48_000.0;
+                    // Kept in one turn: a phase that only grows loses its
+                    // precision within hours, and the tone with it.
+                    phase = (phase + TAU * 440.0 / 48_000.0) % TAU;
                 }
                 source.deliver(&block, 1, 48_000);
             }
             *open_count().lock().unwrap().entry(owner).or_default() -= 1;
         });
+        if spawned.is_err() {
+            *open_count().lock().unwrap().entry(owner).or_default() -= 1;
+            stop(id);
+            release(id);
+            finish(owner, token, OpenResult::Err("NotReadableError", "Could not start the capture thread.".into()));
+            return;
+        }
         finish(owner, token, OpenResult::Ok(id));
     }
 }
@@ -996,6 +1180,8 @@ pub(crate) fn owner_of(g: *mut c_void) -> usize {
 pub(crate) fn forget(gone: crate::context::Gone) {
     states().lock().unwrap().remove(&gone.key);
     ctx_allowed().lock().unwrap().remove(&gone.key);
+    // A prompt it was waiting on stays the host's; its answer opens nothing.
+    asking().lock().unwrap().retain(|x| x.owner != gone.key);
     // Opens still running are abandoned (their thread releases what it gets),
     // finished ones are released here, and so is every track the page held.
     let finished = {
@@ -1039,6 +1225,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 /// Returns how many tracks were live.
 pub fn stop_all(g: *mut c_void) -> usize {
     let owner = g as usize;
+    asking().lock().unwrap().retain(|x| x.owner != owner);
     let unclaimed: Vec<u64> = {
         let mut o = opens().lock().unwrap();
         o.inflight.retain(|(o_, _)| *o_ != owner);
@@ -1083,10 +1270,12 @@ unsafe fn pair(g: *mut c_void, name: &str, msg: &str) -> u64 {
 }
 
 /// `open(token, deviceId, exact, ec, ns, agc)` → `undefined` (the result comes
-/// through `settle`), or `[name, message]` when the gate refuses.
+/// through `settle`, after the host's prompt when it asks one), or
+/// `[name, message]` when the gate refuses.
 unsafe extern "sysv64" fn n_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     let token = read_number(g, cf_arg(cf, 0)) as u32;
-    if let Some((name, msg)) = refusal(gate_for(g as usize)) {
+    let gate = gate_for(g as usize);
+    if let Some((name, msg)) = refusal(gate) {
         return pair(g, name, &msg);
     }
     let dev = cf_arg(cf, 1);
@@ -1099,7 +1288,11 @@ unsafe extern "sysv64" fn n_open(g: *mut c_void, cf: *mut c_void) -> u64 {
             auto_gain_control: arg_bool(cf, 5),
         },
     };
-    open_microphone(g as usize, token, req);
+    if gate == Gate::Ask {
+        ask_then_open(g as usize, token, req);
+    } else {
+        open_microphone(g as usize, token, req);
+    }
     UNDEF
 }
 
@@ -1147,19 +1340,26 @@ unsafe extern "sysv64" fn n_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     o
 }
 
-/// `advise(text)`: a one-shot advisory on stderr (each text once per process).
-unsafe extern "sysv64" fn n_advise(g: *mut c_void, cf: *mut c_void) -> u64 {
+/// A one-shot advisory on stderr (each text once per process).
+fn advise_once(text: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    if SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock().unwrap().insert(text.to_string()) {
+        eprintln!("[redjs] advisory: {text}");
+    }
+}
+
+/// `advise(text)`: [`advise_once`].
+unsafe extern "sysv64" fn n_advise(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(text) = read_string(g, cf_arg(cf, 0)) {
-        if SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock().unwrap().insert(text.clone()) {
-            eprintln!("[redjs] advisory: {text}");
-        }
+        advise_once(&text);
     }
     UNDEF
 }
 
-/// Deliver finished opens and self-ended tracks. One relaxed load when idle.
+/// Deliver finished opens and self-ended tracks, after starting the opens a
+/// prompt has just allowed. A relaxed load or two when idle.
 pub unsafe fn pump(g: *mut c_void) {
+    settle_asked();
     if !WORK.load(Ordering::Acquire) {
         return;
     }
@@ -1254,20 +1454,27 @@ mod tests {
     }
 
     #[test]
-    fn the_gate_opens_only_when_enabled_not_forbidden_and_not_denied() {
+    fn the_gate_opens_asks_or_refuses_in_its_order() {
         use PermissionState::*;
-        assert_eq!(gate(false, true, None), Gate::Open, "no consent store: nothing to ask");
-        assert_eq!(gate(false, true, Some(Granted)), Gate::Open);
-        assert_eq!(gate(false, true, Some(Prompt)), Gate::Open, "the OS asks when the device opens");
-        assert_eq!(gate(false, true, Some(Unsupported)), Gate::Open);
-        assert_eq!(gate(false, true, Some(Denied)), Gate::OsDenied);
-        assert_eq!(gate(false, false, Some(Granted)), Gate::NotEnabled, "off unless the embedder says so");
-        assert_eq!(gate(true, true, Some(Granted)), Gate::Forbidden, "the kill switch beats everything");
-        assert_eq!(gate(true, false, Some(Denied)), Gate::Forbidden);
-        for g in [Gate::Forbidden, Gate::NotEnabled, Gate::OsDenied] {
+        assert_eq!(gate(false, true, None, true), Gate::Open, "no consent store: nothing to ask");
+        assert_eq!(gate(false, true, Some(Granted), true), Gate::Open);
+        assert_eq!(gate(false, true, Some(Unsupported), true), Gate::Open);
+        assert_eq!(gate(false, true, Some(Prompt), true), Gate::Ask, "nobody decided: the host asks");
+        assert_eq!(gate(false, true, Some(Denied), true), Gate::Denied { system: true });
+        assert_eq!(gate(false, true, Some(Denied), false), Gate::Denied { system: false });
+        assert_eq!(gate(false, false, Some(Granted), true), Gate::NotEnabled, "off unless the embedder says so");
+        assert_eq!(gate(false, false, Some(Prompt), true), Gate::NotEnabled, "and then nothing is asked");
+        assert_eq!(gate(true, true, Some(Granted), true), Gate::Forbidden, "the kill switch beats everything");
+        assert_eq!(gate(true, true, Some(Prompt), true), Gate::Forbidden, "including the prompt");
+        assert_eq!(gate(true, false, Some(Denied), true), Gate::Forbidden);
+        for g in [Gate::Forbidden, Gate::NotEnabled, Gate::Denied { system: true }, Gate::Denied { system: false }] {
             assert_eq!(refusal(g).unwrap().0, "NotAllowedError", "{g:?}");
         }
+        // Chrome's words, which pages match on.
+        assert_eq!(refusal(Gate::Denied { system: false }).unwrap().1, "Permission denied");
+        assert_eq!(refusal(Gate::Denied { system: true }).unwrap().1, "Permission denied by system");
         assert!(refusal(Gate::Open).is_none());
+        assert!(refusal(Gate::Ask).is_none(), "asking is not a refusal");
     }
 
     #[test]
@@ -1722,6 +1929,169 @@ mod jsc_tests {
             eprintln!("no output stream on this machine: the tap check is skipped");
         }
         drop(sub);
+    }
+
+    /// A host with a prompt of its own, answered by the test: `microphone` is
+    /// `prompt` until an answer is stored, every request is pending, and the
+    /// pending ones settle with the answer once one is given.
+    struct PromptHost {
+        decided: Mutex<Option<PermissionState>>,
+        answer: Mutex<Option<PermissionState>>,
+        pending: Mutex<Vec<u32>>,
+        asked: AtomicU32,
+    }
+
+    impl PromptHost {
+        fn leak() -> &'static PromptHost {
+            Box::leak(Box::new(PromptHost {
+                decided: Mutex::new(None),
+                answer: Mutex::new(None),
+                pending: Mutex::new(Vec::new()),
+                asked: AtomicU32::new(0),
+            }))
+        }
+        /// What the user picks: `Prompt` is a dismissal (nothing stored).
+        fn answer(&self, st: PermissionState) {
+            *self.answer.lock().unwrap() = Some(st);
+        }
+    }
+
+    impl permissions::PermissionHost for PromptHost {
+        fn platform(&self) -> &'static str {
+            "prompting"
+        }
+        fn status(&self, _: Capability) -> PermissionState {
+            self.decided.lock().unwrap().unwrap_or(PermissionState::Prompt)
+        }
+        fn request(&self, _: Capability) -> permissions::RequestOutcome {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            // Unique across every test's host: the runtime's tokens are
+            // process-wide, as a real embedder has one host.
+            static NEXT: AtomicU32 = AtomicU32::new(9_000);
+            let token = NEXT.fetch_add(1, Ordering::SeqCst);
+            self.pending.lock().unwrap().push(token);
+            permissions::RequestOutcome::Pending(token)
+        }
+        fn drain_settled(&self) -> Vec<(u32, PermissionState)> {
+            let Some(st) = self.answer.lock().unwrap().take() else { return Vec::new() };
+            if st != PermissionState::Prompt {
+                *self.decided.lock().unwrap() = Some(st);
+            }
+            let st = self.status(Capability::Microphone);
+            self.pending.lock().unwrap().drain(..).map(|t| (t, st)).collect()
+        }
+        fn denied_by_system(&self, _: Capability) -> bool {
+            false
+        }
+    }
+
+    fn inputs(c: &Context) -> String {
+        run(
+            c,
+            "const ds = await navigator.mediaDevices.enumerateDevices();
+             return ds.filter(d => d.kind === 'audioinput').map(d => d.deviceId + '/' + d.label).join(',');",
+        )
+    }
+
+    #[test]
+    fn get_user_media_waits_for_the_hosts_prompt_and_opens_on_allow() {
+        let host = PromptHost::leak();
+        permissions::set_thread_host(Some(host));
+        let c = ctx();
+        fake::enable(c.raw());
+        // Before anyone decided, the inputs are anonymous, as in a browser.
+        assert_eq!(inputs(&c), "/");
+        s(
+            &c,
+            "globalThis.__got = [];
+             for (let i = 0; i < 2; i++) navigator.mediaDevices.getUserMedia({ audio: true }).then(
+               ms => { __got.push(ms.getAudioTracks()[0].readyState + ':' + ms.getAudioTracks()[0].label); globalThis['__ms' + i] = ms; },
+               e => { __got.push(e.name + ': ' + e.message); });
+             0",
+        );
+        for _ in 0..20 {
+            unsafe { pump_locked(&c) };
+        }
+        ok(&c, "__got.length === 0");
+        assert_eq!(host.asked.load(Ordering::SeqCst), 2, "each call asks; the host shows one prompt");
+        host.answer(PermissionState::Granted);
+        for _ in 0..200 {
+            unsafe { pump_locked(&c) };
+            if s(&c, "String(__got.length)") == "2" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(s(&c, "__got.join('|')"), "live:Fake Microphone|live:Fake Microphone");
+        // Granted now: the next call opens without asking, and the inputs have names.
+        assert_eq!(
+            run(&c, "const ms = await navigator.mediaDevices.getUserMedia({ audio: true }); ms.getTracks()[0].stop(); return 'ok';"),
+            "ok"
+        );
+        assert_eq!(host.asked.load(Ordering::SeqCst), 2);
+        assert!(inputs(&c).starts_with("default/"), "named once granted: {}", inputs(&c));
+        s(&c, "__ms0.getTracks()[0].stop(); __ms1.getTracks()[0].stop(); 0");
+        permissions::set_thread_host(None);
+    }
+
+    #[test]
+    fn a_dismissed_prompt_asks_again_and_a_blocked_one_never_does() {
+        let host = PromptHost::leak();
+        permissions::set_thread_host(Some(host));
+        let c = ctx();
+        fake::enable(c.raw());
+        let ask = |c: &Context| {
+            s(
+                c,
+                "globalThis.__out = '<pending>';
+                 navigator.mediaDevices.getUserMedia({ audio: true }).then(
+                   ms => { ms.getTracks()[0].stop(); __out = 'opened'; },
+                   e => { __out = e.name + ': ' + e.message; });
+                 0",
+            );
+        };
+        let settle = |c: &Context| {
+            for _ in 0..200 {
+                unsafe { pump_locked(c) };
+                if s(c, "__out") != "<pending>" {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            s(c, "__out")
+        };
+        // Esc: nothing stored, Chrome's "dismissed", and the next call asks again.
+        ask(&c);
+        host.answer(PermissionState::Prompt);
+        assert_eq!(settle(&c), "NotAllowedError: Permission dismissed");
+        ask(&c);
+        assert_eq!(host.asked.load(Ordering::SeqCst), 2, "a dismissal is asked again");
+        // Block: stored, and from then on refused at once, without a prompt.
+        host.answer(PermissionState::Denied);
+        assert_eq!(settle(&c), "NotAllowedError: Permission denied");
+        assert_eq!(run(&c, "await navigator.mediaDevices.getUserMedia({ audio: true }); return 'opened';"),
+                   "ERROR: NotAllowedError: Permission denied");
+        assert_eq!(host.asked.load(Ordering::SeqCst), 2, "a block is never asked again by getUserMedia");
+        assert_eq!(inputs(&c), "/", "blocked: still anonymous");
+        permissions::set_thread_host(None);
+    }
+
+    #[test]
+    fn a_page_that_unloads_while_asked_opens_nothing_when_the_answer_comes() {
+        let host = PromptHost::leak();
+        permissions::set_thread_host(Some(host));
+        let c = ctx();
+        fake::enable(c.raw());
+        s(&c, "globalThis.__out = '<pending>'; navigator.mediaDevices.getUserMedia({ audio: true }).then(() => { __out = 'opened'; }, e => { __out = e.name; }); 0");
+        unsafe { pump_locked(&c) };
+        assert_eq!(stop_all(c.raw()), 0);
+        host.answer(PermissionState::Granted);
+        for _ in 0..20 {
+            unsafe { pump_locked(&c) };
+        }
+        assert_eq!(fake::open_devices(c.raw()), 0, "the answer opened no device for a page that is gone");
+        ok(&c, "__out === '<pending>'");
+        permissions::set_thread_host(None);
     }
 }
 

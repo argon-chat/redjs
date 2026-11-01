@@ -11,9 +11,12 @@
 //
 // WHAT DIFFERS FROM A BROWSER, ON PURPOSE
 //
-//  * No prompt. Whether a microphone opens is the host's capture gate (see the
-//    header of mediastream.rs); a closed gate is a `NotAllowedError`, which is
-//    what a page already handles for "the user said no".
+//  * The prompt is the host's. Whether a microphone opens, and whether the
+//    user is asked first, is the capture gate (see the header of
+//    mediastream.rs); `open` returns nothing while the host asks, and the
+//    answer arrives through `settle` like any open. A refusal is a
+//    `NotAllowedError` with Chrome's message ("Permission denied",
+//    "Permission dismissed", "Permission denied by system").
 //  * `echoCancellation`, `noiseSuppression` and `autoGainControl` are not
 //    performed: the track is the raw device signal. `getSettings()` says so
 //    (all three `false`), and asking for them logs one advisory.
