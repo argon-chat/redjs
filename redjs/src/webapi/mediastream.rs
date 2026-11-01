@@ -1031,12 +1031,44 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 }
 
 /// Stop every track a page in `g` holds, as unloading a document does: for
-/// an embedder that replaces the page without replacing the context.
-pub fn stop_all(g: *mut c_void) {
-    let ids: Vec<u64> = held().lock().unwrap().values().filter(|t| t.owner == g as usize).map(|t| t.id).collect();
-    for id in ids {
+/// an embedder that replaces the page without replacing the context. A
+/// microphone with no live track left is released. No `ended` fires: the
+/// document that would hear it is gone. A `getUserMedia` still opening is
+/// abandoned the way a closing context abandons it (its thread releases the
+/// device it gets), so the old page's promise never hands out a live track.
+/// Returns how many tracks were live.
+pub fn stop_all(g: *mut c_void) -> usize {
+    let owner = g as usize;
+    let unclaimed: Vec<u64> = {
+        let mut o = opens().lock().unwrap();
+        o.inflight.retain(|(o_, _)| *o_ != owner);
+        let mut mine = Vec::new();
+        o.done.retain(|(o_, _, r)| {
+            if *o_ != owner {
+                return true;
+            }
+            if let OpenResult::Ok(id) = r {
+                mine.push(*id);
+            }
+            false
+        });
+        mine
+    };
+    for id in unclaimed {
+        stop(id);
+        release(id);
+    }
+    let ids: Vec<u64> = held()
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|t| t.owner == g as usize && !t.ended())
+        .map(|t| t.id)
+        .collect();
+    for &id in &ids {
         stop(id);
     }
+    ids.len()
 }
 
 unsafe fn arg_bool(cf: *mut c_void, i: u32) -> bool {
@@ -1519,6 +1551,41 @@ mod jsc_tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(open, 0, "the last track stopped: the device closes");
+    }
+
+    #[test]
+    fn unloading_the_page_stops_its_tracks_and_closes_the_device() {
+        // `location.reload()` in one realm: the old page's capture ends
+        // without an `ended` event and the device is released.
+        let c = ctx();
+        fake::enable(c.raw());
+        assert_eq!(
+            run(
+                &c,
+                "const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
+                 globalThis.__t = ms.getAudioTracks()[0];
+                 globalThis.__c = __t.clone();
+                 globalThis.__ended = 0; __t.onended = () => __ended++;
+                 return __t.readyState;"
+            ),
+            "live"
+        );
+        assert_eq!(fake::open_devices(c.raw()), 1);
+        assert_eq!(stop_all(c.raw()), 2, "both live tracks are stopped");
+        let mut open = 1;
+        for _ in 0..100 {
+            open = fake::open_devices(c.raw());
+            if open == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(open, 0, "the device closes with the page");
+        unsafe { pump_locked(&c) };
+        // No `ended` reaches the old page (its JS objects are orphaned by the
+        // reload; their cached readyState is not what this is about).
+        ok(&c, "__ended === 0");
+        assert_eq!(stop_all(c.raw()), 0, "nothing is left to stop");
     }
 
     #[test]

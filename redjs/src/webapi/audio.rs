@@ -1156,6 +1156,26 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     }
 }
 
+/// Close every `AudioContext` the page in `g` has open, as unloading a
+/// document does: for an embedder that replaces the page without replacing
+/// the context (`location.reload()` in one realm). Each one's output stream
+/// stops and its `state` reads `"closed"`, exactly as after `close()`. A
+/// looping source of the old page — a ringtone — stops with it. Returns how
+/// many were open.
+pub fn close_all(g: *mut c_void) -> usize {
+    let mut gl = glob().lock().unwrap();
+    let mut n = 0;
+    for eng in gl.engines.values_mut().filter(|e| e.g == g as usize && e.state != ST_CLOSED) {
+        if eng.fw.is_audio_stream_running() {
+            eng.fw.stop_stream();
+        }
+        eng.running = false;
+        eng.state = ST_CLOSED;
+        n += 1;
+    }
+    n
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -4763,6 +4783,20 @@ mod jsc_tests {
             "{ const a = new AudioContext(); const o = a.createOscillator();
                o.start(0, -1); o.stop(); a.close(); true }",
         );
+    }
+
+    #[test]
+    fn unloading_the_page_closes_its_contexts() {
+        // `location.reload()` in one realm: the old page's AudioContexts
+        // close (a looping ringtone stops with them), already-closed ones are
+        // not counted, and the page that comes next starts its own.
+        let c = ctx();
+        s(&c, "globalThis.__a = new AudioContext(); globalThis.__b = new AudioContext();
+               globalThis.__z = new AudioContext(); __z.close(); 0");
+        assert_eq!(super::close_all(c.raw()), 2);
+        ok(&c, "__a.state === 'closed' && __b.state === 'closed'");
+        assert_eq!(super::close_all(c.raw()), 0);
+        ok(&c, "{ const n = new AudioContext(); const r = n.state !== 'closed'; n.close(); r }");
     }
 
     #[test]
