@@ -67,10 +67,14 @@
 //! - Audio only. `getUserMedia({ video })` rejects with `NotSupportedError`.
 //! - The device opens in its own shared-mode format, usually 48 kHz at its
 //!   own channel count. `sampleRate`, `channelCount`, `sampleSize` and
-//!   `latency` constraints are read but not applied. No processing runs on
-//!   the capture path: `echoCancellation`, `noiseSuppression` and
-//!   `autoGainControl` are recorded as asked ([`Settings`]), `getSettings()`
-//!   reports all three `false`, and asking for one logs an advisory.
+//!   `latency` constraints are read but not applied.
+//! - `echoCancellation`, `noiseSuppression` and `autoGainControl` default as
+//!   in Chrome (on unless a constraint turns them off) and run on the capture
+//!   side, before any consumer, but only through the embedder's processing
+//!   ([`set_capture_processing`]): this runtime has none of its own. The echo
+//!   canceller's far end is what the page's `AudioContext`s play
+//!   (`audio::set_render_reference`). `getSettings()` reports what runs; a
+//!   processed track is mono at the device's rate.
 //! - The tracks are not transferable, and `MediaStreamTrack` has no `stats`.
 
 use core::ffi::c_void;
@@ -280,12 +284,136 @@ pub enum SourceKind {
     Graph,
 }
 
-/// What `getSettings()` reports beyond the format, fixed at open.
-#[derive(Clone, Debug, Default)]
+/// The three processing switches of an audio track. In an [`AudioRequest`],
+/// what the page asked for (Chrome's defaults applied: each is on unless the
+/// constraints turn it off). On a source, what is in effect, which
+/// `getSettings()` reports.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub echo_cancellation: bool,
     pub noise_suppression: bool,
     pub auto_gain_control: bool,
+}
+
+impl Settings {
+    pub fn any(&self) -> bool {
+        self.echo_cancellation || self.noise_suppression || self.auto_gain_control
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Processing (the embedder's)
+// ---------------------------------------------------------------------------
+
+/// Echo cancellation, noise suppression and gain control on a microphone, as
+/// a browser runs them on the capture side, so every consumer of the track
+/// (a Web Audio graph, a published call track) hears the processed signal.
+/// This runtime has none of its own: the embedder installs one
+/// ([`set_capture_processing`]).
+pub trait CaptureProcessor: Send {
+    /// One 10 ms block, mono, at the rate the processor was made for,
+    /// processed in place. Runs on the capture thread.
+    fn process(&mut self, block: &mut [f32]);
+}
+
+/// What a processor is asked to do for one microphone.
+#[derive(Clone, Debug)]
+pub struct ProcessingRequest {
+    /// The context whose page opened it.
+    pub owner: usize,
+    /// The device's rate; blocks are `rate / 100` samples.
+    pub rate: u32,
+    /// What the page asked for, Chrome's defaults applied.
+    pub wanted: Settings,
+}
+
+/// Makes the processor for one open, or `None` for the raw signal. The
+/// [`Settings`] it returns are what it does, and what `getSettings()` says.
+pub type ProcessorFactory = fn(&ProcessingRequest) -> Option<(Box<dyn CaptureProcessor>, Settings)>;
+
+static PROCESSING: OnceLock<ProcessorFactory> = OnceLock::new();
+
+/// Install the embedder's capture processing, once per process, before the
+/// first `getUserMedia`. Without it a microphone is the raw device signal and
+/// `getSettings()` reports all three switches off.
+pub fn set_capture_processing(f: ProcessorFactory) {
+    let _ = PROCESSING.set(f);
+}
+
+/// Whether an embedder installed processing (`getCapabilities()` offers the
+/// switches only then).
+pub fn capture_processing_available() -> bool {
+    PROCESSING.get().is_some()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's factory, for the opens it starts on its own thread.
+    static TEST_PROCESSING: std::cell::Cell<Option<ProcessorFactory>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run on the thread that starts an open: the processor, and the settings
+/// in effect (all off for the raw signal).
+fn processing_for(owner: usize, rate: u32, wanted: &Settings) -> (Option<Chunker>, Settings) {
+    #[cfg(test)]
+    let factory = TEST_PROCESSING.with(|t| t.get()).or_else(|| PROCESSING.get().copied());
+    #[cfg(not(test))]
+    let factory = PROCESSING.get().copied();
+    let Some(factory) = factory.filter(|_| wanted.any()) else { return (None, Settings::default()) };
+    match factory(&ProcessingRequest { owner, rate, wanted: wanted.clone() }) {
+        Some((p, s)) => (Some(Chunker::new(p, rate)), s),
+        None => (None, Settings::default()),
+    }
+}
+
+/// Cuts a device's blocks (any length, any channel count) into the 10 ms
+/// mono blocks a processor takes, and hands each one on processed. The
+/// down-mix is the average of the channels, as Chrome's processed track is
+/// mono.
+pub(crate) struct Chunker {
+    proc: Box<dyn CaptureProcessor>,
+    block: usize,
+    pending: Vec<f32>,
+}
+
+impl Chunker {
+    fn new(proc: Box<dyn CaptureProcessor>, rate: u32) -> Chunker {
+        let block = (rate as usize / 100).max(1);
+        Chunker { proc, block, pending: Vec::with_capacity(block * 8) }
+    }
+
+    fn feed(&mut self, data: &[f32], channels: usize, mut out: impl FnMut(&[f32])) {
+        let channels = channels.max(1);
+        let scale = 1.0 / channels as f32;
+        self.pending.extend(data.chunks_exact(channels).map(|f| f.iter().sum::<f32>() * scale));
+        let mut at = 0;
+        while self.pending.len() - at >= self.block {
+            let b = &mut self.pending[at..at + self.block];
+            self.proc.process(b);
+            out(b);
+            at += self.block;
+        }
+        self.pending.drain(..at);
+    }
+}
+
+/// What a capture thread hands its blocks to: the source, through the
+/// processing when there is some.
+struct Feeder {
+    source: Weak<Source>,
+    chunker: Option<Chunker>,
+    channels: usize,
+    rate: u32,
+}
+
+impl Feeder {
+    fn push(&mut self, data: &[f32]) {
+        let Some(s) = self.source.upgrade() else { return };
+        match &mut self.chunker {
+            Some(c) => c.feed(data, self.channels, |b| s.deliver(b, 1, self.rate)),
+            None => s.deliver(data, self.channels, self.rate),
+        }
+    }
 }
 
 pub struct Source {
@@ -685,6 +813,7 @@ pub struct AudioRequest {
     /// `deviceId: { exact }`: a missing device is an `OverconstrainedError`
     /// rather than the default.
     pub exact: bool,
+    /// The processing the page wants, Chrome's defaults applied.
     pub settings: Settings,
 }
 
@@ -935,8 +1064,11 @@ mod capture {
         let config = supported.config();
         let channels = config.channels as usize;
         let rate = config.sample_rate;
-        let source =
-            Source::new(SourceKind::Microphone { device_id }, label, channels as u32, rate, req.settings.clone());
+        let (chunker, settings) = processing_for(owner, rate, &req.settings);
+        // A processed track is mono, as Chrome's is.
+        let track_channels = if chunker.is_some() { 1 } else { channels as u32 };
+        let source = Source::new(SourceKind::Microphone { device_id }, label, track_channels, rate, settings);
+        let mut feeder = Feeder { source: Arc::downgrade(&source), chunker, channels, rate };
 
         let failed = Arc::downgrade(&source);
         let on_error = move |e: cpal::StreamError| {
@@ -947,15 +1079,10 @@ mod capture {
                 }
             }
         };
-        let weak = Arc::downgrade(&source);
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => device.build_input_stream(
                 &config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Some(s) = weak.upgrade() {
-                        s.deliver(data, channels, rate);
-                    }
-                },
+                move |data: &[f32], _: &cpal::InputCallbackInfo| feeder.push(data),
                 on_error,
                 None,
             ),
@@ -966,9 +1093,7 @@ mod capture {
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         buf.clear();
                         buf.extend(data.iter().map(|&v| v as f32 / 32768.0));
-                        if let Some(s) = weak.upgrade() {
-                            s.deliver(&buf, channels, rate);
-                        }
+                        feeder.push(&buf);
                     },
                     on_error,
                     None,
@@ -981,9 +1106,7 @@ mod capture {
                     move |data: &[i32], _: &cpal::InputCallbackInfo| {
                         buf.clear();
                         buf.extend(data.iter().map(|&v| v as f32 / 2_147_483_648.0));
-                        if let Some(s) = weak.upgrade() {
-                            s.deliver(&buf, channels, rate);
-                        }
+                        feeder.push(&buf);
                     },
                     on_error,
                     None,
@@ -996,9 +1119,7 @@ mod capture {
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         buf.clear();
                         buf.extend(data.iter().map(|&v| (v as f32 - 32768.0) / 32768.0));
-                        if let Some(s) = weak.upgrade() {
-                            s.deliver(&buf, channels, rate);
-                        }
+                        feeder.push(&buf);
                     },
                     on_error,
                     None,
@@ -1084,13 +1205,11 @@ pub(crate) mod fake {
             return;
         }
         let device_id = if req.device_id.as_deref() == Some(DEVICE_ID) { DEVICE_ID } else { "default" };
-        let source = Source::new(
-            SourceKind::Microphone { device_id: device_id.into() },
-            LABEL.into(),
-            1,
-            48_000,
-            req.settings.clone(),
-        );
+        // Processed like a device, so an automated run covers the processing.
+        let (chunker, settings) = processing_for(owner, 48_000, &req.settings);
+        let source =
+            Source::new(SourceKind::Microphone { device_id: device_id.into() }, LABEL.into(), 1, 48_000, settings);
+        let mut feeder = Feeder { source: Arc::downgrade(&source), chunker, channels: 1, rate: 48_000 };
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         source.set_stop(tx);
         let id = new_track(&source, owner);
@@ -1108,8 +1227,9 @@ pub(crate) mod fake {
                     // precision within hours, and the tone with it.
                     phase = (phase + TAU * 440.0 / 48_000.0) % TAU;
                 }
-                source.deliver(&block, 1, 48_000);
+                feeder.push(&block);
             }
+            drop(source);
             *open_count().lock().unwrap().entry(owner).or_default() -= 1;
         });
         if spawned.is_err() {
@@ -1318,7 +1438,8 @@ unsafe extern "sysv64" fn n_set_enabled(g: *mut c_void, cf: *mut c_void) -> u64 
 }
 
 /// `info(handle)` → `{ id, kind, label, deviceId, channelCount, sampleRate,
-/// echoCancellation, noiseSuppression, autoGainControl, ended }`, or `null`.
+/// echoCancellation, noiseSuppression, autoGainControl, canProcess, ended }`,
+/// or `null`. The three switches are what runs, not what was asked.
 unsafe extern "sysv64" fn n_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(t) = handle_id(g, cf_arg(cf, 0)).and_then(track) else { return NULL };
     let o = new_object(g, UNDEF);
@@ -1336,6 +1457,7 @@ unsafe extern "sysv64" fn n_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     define(g, o, "echoCancellation", enc_bool(s.echo_cancellation), 0);
     define(g, o, "noiseSuppression", enc_bool(s.noise_suppression), 0);
     define(g, o, "autoGainControl", enc_bool(s.auto_gain_control), 0);
+    define(g, o, "canProcess", enc_bool(can_process()), 0);
     define(g, o, "ended", enc_bool(t.ended()), 0);
     o
 }
@@ -1354,6 +1476,20 @@ unsafe extern "sysv64" fn n_advise(g: *mut c_void, cf: *mut c_void) -> u64 {
         advise_once(&text);
     }
     UNDEF
+}
+
+/// [`capture_processing_available`], or a test's own factory.
+fn can_process() -> bool {
+    #[cfg(test)]
+    if TEST_PROCESSING.with(|t| t.get()).is_some() {
+        return true;
+    }
+    capture_processing_available()
+}
+
+/// `canProcess()`: [`can_process`].
+unsafe extern "sysv64" fn n_can_process(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+    enc_bool(can_process())
 }
 
 /// Deliver finished opens and self-ended tracks, after starting the opens a
@@ -1410,6 +1546,7 @@ pub unsafe fn install(g: *mut c_void) {
         ("setEnabled", 2, n_set_enabled),
         ("info", 1, n_info),
         ("advise", 1, n_advise),
+        ("canProcess", 0, n_can_process),
         ("sourceNode", 3, super::audio::ms_source_node),
         ("destNode", 3, super::audio::ms_dest_node),
     ];
@@ -1591,6 +1728,43 @@ mod tests {
         assert!(drain_opened(owner).is_empty());
         assert!(track(id).is_none(), "the abandoned track is stopped and let go");
     }
+
+    /// Doubles its block and counts the blocks it saw.
+    struct Doubler(Arc<Mutex<Vec<usize>>>);
+
+    impl CaptureProcessor for Doubler {
+        fn process(&mut self, block: &mut [f32]) {
+            self.0.lock().unwrap().push(block.len());
+            for v in block.iter_mut() {
+                *v *= 2.0;
+            }
+        }
+    }
+
+    #[test]
+    fn processing_takes_10ms_mono_blocks_whatever_the_device_hands_over() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut c = Chunker::new(Box::new(Doubler(seen.clone())), 48_000);
+        let mut out: Vec<f32> = Vec::new();
+        // 7 ms of stereo at a time: (0.25, 0.75) averages to 0.5.
+        let block: Vec<f32> = [0.25f32, 0.75].repeat(336);
+        for _ in 0..3 {
+            c.feed(&block, 2, |b| out.extend_from_slice(b));
+        }
+        // 21 ms in: two whole blocks out, 1 ms waiting for the next.
+        assert_eq!(*seen.lock().unwrap(), vec![480, 480]);
+        assert_eq!(out.len(), 960);
+        assert!(out.iter().all(|&v| (v - 1.0).abs() < 1e-6), "averaged, then processed");
+        c.feed(&block, 2, |b| out.extend_from_slice(b));
+        assert_eq!(*seen.lock().unwrap(), vec![480, 480], "28 ms: still two");
+        c.feed(&block, 2, |b| out.extend_from_slice(b));
+        assert_eq!(seen.lock().unwrap().len(), 3, "35 ms: the third");
+        // 44.1 kHz cuts at 441.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut c = Chunker::new(Box::new(Doubler(seen.clone())), 44_100);
+        c.feed(&vec![0.1f32; 900], 1, |_| {});
+        assert_eq!(*seen.lock().unwrap(), vec![441, 441]);
+    }
 }
 
 /// The JS surface, over the fake input: no test here opens a device.
@@ -1722,6 +1896,63 @@ mod jsc_tests {
             ),
             "audio|Fake Microphone|live|true|false|48000|1|default|false|true"
         );
+    }
+
+    static PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    struct Counting;
+
+    impl CaptureProcessor for Counting {
+        fn process(&mut self, block: &mut [f32]) {
+            assert_eq!(block.len(), 480);
+            PROCESSED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Runs echo cancellation and noise suppression, never gain control, so
+    /// `getSettings()` has to report what runs rather than what was asked.
+    fn no_agc(req: &ProcessingRequest) -> Option<(Box<dyn CaptureProcessor>, Settings)> {
+        assert_eq!(req.rate, 48_000);
+        let s = Settings { auto_gain_control: false, ..req.wanted.clone() };
+        Some((Box::new(Counting), s))
+    }
+
+    #[test]
+    fn processing_defaults_on_as_in_chrome_and_get_settings_reports_what_runs() {
+        let c = ctx();
+        fake::enable(c.raw());
+        TEST_PROCESSING.with(|t| t.set(Some(no_agc)));
+        let settings = |audio: &str| {
+            let out = run(
+                &c,
+                &format!(
+                    "const ms = await navigator.mediaDevices.getUserMedia({{ audio: {audio} }});
+                     const t = globalThis.__t = ms.getAudioTracks()[0];
+                     const st = t.getSettings(), cap = t.getCapabilities();
+                     return [st.echoCancellation, st.noiseSuppression, st.autoGainControl, st.channelCount,
+                             cap.echoCancellation.join('/')].join('|');"
+                ),
+            );
+            // A few of the fake's 10 ms blocks.
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            s(&c, "globalThis.__t && globalThis.__t.stop(), 0");
+            out
+        };
+        let before = PROCESSED.load(Ordering::Relaxed);
+        assert_eq!(settings("true"), "true|true|false|1|true/false", "audio: true is all three asked");
+        assert!(PROCESSED.load(Ordering::Relaxed) > before, "the fake microphone ran through the processor");
+        assert_eq!(settings("{}"), "true|true|false|1|true/false", "unset means on");
+        assert_eq!(
+            settings("{ echoCancellation: false, noiseSuppression: { ideal: false } }"),
+            "false|false|false|1|true/false",
+            "AGC alone was asked, and this processor does not do it"
+        );
+        assert_eq!(
+            settings("{ echoCancellation: { exact: false }, noiseSuppression: false, autoGainControl: false }"),
+            "false|false|false|1|true/false",
+            "nothing asked: no processor"
+        );
+        TEST_PROCESSING.with(|t| t.set(None));
     }
 
     #[test]

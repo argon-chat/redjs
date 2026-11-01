@@ -17,9 +17,12 @@
 //    answer arrives through `settle` like any open. A refusal is a
 //    `NotAllowedError` with Chrome's message ("Permission denied",
 //    "Permission dismissed", "Permission denied by system").
-//  * `echoCancellation`, `noiseSuppression` and `autoGainControl` are not
-//    performed: the track is the raw device signal. `getSettings()` says so
-//    (all three `false`), and asking for them logs one advisory.
+//  * `echoCancellation`, `noiseSuppression` and `autoGainControl` default as
+//    in Chrome: each is on unless the constraints turn it off. They run only
+//    when the embedder installed capture processing (mediastream.rs,
+//    "Processing"). `getSettings()` reports what is in effect, so without it
+//    all three are `false`, and asking for one explicitly logs an advisory.
+//    A processed track is mono.
 //  * Video is refused with `NotSupportedError`.
 //  * `applyConstraints()` records the constraints and changes nothing.
 (function (g, N) {
@@ -196,10 +199,10 @@
         sampleSize: 16,
         channelCount: info.channelCount,
         latency: 0.01,
-        // The raw device signal: none of the three runs (see the header).
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
+        // What runs on the capture side (see the header).
+        echoCancellation: info.echoCancellation,
+        noiseSuppression: info.noiseSuppression,
+        autoGainControl: info.autoGainControl,
       };
     }
     getConstraints() {
@@ -216,9 +219,9 @@
         sampleSize: { min: 16, max: 16 },
         channelCount: { min: 1, max: info.channelCount },
         latency: { min: 0.01, max: 0.01 },
-        echoCancellation: [false],
-        noiseSuppression: [false],
-        autoGainControl: [false],
+        echoCancellation: info.canProcess ? [true, false] : [false],
+        noiseSuppression: info.canProcess ? [true, false] : [false],
+        autoGainControl: info.canProcess ? [true, false] : [false],
       };
     }
     applyConstraints(constraints) {
@@ -353,6 +356,17 @@
     return false;
   }
 
+  // Chrome's default for the three processing switches: on, unless the
+  // constraint says `false` (bare, `exact` or `ideal`).
+  function wanted(v) {
+    if (typeof v === "boolean") return v;
+    if (v && typeof v === "object") {
+      if (typeof v.exact === "boolean") return v.exact;
+      if (typeof v.ideal === "boolean") return v.ideal;
+    }
+    return true;
+  }
+
   var pending = new Map();
   var nextToken = 1;
 
@@ -375,10 +389,13 @@
           return;
         }
         var ac = c.audio === true ? {} : c.audio;
-        if (asked(ac.echoCancellation) || asked(ac.noiseSuppression) || asked(ac.autoGainControl)) {
+        if (
+          !N.canProcess() &&
+          (asked(ac.echoCancellation) || asked(ac.noiseSuppression) || asked(ac.autoGainControl))
+        ) {
           N.advise(
             "getUserMedia: echoCancellation / noiseSuppression / autoGainControl were requested, but this " +
-              "runtime captures the raw device signal and performs none of them (getSettings() reports false)."
+              "host has no capture processing, so the track is the raw device signal (getSettings() reports false)."
           );
         }
         var dev = readDevice(ac.deviceId);
@@ -387,9 +404,9 @@
           token,
           dev.id,
           dev.exact,
-          asked(ac.echoCancellation),
-          asked(ac.noiseSuppression),
-          asked(ac.autoGainControl)
+          wanted(ac.echoCancellation),
+          wanted(ac.noiseSuppression),
+          wanted(ac.autoGainControl)
         );
         if (refused) {
           reject(failure(refused[0], refused[1]));

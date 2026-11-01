@@ -287,10 +287,17 @@ unsafe extern "sysv64" fn input_get_capabilities(g: *mut c_void, cf: *mut c_void
     range("sampleSize", 16.0, 16.0);
     range("channelCount", 1.0, channels as f64);
     range("latency", 0.01, 0.01);
-    // The capture does no processing of its own (see mediastream.js).
+    // Each switch can be on only when the embedder installed processing
+    // (mediastream.rs, "Processing"); Chrome lists `[true, false]`.
+    let can = super::mediastream::capture_processing_available();
     for name in ["echoCancellation", "noiseSuppression", "autoGainControl"] {
         let a = new_array(g);
-        set_i(g, a, 0, FALSE);
+        if can {
+            set_i(g, a, 0, TRUE);
+            set_i(g, a, 1, FALSE);
+        } else {
+            set_i(g, a, 0, FALSE);
+        }
         define(g, out, name, a, 0);
     }
     out

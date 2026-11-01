@@ -488,6 +488,98 @@ impl firewheel::node::AudioNodeProcessor for MonitorProcessor {
 }
 
 // ---------------------------------------------------------------------------
+// The render reference: what an AudioContext plays, for an echo canceller.
+// ---------------------------------------------------------------------------
+//
+// An echo canceller on the microphone (mediastream.rs, "Processing") has to
+// know what the speakers play. Here that is the destination of every
+// AudioContext: when the embedder installs a reference sink, each context
+// built after that gets a sink node beside its graph output, fed by the same
+// master volume, which hands every block it renders to the embedder with the
+// context's key. A context built before then has no tap.
+
+/// Receives `(context key, interleaved block, channels, sample rate)` on the
+/// context's audio thread, once per rendered block. It must not block.
+pub type RenderReference = fn(u64, &[f32], usize, u32);
+
+static RENDER_REFERENCE: OnceLock<RenderReference> = OnceLock::new();
+static NEXT_REFERENCE_KEY: AtomicU64 = AtomicU64::new(1);
+
+/// Install the embedder's render reference, once per process, before the
+/// page builds its `AudioContext`s.
+pub fn set_render_reference(f: RenderReference) {
+    let _ = RENDER_REFERENCE.set(f);
+}
+
+#[derive(Clone)]
+struct RefTapNode {
+    key: u64,
+    sink: RenderReference,
+}
+
+impl firewheel::node::AudioNode for RefTapNode {
+    type Configuration = firewheel::node::EmptyConfig;
+
+    fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
+        firewheel::node::AudioNodeInfo::new().debug_name("render_reference").channel_config(
+            firewheel::channel_config::ChannelConfig {
+                num_inputs: firewheel::channel_config::ChannelCount::STEREO,
+                num_outputs: firewheel::channel_config::ChannelCount::ZERO,
+            },
+        )
+    }
+
+    fn construct_processor(
+        &self,
+        _config: &Self::Configuration,
+        cx: firewheel::node::ConstructProcessorContext,
+    ) -> impl firewheel::node::AudioNodeProcessor {
+        RefTapProcessor {
+            key: self.key,
+            sink: self.sink,
+            scratch: vec![0.0; cx.stream_info.max_block_frames.get() as usize * 2],
+            rate: cx.stream_info.sample_rate.get(),
+        }
+    }
+}
+
+struct RefTapProcessor {
+    key: u64,
+    sink: RenderReference,
+    scratch: Vec<f32>,
+    rate: u32,
+}
+
+impl firewheel::node::AudioNodeProcessor for RefTapProcessor {
+    fn process(
+        &mut self,
+        info: &firewheel::node::ProcInfo,
+        buffers: firewheel::node::ProcBuffers,
+        _events: &mut firewheel::event::ProcEvents,
+        _extra: &mut firewheel::node::ProcExtra,
+    ) -> firewheel::node::ProcessStatus {
+        let frames = info.frames.min(self.scratch.len() / 2);
+        for ch in 0..2 {
+            let silent = info.in_silence_mask.is_channel_silent(ch);
+            let input = buffers.inputs.get(ch);
+            for i in 0..frames {
+                self.scratch[2 * i + ch] = match input {
+                    Some(buf) if !silent => buf[i],
+                    _ => 0.0,
+                };
+            }
+        }
+        (self.sink)(self.key, &self.scratch[..frames * 2], 2, self.rate);
+        firewheel::node::ProcessStatus::ClearAllOutputs
+    }
+
+    fn new_stream(&mut self, stream_info: &firewheel::StreamInfo, _context: &mut firewheel::node::ProcStreamCtx) {
+        self.rate = stream_info.sample_rate.get();
+        self.scratch.resize(stream_info.max_block_frames.get() as usize * 2, 0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MediaStreamAudioDestinationNode backing: a sink that hands every block to a
 // track (webapi/mediastream.rs).
 // ---------------------------------------------------------------------------
@@ -2786,6 +2878,12 @@ unsafe extern "sysv64" fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 
     let master = fw.add_node(VolumeNode::default(), None);
     let out = fw.graph_out_node_id();
     let _ = fw.connect(master, out, STEREO_PORTS, true);
+    if let Some(&sink) = RENDER_REFERENCE.get() {
+        // What the speakers play, for the microphone's echo canceller.
+        let key = NEXT_REFERENCE_KEY.fetch_add(1, Ordering::Relaxed);
+        let tap = fw.add_node(RefTapNode { key, sink }, None);
+        let _ = fw.connect(master, tap, STEREO_PORTS, true);
+    }
     let running = match fw.start_stream(firewheel::cpal::CpalConfig::default()) {
         Ok(()) => true,
         Err(e) => {
