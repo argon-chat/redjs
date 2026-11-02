@@ -331,13 +331,17 @@ struct Timeline {
     evs: Vec<Tl>,
     /// Param value at the moment the first event was scheduled.
     start_v: f64,
+    /// Context time at that moment. A ramp with no event before it starts
+    /// here, from `start_v`: the spec treats it as if `setValueAtTime(value,
+    /// currentTime)` had been called first.
+    start_t: f64,
 }
 
 impl Timeline {
     /// (value at `now`, finished)
     fn eval(&self, now: f64) -> (f64, bool) {
         let mut cur = self.start_v;
-        let mut cur_t = f64::NEG_INFINITY;
+        let mut cur_t = self.start_t;
         for (i, ev) in self.evs.iter().enumerate() {
             match *ev {
                 Tl::Set { t, v } => {
@@ -952,6 +956,9 @@ struct NodeRec {
     /// PannerNode distance attenuation: model + [refDistance, maxDistance, rolloffFactor].
     dist_model: DistModel,
     dist: [f32; 3],
+    /// GainNode `gain` as the page set it. Its VolumeNode carries the
+    /// magnitude through [`gain_volume`].
+    gain: f32,
     // -- sampler bookkeeping --
     buffer: Option<Arc<PlanarBuffer>>,
     /// `loop` / `loopStart` / `loopEnd`, shared with the playing [`SourceSample`].
@@ -992,6 +999,7 @@ impl NodeRec {
             cone: [360.0, 360.0, 0.0],
             dist_model: DistModel::Inverse,
             dist: [1.0, 10_000.0, 1.0], // Web Audio defaults: ref, max, rolloff
+            gain: 1.0,
             buffer: None,
             src: Arc::new(SourceCtl::default()),
             started: false,
@@ -1423,6 +1431,25 @@ fn update_spatial(eng: &mut Engine, rec: &mut NodeRec) {
 }
 
 /// Route a param write to the owning Firewheel node.
+/// GainNode `gain`, an amplitude as in the spec, as firewheel's `Volume`.
+/// `Volume::Linear` is a slider position that firewheel squares into an
+/// amplitude, so it is given the square root. Before this, every gain other
+/// than 0 and 1 played squared: 0.5 at 0.25 (−12 dB for −6), the Argon
+/// dialpad's 0.075 at 0.0056 (−45 dB for −22.5). A negative gain plays at its
+/// magnitude, since a VolumeNode cannot invert the phase (advisory, once).
+fn gain_volume(v: f32) -> Volume {
+    if v < 0.0 {
+        static ONCE: OnceLock<()> = OnceLock::new();
+        ONCE.get_or_init(|| {
+            eprintln!(
+                "[audio] advisory: a GainNode was given a negative gain. It plays at the gain's \
+                 magnitude here, without the phase inversion a browser applies."
+            );
+        });
+    }
+    Volume::Linear(v.abs().sqrt())
+}
+
 fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRec>, handle: u64, kind: u8, v: f64) {
     if kind >= P_L_POS_X {
         let Some(eng) = engines.get_mut(&handle) else { return };
@@ -1444,7 +1471,8 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
         match (&mut rec.params, kind) {
             (Params::Gain(p), P_GAIN) => {
                 let old = *p;
-                p.volume = Volume::Linear(v as f32);
+                rec.gain = v as f32;
+                p.volume = gain_volume(rec.gain);
                 queue_diff(&mut eng.fw, rec.id, &old, p);
             }
             (Params::Pan(p), P_PAN) => {
@@ -1624,6 +1652,74 @@ unsafe fn wrap_node(g: *mut c_void, proto: u64, handle: u64, params: &[(&str, u8
 
 unsafe fn slots_of(g: *mut c_void, obj: u64) -> u64 {
     get_a(g, obj, classes(g).s_audio)
+}
+
+/// Where a node's wrapper keeps the wrappers its outputs are connected to.
+const OUTS_SLOT: &str = "~outs";
+
+/// The spec's connection reference: a node that a live node is connected to
+/// is itself live, with or without a script reference. The Argon dialpad keeps
+/// only its oscillators. They are live while they play, but the panners, gain
+/// and filter after them were left to the collector. A collection mid-tone
+/// took them out of the graph and cut the tone short. Under fast presses that
+/// sounded like stutter, worse the busier the page was.
+///
+/// So `src`'s wrapper holds `dst`'s, in an array on its private slots, until
+/// the last connection between them is gone ([`release_downstream`]). A
+/// source's own playing reference (`redjs_protect` while it plays) then holds
+/// the whole chain after it. A chain whose source has ended and that nothing
+/// else holds is collected as one.
+unsafe fn hold_downstream(g: *mut c_void, src_obj: u64, dst_obj: u64) {
+    let slots = slots_of(g, src_obj);
+    if !is_cell(slots) {
+        return;
+    }
+    let mut held = get(g, slots, OUTS_SLOT);
+    if !is_cell(held) {
+        held = new_array(g);
+        define(g, slots, OUTS_SLOT, held, 0);
+    }
+    let n = array_len(g, held);
+    let mut free = None;
+    for i in 0..n {
+        let v = get_i(g, held, i);
+        if v == dst_obj {
+            return;
+        }
+        if free.is_none() && v == UNDEF {
+            free = Some(i);
+        }
+    }
+    set_i(g, held, free.unwrap_or(n), dst_obj);
+}
+
+/// Let go of every wrapper `src` holds that it is no longer connected to.
+/// A released slot is set to `undefined` and reused by the next connect, so
+/// the array never grows past the most destinations held at once.
+unsafe fn release_downstream(g: *mut c_void, src_obj: u64, src: u64) {
+    let slots = slots_of(g, src_obj);
+    if !is_cell(slots) {
+        return;
+    }
+    let held = get(g, slots, OUTS_SLOT);
+    if !is_cell(held) {
+        return;
+    }
+    let still: Vec<u64> = {
+        let gl = glob().lock().unwrap();
+        gl.nodes.get(&src).map(|r| r.outs.iter().map(|k| k.dst).collect()).unwrap_or_default()
+    };
+    let cls = classes(g).node_cls;
+    for i in 0..array_len(g, held) {
+        let v = get_i(g, held, i);
+        if v == UNDEF {
+            continue;
+        }
+        let kept = host_data::<NodeHandle>(g, cls, v).is_some_and(|h| still.contains(&h.0));
+        if !kept {
+            set_i(g, held, i, UNDEF);
+        }
+    }
 }
 
 /// Open the producer→processor channel of a `StreamWriterNode` and publish the
@@ -1885,6 +1981,7 @@ unsafe extern "sysv64" fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
             if let Some(channels) = wide {
                 advise_wide_output(channels);
             }
+            hold_downstream(g, cf_this(cf), dst_v);
             dst_v
         }
     }
@@ -2032,7 +2129,10 @@ unsafe extern "sysv64" fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u6
     };
     match refusal {
         Some(r) => throw_refusal(g, r),
-        None => UNDEF,
+        None => {
+            release_downstream(g, cf_this(cf), src);
+            UNDEF
+        }
     }
 }
 
@@ -2076,10 +2176,7 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
     }
     let Some(rec) = gl.nodes.get(&node) else { return fallback };
     match (&rec.params, kind) {
-        (Params::Gain(p), P_GAIN) => match p.volume {
-            Volume::Linear(v) => v as f64,
-            Volume::Decibels(d) => 10f64.powf(d as f64 / 20.0),
-        },
+        (Params::Gain(_), P_GAIN) => rec.gain as f64,
         (Params::Pan(p), P_PAN) => p.pan as f64,
         (Params::Svf(p), P_FREQ) => p.cutoff_hz as f64,
         (Params::Svf(p), P_Q) => p.q_factor as f64,
@@ -2126,12 +2223,25 @@ unsafe fn param_schedule(g: *mut c_void, cf: *mut c_void, mk: impl FnOnce(f64, f
     p.last = v;
     let (node, kind) = (p.node, p.kind);
     let mut gl = glob().lock().unwrap();
-    let cur = param_current(&gl, node, kind, v);
-    let tl = gl.timelines.entry((node, kind)).or_insert_with(|| Timeline { evs: Vec::new(), start_v: cur });
+    let gl = &mut *gl;
+    // The context's time: listener params key by engine handle.
+    let engine = if kind >= P_L_POS_X { Some(node) } else { gl.nodes.get(&node).map(|r| r.engine) };
+    let now = engine.and_then(|e| gl.engines.get(&e)).map(|e| e.now()).unwrap_or(0.0);
+    let cur = param_current(gl, node, kind, v);
+    let tl = gl.timelines.entry((node, kind)).or_insert_with(|| Timeline { evs: Vec::new(), start_v: cur, start_t: now });
     let ev = mk(v, t);
     // keep sorted by time (stable for equal timestamps)
     let at = tl.evs.partition_point(|e| e.time() <= ev.time());
     tl.evs.insert(at, ev);
+    // The value the timeline gives now, applied at once rather than at the
+    // next pump. Pages build a node, schedule its envelope and start its
+    // source in one task (`gain.setValueAtTime(0, now)`, a ramp up,
+    // `osc.start(now)`); applied a pump later, the node would play its first
+    // blocks at the parameter's default, which for a GainNode is a full-scale
+    // burst. Set now, the value ships with the node in the next graph update
+    // and its first block already has it.
+    let (value, _) = tl.eval(now);
+    set_param(&mut gl.engines, &mut gl.nodes, node, kind, value);
     this
 }
 
@@ -3928,13 +4038,15 @@ pub unsafe fn pump(g: *mut c_void) {
 
         let default_output = mediadevices::default_generation(mediadevices::Flow::Output);
         for eh in handles {
+            // The graph update that ships this frame's work comes LAST (below),
+            // after the timelines and the scheduled starts and stops. Values
+            // set here then reach the audio thread in this frame, together
+            // with any node created since the last one, rather than a frame
+            // after it. A node that is created, automated and started in one
+            // task must never play a block at its parameters' defaults.
             let now = {
                 let eng = engines.get_mut(&eh).unwrap();
                 follow_default_output(eng, default_output);
-                if let Err(e) = eng.fw.update() {
-                    // Always loud: a swallowed update error is silent audio.
-                    eprintln!("[audio] firewheel update error (engine {eh}): {e:?}");
-                }
                 eng.now()
             };
 
@@ -4036,6 +4148,13 @@ pub unsafe fn pump(g: *mut c_void) {
                         }
                     }
                 }
+            }
+
+            // Ship: graph changes since the last frame, and every value set
+            // above, in one go (see the top of this loop).
+            if let Err(e) = eng.fw.update() {
+                // Always loud: a swallowed update error is silent audio.
+                eprintln!("[audio] firewheel update error (engine {eh}): {e:?}");
             }
         }
     }
@@ -4518,6 +4637,134 @@ mod jsc_tests {
         );
         assert!(got.starts_with("ok:"), "{got}");
         eprintln!("[setSinkId] round-tripped {} real output device(s)", &got[3..]);
+    }
+
+    #[test]
+    fn an_envelope_scheduled_with_its_node_ships_with_it() {
+        // The Argon dialpad's tone, in one task: a gain built, its envelope
+        // scheduled from 0 at `now`, its sources started. The next graph
+        // update sends the node with the value stored here, so that value
+        // must already be the envelope's. It used to stay at the default 1
+        // until a pump evaluated the timeline, and the update after that
+        // delivered it: a frame or two of a full-scale dual tone per key.
+        let c = ctx();
+        s(
+            &c,
+            "globalThis.__d = new AudioContext(); const g = __d.createGain(); globalThis.__g = g; \
+             const now = __d.currentTime; g.gain.setValueAtTime(0, now); \
+             g.gain.linearRampToValueAtTime(0.075, now + 0.008); 'ok'",
+        );
+        // The amplitude the queued VolumeNode will apply.
+        let gains = || -> Vec<f32> {
+            let gl = super::glob().lock().unwrap();
+            gl.nodes
+                .values()
+                .filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize))
+                .filter_map(|r| match &r.params {
+                    super::Params::Gain(p) => Some(p.volume.amp()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let now = gains();
+        assert_eq!(now.len(), 1);
+        // 0 at `now`, at most the ramp's 0.075 if the clock ticked meanwhile.
+        assert!(now[0] <= 0.075 + 1e-6, "the gain ships at {}, not the envelope's value", now[0]);
+
+        // A value scheduled for later holds the current one until then.
+        s(&c, "__g.gain.setValueAtTime(0.5, __d.currentTime + 60); 'ok'");
+        assert!(gains()[0] <= 0.075 + 1e-6);
+        s(&c, "__d.close(); 'ok'");
+    }
+
+    #[test]
+    fn a_gain_is_an_amplitude() {
+        // firewheel squares `Volume::Linear`, so a gain of 0.5 used to play at
+        // 0.25. The page reads back exactly what it set, a negative gain
+        // included; the node applies the magnitude.
+        let c = ctx();
+        let got = s(
+            &c,
+            "globalThis.__d = new AudioContext(); \
+             [0.075, 0.5, 1, 2, -0.5].map(v => { const g = __d.createGain(); g.gain.value = v; \
+               return g.gain.value === Math.fround(v); }).join()",
+        );
+        assert_eq!(got, "true,true,true,true,true");
+        let mut amps: Vec<(f32, f32)> = {
+            let gl = super::glob().lock().unwrap();
+            gl.nodes
+                .values()
+                .filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize))
+                .filter_map(|r| match &r.params {
+                    super::Params::Gain(p) => Some((r.gain, p.volume.amp())),
+                    _ => None,
+                })
+                .collect()
+        };
+        amps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(amps.len(), 5);
+        for (set, amp) in amps {
+            assert!((amp - set.abs()).abs() <= 1e-6 * set.abs().max(1.0), "gain {set} plays at {amp}");
+        }
+        s(&c, "__d.close(); 'ok'");
+    }
+
+    #[test]
+    fn a_playing_source_keeps_the_nodes_after_it() {
+        // The dialpad's chain, kept by nothing but its playing oscillator:
+        // osc → panner → gain → filter → destination. Beside it, nodes no
+        // one holds or connects to, which a collection must take (they show
+        // the collection really ran), and a gain the oscillator was connected
+        // to and then disconnected from, which runs the release path (it is
+        // let go of, but a conservative collector may still keep it).
+        let c = ctx();
+        s(
+            &c,
+            "globalThis.__d = new AudioContext(); (() => { \
+               const o = __d.createOscillator(), p = __d.createStereoPanner(), \
+                     g = __d.createGain(), f = __d.createBiquadFilter(), gone = __d.createGain(); \
+               g.gain.value = 0; \
+               o.connect(p).connect(g).connect(f).connect(__d.destination); \
+               o.connect(gone); o.disconnect(gone); \
+               o.start(); \
+               for (let i = 0; i < 64; i++) __d.createGain(); \
+             })(); 'ok'",
+        );
+        // Nodes of this context, by kind: (panners, gains, filters).
+        let census = || -> (usize, usize, usize) {
+            let gl = super::glob().lock().unwrap();
+            let mine = gl.nodes.values().filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize));
+            let (mut p, mut g, mut f) = (0, 0, 0);
+            for r in mine {
+                match &r.params {
+                    super::Params::Pan(_) => p += 1,
+                    super::Params::Gain(_) => g += 1,
+                    super::Params::Svf(_) => f += 1,
+                    _ => {}
+                }
+            }
+            (p, g, f)
+        };
+        assert_eq!(census(), (1, 66, 1));
+        for _ in 0..4 {
+            c.gc();
+            unsafe { super::pump(c.raw()) };
+        }
+        let (p, g, f) = census();
+        // The collector is conservative, so a stray stack word may keep one
+        // of the loose gains; most of them must go.
+        assert!(g < 33, "the unreferenced gains were not collected ({g} left), so this proves nothing");
+        assert_eq!((p, f), (1, 1), "the panner or the filter after a playing oscillator was collected");
+        assert!(g >= 1, "the gain after a playing oscillator was collected");
+        let chain_gain = {
+            let gl = super::glob().lock().unwrap();
+            gl.nodes
+                .values()
+                .filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize))
+                .any(|r| matches!(&r.params, super::Params::Gain(_)) && r.gain == 0.0)
+        };
+        assert!(chain_gain, "the chain's own gain (set to 0) was collected");
+        s(&c, "__d.close(); 'ok'");
     }
 
     #[test]
@@ -5814,7 +6061,18 @@ mod timeline_tests {
     /// `Timeline::eval` is the whole of `AudioParam` automation, and it is pure
     /// arithmetic — so it is testable without a JS context or an audio device.
     fn tl(start: f64, evs: Vec<Tl>) -> Timeline {
-        Timeline { evs, start_v: start }
+        Timeline { evs, start_v: start, start_t: 0.0 }
+    }
+
+    #[test]
+    fn a_ramp_with_nothing_before_it_starts_when_it_was_scheduled() {
+        // Scheduled at t = 100 with the value at 1: a ramp to 0 over 1 s is
+        // halfway at 100.5. Measured from t = 0 instead, it was already at 0.005
+        // the moment it was scheduled, which is a jump, not a fade.
+        let t = Timeline { evs: vec![Tl::Lin { t: 101.0, v: 0.0 }], start_v: 1.0, start_t: 100.0 };
+        assert_eq!(t.eval(100.0), (1.0, false));
+        assert!((t.eval(100.5).0 - 0.5).abs() < 1e-9);
+        assert_eq!(t.eval(101.0), (0.0, true));
     }
 
     #[test]
