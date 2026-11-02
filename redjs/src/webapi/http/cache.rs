@@ -126,6 +126,13 @@
 //! moves that read to its blocking pool, so it never holds up the network
 //! thread.
 //!
+//! The owning instance reads only what its in-memory entry list holds. It
+//! wrote every entry there is, so a URL the list lacks is a miss without a
+//! file open. On the pooled transport it also skips the trip through the
+//! blocking pool: a first load's redirect continues at once, on the
+//! connection its first hop just freed, as it does with no cache. A
+//! read-only instance always looks, since the owner keeps writing.
+//!
 //! - **Index.** Rewritten every 30 s when something changed, and at
 //!   [`flush`]/[`uninstall`]. It holds only the LRU order: [`install`]
 //!   rebuilds the entry list from the folder itself, so a lost or stale index
@@ -402,11 +409,11 @@ pub(crate) enum Settled {
 /// those calls to its blocking pool; every other plan is instant. (The
 /// blocking transport is on a worker thread already and does not ask.)
 #[cfg_attr(not(feature = "net-h2"), allow(dead_code))]
-pub(crate) fn reads_disk(method: &str, headers: &[(String, String)], mode: CacheMode) -> bool {
+pub(crate) fn reads_disk(method: &str, url: &str, headers: &[(String, String)], mode: CacheMode) -> bool {
     method.eq_ignore_ascii_case("GET")
-        && installed()
         && !has(headers, "range")
         && !matches!(effective_mode(mode, headers), CacheMode::NoStore | CacheMode::Reload)
+        && current().is_some_and(|s| key_of(url).is_some_and(|k| s.may_have(hash_of(&k))))
 }
 
 /// Decides one hop. `headers` are the hop's request headers as they will be
@@ -1366,9 +1373,31 @@ impl Store {
         }
     }
 
+    /// Can there be an entry file for `h`? The owner's list is complete: it
+    /// was read from the folder at install, and every write, removal and
+    /// eviction since is this instance's own and updates it (a write after
+    /// its rename, a removal before its delete). A read-only instance cannot
+    /// know what the owner wrote since, so it always looks.
+    fn may_have(&self, h: Hash) -> bool {
+        !self.writable || self.index.lock().unwrap().map.contains_key(&h)
+    }
+
     /// One entry, if it is there, readable and for this key.
     fn read(&self, h: Hash, key: &str) -> Option<Entry> {
-        let bytes = fs::read(self.path(h)).ok()?;
+        if !self.may_have(h) {
+            return None;
+        }
+        let bytes = match fs::read(self.path(h)) {
+            Ok(b) => b,
+            Err(e) => {
+                // Deleted behind the cache's back: unlisted, so the next lookup
+                // does not open it again.
+                if self.writable && e.kind() == std::io::ErrorKind::NotFound {
+                    self.index.lock().unwrap().drop_entry(&h);
+                }
+                return None;
+            }
+        };
         match decode_file(&bytes, self.sealer.as_deref()) {
             Ok(e) if e.key == key => {
                 let mut ix = self.index.lock().unwrap();
@@ -1378,7 +1407,11 @@ impl Store {
                         m.used = used;
                         ix.dirty = true;
                     }
-                    None => ix.set(h, Meta { size: bytes.len() as u64, used }),
+                    // How a read-only instance learns of the owner's entries.
+                    None if !self.writable => ix.set(h, Meta { size: bytes.len() as u64, used }),
+                    // The owner evicted or removed it during the read: it stays
+                    // dropped, since its file is gone or going.
+                    None => {}
                 }
                 Some(e)
             }

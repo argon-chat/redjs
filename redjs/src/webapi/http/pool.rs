@@ -939,7 +939,7 @@ async fn run(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
         cancel.check()?;
         let hop = hops.next()?;
         // A lookup reads a file: on the blocking pool, never on this thread.
-        let planned = if cache::reads_disk(&hops.method, &hop.headers, req.cache) {
+        let planned = if cache::reads_disk(&hops.method, hop.url.as_str(), &hop.headers, req.cache) {
             let (m, u, h, mode) = (hops.method.clone(), hop.url.to_string(), hop.headers.clone(), req.cache);
             tokio::task::spawn_blocking(move || cache::plan(&m, &u, &h, mode))
                 .await

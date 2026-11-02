@@ -5,8 +5,8 @@
 //! not leak into the library's other network tests. One test at a time, for
 //! the same reason (`SERIAL`).
 //!
-//!   cargo test --release --no-default-features --features "net-h2 http-cache" --test http_cache
-//!   cargo test --release --no-default-features --features "http-cache" --test http_cache
+//!   cargo test --release --no-default-features --features net-h2 --test http_cache
+//!   cargo test --release --no-default-features --test http_cache
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -555,4 +555,42 @@ fn clear_empties_the_folder() {
         .collect();
     assert!(left.is_empty());
     assert_eq!(get(&srv.url("/c1")).cache, Outcome::Stored);
+}
+
+#[test]
+fn the_owner_opens_only_the_entries_it_lists() {
+    // The owner wrote every entry there is, so a URL its list lacks is a miss
+    // without a file open. Proof: an entry file copied in behind its back is
+    // not served, and one deleted behind its back is a plain miss.
+    let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let srv = serve(|_| reply("200 OK", &[("cache-control", "max-age=600")], b"listed"));
+    let donor = fresh_dir();
+    {
+        let c = Installed::at(donor.clone(), 64 * MB, None);
+        assert_eq!(get(&srv.url("/l")).cache, Outcome::Stored);
+        cache::uninstall();
+        std::mem::forget(c);
+    }
+    let c = Installed::new(64 * MB, None);
+    let entries = |dir: &PathBuf| -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "e"))
+            .collect()
+    };
+    for p in entries(&donor) {
+        std::fs::copy(&p, c.0.join(p.file_name().unwrap())).unwrap();
+    }
+    assert_eq!(get(&srv.url("/l")).cache, Outcome::Stored, "the unlisted file was not read");
+    assert_eq!(srv.count(), 2);
+    assert_eq!(get(&srv.url("/l")).cache, Outcome::Hit);
+    for p in entries(&c.0) {
+        std::fs::remove_file(p).unwrap();
+    }
+    assert_eq!(get(&srv.url("/l")).cache, Outcome::Stored);
+    assert_eq!(srv.count(), 3);
+    assert_eq!(cache::stats().unwrap().errors, 0, "a missing file is a miss, not damage");
+    let _ = std::fs::remove_dir_all(&donor);
 }
