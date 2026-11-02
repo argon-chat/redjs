@@ -16,14 +16,29 @@
 //! different path here than in a browser, and a rejected promise is the failure
 //! mode such code is already written to handle.
 //!
-//! # Divergence 1: `read()` and `write()` are text-only, and refuse
+//! # `ClipboardItem`, `read()` and `write()`
 //!
-//! The item-based half of the API (`ClipboardItem`, `image/png`, multiple
-//! representations) is not implemented in v1, and `ClipboardItem` is therefore
-//! **not defined at all** — so `typeof ClipboardItem === "undefined"` tells the
-//! truth and the feature detection every real image-paste implementation
-//! already does takes the right branch. `read()`/`write()` exist, reject with a
-//! `NotSupportedError`, and advise once, pointing at `readText`/`writeText`.
+//! The item-based half takes the three representations every browser writes —
+//! `text/plain`, `text/html` and `image/png` — when the backend does
+//! ([`ClipboardHost::item_types`]). As in Chrome:
+//!
+//! * one item per `write()` (more is a `NotAllowedError`, "Support for
+//!   multiple ClipboardItems is not implemented.");
+//! * a type the backend does not write — `image/svg+xml`, a `web ` custom
+//!   format — is a `NotAllowedError` naming it, so an app's fallback chain
+//!   (try the rich item, then a smaller one) takes the next step;
+//! * a value may be a Blob, a string or a promise of either, and every one
+//!   settles before anything is written: the clipboard changes all at once or
+//!   not at all;
+//! * `image/png` bytes that are not a PNG are a `DataError`.
+//!
+//! `read()` answers with one item holding what the backend found, each
+//! representation a Blob of its type; an empty clipboard is a `DataError`
+//! ("No valid data on clipboard."). A text-only backend still answers `read()`
+//! with its text.
+//!
+//! What the platform writes for an image (Chrome writes the PNG and a bitmap
+//! for the apps that only read bitmaps) is the backend's business.
 //!
 //! # Divergence 2: there is no user-gesture requirement and no focus check
 //!
@@ -86,7 +101,35 @@ pub trait ClipboardHost: Send + Sync {
 
     /// Replaces the clipboard's contents with `text`.
     fn write_text(&self, text: &str) -> Result<(), String>;
+
+    /// The MIME types [`Self::write_items`] takes, out of [`ITEM_TYPES`]. The
+    /// default is none — a text-only backend — and `write()` then refuses
+    /// every type the way a browser refuses one it does not support.
+    fn item_types(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Replaces the clipboard's contents with these representations of ONE
+    /// item, all at once: `(MIME type, bytes)`, UTF-8 for the text types and
+    /// the encoded file for an image. Called only with types out of
+    /// [`Self::item_types`].
+    fn write_items(&self, items: &[(String, Vec<u8>)]) -> Result<(), String> {
+        let _ = items;
+        Err("this clipboard backend writes text only".into())
+    }
+
+    /// What the clipboard holds, as representations in [`ITEM_TYPES`]:
+    /// `(MIME type, bytes)`. `Ok(vec![])` is an empty clipboard. The default
+    /// reads the text.
+    fn read_items(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let text = self.read_text()?;
+        Ok(if text.is_empty() { Vec::new() } else { vec![("text/plain".to_string(), text.into_bytes())] })
+    }
 }
+
+/// The representations `write()` and `read()` know: the three every browser
+/// writes. What a backend actually takes is [`ClipboardHost::item_types`].
+pub const ITEM_TYPES: &[&str] = &["text/plain", "text/html", "image/png"];
 
 static HOST: RwLock<Option<&'static dyn ClipboardHost>> = RwLock::new(None);
 
@@ -179,36 +222,362 @@ unsafe extern "sysv64" fn clipboard_write_text(g: *mut c_void, cf: *mut c_void) 
     }
 }
 
-fn advise_items(verb: &str) {
-    static ONCE: OnceLock<()> = OnceLock::new();
-    let platform = host().map(|h| h.platform()).unwrap_or("this platform");
-    ONCE.get_or_init(|| {
-        eprintln!(
-            "[redjs] navigator.clipboard.{verb}() is not implemented on {platform}: this runtime's \
-             clipboard is text-only in v1, and `ClipboardItem` is deliberately undefined so \
-             feature detection reports it honestly. Use readText()/writeText()."
-        );
-    });
+// ---------------------------------------------------------------------------
+// ClipboardItem
+// ---------------------------------------------------------------------------
+
+/// A `ClipboardItem`'s internal slots, which are private names: made once per
+/// context, as a private name has to be to name the same slot twice.
+#[derive(Clone, Copy)]
+struct Slots {
+    /// `ClipboardItem.prototype` — `read()` makes items without `new`.
+    proto: u64,
+    /// The representations as given: type → Blob | string | promise.
+    items: *mut c_void,
+    /// The types, a frozen array in the record's order.
+    types: *mut c_void,
+    /// `presentationStyle`.
+    style: *mut c_void,
 }
+
+unsafe impl Send for Slots {}
+
+fn registry() -> &'static std::sync::Mutex<std::collections::HashMap<usize, Slots>> {
+    static R: OnceLock<std::sync::Mutex<std::collections::HashMap<usize, Slots>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+fn slots(g: *mut c_void) -> Option<Slots> {
+    registry().lock().unwrap().get(&(g as usize)).copied()
+}
+
+/// The protos were protected in a heap that no longer exists.
+pub(crate) fn forget(gone: crate::context::Gone) {
+    registry().lock().unwrap().remove(&gone.key);
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Items,
+    Types,
+    Style,
+}
+
+unsafe fn slot_get(g: *mut c_void, obj: u64, slot: Slot) -> u64 {
+    let Some(s) = slots(g) else { return UNDEF };
+    if !is_cell(obj) {
+        return UNDEF;
+    }
+    get_a(g, obj, match slot {
+        Slot::Items => s.items,
+        Slot::Types => s.types,
+        Slot::Style => s.style,
+    })
+}
+
+unsafe fn slot_set(g: *mut c_void, obj: u64, slot: Slot, v: u64) {
+    let Some(s) = slots(g) else { return };
+    let a = match slot {
+        Slot::Items => s.items,
+        Slot::Types => s.types,
+        Slot::Style => s.style,
+    };
+    glue::rjs_define(g, obj, a, v, 0);
+}
+
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// `global[a][b]`, called with `this` = `global[a]`.
+unsafe fn call_static(g: *mut c_void, a: &str, b: &str, args: &[u64]) -> Result<u64, u64> {
+    let owner = get(g, glue::rjs_global(g), a);
+    call(g, get(g, owner, b), owner, args)
+}
+
+/// `f.bind(undefined, arg)`: a native reaction that needs to know which type
+/// (or types) it is for.
+unsafe fn bind1(g: *mut c_void, f: u64, arg: u64) -> u64 {
+    call(g, get(g, f, "bind"), f, &[UNDEF, arg]).unwrap_or(f)
+}
+
+/// `p.then(f)`; a throw from `then` itself becomes the rejection.
+unsafe fn then(g: *mut c_void, p: u64, f: u64) -> u64 {
+    match call(g, get(g, p, "then"), p, &[f]) {
+        Ok(v) => v,
+        Err(e) => super::domexception::rejected_with(g, e),
+    }
+}
+
+/// The string in `v`, through ToString; `Err` holds what ToString threw.
+unsafe fn dom_string(g: *mut c_void, v: u64) -> Result<String, u64> {
+    let mut sv = v;
+    if glue::rjs_kind(g, v) != 5 && glue::rjs_to_string(g, v, &mut sv) != 0 {
+        return Err(sv);
+    }
+    Ok(read_string(g, sv).unwrap_or_default())
+}
+
+/// Builds an item over `record` / `types` (already a frozen array).
+unsafe fn make_item(g: *mut c_void, proto: u64, record: u64, types: u64, style: &str) -> u64 {
+    let item = new_object(g, proto);
+    slot_set(g, item, Slot::Items, record);
+    slot_set(g, item, Slot::Types, types);
+    slot_set(g, item, Slot::Style, js_string(g, style));
+    item
+}
+
+/// The types of an item, as Rust strings, in order.
+unsafe fn item_type_list(g: *mut c_void, types: u64) -> Vec<String> {
+    (0..array_len(g, types)).filter_map(|i| read_string(g, get_i(g, types, i))).collect()
+}
+
+/// `new ClipboardItem(items, options)` — WebIDL's record conversion: the keys
+/// are read once, in order, and each value once.
+unsafe extern "sysv64" fn item_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+    const WHO: &str = "Failed to construct 'ClipboardItem'";
+    let items = cf_arg(cf, 0);
+    if !super::blob::is_object(g, items) {
+        return throw_type_error(
+            g,
+            &format!("{WHO}: The provided value is not of type '(record<DOMString, (Blob or DOMString or Promise<(Blob or DOMString)>)>)'."),
+        );
+    }
+    let keys = match call_static(g, "Object", "keys", &[items]) {
+        Ok(k) => k,
+        Err(e) => {
+            glue::rjs_throw(g, e);
+            return UNDEF;
+        }
+    };
+    let n = array_len(g, keys);
+    if n == 0 {
+        return throw_type_error(g, &format!("{WHO}: Empty dictionary argument"));
+    }
+    let record = new_object(g, UNDEF);
+    let types = new_array(g);
+    for i in 0..n {
+        let key = get_i(g, keys, i);
+        let Some(name) = read_string(g, key) else { continue };
+        let a = atom(g, &name);
+        let mut v = UNDEF;
+        let rc = glue::rjs_get(g, items, a, &mut v);
+        glue::rjs_atom_free(g, a);
+        if rc != 0 {
+            glue::rjs_throw(g, v);
+            return UNDEF;
+        }
+        define(g, record, &name, v, 0);
+        set_i(g, types, i, key);
+    }
+    let _ = call_static(g, "Object", "freeze", &[types]);
+    // `options.presentationStyle`: an enum, "unspecified" by default.
+    let mut style = "unspecified".to_string();
+    let options = cf_arg(cf, 1);
+    if super::blob::is_object(g, options) {
+        let v = get(g, options, "presentationStyle");
+        if v != UNDEF {
+            match dom_string(g, v) {
+                Ok(s) if matches!(s.as_str(), "unspecified" | "inline" | "attachment") => style = s,
+                Ok(s) => {
+                    return throw_type_error(
+                        g,
+                        &format!("{WHO}: Failed to read the 'presentationStyle' property from 'ClipboardItemOptions': The provided value '{s}' is not a valid enum value of type PresentationStyle."),
+                    )
+                }
+                Err(e) => {
+                    glue::rjs_throw(g, e);
+                    return UNDEF;
+                }
+            }
+        }
+    }
+    let proto = slots(g).map_or(UNDEF, |s| s.proto);
+    let this = ordinary_create(g, cf_new_target(cf), proto);
+    slot_set(g, this, Slot::Items, record);
+    slot_set(g, this, Slot::Types, types);
+    slot_set(g, this, Slot::Style, js_string(g, &style));
+    this
+}
+
+unsafe extern "sysv64" fn item_types(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let types = slot_get(g, cf_this(cf), Slot::Types);
+    if !is_cell(types) {
+        return throw_type_error(g, "Illegal invocation");
+    }
+    types
+}
+
+unsafe extern "sysv64" fn item_style(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let style = slot_get(g, cf_this(cf), Slot::Style);
+    if style == UNDEF {
+        return throw_type_error(g, "Illegal invocation");
+    }
+    style
+}
+
+/// The reaction that turns a settled representation into its Blob: bound to
+/// the type, called with the value. A Blob is itself; a string becomes a Blob
+/// of the type.
+unsafe extern "sysv64" fn to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
+    let v = cf_arg(cf, 1);
+    if super::blob::data_of(g, v).is_some() {
+        return v;
+    }
+    match dom_string(g, v) {
+        Ok(s) => super::blob::create(g, UNDEF, s.into_bytes(), ty),
+        Err(e) => {
+            glue::rjs_throw(g, e);
+            UNDEF
+        }
+    }
+}
+
+/// `item.getType(type)` — a promise of the representation's Blob.
+unsafe extern "sysv64" fn item_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let this = cf_this(cf);
+    let record = slot_get(g, this, Slot::Items);
+    if !is_cell(record) {
+        return rejected_promise(g, 1, "Illegal invocation");
+    }
+    let ty = match dom_string(g, cf_arg(cf, 0)) {
+        Ok(t) => t,
+        Err(e) => return super::domexception::rejected_with(g, e),
+    };
+    if !item_type_list(g, slot_get(g, this, Slot::Types)).contains(&ty) {
+        return rejected_named(
+            g,
+            "NotFoundError",
+            "Failed to execute 'getType' on 'ClipboardItem': The type was not found",
+        );
+    }
+    let v = get(g, record, &ty);
+    let settled = match call_static(g, "Promise", "resolve", &[v]) {
+        Ok(p) => p,
+        Err(e) => return super::domexception::rejected_with(g, e),
+    };
+    let reaction = bind1(g, make_fn(g, "", 2, to_blob), js_string(g, &ty));
+    then(g, settled, reaction)
+}
+
+/// `ClipboardItem.supports(type)` — what `write()` would take.
+unsafe extern "sysv64" fn item_supports(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let ty = match dom_string(g, cf_arg(cf, 0)) {
+        Ok(t) => t,
+        Err(e) => {
+            glue::rjs_throw(g, e);
+            return UNDEF;
+        }
+    };
+    let takes = host().map(|h| h.item_types()).unwrap_or(&[]);
+    enc_bool(takes.contains(&ty.as_str()))
+}
+
+// ---------------------------------------------------------------------------
+// read() / write()
+// ---------------------------------------------------------------------------
 
 unsafe extern "sysv64" fn clipboard_read(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    advise_items("read");
-    rejected_named(
-        g,
-        "NotSupportedError",
-        "Failed to execute 'read' on 'Clipboard': this runtime's clipboard is text-only. Use \
-         navigator.clipboard.readText().",
-    )
+    const WHO: &str = "Failed to execute 'read' on 'Clipboard'";
+    let Some(h) = host() else {
+        advise_no_host();
+        return rejected_named(g, "NotAllowedError", &format!("{WHO}: no clipboard backend is installed in this runtime."));
+    };
+    let items = match h.read_items() {
+        Ok(items) => items,
+        Err(why) => return rejected_named(g, "NotAllowedError", &format!("{WHO}: {why}")),
+    };
+    if items.is_empty() {
+        return rejected_named(g, "DataError", "No valid data on clipboard.");
+    }
+    let record = new_object(g, UNDEF);
+    let types = new_array(g);
+    for (i, (ty, bytes)) in items.into_iter().enumerate() {
+        let blob = super::blob::create(g, UNDEF, bytes, ty.clone());
+        define(g, record, &ty, blob, 0);
+        set_i(g, types, i as u32, js_string(g, &ty));
+    }
+    let _ = call_static(g, "Object", "freeze", &[types]);
+    let proto = slots(g).map_or(UNDEF, |s| s.proto);
+    let list = new_array(g);
+    set_i(g, list, 0, make_item(g, proto, record, types, "unspecified"));
+    resolved_promise(g, list)
 }
 
-unsafe extern "sysv64" fn clipboard_write(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    advise_items("write");
-    rejected_named(
-        g,
-        "NotSupportedError",
-        "Failed to execute 'write' on 'Clipboard': this runtime's clipboard is text-only. Use \
-         navigator.clipboard.writeText().",
-    )
+/// The reaction that writes once every representation has settled: bound to
+/// the types, called with the values in the same order.
+unsafe extern "sysv64" fn write_settled(g: *mut c_void, cf: *mut c_void) -> u64 {
+    const WHO: &str = "Failed to execute 'write' on 'Clipboard'";
+    let types = item_type_list(g, cf_arg(cf, 0));
+    let values = cf_arg(cf, 1);
+    let mut items = Vec::with_capacity(types.len());
+    for (i, ty) in types.into_iter().enumerate() {
+        let v = get_i(g, values, i as u32);
+        let bytes = match super::blob::bytes_of(g, v, "navigator.clipboard.write()") {
+            Some(Ok(bytes)) => bytes,
+            Some(Err(_)) => {
+                return super::domexception::throw(g, "DataError", &format!("Failed to read or decode Blob for clipboard item type {ty}."))
+            }
+            None => match dom_string(g, v) {
+                Ok(s) => s.into_bytes(),
+                Err(e) => {
+                    glue::rjs_throw(g, e);
+                    return UNDEF;
+                }
+            },
+        };
+        if ty == "image/png" && !bytes.starts_with(PNG_SIGNATURE) {
+            return super::domexception::throw(g, "DataError", "Failed to read or decode Blob for clipboard item type image/png.");
+        }
+        items.push((ty, bytes));
+    }
+    let Some(h) = host() else {
+        return super::domexception::throw(g, "NotAllowedError", &format!("{WHO}: no clipboard backend is installed in this runtime."));
+    };
+    match h.write_items(&items) {
+        Ok(()) => UNDEF,
+        Err(why) => super::domexception::throw(g, "NotAllowedError", &format!("{WHO}: {why}")),
+    }
+}
+
+/// `navigator.clipboard.write(data)` — one `ClipboardItem`, every
+/// representation settled first, then written at once.
+unsafe extern "sysv64" fn clipboard_write(g: *mut c_void, cf: *mut c_void) -> u64 {
+    const WHO: &str = "Failed to execute 'write' on 'Clipboard'";
+    let list = match call_static(g, "Array", "from", &[cf_arg(cf, 0)]) {
+        Ok(l) => l,
+        Err(e) => return super::domexception::rejected_with(g, e),
+    };
+    let n = array_len(g, list);
+    if n == 0 {
+        return resolved_promise(g, UNDEF);
+    }
+    if n > 1 {
+        return rejected_named(g, "NotAllowedError", "Support for multiple ClipboardItems is not implemented.");
+    }
+    let item = get_i(g, list, 0);
+    let record = slot_get(g, item, Slot::Items);
+    let types = slot_get(g, item, Slot::Types);
+    if !is_cell(record) || !is_cell(types) {
+        return rejected_promise(g, 1, &format!("{WHO}: The provided value is not of type 'ClipboardItem'."));
+    }
+    let Some(h) = host() else {
+        advise_no_host();
+        return rejected_named(g, "NotAllowedError", &format!("{WHO}: no clipboard backend is installed in this runtime."));
+    };
+    let names = item_type_list(g, types);
+    if let Some(ty) = names.iter().find(|t| !h.item_types().contains(&t.as_str())) {
+        return rejected_named(g, "NotAllowedError", &format!("{WHO}: Type {ty} not supported on write."));
+    }
+    let values = new_array(g);
+    for (i, ty) in names.iter().enumerate() {
+        set_i(g, values, i as u32, get(g, record, ty));
+    }
+    let all = match call_static(g, "Promise", "all", &[values]) {
+        Ok(p) => p,
+        Err(e) => return super::domexception::rejected_with(g, e),
+    };
+    let reaction = bind1(g, make_fn(g, "", 2, write_settled), types);
+    then(g, all, reaction)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +632,26 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     let clipboard = new_object(g, clipboard_class.proto);
     crate::ffi::redjs_protect(g, clipboard);
 
+    let item_class = define_class(g, &ClassSpec {
+        name: "ClipboardItem",
+        arity: 1,
+        construct: Some(item_construct),
+        parent_proto: 0,
+        methods: &[("getType", 1, item_get_type)],
+        getters: &[("types", item_types), ("presentationStyle", item_style)],
+        accessors: &[],
+    });
+    define(g, item_class.ctor, "supports", make_fn(g, "supports", 1, item_supports), 2);
+    registry().lock().unwrap().insert(
+        g as usize,
+        Slots {
+            proto: item_class.proto,
+            items: atom_priv(g, "redjs#clipboardItems"),
+            types: atom_priv(g, "redjs#clipboardTypes"),
+            style: atom_priv(g, "redjs#clipboardStyle"),
+        },
+    );
+
     // `navigator` may already exist (permissions, mediaDevices, or the host's
     // own); only `clipboard` is ours, and it goes onto whatever object is there.
     let global = glue::rjs_global(g);
@@ -304,10 +693,14 @@ mod jsc_tests {
     use crate::api::Context;
     use crate::webapi::testing::*;
 
-    /// A clipboard that is a `Mutex<String>` — the OS, without an OS.
+    /// A clipboard that is a `Mutex<String>` — the OS, without an OS — plus
+    /// the representations of the last item written.
     struct FakeClipboard;
     static TEXT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    static ITEMS: std::sync::Mutex<Vec<(String, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
     static FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// The backend writes text only (`item_types` is empty), as v1 did.
+    static TEXT_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     impl ClipboardHost for FakeClipboard {
         fn platform(&self) -> &'static str {
@@ -324,7 +717,27 @@ mod jsc_tests {
                 return Err("the clipboard is held by another process".into());
             }
             *TEXT.lock().unwrap() = text.to_string();
+            ITEMS.lock().unwrap().clear();
             Ok(())
+        }
+        fn item_types(&self) -> &'static [&'static str] {
+            if TEXT_ONLY.load(std::sync::atomic::Ordering::Relaxed) { &[] } else { ITEM_TYPES }
+        }
+        fn write_items(&self, items: &[(String, Vec<u8>)]) -> Result<(), String> {
+            if FAIL.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("the clipboard is held by another process".into());
+            }
+            *ITEMS.lock().unwrap() = items.to_vec();
+            TEXT.lock().unwrap().clear();
+            Ok(())
+        }
+        fn read_items(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+            let items = ITEMS.lock().unwrap().clone();
+            if !items.is_empty() {
+                return Ok(items);
+            }
+            let text = self.read_text()?;
+            Ok(if text.is_empty() { Vec::new() } else { vec![("text/plain".into(), text.into_bytes())] })
         }
     }
 
@@ -338,7 +751,9 @@ mod jsc_tests {
         static H: FakeClipboard = FakeClipboard;
         set_host(&H);
         FAIL.store(false, std::sync::atomic::Ordering::Relaxed);
+        TEXT_ONLY.store(false, std::sync::atomic::Ordering::Relaxed);
         TEXT.lock().unwrap().clear();
+        ITEMS.lock().unwrap().clear();
         guard
     }
 
@@ -419,19 +834,115 @@ mod jsc_tests {
         assert!(got.starts_with("ERROR: NotAllowedError"), "{got}");
     }
 
+    /// A PNG's first bytes: all `write()` checks of an `image/png`.
+    const PNG: &str = "new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])";
+
     #[test]
-    fn read_and_write_reject_and_clipboard_item_does_not_exist() {
-        // v1's whole item story, pinned: the honest "no" plus the feature
-        // detection that lets an app take the text branch.
+    fn a_clipboard_item_is_its_record_read_once() {
         let _g = install_fake();
         let c = ctx();
-        ok(&c, "typeof ClipboardItem === 'undefined'");
+        ok(&c, "typeof ClipboardItem === 'function'");
+        ok(&c, "Object.prototype.toString.call(new ClipboardItem({'text/plain': 'x'})) === '[object ClipboardItem]'");
+        ok(&c, "JSON.stringify(new ClipboardItem({'text/plain': 'x', 'image/png': new Blob([])}).types) === '[\"text/plain\",\"image/png\"]'");
+        ok(&c, "Object.isFrozen(new ClipboardItem({'text/plain': 'x'}).types)");
+        ok(&c, "new ClipboardItem({'text/plain': 'x'}).presentationStyle === 'unspecified'");
+        ok(&c, "new ClipboardItem({'text/plain': 'x'}, {presentationStyle: 'attachment'}).presentationStyle === 'attachment'");
+        assert!(throws(&c, "new ClipboardItem({})").contains("Empty dictionary argument"));
+        assert!(throws(&c, "new ClipboardItem('text/plain')").contains("record"));
+        assert!(throws(&c, "ClipboardItem({'text/plain': 'x'})").contains("requires 'new'"));
+        assert!(throws(&c, "new ClipboardItem({'text/plain': 'x'}, {presentationStyle: 'nope'})").contains("PresentationStyle"));
+        ok(&c, "ClipboardItem.supports('image/png') && ClipboardItem.supports('text/html')");
+        ok(&c, "!ClipboardItem.supports('image/svg+xml') && !ClipboardItem.supports('web text/x-mine')");
+        // getType: a Blob of the type, from a string, a Blob or a promise.
+        assert_eq!(
+            run(&c, "const b = await new ClipboardItem({'text/plain': 'hi'}).getType('text/plain');
+                     return (b instanceof Blob) + ':' + b.type + ':' + await b.text();"),
+            "true:text/plain:hi"
+        );
+        assert_eq!(
+            run(&c, "const b = await new ClipboardItem({'text/html': Promise.resolve('<b>x</b>')}).getType('text/html');
+                     return b.type + ':' + await b.text();"),
+            "text/html:<b>x</b>"
+        );
+        let got = run(&c, "return await new ClipboardItem({'text/plain': 'hi'}).getType('image/png');");
+        assert!(got.starts_with("ERROR: NotFoundError"), "{got}");
+    }
+
+    #[test]
+    fn write_then_read_round_trips_an_image_and_its_text() {
+        let _g = install_fake();
+        let c = ctx();
+        assert_eq!(
+            run(
+                &c,
+                &format!(
+                    "const png = new Blob([{PNG}], {{type: 'image/png'}});
+                     await navigator.clipboard.write([new ClipboardItem({{
+                       'image/png': Promise.resolve(png), 'text/plain': 'caption'
+                     }})]);
+                     const [item] = await navigator.clipboard.read();
+                     const back = new Uint8Array(await (await item.getType('image/png')).arrayBuffer());
+                     return item.types.join(',') + ':' + back.length + ':' + back[1] + ':' +
+                       await (await item.getType('text/plain')).text();"
+                )
+            ),
+            "image/png,text/plain:11:80:caption"
+        );
+        let items = ITEMS.lock().unwrap().clone();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0, "image/png");
+        assert_eq!(&items[0].1[..4], b"\x89PNG");
+        assert_eq!(items[1], ("text/plain".to_string(), b"caption".to_vec()));
+        // readText still reads a text clipboard after an item write of text.
+        assert_eq!(
+            run(&c, "await navigator.clipboard.write([new ClipboardItem({'text/plain': 'only'})]);
+                     return (await (await navigator.clipboard.read())[0].getType('text/plain')).text();"),
+            "only"
+        );
+    }
+
+    #[test]
+    fn write_refuses_what_a_browser_refuses_and_writes_nothing() {
+        let _g = install_fake();
+        let c = ctx();
+        *TEXT.lock().unwrap() = "untouched".into();
+        // A type the backend does not take: the app's fallback chain moves on.
+        let got = run(&c, "return await navigator.clipboard.write([new ClipboardItem({'image/png': new Blob([]), 'web text/x-mine': 'x'})]);");
+        assert!(got.starts_with("ERROR: NotAllowedError"), "{got}");
+        assert!(got.contains("web text/x-mine"), "{got}");
+        // More than one item.
+        let got = run(&c, "const i = () => new ClipboardItem({'text/plain': 'x'}); return await navigator.clipboard.write([i(), i()]);");
+        assert!(got.contains("multiple ClipboardItems"), "{got}");
+        // Not a PNG under image/png.
+        let got = run(&c, "return await navigator.clipboard.write([new ClipboardItem({'image/png': new Blob(['GIF89a'])})]);");
+        assert!(got.starts_with("ERROR: DataError"), "{got}");
+        // A representation that never resolves to anything writes nothing.
+        let got = run(&c, "return await navigator.clipboard.write([new ClipboardItem({'text/plain': Promise.reject(new Error('gone'))})]);");
+        assert!(got.contains("gone"), "{got}");
+        // Not an item at all.
+        let got = run(&c, "return await navigator.clipboard.write([{}]);");
+        assert!(got.starts_with("ERROR: plain TypeError"), "{got}");
+        assert_eq!(*TEXT.lock().unwrap(), "untouched");
+        assert!(ITEMS.lock().unwrap().is_empty());
+        // An empty clipboard has nothing to read.
+        TEXT.lock().unwrap().clear();
         let got = run(&c, "return await navigator.clipboard.read();");
-        assert!(got.starts_with("ERROR: NotSupportedError"), "{got}");
-        assert!(got.contains("readText"), "the message must name the alternative: {got}");
-        let got = run(&c, "return await navigator.clipboard.write([]);");
-        assert!(got.starts_with("ERROR: NotSupportedError"), "{got}");
-        assert!(got.contains("writeText"), "{got}");
+        assert!(got.starts_with("ERROR: DataError"), "{got}");
+    }
+
+    #[test]
+    fn a_text_only_backend_refuses_every_item_type_but_still_reads_its_text() {
+        let _g = install_fake();
+        TEXT_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+        let c = ctx();
+        ok(&c, "!ClipboardItem.supports('text/plain')");
+        let got = run(&c, "return await navigator.clipboard.write([new ClipboardItem({'text/plain': 'x'})]);");
+        assert!(got.starts_with("ERROR: NotAllowedError"), "{got}");
+        *TEXT.lock().unwrap() = "from the OS".into();
+        assert_eq!(
+            run(&c, "const [i] = await navigator.clipboard.read(); return (await i.getType('text/plain')).text();"),
+            "from the OS"
+        );
     }
 
     #[test]

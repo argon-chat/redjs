@@ -182,6 +182,8 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     blob::forget(gone);
     #[cfg(feature = "canvas")]
     canvas2d::forget(gone);
+    #[cfg(feature = "clipboard")]
+    clipboard::forget(gone);
     domexception::forget(gone);
     file::forget(gone);
     #[cfg(feature = "audio")]
