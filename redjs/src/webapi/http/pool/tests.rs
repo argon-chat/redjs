@@ -21,6 +21,7 @@ fn get(url: &str) -> Request {
         connect_timeout: Duration::from_secs(5),
         io_timeout: Duration::from_secs(10),
         observer: None,
+        cache: crate::webapi::http::cache::CacheMode::Default,
     }
 }
 

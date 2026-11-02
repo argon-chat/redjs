@@ -403,16 +403,19 @@ pub fn check_supported(plan: &Plan) -> Result<(), String> {
         other => return Err(format!("mode: {other:?} is not a valid request mode")),
     }
 
-    // No HTTP cache exists, so every mode but these would be a lie about
-    // freshness; "only-if-cached" in particular could never succeed.
+    // With the HTTP cache (webapi/http/cache.rs) every mode is real.
+    // `force-cache` with no cache installed is honest too: nothing is cached, so
+    // it goes to the network, as it would on a miss. `only-if-cached` without
+    // one could never succeed, and Fetch allows it only with mode "same-origin".
     match plan.cache.as_str() {
-        "default" | "no-store" | "no-cache" | "reload" => {}
-        "only-if-cached" | "force-cache" => {
-            return Err(format!(
-                "cache: {:?} is not supported by this runtime — it has no HTTP cache",
-                plan.cache
-            ))
+        "default" | "no-store" | "no-cache" | "reload" | "force-cache" => {}
+        "only-if-cached" if plan.mode != "same-origin" => {
+            return Err("cache: \"only-if-cached\" can be set only with mode: \"same-origin\"".into())
         }
+        "only-if-cached" if !super::http::cache::installed() => {
+            return Err("cache: \"only-if-cached\" cannot succeed here: no HTTP cache is installed".into())
+        }
+        "only-if-cached" => {}
         other => return Err(format!("cache: {other:?} is not a valid cache mode")),
     }
 

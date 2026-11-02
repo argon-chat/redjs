@@ -888,6 +888,7 @@ fn answer(sh: &Arc<Shared>, status: u16, status_text: &str, headers: Vec<(String
         reused: false,
         connection_id: 0,
         remote_addr: None,
+        cache: http::cache::Outcome::Off,
     };
     let head = HeadMsg { status, status_text: status_text.to_string(), headers, url };
     sh.post(move |i| {
@@ -1344,6 +1345,9 @@ unsafe extern "sysv64" fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
             connect_timeout: CONNECT_TIMEOUT,
             io_timeout: IO_TIMEOUT,
             observer: Some(http::Observer(Arc::new(Obs(Arc::clone(&sh))))),
+            // XMLHttpRequest has no cache mode; it goes through the HTTP cache
+            // as a browser's does.
+            cache: http::cache::CacheMode::Default,
         };
         INFLIGHT.fetch_add(1, Ordering::SeqCst);
         let worker = Arc::clone(&sh);

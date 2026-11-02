@@ -201,6 +201,7 @@ pub(super) fn drive(scheme: &str, ports: &[u16], total: usize, threads: usize, s
                 connect_timeout: Duration::from_secs(10),
                 io_timeout,
                 observer: None,
+                cache: super::cache::CacheMode::Default,
             };
             let t0 = Instant::now();
             match send(&req, &Cancel::default()) {
@@ -289,6 +290,7 @@ fn live_req() -> Request {
         connect_timeout: Duration::from_secs(15),
         io_timeout: Duration::from_secs(20),
         observer: None,
+        cache: super::cache::CacheMode::Default,
     }
 }
 

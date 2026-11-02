@@ -133,6 +133,9 @@ pub struct NetInfo {
     /// stored them and the `Response` script sees has none (Fetch's forbidden
     /// response-header names); this copy is for devtools only.
     pub set_cookies: Vec<String>,
+    /// What the HTTP cache did for the final hop (`Hit`: no connection was
+    /// used, and the transport fields above are empty).
+    pub cache: http::cache::Outcome,
 }
 
 /// The [`NetInfo`] of a `Response` object, if it came off the network. For an
@@ -644,6 +647,7 @@ unsafe fn settle(g: *mut c_void, d: Delivery) {
                     connection_id: resp.connection_id,
                     remote_addr: resp.remote_addr,
                     set_cookies,
+                    cache: resp.cache,
                 }),
             });
             let _ = call(g, d.resolve, UNDEF, &[obj]);
@@ -720,6 +724,8 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
         connect_timeout: CONNECT_TIMEOUT,
         io_timeout: IO_TIMEOUT,
         observer: None,
+        // `check_supported` already refused anything else.
+        cache: http::cache::CacheMode::parse(&plan.cache).unwrap_or_default(),
     };
 
     let ctx = Ctx(g);

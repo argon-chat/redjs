@@ -930,41 +930,130 @@ impl Prepared {
     }
 }
 
-/// The run of one `fetch`: redirects, the jar per hop, the pool per hop.
+/// The run of one `fetch`: redirects, the jar per hop, the HTTP cache per hop
+/// ([`super::cache`]), the pool per hop.
 async fn run(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
+    use super::cache::{self, Action, Outcome, Settled};
     let mut hops = Hops::new(req);
     loop {
         cancel.check()?;
         let hop = hops.next()?;
-        let key = Key::of(&hop.url)?;
-        let prepared = prepare(&hop.url, &hops.method, &hop.headers, hops.body.as_deref())?;
-        let seen = Seen { url: &hops.current, redirected: hops.redirected };
-        let a = exchange(&key, &hop.url, &hops.method, &prepared, req, cancel, seen).await?;
-        if hops.after(&hop, a.status, &a.headers)? {
-            continue;
-        }
-        // Decoding a big body is CPU work; keep it off the runtime's one thread.
-        let enc = header(&a.headers, "content-encoding").map(str::to_string);
-        let body = if enc.is_some() && a.body.len() > 256 * 1024 {
-            let raw = a.body;
-            tokio::task::spawn_blocking(move || decode_content_encoding(enc.as_deref(), raw))
+        // A lookup reads a file: on the blocking pool, never on this thread.
+        let planned = if cache::reads_disk(&hops.method, &hop.headers, req.cache) {
+            let (m, u, h, mode) = (hops.method.clone(), hop.url.to_string(), hop.headers.clone(), req.cache);
+            tokio::task::spawn_blocking(move || cache::plan(&m, &u, &h, mode))
                 .await
-                .map_err(|e| network(format!("decoding the body failed: {e}")))??
+                .map_err(|e| network(format!("the HTTP cache lookup failed: {e}")))?
         } else {
-            decode_content_encoding(enc.as_deref(), a.body)?
+            cache::plan(&hops.method, hop.url.as_str(), &hop.headers, req.cache)
         };
-        return Ok(Response {
-            status: a.status,
-            status_text: a.reason,
-            headers: a.headers,
-            url: hops.current,
-            redirected: hops.redirected,
-            body,
-            protocol: a.proto.name(),
-            reused: a.reused,
-            connection_id: a.id,
-            remote_addr: Some(a.addr),
-        });
+        let (action, ctx) = planned.into_parts();
+        let (validating, conditional) = match action {
+            Action::Fail(e) => return Err(e),
+            Action::Serve { entry, revalidate } => {
+                if revalidate {
+                    cache::revalidate_in_background(req, hop.url.as_str());
+                }
+                if hops.follow(entry.status, &entry.headers)? {
+                    continue;
+                }
+                return from_cache(req, &hops, entry, Outcome::Hit, None).await;
+            }
+            Action::Validate { entry, conditional } => (Some(entry), conditional),
+            Action::Network => (None, Vec::new()),
+        };
+        // A conditional exchange is not observed: its 304 is not the answer.
+        let asked = validating.is_some();
+        let quiet;
+        let (sent, headers) = if asked {
+            quiet = Request { observer: None, ..req.clone() };
+            let mut h = hop.headers.clone();
+            h.extend(conditional);
+            (&quiet, std::borrow::Cow::Owned(h))
+        } else {
+            (req, std::borrow::Cow::Borrowed(&hop.headers[..]))
+        };
+        let key = Key::of(&hop.url)?;
+        let prepared = prepare(&hop.url, &hops.method, &headers, hops.body.as_deref())?;
+        let seen = Seen { url: &hops.current, redirected: hops.redirected };
+        let a = exchange(&key, &hop.url, &hops.method, &prepared, sent, cancel, seen).await?;
+        match cache::settle(ctx, validating, a.status, &a.reason, &a.headers, &a.body, true) {
+            Settled::Refreshed(entry) => {
+                hops.store_cookies(&hop, &a.headers);
+                if hops.follow(entry.status, &entry.headers)? {
+                    continue;
+                }
+                let net = (a.proto.name(), a.reused, a.id, a.addr);
+                return from_cache(req, &hops, entry, Outcome::Revalidated, Some(net)).await;
+            }
+            Settled::Network(outcome) => {
+                if hops.after(&hop, a.status, &a.headers)? {
+                    continue;
+                }
+                if asked {
+                    let (url, r) = (&hops.current, hops.redirected);
+                    cache::observe(req, url, r, a.proto.name(), a.status, &a.reason, &a.headers, &a.body);
+                }
+                let body = decode_off_thread(header(&a.headers, "content-encoding"), a.body).await?;
+                return Ok(Response {
+                    status: a.status,
+                    status_text: a.reason,
+                    headers: a.headers,
+                    url: hops.current,
+                    redirected: hops.redirected,
+                    body,
+                    protocol: a.proto.name(),
+                    reused: a.reused,
+                    connection_id: a.id,
+                    remote_addr: Some(a.addr),
+                    cache: outcome,
+                });
+            }
+        }
+    }
+}
+
+/// An answer the cache served, or a 304 refreshed (`net`: the connection that
+/// carried the 304).
+async fn from_cache(
+    req: &Request,
+    hops: &Hops<'_>,
+    entry: super::cache::Entry,
+    outcome: super::cache::Outcome,
+    net: Option<(&'static str, bool, u64, SocketAddr)>,
+) -> Result<Response, HttpError> {
+    let (url, redirected) = (hops.current.clone(), hops.redirected);
+    let protocol = net.map_or("", |n| n.0);
+    super::cache::observe(req, &url, redirected, protocol, entry.status, &entry.reason, &entry.headers, &entry.body);
+    let body = if entry.coded {
+        decode_off_thread(header(&entry.headers, "content-encoding"), entry.body).await?
+    } else {
+        entry.body
+    };
+    Ok(Response {
+        status: entry.status,
+        status_text: entry.reason,
+        headers: entry.headers,
+        url,
+        redirected,
+        body,
+        protocol,
+        reused: net.is_some_and(|n| n.1),
+        connection_id: net.map_or(0, |n| n.2),
+        remote_addr: net.map(|n| n.3),
+        cache: outcome,
+    })
+}
+
+/// Decoding a big body is CPU work; keep it off the runtime's one thread.
+async fn decode_off_thread(enc: Option<&str>, body: Vec<u8>) -> Result<Vec<u8>, HttpError> {
+    if enc.is_some() && body.len() > 256 * 1024 {
+        let enc = enc.map(str::to_string);
+        tokio::task::spawn_blocking(move || decode_content_encoding(enc.as_deref(), body))
+            .await
+            .map_err(|e| network(format!("decoding the body failed: {e}")))?
+    } else {
+        decode_content_encoding(enc, body)
     }
 }
 

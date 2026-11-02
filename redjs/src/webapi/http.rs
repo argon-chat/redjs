@@ -125,6 +125,16 @@
 //! at, and a hop to another host carries only that host's cookies. Redirects
 //! are followed here (not by hyper), on both transports, by one shared state
 //! machine ([`Hops`]).
+//!
+//! ## The HTTP cache
+//!
+//! Also per hop, on both transports. Before each hop, [`cache`] decides
+//! whether the disk answers it, whether the server is asked conditionally, or
+//! whether the request goes out as is. After the hop it decides what to store.
+//! A redirect with a `max-age` therefore costs no round trip while it is fresh.
+//! The cache is off until an embedder installs a folder
+//! ([`cache::install`]); [`Request::cache`] is Fetch's `cache` mode, and
+//! [`Response::cache`] says what happened.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
@@ -138,6 +148,8 @@ use sock::Polled;
 
 #[cfg(feature = "net-h2")]
 pub mod pool;
+
+pub mod cache;
 
 /// Response heads larger than this are a malformed or hostile peer.
 pub(crate) const MAX_HEAD: usize = 64 * 1024;
@@ -330,6 +342,9 @@ pub struct Request {
     /// Progress as it happens (XMLHttpRequest's events); `None` for `fetch`,
     /// whose body is delivered whole.
     pub observer: Option<Observer>,
+    /// Fetch's `cache` mode: how the HTTP cache ([`cache`]) treats every hop.
+    /// Inert while no cache is installed.
+    pub cache: cache::CacheMode,
 }
 
 /// Progress of one request while it is in flight — what XMLHttpRequest needs
@@ -411,6 +426,9 @@ pub struct Response {
     pub connection_id: u64,
     /// ... and the address it was connected to.
     pub remote_addr: Option<std::net::SocketAddr>,
+    /// What the HTTP cache did for the final hop. An answer from disk has no
+    /// connection: `protocol` "", `connection_id` 0, no address.
+    pub cache: cache::Outcome,
 }
 
 static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
@@ -819,12 +837,15 @@ pub(crate) struct Hop {
 
 impl<'a> Hops<'a> {
     pub(crate) fn new(req: &'a Request) -> Self {
+        let mut headers = req.headers.clone();
+        // Fetch's headers for an explicit cache mode (`Pragma: no-cache` & co).
+        cache::add_mode_headers(req.cache, &mut headers);
         Hops {
             req,
             current: req.url.clone(),
             method: req.method.to_ascii_uppercase(),
             body: req.body.clone(),
-            headers: req.headers.clone(),
+            headers,
             redirected: false,
             left: MAX_REDIRECTS + 1,
         }
@@ -852,9 +873,22 @@ impl<'a> Hops<'a> {
     /// After a hop's head: stores its cookies, then either sets up the next
     /// hop (`Ok(true)`) or says this response is the answer (`Ok(false)`).
     pub(crate) fn after(&mut self, hop: &Hop, status: u16, headers: &[(String, String)]) -> Result<bool, HttpError> {
+        self.store_cookies(hop, headers);
+        self.follow(status, headers)
+    }
+
+    /// The jar's half of [`Hops::after`]: this hop's `Set-Cookie`, when the
+    /// credentials mode says so.
+    pub(crate) fn store_cookies(&self, hop: &Hop, headers: &[(String, String)]) {
         if hop.cookies {
             super::cookies::store_response(&hop.url, headers);
         }
+    }
+
+    /// The redirect half of [`Hops::after`]. On its own for an answer the HTTP
+    /// cache served or refreshed: its `Location` is followed, and the cookies
+    /// came (if at all) with the 304 that refreshed it.
+    pub(crate) fn follow(&mut self, status: u16, headers: &[(String, String)]) -> Result<bool, HttpError> {
         if !is_redirect(status) {
             return Ok(false);
         }
@@ -1314,41 +1348,117 @@ fn reclassify(e: HttpError, cancel: &Cancel) -> HttpError {
 }
 
 /// The blocking transport's request: redirects, cookies per hop, a fresh
-/// connection per hop.
+/// connection per hop, the HTTP cache per hop ([`cache`]).
 #[cfg_attr(feature = "net-h2", allow(dead_code))]
 pub(crate) fn send_blocking(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
+    use cache::{Action, Outcome, Settled};
     let mut hops = Hops::new(req);
     loop {
         cancel.check()?;
         let hop = hops.next()?;
+        let (action, ctx) = cache::plan(&hops.method, hop.url.as_str(), &hop.headers, req.cache).into_parts();
+        let (validating, conditional) = match action {
+            Action::Fail(e) => return Err(e),
+            Action::Serve { entry, revalidate } => {
+                if revalidate {
+                    cache::revalidate_in_background(req, hop.url.as_str());
+                }
+                if hops.follow(entry.status, &entry.headers)? {
+                    continue;
+                }
+                return blocking_from_cache(req, &hops, entry, Outcome::Hit, ("", 0, None));
+            }
+            Action::Validate { entry, conditional } => (Some(entry), conditional),
+            Action::Network => (None, Vec::new()),
+        };
+        // A conditional exchange is not observed: its 304 is not the answer.
+        let asked = validating.is_some();
+        let quiet;
+        let (sent, headers) = if asked {
+            quiet = Request { observer: None, ..req.clone() };
+            let mut h = hop.headers.clone();
+            h.extend(conditional);
+            (&quiet, std::borrow::Cow::Owned(h))
+        } else {
+            (req, std::borrow::Cow::Borrowed(&hop.headers[..]))
+        };
         let result = round_trip(
             &hop.url,
             &hops.method,
-            &hop.headers,
+            &headers,
             hops.body.as_deref(),
-            req,
+            sent,
             cancel,
             &hops.current,
             hops.redirected,
         );
         cancel.disarm();
         let (head, bytes, remote) = result?;
-        if hops.after(&hop, head.status, &head.headers)? {
-            continue;
+        let id = next_connection_id();
+        match cache::settle(ctx, validating, head.status, &head.reason, &head.headers, &bytes, false) {
+            Settled::Refreshed(entry) => {
+                hops.store_cookies(&hop, &head.headers);
+                if hops.follow(entry.status, &entry.headers)? {
+                    continue;
+                }
+                return blocking_from_cache(req, &hops, entry, Outcome::Revalidated, (PROTO_H1, id, remote));
+            }
+            Settled::Network(outcome) => {
+                if hops.after(&hop, head.status, &head.headers)? {
+                    continue;
+                }
+                if asked {
+                    let (url, r) = (&hops.current, hops.redirected);
+                    cache::observe(req, url, r, PROTO_H1, head.status, &head.reason, &head.headers, &bytes);
+                }
+                return Ok(Response {
+                    status: head.status,
+                    status_text: head.reason,
+                    headers: head.headers,
+                    url: hops.current,
+                    redirected: hops.redirected,
+                    body: bytes,
+                    protocol: PROTO_H1,
+                    reused: false,
+                    connection_id: id,
+                    remote_addr: remote,
+                    cache: outcome,
+                });
+            }
         }
-        return Ok(Response {
-            status: head.status,
-            status_text: head.reason,
-            headers: head.headers,
-            url: hops.current,
-            redirected: hops.redirected,
-            body: bytes,
-            protocol: PROTO_H1,
-            reused: false,
-            connection_id: next_connection_id(),
-            remote_addr: remote,
-        });
     }
+}
+
+/// An answer the cache served (or a 304 refreshed) on the blocking transport.
+/// `net`: the connection that carried the 304, if one did.
+#[cfg_attr(feature = "net-h2", allow(dead_code))]
+fn blocking_from_cache(
+    req: &Request,
+    hops: &Hops<'_>,
+    entry: cache::Entry,
+    outcome: cache::Outcome,
+    net: (&'static str, u64, Option<std::net::SocketAddr>),
+) -> Result<Response, HttpError> {
+    let (url, redirected) = (hops.current.clone(), hops.redirected);
+    cache::observe(req, &url, redirected, net.0, entry.status, &entry.reason, &entry.headers, &entry.body);
+    let body = if entry.coded {
+        decode_content_encoding(header(&entry.headers, "content-encoding"), entry.body)?
+    } else {
+        entry.body
+    };
+    Ok(Response {
+        status: entry.status,
+        status_text: entry.reason,
+        headers: entry.headers,
+        url,
+        redirected,
+        body,
+        protocol: net.0,
+        reused: false,
+        connection_id: net.1,
+        remote_addr: net.2,
+        cache: outcome,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,6 +1720,7 @@ mod tests {
             connect_timeout: Duration::from_secs(5),
             io_timeout: Duration::from_secs(10),
             observer: None,
+            cache: cache::CacheMode::Default,
         }
     }
 
