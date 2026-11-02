@@ -399,7 +399,9 @@ pub(crate) enum Settled {
 }
 
 /// Will [`plan`] read the disk for this hop? The pooled transport moves
-/// those calls to its blocking pool; every other plan is instant.
+/// those calls to its blocking pool; every other plan is instant. (The
+/// blocking transport is on a worker thread already and does not ask.)
+#[cfg_attr(not(feature = "net-h2"), allow(dead_code))]
 pub(crate) fn reads_disk(method: &str, headers: &[(String, String)], mode: CacheMode) -> bool {
     method.eq_ignore_ascii_case("GET")
         && installed()
