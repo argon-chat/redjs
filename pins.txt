@@ -9,27 +9,29 @@
 # Bumping is: edit this file, run ./setup.ps1, run ./build.ps1 -Test.
 # Format: `key = value`, `#` starts a comment.
 
-# oven-sh/WebKit release tag. Bun v1.4.4 (2026-10-22) ships exactly this one
-# (scripts/build/deps/webkit.ts WEBKIT_VERSION at bun-v1.4.4).
-webkit.tag     = autobuild-d6375c72affe0f70222cdcb45012b10f0bf3a9d5
+# oven-sh/WebKit release used by Bun main/canary 7ca0042d3 (2026-11-07).
+# Stable Bun 1.4.4 predates AOT; this pin deliberately adopts its tested successor.
+webkit.tag     = autobuild-4d45755fed4aeef19e95beb90d3d0c884a2812bd
 # What the prebuilt says about itself: `BUN_WEBKIT_VERSION` in
 # include/cmakeconfig.h. build.rs compares this, so a hand-extracted tarball is
 # held to the same pin as a fetched one.
-webkit.version = d6375c72affe0f70222cdcb45012b10f0bf3a9d5
-# The PLAIN asset — never -lto (ThinLTO bitcode, link.exe cannot use it) and
-# never -aot (closed-world image runtime; research/reports in vue-native m24).
-webkit.asset   = bun-webkit-windows-amd64.tar.gz
-webkit.sha256  = 70eb12360936d3726081dd196c982a33e2f1e0b6ebfe7603696a1c49b97bd4f9
+webkit.version = 4d45755fed4aeef19e95beb90d3d0c884a2812bd
+# The non-LTO AOT variant contains the compiler/image runtime AND normal JIT.
+# The plain twin has ENABLE_AOT=0 even at the same commit; verify both fields.
+# Never -lto: link.exe cannot consume the ThinLTO archive.
+webkit.aot     = 1
+webkit.asset   = bun-webkit-windows-amd64-aot.tar.gz
+webkit.sha256  = fd79937b7f8becd5c0961646cd7f8af4409122e9cf710ffd766dc0c89df1f619
 
-# oven-sh/mimalloc ("sync-upstream-v3.5.3"), the allocator this JSC build calls
+# oven-sh/mimalloc, the allocator this JSC build calls
 # directly (USE_MIMALLOC=1, USE_EXTERNAL_MIMALLOC=1): the embedder links it.
-# Same commit as Bun v1.4.4's scripts/build/deps/mimalloc.ts. MIT.
-mimalloc.commit = 92ef6587c57b262f6e6abf513f7776a2f8d12aeb
+# Same commit as Bun 7ca0042d3's scripts/build/deps/mimalloc.ts. MIT.
+mimalloc.commit = 5945551d9ea1e3c83dbf5b198b00a3ec51aee395
 # sha256 over the EXTRACTED tree (src/, include/, LICENSE) rather than over the
 # GitHub archive, whose gzip bytes GitHub does not promise to keep stable. It is
 # the sha256 of the text "<sha256 of file>  <path>\n" per file, paths relative
 # with forward slashes, ordinal-sorted — `sha256sum` manifest form.
-mimalloc.tree-sha256 = a39655bf7f2628e42f7bf3b07c1ad2e26284edb21979e6ddf695881803c5339b
+mimalloc.tree-sha256 = e7dd762d39af37c521042cbb2023a2f0aa02d20635df277e604b14ca27f20ebc
 
 # utelle/SQLite3MultipleCiphers (MIT; SQLite itself is public domain): the
 # amalgamation IndexedDB's persistent backend is compiled from — ONLY with the

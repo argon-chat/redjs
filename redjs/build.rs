@@ -75,8 +75,8 @@ fn main() {
     // battle_test/bench_jsc): clang-cl, C++23, static CRT, NDEBUG, and the
     // prebuilt's own cmakeconfig.h force-included so every USE_/ENABLE_ flag
     // (incl. USE_BUN_JSC_ADDITIONS) matches its ABI exactly.
-    cc::Build::new()
-        .cpp(true)
+    let mut glue = cc::Build::new();
+    glue.cpp(true)
         .compiler("clang-cl")
         .static_crt(true)
         .file("cpp/glue.cpp")
@@ -95,8 +95,37 @@ fn main() {
         .define("WIN32", None)
         .define("_WINDOWS", None)
         .define("WIN32_LEAN_AND_MEAN", "1")
-        .define("_CRT_SECURE_NO_WARNINGS", None)
-        .compile("redjs_glue");
+        .define("_CRT_SECURE_NO_WARNINGS", None);
+
+    // An AOT-enabled prebuilt leaves its generated builtin table to the
+    // embedder. Use the exact real table shipped in the verified archive:
+    // invented/empty tables invalidate the engine's builtin IDs and layouts.
+    let configuration = fs::read_to_string(inc.join("cmakeconfig.h"))
+        .expect("the checked WebKit configuration is readable");
+    if configuration.lines().any(|line| line.trim() == "#define BUN_WEBKIT_ENABLE_AOT 1") {
+        let generated = inc.join("JavaScriptCore").join("aot");
+        glue.include(inc.join("JavaScriptCore"))
+            .include(&generated)
+            .include("cpp/aot")
+            .file("cpp/aot_support.cpp");
+        for name in [
+            "AOTBuiltinTableAttachments.cpp",
+            "AOTBuiltinTableBuiltins.cpp",
+            "AOTBuiltinTableEngineBindings.cpp",
+            "AOTBuiltinTableNames.cpp",
+            "AOTBuiltinTableOverloads.cpp",
+            "AOTBuiltinTableTypes.cpp",
+            "AOTSchemaInlineBuiltins.cpp",
+        ] {
+            let source = generated.join(name);
+            assert!(source.is_file(), "AOT prebuilt lacks generated source {}", source.display());
+            println!("cargo:rerun-if-changed={}", source.display());
+            glue.file(source);
+        }
+        println!("cargo:rerun-if-changed=cpp/aot_support.cpp");
+        println!("cargo:rerun-if-changed=cpp/aot");
+    }
+    glue.compile("redjs_glue");
 
     // --- vendored Yoga (flexbox layout for the RedYoga host class) ---------
     // Ordinary self-contained C++20 — same compiler/CRT as the rest of the
@@ -305,6 +334,12 @@ fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
             have.as_deref().unwrap_or("unidentified (no BUN_WEBKIT_VERSION)"),
         ),
     }
+    let want_aot = pin(pins, "webkit.aot");
+    let have_aot = text.lines().find_map(|line| {
+        line.trim().strip_prefix("#define BUN_WEBKIT_ENABLE_AOT ")
+    }).map(str::trim);
+    assert_eq!(have_aot, Some(want_aot),
+        "JSC AOT variant mismatch at {}: wanted ENABLE_AOT={want_aot}. {fix}", webkit.display());
     if !webkit.join("lib").join("JavaScriptCore.lib").is_file() {
         panic!(
             "\n\n{} names the pinned build but has no lib/JavaScriptCore.lib — an interrupted \

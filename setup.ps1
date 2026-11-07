@@ -45,7 +45,7 @@ function Read-Pins([string] $path) {
         if ($eq -lt 1) { throw "pins.txt: cannot parse line: $raw" }
         $pins[$line.Substring(0, $eq).Trim()] = $line.Substring($eq + 1).Trim()
     }
-    foreach ($k in 'webkit.tag', 'webkit.version', 'webkit.asset', 'webkit.sha256', 'mimalloc.commit', 'mimalloc.tree-sha256',
+    foreach ($k in 'webkit.tag', 'webkit.version', 'webkit.aot', 'webkit.asset', 'webkit.sha256', 'mimalloc.commit', 'mimalloc.tree-sha256',
         'sqlite3mc.version', 'sqlite3mc.asset', 'sqlite3mc.sha256', 'sqlite3mc.tree-sha256') {
         if (-not $pins.ContainsKey($k)) { throw "pins.txt: missing '$k'" }
     }
@@ -98,7 +98,16 @@ function Get-TreeSha256([string] $dir) {
     finally { $sha.Dispose() }
 }
 
+function Assert-ScopedPath([string] $dir) {
+    $absolute = [IO.Path]::GetFullPath($dir)
+    $boundary = [IO.Path]::GetFullPath($root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if (-not $absolute.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing filesystem mutation outside redjs: $absolute"
+    }
+}
+
 function Remove-Tree([string] $dir) {
+    Assert-ScopedPath $dir
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
 }
 
@@ -112,12 +121,20 @@ function Get-WebKitVersion([string] $dir) {
     return $m.Matches[0].Groups[1].Value
 }
 
+function Get-WebKitAot([string] $dir) {
+    $cfg = Join-Path $dir 'include/cmakeconfig.h'
+    if (-not (Test-Path -LiteralPath $cfg)) { return $null }
+    $m = Select-String -LiteralPath $cfg -Pattern '^#define BUN_WEBKIT_ENABLE_AOT ([01])$' | Select-Object -First 1
+    if ($m) { return $m.Matches[0].Groups[1].Value }
+    return $null
+}
+
 $dest = Join-Path $root 'prebuilt/bun-webkit'
 $want = $pins['webkit.version']
 $have = Get-WebKitVersion $dest
 $complete = Test-Path -LiteralPath (Join-Path $dest 'lib/JavaScriptCore.lib')
 
-if (-not $Force -and $have -eq $want -and $complete) {
+if (-not $Force -and $have -eq $want -and (Get-WebKitAot $dest) -eq $pins['webkit.aot'] -and $complete) {
     Write-Host "[jscore] prebuilt present at the pin ($want): $dest"
 }
 else {
@@ -150,6 +167,7 @@ else {
     $fresh = Join-Path $staging 'bun-webkit'
     $got = Get-WebKitVersion $fresh
     if ($got -ne $want) { throw "the tarball is $got, not the pinned $want" }
+    if ((Get-WebKitAot $fresh) -ne $pins['webkit.aot']) { throw "the tarball has the wrong AOT variant" }
     if (-not (Test-Path -LiteralPath (Join-Path $fresh 'lib/JavaScriptCore.lib'))) {
         throw "extraction did not produce lib/JavaScriptCore.lib"
     }

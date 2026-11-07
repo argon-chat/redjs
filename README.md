@@ -60,13 +60,16 @@ dotnet publish -r win-x64 -c Release -p:PublishAot=true -p:RedJsRid=win-x64
 
 Requires stable Rust, `clang-cl` (LLVM) on PATH and an MSVC toolset ≥ 14.44
 (the prebuilt's objects need `__std_fs_equivalent`). Everything is verified on
-the prebuilt `pins.txt` names — since m24 (2026-10) **`autobuild-d6375c72`**,
-the one Bun v1.4.4 ships (upstream 323797@main, ICU 78.3, mimalloc instead of
-libpas, a nehalem CPU floor instead of haswell — no AVX2 required).
+the prebuilt `pins.txt` names — **`autobuild-4d45755`**, the AOT-enabled
+Windows archive used by Bun main/canary `7ca0042d3` (2026-11-07). This variant
+includes the native AOT compiler/runtime alongside normal JIT; applications
+continue using JIT until a typed image frontend/loader is integrated. Stable
+Bun 1.4.4 predates AOT. The previous `d6375c72` pin remains the version of the
+historical benchmarks below (nehalem CPU floor, no AVX2 required).
 
 **Re-run `./setup.ps1` after pulling a pin change.** It compares what is on
 disk with `pins.txt` (the prebuilt names itself: `BUN_WEBKIT_VERSION` in
-`include/cmakeconfig.h`) and replaces a stale copy; `redjs/build.rs` refuses to
+`include/cmakeconfig.h`, including its AOT variant) and replaces a stale copy; `redjs/build.rs` refuses to
 build against anything else, so a checkout that skipped it gets a build error
 naming the fix rather than a link of the old engine. `BUN_WEBKIT_DIR` points
 the build at a prebuilt elsewhere; it is held to the same pin.

@@ -2400,13 +2400,42 @@ mod tests {
 
     #[test]
     fn deep_graphs_throw_range_error_not_overflow() {
-        let c = ctx();
-        ok(&c, "(() => { let o = {}; for (let i = 0; i < 500; i++) o = { o }; let r = structuredClone(o); let n = 0; while (r.o) { r = r.o; n++; } return n === 500; })()");
+        // JSC and native recursion share the host thread's stack. Match the
+        // production UI's explicit 8 MiB instead of libtest's 2 MiB default.
+        std::thread::Builder::new()
+            .name("serialize-production-stack".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let c = ctx();
+                ok(&c, "(() => { let o = {}; for (let i = 0; i < 500; i++) o = { o }; let r = structuredClone(o); let n = 0; while (r.o) { r = r.o; n++; } return n === 500; })()");
+                assert_deep_graph_refusal(&c);
+            })
+            .expect("spawn production-stack serializer test")
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn deep_graphs_on_small_stack_refuse_safely() {
+        // A smaller embedder stack must still produce a catchable RangeError
+        // and leave its context usable, rather than overflowing native frames.
+        std::thread::Builder::new()
+            .name("serialize-small-stack".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let c = ctx();
+                assert_deep_graph_refusal(&c);
+            })
+            .expect("spawn small-stack serializer test")
+            .join()
+            .unwrap();
+    }
+
+    fn assert_deep_graph_refusal(c: &crate::api::Context) {
         assert_eq!(
-            s(&c, "(() => { let a = []; for (let i = 0; i < 100000; i++) a = [a]; try { structuredClone(a); return 'cloned'; } catch (e) { return e.constructor.name; } })()"),
+            s(c, "(() => { let a = []; for (let i = 0; i < 100000; i++) a = [a]; try { structuredClone(a); return 'cloned'; } catch (e) { return e.constructor.name; } })()"),
             "RangeError"
         );
-        // And the context is fine afterwards.
-        ok(&c, "structuredClone([1])[0] === 1");
+        ok(c, "structuredClone([1])[0] === 1");
     }
 }

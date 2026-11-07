@@ -23,6 +23,14 @@
 #include <JavaScriptCore/CallData.h>
 #include <JavaScriptCore/DeferredWorkTimer.h>
 #include <JavaScriptCore/Completion.h>
+#include <JavaScriptCore/CachedBytecode.h>
+#include <JavaScriptCore/CachedTypes.h>
+#include <JavaScriptCore/CodeCache.h>
+#include <JavaScriptCore/JSCBytecodeCacheVersion.h>
+#include <JavaScriptCore/ParserError.h>
+#include <JavaScriptCore/SourceCodeKey.h>
+#include <JavaScriptCore/Strong.h>
+#include <JavaScriptCore/UnlinkedProgramCodeBlock.h>
 #include <JavaScriptCore/Error.h>
 #include <JavaScriptCore/ExceptionHelpers.h>
 #include <JavaScriptCore/ExceptionScope.h>
@@ -50,6 +58,9 @@
 #include <JavaScriptCore/VM.h>
 #include <wtf/NakedPtr.h>
 #include <wtf/text/WTFString.h>
+#include <wtf/text/StringBuilder.h>
+#include <cstdlib>
+#include <cstring>
 #include <unicode/udata.h>
 
 // JSC registers unwind info for its JIT pool, LLInt and vmEntry with
@@ -341,6 +352,139 @@ extern "C" int32_t rjs_eval8(void* g, const char* src, size_t len, const char* u
         ? WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(url), urlLen })
         : WTF::String();
     return evalCommon(G(g), code, file, out);
+}
+
+// A cache is an optimisation of this classic-script source, never another
+// program. The Rust layer admits only caches generated here or explicitly
+// imported from a trusted local artifact after identity/integrity checks.
+class RjsCachedSourceProvider final : public StringSourceProvider {
+public:
+    static Ref<RjsCachedSourceProvider> create(const WTF::String& code, WTF::String file, Ref<CachedBytecode>&& bytecode)
+    {
+        return adoptRef(*new RjsCachedSourceProvider(code, WTF::move(file), WTF::move(bytecode)));
+    }
+
+    RefPtr<CachedBytecode> cachedBytecode() const final
+    {
+        m_wasRead = true;
+        return m_bytecode.ptr();
+    }
+    void didGenerateUnlinkedCodeBlock(VM&, const SourceCodeKey&, UnlinkedCodeBlock*) const final
+    {
+        m_wasGenerated = true;
+    }
+    bool wasUsed() const { return m_wasRead && !m_wasGenerated && Options::useCodeCache(); }
+
+private:
+    RjsCachedSourceProvider(const WTF::String& code, WTF::String file, Ref<CachedBytecode>&& bytecode)
+        : StringSourceProvider(code, SourceOrigin(), SourceTaintedOrigin::Untainted, WTF::move(file), TextPosition(), SourceProviderSourceType::Program)
+        , m_bytecode(WTF::move(bytecode))
+    {
+    }
+
+    Ref<CachedBytecode> m_bytecode;
+    mutable bool m_wasRead { false };
+    mutable bool m_wasGenerated { false };
+};
+
+extern "C" uint32_t rjs_bytecode_cache_version()
+{
+    return computeJSCBytecodeCacheVersion();
+}
+
+// Snapshot all effective options instead of guessing which JSC flag a future
+// engine revision will add to its bytecode format. The caller hashes the text.
+extern "C" size_t rjs_bytecode_cache_options(void* g, uint8_t* destination, size_t capacity)
+{
+    JSLockHolder lock(G(g)->vm());
+    WTF::StringBuilder builder;
+    Options::dumpAllOptionsInALine(builder);
+    auto options = builder.toString().utf8();
+    if (destination && capacity >= options.length())
+        std::memcpy(destination, options.data(), options.length());
+    return options.length();
+}
+
+// The handle owns the encoded payload until rjs_bytecode_free. It contains no
+// borrowed Rust memory; the bytes can be copied before releasing the handle.
+extern "C" int32_t rjs_bytecode_generate(void* global, const char* src, size_t len, const char* url, size_t urlLen,
+    uint32_t functionDepth, void** handle, const uint8_t** bytes, size_t* byteLength, uint64_t* out)
+{
+    if (!global || !handle || !bytes || !byteLength || (!src && len) || (!url && urlLen))
+        return RJS_BAD_ARG;
+    *handle = nullptr;
+    *bytes = nullptr;
+    *byteLength = 0;
+    auto* g = G(global);
+    VM& vm = g->vm();
+    JSLockHolder lock(vm);
+    auto code = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(src), len });
+    auto file = urlLen ? WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(url), urlLen }) : WTF::String();
+    auto source = makeSource(code, SourceOrigin(), SourceTaintedOrigin::Untainted, file);
+    ParserError parserError;
+    auto* block = recursivelyGenerateUnlinkedCodeBlockForProgram(vm, source, NoLexicallyScopedFeatures,
+        JSParserScriptMode::Classic, { }, parserError, EvalContextType::None, functionDepth, OptimizeBytecode::No);
+    if (parserError.isValid()) {
+        if (out)
+            *out = JSValue::encode(parserError.toErrorObject(g, source));
+        return RJS_EXCEPTION;
+    }
+    if (!block)
+        return RJS_BAD_ARG;
+    Strong<UnlinkedProgramCodeBlock> rootedBlock(vm, block);
+    auto key = sourceCodeKeyForSerializedProgram(vm, source);
+    auto bytecode = encodeCodeBlock(vm, key, block, nullptr, BytecodeCacheUpdatable::No);
+    if (!bytecode)
+        return RJS_BAD_ARG;
+    *bytes = bytecode->span().data();
+    *byteLength = bytecode->size();
+    *handle = bytecode.leakRef();
+    return RJS_OK;
+}
+
+extern "C" void rjs_bytecode_free(void* handle)
+{
+    if (handle)
+        static_cast<CachedBytecode*>(handle)->deref();
+}
+
+extern "C" int32_t rjs_eval8_cached(void* global, const char* src, size_t len, const char* url, size_t urlLen,
+    const uint8_t* bytes, size_t byteLength, uint32_t* used, uint64_t* out)
+{
+    if (!global || !used || (!src && len) || (!url && urlLen) || (!bytes && byteLength))
+        return RJS_BAD_ARG;
+    *used = 0;
+    auto* g = G(global);
+    VM& vm = g->vm();
+    JSLockHolder lock(vm);
+    auto code = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(src), len });
+    auto file = urlLen ? WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(url), urlLen }) : WTF::String();
+    if (!byteLength)
+        return evalCommon(g, code, file, out);
+
+    // JSC may decode nested functions after eval returns, or keep pointers into
+    // its decoder. Give CachedBytecode ownership, never promise persistence of
+    // a caller's slice. Its destructor follows the last decoder's lifetime.
+    auto* copy = static_cast<uint8_t*>(std::malloc(byteLength));
+    if (!copy)
+        return evalCommon(g, code, file, out);
+    std::memcpy(copy, bytes, byteLength);
+    auto bytecode = CachedBytecode::create(std::span<uint8_t> { copy, byteLength },
+        [] (const void* address) { std::free(const_cast<void*>(address)); }, { });
+    // Bun omits source text from its cache. Its provider-less
+    // isCachedBytecodeStillValid() intentionally rejects such payloads. The
+    // ordinary CodeCache decoder receives this runtime provider, validates the
+    // format/source key, and falls back to parsing before any execution.
+    auto provider = RjsCachedSourceProvider::create(code, WTF::move(file), WTF::move(bytecode));
+    SourceCode cachedSource(provider.copyRef());
+    NakedPtr<Exception> exception;
+    auto result = evaluate(g, cachedSource, jsUndefined(), exception);
+    *used = provider->wasUsed() ? 1 : 0;
+    // An exception is an executed program's result. Never fall back here: it
+    // would repeat any effects performed before the throw.
+    if (out)
+        *out = JSValue::encode(exception ? exception->value() : result);
+    return exception ? RJS_EXCEPTION : RJS_OK;
 }
 
 // ---------------------------------------------------------------------------

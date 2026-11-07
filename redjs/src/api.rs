@@ -10,6 +10,8 @@
 use core::ffi::c_void;
 use std::sync::OnceLock;
 
+pub use crate::bytecode::Bytecode;
+
 use crate::ffi;
 use crate::glue::{self, RjsAbInfo, RjsHeapStats, RjsLayout, RjsStr, RjsTaInfo};
 use crate::trampoline;

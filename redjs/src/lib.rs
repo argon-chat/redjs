@@ -27,6 +27,7 @@
 
 pub mod api;
 pub mod capi;
+pub mod bytecode;
 pub mod context;
 pub mod errors;
 pub mod ffi;

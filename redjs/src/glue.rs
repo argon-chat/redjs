@@ -87,6 +87,20 @@ extern "C" {
     /// 1 while any JS frame of this VM is on the stack, else 0.
     pub fn rjs_in_js(g: *mut c_void) -> i32;
 
+    pub fn rjs_bytecode_cache_version() -> u32;
+    pub fn rjs_bytecode_cache_options(g: *mut c_void, destination: *mut u8, capacity: usize) -> usize;
+    pub fn rjs_bytecode_generate(
+        g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
+        function_depth: u32, handle: *mut *mut c_void, bytes: *mut *const u8,
+        byte_length: *mut usize, out: *mut u64,
+    ) -> i32;
+    pub fn rjs_bytecode_free(handle: *mut c_void);
+    /// `bytes` must be a trusted JSC-produced payload, never adversarial input.
+    pub fn rjs_eval8_cached(
+        g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
+        bytes: *const u8, byte_length: usize, used: *mut u32, out: *mut u64,
+    ) -> i32;
+
     // -- structured serialization support (glue.cpp, same section name) --------
     /// Well-known symbol atom: 0 iterator, 1 toStringTag, 2 asyncIterator.
     pub fn rjs_atom_wellknown(g: *mut c_void, which: u32) -> *mut c_void;
