@@ -205,7 +205,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     define(g, document, "hidden", FALSE, 0);
     define(g, document, "title", js_string(g, ""), 0);
 
-    let mut def_fn = |target: u64, name: &str, arity: u32, f: HostFn| {
+    let def_fn = |target: u64, name: &str, arity: u32, f: HostFn| {
         let n16: Vec<u16> = name.encode_utf16().collect();
         let mut func = UNDEF;
         glue::rjs_function_create(g, n16.as_ptr(), n16.len(), arity, f as *const c_void, &mut func);

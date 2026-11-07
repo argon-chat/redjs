@@ -88,7 +88,7 @@ pub unsafe fn install(g: *mut c_void) {
     let global = glue::rjs_global(g);
     let crypto = new_object(g, UNDEF);
 
-    let mut def_fn = |target: u64, name: &str, arity: u32, f: HostFn| {
+    let def_fn = |target: u64, name: &str, arity: u32, f: HostFn| {
         let n16: Vec<u16> = name.encode_utf16().collect();
         let mut func = UNDEF;
         glue::rjs_function_create(g, n16.as_ptr(), n16.len(), arity, f as *const c_void, &mut func);
