@@ -111,6 +111,8 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 # dep regardless of features, so `../../redcss` must exist on disk even with
 # `css-host` off — a stub crate at that path satisfies it.
 [features]
+# Experimental native images; never enabled by default. Requires the matching frontend table.
+native-aot = []
 default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
@@ -257,8 +259,13 @@ required-features = ["audio"]
 name = "spatial_tour"
 required-features = ["audio"]
 
+[[example]]
+name = "aot-image"
+required-features = ["native-aot"]
+
 [build-dependencies]
 cc = "1"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

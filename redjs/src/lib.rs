@@ -42,3 +42,6 @@ pub mod trampoline;
 pub mod ui;
 pub mod web;
 pub mod webapi;
+
+#[cfg(feature = "native-aot")]
+pub mod aot;

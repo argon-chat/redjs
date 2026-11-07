@@ -102,8 +102,55 @@ fn main() {
     // invented/empty tables invalidate the engine's builtin IDs and layouts.
     let configuration = fs::read_to_string(inc.join("cmakeconfig.h"))
         .expect("the checked WebKit configuration is readable");
-    if configuration.lines().any(|line| line.trim() == "#define BUN_WEBKIT_ENABLE_AOT 1") {
+    if configuration
+        .lines()
+        .any(|line| line.trim() == "#define BUN_WEBKIT_ENABLE_AOT 1")
+    {
         let generated = inc.join("JavaScriptCore").join("aot");
+        let native_aot = std::env::var_os("CARGO_FEATURE_NATIVE_AOT").is_some();
+        println!("cargo:rerun-if-env-changed=REDJS_AOT_BUILTIN_TABLE_DIR");
+        let table = if native_aot {
+            let table = PathBuf::from(std::env::var_os("REDJS_AOT_BUILTIN_TABLE_DIR")
+                .expect("native-aot requires REDJS_AOT_BUILTIN_TABLE_DIR; run scripts/aot/generate-table.ts"));
+            let receipt = fs::read_to_string(table.join(".redjs-aot-table"))
+                .expect("native-aot table lacks its pinned generation receipt");
+            assert!(
+                receipt.contains("7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074")
+                    && receipt.contains(pin(&pins, "webkit.version")),
+                "AOT frontend/engine receipt mismatch"
+            );
+            table
+        } else {
+            generated.clone()
+        };
+        if native_aot {
+            println!(
+                "cargo:rustc-env=REDJS_AOT_ENGINE_VERSION={}",
+                pin(&pins, "webkit.version")
+            );
+            use sha2::{Digest, Sha256};
+            let mut hash = Sha256::new();
+            for file in [
+                ".redjs-aot-table",
+                "AOTBuiltinTableArrays.h",
+                "AOTBuiltinTableAttachments.cpp",
+                "AOTBuiltinTableBuiltins.cpp",
+                "AOTBuiltinTableNames.cpp",
+                "AOTBuiltinTableOverloads.cpp",
+                "AOTBuiltinTableTypes.cpp",
+            ] {
+                let path = table.join(file);
+                println!("cargo:rerun-if-changed={}", path.display());
+                hash.update(file.as_bytes());
+                hash.update(fs::read(path).expect("AOT table input missing"));
+            }
+            hash.update(
+                fs::read(inc.join("JavaScriptCore/aot/AOTWire.cpp"))
+                    .expect("AOT schema hash missing"),
+            );
+            println!("cargo:rustc-env=REDJS_AOT_TABLE_ID={:x}", hash.finalize());
+            glue.file("cpp/aot.cpp");
+        }
         glue.include(inc.join("JavaScriptCore"))
             .include(&generated)
             .include("cpp/aot")
@@ -117,12 +164,23 @@ fn main() {
             "AOTBuiltinTableTypes.cpp",
             "AOTSchemaInlineBuiltins.cpp",
         ] {
-            let source = generated.join(name);
-            assert!(source.is_file(), "AOT prebuilt lacks generated source {}", source.display());
+            let source = if name == "AOTBuiltinTableEngineBindings.cpp"
+                || name == "AOTSchemaInlineBuiltins.cpp"
+            {
+                generated.join(name)
+            } else {
+                table.join(name)
+            };
+            assert!(
+                source.is_file(),
+                "AOT prebuilt lacks generated source {}",
+                source.display()
+            );
             println!("cargo:rerun-if-changed={}", source.display());
             glue.file(source);
         }
         println!("cargo:rerun-if-changed=cpp/aot_support.cpp");
+        println!("cargo:rerun-if-changed=cpp/aot.cpp");
         println!("cargo:rerun-if-changed=cpp/aot");
     }
     glue.compile("redjs_glue");

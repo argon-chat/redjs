@@ -180,7 +180,11 @@ pub unsafe extern "C" fn redjs_set_options(options: *const c_char) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
     glue::rjs_init(core::ptr::null());
-    let g = capi::JSGlobalContextCreate(null_mut());
+    #[cfg(feature = "native-aot")]
+    let aot_global = crate::aot::create_context_if_active();
+    #[cfg(not(feature = "native-aot"))]
+    let aot_global: *mut c_void = null_mut();
+    let g = if aot_global.is_null() { capi::JSGlobalContextCreate(null_mut()) } else { aot_global };
     if !g.is_null() {
         // Before anything is keyed by this address: if it belonged to a context
         // released earlier, that context's registrations are purged here, so
@@ -199,6 +203,8 @@ pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
 /// created later at the same address starts from nothing.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_context_release(ctx: *mut c_void) {
+    #[cfg(feature = "native-aot")]
+    crate::aot::forget_context(ctx);
     crate::context::forget(ctx);
     capi::JSGlobalContextRelease(ctx);
 }

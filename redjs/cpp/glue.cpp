@@ -1349,7 +1349,7 @@ extern "C" uint32_t rjs_brand(void* g, uint64_t v, RjsBrandInfo* out)
             b = RJS_BRAND_SYMBOL_OBJECT;
         else if (o->isCallable())
             b = RJS_BRAND_FUNCTION;
-        else if (o->type() == FinalObjectType)
+        else if (o->type() == FinalObjectType || o->type() == CompiledObjectType)
             b = RJS_BRAND_PLAIN;
         break;
     }
