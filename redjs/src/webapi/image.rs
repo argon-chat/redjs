@@ -328,6 +328,29 @@ pub fn decode(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
     Some(BitmapData::new(w, h, rgba.into_raw()))
 }
 
+/// Decode a small native icon without allocating its intrinsic SVG dimensions.
+/// Input is bounded to 2 MiB; raster images are limited to 4096 per side and
+/// 32 MiB of decoder allocation. No upscaling; EXIF orientation is preserved.
+/// The returned bitmap is straight RGBA, with neither dimension above `max_side`.
+pub fn decode_thumbnail(bytes: &[u8], mime: Option<&str>, max_side: u32) -> Option<BitmapData> {
+    use image::ImageDecoder;
+    if max_side == 0 || max_side > 512 || bytes.len() > 2 * 1024 * 1024 { return None; }
+    if is_svg(bytes, mime) { return svg::rasterize_at(bytes, max_side as f32); }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(32 * 1024 * 1024);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    if img.width() > max_side || img.height() > max_side { img = img.thumbnail(max_side, max_side); }
+    let rgba = img.into_rgba8();
+    Some(BitmapData::new(rgba.width(), rgba.height(), rgba.into_raw()))
+}
+
 /// `image/svg+xml`, or markup that opens an `<svg>` element (after a BOM,
 /// whitespace, an XML declaration, comments or a doctype).
 fn is_svg(bytes: &[u8], mime: Option<&str>) -> bool {
@@ -370,7 +393,9 @@ mod svg {
 
     /// Rasterize at the SVG's intrinsic size (its `width`/`height`, else its
     /// `viewBox`), which is what `naturalWidth`/`naturalHeight` then report.
-    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> {
+    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> { rasterize_at(bytes, MAX_SIDE) }
+
+    pub(super) fn rasterize_at(bytes: &[u8], max_side: f32) -> Option<BitmapData> {
         let mut opt = usvg::Options::default();
         if bytes.windows(5).any(|w| w == b"<text") {
             opt.fontdb = fonts();
@@ -383,7 +408,7 @@ mod svg {
             }
         };
         let size = tree.size();
-        let scale = (MAX_SIDE / size.width().max(size.height())).min(1.0);
+        let scale = (max_side / size.width().max(size.height())).min(1.0);
         let w = (size.width() * scale).round().max(1.0) as u32;
         let h = (size.height() * scale).round().max(1.0) as u32;
         let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
@@ -408,7 +433,9 @@ mod svg {
 mod svg {
     use super::BitmapData;
 
-    pub(super) fn rasterize(_bytes: &[u8]) -> Option<BitmapData> {
+    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> { rasterize_at(bytes, 8192.0) }
+
+    pub(super) fn rasterize_at(_bytes: &[u8], _max_side: f32) -> Option<BitmapData> {
         static WARNED: std::sync::Once = std::sync::Once::new();
         WARNED.call_once(|| {
             eprintln!("[js:image] advisory: this build has no SVG decoder (redjs feature `svg-images`); SVG images fire `error`");
@@ -738,7 +765,27 @@ mod jsc_tests {
 
 #[cfg(test)]
 mod decode_tests {
-    use super::decode;
+    use super::{decode, decode_thumbnail};
+
+    #[test]
+    fn thumbnails_bound_dimensions_preserve_orientation_and_reject_invalid_inputs() {
+        let turned = decode_thumbnail(&jpeg(Some(6)), None, 8).unwrap();
+        assert_eq!((turned.width, turned.height, turned.rgba.len()), (4, 8, 128));
+        assert!(decode_thumbnail(b"bad", None, 16).is_none());
+        assert!(decode_thumbnail(&jpeg(None), None, 0).is_none());
+        assert!(decode_thumbnail(&jpeg(None), None, 513).is_none());
+        assert!(decode_thumbnail(&vec![0; 2 * 1024 * 1024 + 1], None, 16).is_none());
+    }
+
+    #[cfg(feature = "svg-images")]
+    #[test]
+    fn svg_thumbnail_renders_at_requested_size_instead_of_intrinsic_allocation() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="50000"><rect width="100000" height="50000" fill="red" fill-opacity="0.5"/></svg>"#;
+        let icon = decode_thumbnail(svg, None, 32).unwrap();
+        assert_eq!((icon.width, icon.height, icon.rgba.len()), (32, 16, 2048));
+        assert_eq!(icon.rgba[0], 255);
+        assert!((127..=128).contains(&icon.rgba[3]));
+    }
 
     /// A 32x16 JPEG, red on the left and blue on the right (wide enough that
     /// chroma subsampling keeps the halves apart), with an APP1 Exif segment
