@@ -12,8 +12,9 @@
 //! never freed: host functions live as long as the process, which matches the
 //! player's usage (a bounded set registered at startup).
 
+use core::cell::UnsafeCell;
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 include!(concat!(env!("OUT_DIR"), "/trampolines.rs"));
 
@@ -90,14 +91,40 @@ pub(crate) unsafe fn dispatch(i: usize, g: *mut c_void, cf: *mut c_void) -> u64 
 /// Boxed Rust host closure: `(global, callframe) -> EncodedJSValue`.
 pub type HostClosure = Box<dyn FnMut(*mut c_void, *mut c_void) -> u64 + 'static>;
 
+struct ClosureState {
+    active: AtomicBool,
+    callback: UnsafeCell<HostClosure>,
+}
+struct ClosureCall<'a>(&'a AtomicBool);
+impl Drop for ClosureCall<'_> {
+    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+}
+
 unsafe extern "C" fn closure_adapter(g: *mut c_void, cf: *mut c_void, data: *mut c_void) -> u64 {
-    let f = &mut *(data as *mut HostClosure);
-    f(g, cf)
+    let state = &*(data as *const ClosureState);
+    // JS getters/callbacks can recursively call this same native function.
+    // Reject before creating any mutable reference to the FnMut callback.
+    if state.active.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        let message: Vec<u16> = "a mutable native callback cannot be called recursively".encode_utf16().collect();
+        let mut error = ENC_UNDEFINED;
+        if crate::glue::rjs_error_create(g, 1, message.as_ptr(), message.len(), &mut error) == 0 {
+            crate::glue::rjs_throw(g, error);
+        }
+        return ENC_UNDEFINED;
+    }
+    let _call = ClosureCall(&state.active);
+    let callback = &mut *state.callback.get();
+    callback(g, cf)
 }
 
 /// Registers a Rust closure in the pool (leaks the closure — host functions
 /// are process-lifetime). Returns the SysV entry point.
 pub fn acquire_closure(f: HostClosure) -> Option<*const c_void> {
-    let data = Box::into_raw(Box::new(f)) as *mut c_void;
-    acquire(KIND_DATA, closure_adapter as *const c_void, data)
+    let data = Box::into_raw(Box::new(ClosureState {
+        active: AtomicBool::new(false),
+        callback: UnsafeCell::new(f),
+    }));
+    let entry = acquire(KIND_DATA, closure_adapter as *const c_void, data.cast());
+    if entry.is_none() { drop(unsafe { Box::from_raw(data) }); }
+    entry
 }

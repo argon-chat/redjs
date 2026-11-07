@@ -327,6 +327,8 @@ impl Context {
 
     /// Registers a Rust closure as a JS host function. The closure receives
     /// `(global, callframe)`; use [`HostArgs`] to decode arguments.
+    /// Recursive entry into the same mutable Rust closure throws a TypeError;
+    /// calling a different host function remains supported.
     pub fn function<F>(&self, name: &str, arity: u32, f: F) -> Result<Value>
     where
         F: FnMut(*mut c_void, *mut c_void) -> u64 + 'static,
