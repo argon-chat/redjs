@@ -54,6 +54,8 @@
 pub mod abort;
 #[cfg(feature = "audio")]
 pub mod audio;
+#[cfg(feature = "audio")]
+mod audio_worklet;
 pub mod blob;
 #[cfg(feature = "canvas")]
 pub mod canvas2d;

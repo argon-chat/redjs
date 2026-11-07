@@ -50,7 +50,9 @@
 //!   `ChannelSplitterNode` and `ChannelMergerNode` only — the two nodes whose
 //!   values the spec pins (see [`SplitterNode`] / [`MergerNode`]). The other
 //!   nodes do not have the three attributes.
-//! - No `OfflineAudioContext`, `AudioWorklet`, `ConvolverNode`, `DelayNode`,
+//! - `loadNativeAudioWorklet` selects precompiled Rust DSP; it does not execute
+//!   arbitrary JavaScript worklet modules (see `audio/native_worklet.rs`).
+//! - No `OfflineAudioContext`, JavaScript `AudioWorklet`, `ConvolverNode`, `DelayNode`,
 //!   `WaveShaperNode`, `DynamicsCompressorNode`, or `PeriodicWave`. Each is
 //!   absent rather than stubbed, so `typeof ctx.createDelay === 'function'`
 //!   tells the truth.
@@ -90,6 +92,9 @@ use super::osc::{OscNode, OscShared, Wave};
 use super::pcm::{self, PcmStreamConfig};
 use super::util::*;
 use crate::glue;
+use super::audio_worklet::{NativeKind, NativeMessage, NativeNode, NativeShared};
+
+mod native_worklet;
 
 // ---------------------------------------------------------------------------
 // AudioParam kinds
@@ -108,6 +113,8 @@ const P_ORIENT_X: u8 = 10; // PannerNode.orientationX (cone direction)
 const P_ORIENT_Y: u8 = 11;
 const P_ORIENT_Z: u8 = 12;
 const P_DETUNE: u8 = 13; // OscillatorNode.detune (cents) — a REAL detune, unlike P_INERT
+const P_NATIVE_ENABLED: u8 = 20;
+const P_NATIVE_THRESHOLD: u8 = 21;
 const P_L_POS_X: u8 = 100; // AudioListener.positionX (param.node = engine handle)
 const P_L_POS_Y: u8 = 101;
 const P_L_POS_Z: u8 = 102;
@@ -904,6 +911,8 @@ enum Params {
     },
     /// OscillatorNode: params shared with the audio thread (webapi/osc.rs).
     Osc(ArcGc<OscShared>),
+    /// Precompiled native DSP, with a bounded audio-thread -> VM mailbox.
+    Native { kind: NativeKind, shared: ArcGc<NativeShared>, discrete: bool },
     /// RedStreamSourceNode: the graph end of a streaming-PCM push (webapi/pcm.rs).
     /// The producer end lives in `pcm`'s own registry, keyed by the node handle.
     PcmStream(PcmStreamConfig),
@@ -968,6 +977,9 @@ struct NodeRec {
     ended: bool,
     /// The JS node object, protected while playing (spec keeps it alive).
     js_obj: u64,
+    /// Weak wrapper reference: its finalizer is drained before notification collection.
+    /// The wrapper/port own each other through GC slots; no permanent JS root.
+    worklet_obj: u64,
     pending_start: Option<(f64, f64, Option<f64>)>, // (when, offset, duration)
     pending_stop: Option<f64>,
 }
@@ -1006,6 +1018,7 @@ impl NodeRec {
             saw_playing: false,
             ended: false,
             js_obj: 0,
+            worklet_obj: 0,
             pending_start: None,
             pending_stop: None,
         }
@@ -1248,6 +1261,9 @@ pub struct AudioClasses {
     source: Class,
     osc: Class,
     stream_src: Class,
+    worklet: Class,
+    worklet_port: Class,
+    worklet_port_cls: crate::capi::JSClassRef,
     splitter: Class,
     merger: Class,
     dest: Class,
@@ -1502,6 +1518,8 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
             }
             // Oscillator params are plain atomic stores — no event round-trip,
             // and readable back by `param_current` for `.value`.
+            (Params::Native { shared, .. }, P_NATIVE_ENABLED) => shared.set_enabled(v.clamp(0.0, 1.0) as f32),
+            (Params::Native { shared, .. }, P_NATIVE_THRESHOLD) => shared.set_threshold(v.clamp(-100.0, 0.0) as f32),
             (Params::Osc(sh), P_FREQ) => sh.set_frequency(v as f32),
             (Params::Osc(sh), P_DETUNE) => sh.set_detune(v as f32),
             (Params::Spatial(_), P_POS_X..=P_POS_Z) => {
@@ -1778,6 +1796,7 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
         Params::Sampler(s) => eng.fw.add_node((**s).clone(), Some(SamplerConfig::default())),
         Params::Analyser { ring, .. } => eng.fw.add_node(MonitorNode { ring: ArcGc::clone(ring) }, None),
         Params::Osc(sh) => eng.fw.add_node(OscNode { shared: ArcGc::clone(sh) }, None),
+        Params::Native { kind, shared, .. } => eng.fw.add_node(NativeNode { kind: *kind, shared: ArcGc::clone(shared) }, None),
         Params::PcmStream(cfg) => {
             let ch = firewheel::channel_config::NonZeroChannelCount::new(cfg.channels as u32)
                 .unwrap_or(firewheel::channel_config::NonZeroChannelCount::STEREO);
@@ -1852,6 +1871,7 @@ fn conn_ports(src: &NodeRec, output: u32, dst: &NodeRec, input: u32) -> Vec<(u32
     match &dst.params {
         Params::Merger { .. } => pair(2 * input, 2 * input + 1),
         Params::Splitter(n) => from.iter().copied().zip(0..*n).collect(),
+        Params::Native { discrete: true, .. } => from.iter().copied().zip(0..2).collect(),
         _ => match dst.in_ch {
             0 => Vec::new(),
             1 => vec![(from[0], 0)],
@@ -2181,6 +2201,8 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
         (Params::Svf(p), P_FREQ) => p.cutoff_hz as f64,
         (Params::Svf(p), P_Q) => p.q_factor as f64,
         (Params::Sampler(s), P_RATE) => s.speed,
+        (Params::Native { shared, .. }, P_NATIVE_ENABLED) => shared.enabled() as f64,
+        (Params::Native { shared, .. }, P_NATIVE_THRESHOLD) => shared.threshold() as f64,
         (Params::Osc(sh), P_FREQ) => sh.frequency() as f64,
         (Params::Osc(sh), P_DETUNE) => sh.detune() as f64,
         (Params::Spatial(_), P_POS_X..=P_POS_Z) => rec.pos[(kind - P_POS_X) as usize] as f64,
@@ -2200,7 +2222,12 @@ unsafe extern "sysv64" fn param_get_value(g: *mut c_void, cf: *mut c_void) -> u6
 }
 
 unsafe extern "sysv64" fn param_set_value(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let v = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
+    let native = this_param(g, cf).is_some_and(|p| matches!(p.kind, P_NATIVE_ENABLED | P_NATIVE_THRESHOLD));
+    let v = if native {
+        let Ok(v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF; };
+        if !v.is_finite() { return throw_type_error(g, "Native audio parameters must be finite"); }
+        v
+    } else { dec_f64(cf_arg(cf, 0)).unwrap_or(0.0) };
     let Some(p) = this_param(g, cf) else {
         return throw_type_error(g, "AudioParam.value on wrong this");
     };
@@ -2214,8 +2241,13 @@ unsafe extern "sysv64" fn param_set_value(g: *mut c_void, cf: *mut c_void) -> u6
 }
 
 unsafe fn param_schedule(g: *mut c_void, cf: *mut c_void, mk: impl FnOnce(f64, f64) -> Tl) -> u64 {
-    let v = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
-    let t = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0);
+    let native = this_param(g, cf).is_some_and(|p| matches!(p.kind, P_NATIVE_ENABLED | P_NATIVE_THRESHOLD));
+    let (v, t) = if native {
+        let Ok(v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF; };
+        let Ok(t) = to_number(g, cf_arg(cf, 1)) else { return UNDEF; };
+        if !v.is_finite() || !t.is_finite() { return throw_type_error(g, "Native audio automation values/times must be finite"); }
+        (v, t)
+    } else { (dec_f64(cf_arg(cf, 0)).unwrap_or(0.0), dec_f64(cf_arg(cf, 1)).unwrap_or(0.0)) };
     let this = cf_this(cf);
     let Some(p) = this_param(g, cf) else {
         return throw_type_error(g, "AudioParam method on wrong this");
@@ -3991,6 +4023,7 @@ pub unsafe fn pump(g: *mut c_void) {
     }
 
     let mut ended: Vec<u64> = Vec::new();
+    let mut worklet_messages: Vec<(u64, NativeMessage)> = Vec::new();
     {
         let mut gl = glob().lock().unwrap();
         let gl = &mut *gl;
@@ -4077,6 +4110,14 @@ pub unsafe fn pump(g: *mut c_void) {
             // Scheduled starts/stops + ended detection.
             let eng = engines.get_mut(&eh).unwrap();
             for rec in nodes.values_mut().filter(|r| r.engine == eh) {
+                if let Params::Native { shared, .. } = &rec.params {
+                    if rec.worklet_obj != 0 {
+                        if let Some(message) = shared.take_message() {
+                            crate::ffi::redjs_protect(g, rec.worklet_obj);
+                            worklet_messages.push((rec.worklet_obj, message));
+                        }
+                    }
+                }
                 if let Some((when, offset, duration)) = rec.pending_start {
                     if when <= now {
                         rec.pending_start = None;
@@ -4159,7 +4200,11 @@ pub unsafe fn pump(g: *mut c_void) {
         }
     }
 
-    // JS callbacks outside the lock.
+    // JS callbacks outside the lock. A listener may close a context or force GC.
+    for (obj, message) in worklet_messages {
+        native_worklet::dispatch_message(g, obj, message);
+        crate::ffi::redjs_unprotect(g, obj);
+    }
     for obj in ended {
         let slots = get_a(g, obj, c_s_audio);
         let cb = get(g, slots, "onended");
@@ -4411,12 +4456,15 @@ pub unsafe fn install(g: *mut c_void) {
         accessors: pinned,
     });
 
+    let (worklet, worklet_port, worklet_port_cls) = native_worklet::install(g, node_base.proto);
+
     let ctx = define_class(g, &ClassSpec {
         name: "AudioContext",
         arity: 0,
         construct: Some(ctx_construct),
         parent_proto: 0,
         methods: &[
+            ("loadNativeAudioWorklet", 1, native_worklet::load),
             ("createGain", 0, ctx_create_gain),
             ("createStereoPanner", 0, ctx_create_stereo_panner),
             ("createPanner", 0, ctx_create_panner),
@@ -4468,6 +4516,9 @@ pub unsafe fn install(g: *mut c_void) {
         source,
         osc,
         stream_src,
+        worklet,
+        worklet_port,
+        worklet_port_cls,
         splitter,
         merger,
         dest,
@@ -4814,7 +4865,7 @@ mod jsc_tests {
     /// i.e. whether there is a real output stream. Every signal assertion below
     /// is conditional on that, so the suite is green on a machine with no sound
     /// card AND meaningful on one with.
-    fn pump_for(c: &Context, ms: u64) -> bool {
+    pub(super) fn pump_for(c: &Context, ms: u64) -> bool {
         let before = s(c, "globalThis.__ctx.currentTime");
         for _ in 0..(ms / 10).max(1) {
             unsafe { super::pump(c.raw()) };
@@ -4828,7 +4879,7 @@ mod jsc_tests {
     }
 
     /// RMS of an analyser's time-domain window, as JS sees it.
-    fn analyser_rms(c: &Context, which: &str) -> f64 {
+    pub(super) fn analyser_rms(c: &Context, which: &str) -> f64 {
         s(
             c,
             &format!(
