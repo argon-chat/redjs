@@ -419,7 +419,7 @@ unsafe fn new_progress(g: *mut c_void, ty: &str, loaded: u64, total: u64) -> u64
     obj
 }
 
-unsafe fn fire_progress(g: *mut c_void, target: u64, ty: &str, loaded: u64, total: u64) {
+pub(super) unsafe fn fire_progress(g: *mut c_void, target: u64, ty: &str, loaded: u64, total: u64) {
     let ev = new_progress(g, ty, loaded, total);
     events::dispatch(g, target, ev);
 }
@@ -1017,7 +1017,7 @@ fn http_trim(s: &str) -> &str {
 }
 
 /// The `charset` parameter of a MIME type, if any.
-fn charset_of(mime: &str) -> Option<String> {
+pub(super) fn charset_of(mime: &str) -> Option<String> {
     mime.split(';').skip(1).find_map(|p| {
         let (k, v) = p.split_once('=')?;
         k.trim().eq_ignore_ascii_case("charset").then(|| v.trim().trim_matches('"').to_string())

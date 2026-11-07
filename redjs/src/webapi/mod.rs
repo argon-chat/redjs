@@ -68,6 +68,7 @@ pub mod domexception;
 pub mod events;
 pub mod fetch;
 pub mod file;
+pub mod file_reader;
 pub mod formdata;
 pub mod fsutil;
 pub mod geometry;
@@ -186,6 +187,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     clipboard::forget(gone);
     domexception::forget(gone);
     file::forget(gone);
+    file_reader::forget(gone);
     #[cfg(feature = "audio")]
     {
         audio::forget(gone);
@@ -383,6 +385,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // transport `fetch` uses. Same needs as `WebSocket`: `Event.prototype`
     // (ProgressEvent) and `EventTarget.prototype`.
     xhr::install(g, ev_proto, et_proto);
+    file_reader::install(g, et_proto);
     // `navigator.clipboard` answers from whatever `ClipboardHost` the embedder
     // installed. AFTER `dom::install`, because it also lands `execCommand` on
     // `document`; the hook itself is read per call, so nothing else orders it.

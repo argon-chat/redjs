@@ -274,11 +274,41 @@ unsafe extern "sysv64" fn init_event_legacy(g: *mut c_void, cf: *mut c_void) -> 
     UNDEF
 }
 
+/// A constructor's fresh event/state are not reachable from script yet. Init
+/// getters may reenter JS and collect, so root the whole input graph until the
+/// state bag is attached, including callers which pass temporary native values.
+struct EventInitRoots {
+    global: *mut c_void,
+    values: [u64; 4],
+}
+impl EventInitRoots {
+    unsafe fn new(global: *mut c_void, object: u64, ty: u64, init: u64) -> Self {
+        let values = [object, ty, init, UNDEF];
+        for value in values {
+            if is_cell(value) { crate::ffi::redjs_protect(global, value); }
+        }
+        Self { global, values }
+    }
+    unsafe fn state(&mut self, value: u64) {
+        self.values[3] = value;
+        if is_cell(value) { crate::ffi::redjs_protect(self.global, value); }
+    }
+}
+impl Drop for EventInitRoots {
+    fn drop(&mut self) {
+        for &value in self.values.iter().rev() {
+            if is_cell(value) { unsafe { crate::ffi::redjs_unprotect(self.global, value); } }
+        }
+    }
+}
+
 /// Shared init for Event/CustomEvent constructors. `this_obj` is the fresh
 /// ordinary object; fills the [[s_event]] slot from (type, initDict).
 pub unsafe fn init_event(g: *mut c_void, this_obj: u64, ty: u64, init: u64, detail_from_init: bool) {
+    let mut roots = EventInitRoots::new(g, this_obj, ty, init);
     let st = state(g);
     let s = new_object(g, UNDEF);
+    roots.state(s);
     let type_str = read_string(g, ty).unwrap_or_default();
     define(g, s, "type", js_string(g, &type_str), 0);
 
@@ -881,6 +911,48 @@ pub unsafe fn install(g: *mut c_void) -> (Class, Class, Class) {
 mod tests {
     use super::*;
     use crate::webapi::testing::*;
+
+    unsafe extern "sysv64" fn force_init_gc(g: *mut c_void, _cf: *mut c_void) -> u64 {
+        glue::rjs_gc(g, 0);
+        UNDEF
+    }
+
+    #[test]
+    fn constructor_state_survives_gc_and_reentry_in_init_getters() {
+        let c = ctx();
+        let collect = unsafe { c.function_sysv("__eventInitGc", 0, force_init_gc as *const c_void) }.unwrap();
+        c.global_set("__eventInitGc", collect).unwrap();
+        ok(&c, r#"(() => {
+            for (let index = 0; index < 12; index++) {
+                const type = 'event-' + index + '-' + Array.from({length: 512}, (_, i) => i).join('x');
+                const seen = [];
+                const event = new Event({toString() {__eventInitGc(); return type;}}, {
+                    get bubbles() {
+                        const nested = new Event('nested', {get cancelable() {__eventInitGc(); return true;}});
+                        if (!nested.cancelable) throw Error('nested event lost state');
+                        __eventInitGc(); seen.push('bubbles'); return true;
+                    },
+                    get cancelable() {__eventInitGc(); seen.push('cancelable'); return true;},
+                    get composed() {__eventInitGc(); seen.push('composed'); return true;}
+                });
+                if (event.type !== type || !event.bubbles || !event.cancelable || !event.composed || seen.join() !== 'bubbles,cancelable,composed') return false;
+                const custom = new CustomEvent(type, {
+                    get bubbles() {__eventInitGc(); return true;},
+                    get cancelable() {__eventInitGc(); return true;},
+                    get detail() {const detail = {marker: 'detail-' + index, bytes: new Uint8Array([index, 7, 9])}; __eventInitGc(); return detail;}
+                });
+                __eventInitGc();
+                const target = new EventTarget(); let dispatched = false;
+                target.addEventListener(type, function (received) {
+                    __eventInitGc();
+                    dispatched = received === custom && received.target === target && received.currentTarget === target && received.type === type && received.detail.marker === 'detail-' + index && received.detail.bytes[0] === index;
+                    received.preventDefault();
+                });
+                if (target.dispatchEvent(custom) !== false || !dispatched || !custom.defaultPrevented || custom.currentTarget !== null || custom.eventPhase !== 0) return false;
+            }
+            return true;
+        })()"#);
+    }
 
     #[test]
     fn phases_and_order_over_an_explicit_path() {
