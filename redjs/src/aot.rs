@@ -18,6 +18,46 @@ pub fn digest_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Hash a trusted image without retaining a second image-sized allocation.
+/// Interrupted reads are retried; all other I/O failures remain observable.
+pub fn digest_reader(mut reader: impl std::io::Read) -> std::io::Result<String> {
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(format!("{:x}", hash.finalize())),
+            Ok(length) => hash.update(&buffer[..length]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Runtime-only heap capacity profile for a selected native AOT process.
+/// This does not change native-image identity, reference width or JIT defaults.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum MemoryProfile {
+    /// Preserve the pinned engine's normal options and external overrides.
+    #[default]
+    Default = 0,
+    /// 256 MiB Structure heap and a 1 GiB narrow-reference cell cage.
+    /// Capacity limits: an exhausted heap can fail allocations earlier than
+    /// the engine-default profile. Select before any JSC initialization.
+    Compact = 1,
+}
+
+/// The options and initial image-view protection actually selected by a loader.
+/// An engine-default structure_heap_size_kb of zero means automatic sizing;
+/// these are configured option values, not committed/resident byte counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemorySettings {
+    pub profile: MemoryProfile,
+    pub structure_heap_size_kb: u64,
+    pub marked_block_cage_size_mb: u64,
+    pub initial_image_read_only: bool,
+}
+
 fn anchor_icu() {
     core::hint::black_box(crate::icu::bun_icu_maybe_decompress as *const ());
 }
@@ -28,7 +68,18 @@ unsafe extern "C" {
     fn rjs_aot_compilation_entries(handle: *mut c_void, entries: *mut *const u32) -> usize;
     fn rjs_aot_compilation_diagnostic(handle: *mut c_void, bytes: *mut *const u8) -> usize;
     fn rjs_aot_compilation_free(handle: *mut c_void);
-    fn rjs_aot_load_file(path: *const u16, length: usize, identity: *const u8) -> u32;
+    fn rjs_aot_load_file_with_profile(
+        path: *const u16,
+        length: usize,
+        identity: *const u8,
+        profile: u32,
+    ) -> u32;
+    fn rjs_aot_load_handle_with_profile(file: isize, identity: *const u8, profile: u32) -> u32;
+    fn rjs_aot_memory_settings(
+        structure_heap_kb: *mut u64,
+        cell_cage_mb: *mut u64,
+        read_only: *mut u32,
+    ) -> u32;
     fn rjs_aot_create_context() -> *mut c_void;
     fn rjs_aot_run(context: *mut c_void, module: u32, result: *mut u64) -> i32;
     fn rjs_aot_is_active() -> i32;
@@ -110,15 +161,91 @@ pub unsafe fn compile_ir(program: &[u8]) -> Result<CompiledImage, String> {
 /// BUILD_TABLE_ID and COMPILE_OPTIONS before loading. An identity from an
 /// unrelated artifact is not an ABI compatibility check.
 pub unsafe fn load_image(path: &Path, identity: [u8; 16]) -> Result<(), String> {
+    unsafe { load_image_with_profile(path, identity, MemoryProfile::Default) }
+}
+
+/// Selects a trusted native image and its runtime memory capacity profile.
+/// Compact must be selected before JSC initialization; conflicting options or
+/// attempts to change a previously initialized profile fail explicitly.
+///
+/// # Safety
+/// The same native-code trust and exact manifest/ABI checks as [`load_image`]
+/// apply. Compact is a capacity tradeoff, not an image compatibility change.
+/// Options cannot be undone for a JIT fallback after initialization/acceptance.
+pub unsafe fn load_image_with_profile(
+    path: &Path,
+    identity: [u8; 16],
+    profile: MemoryProfile,
+) -> Result<(), String> {
     anchor_icu();
     use std::os::windows::ffi::OsStrExt;
     let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    let verdict = unsafe { rjs_aot_load_file(wide.as_ptr(), wide.len(), identity.as_ptr()) };
+    let verdict = unsafe {
+        rjs_aot_load_file_with_profile(wide.as_ptr(), wide.len(), identity.as_ptr(), profile as u32)
+    };
     if verdict == 1 {
         Ok(())
     } else {
-        Err(format!("native AOT image rejected (verdict {verdict})"))
+        Err(format!(
+            "native AOT image rejected (verdict {verdict}, memory profile {profile:?})"
+        ))
     }
+}
+
+/// Loads the exact already-verified file object, without reopening its path.
+/// The loader duplicates its handle; the caller can close its File on success.
+/// The file must have read and execute access. Hash and validate the trusted
+/// manifest through this same file while denying writes before calling.
+///
+/// # Safety
+/// The native-code trust and exact ABI requirements of [`load_image`] apply.
+/// A read checksum is not authentication. The caller must keep the verified
+/// file immutable for the native image lifetime. Open while denying write
+/// sharing, which the retained duplicate preserves. A retained path alone is
+/// not a file identity.
+pub unsafe fn load_image_file_with_profile(
+    file: &std::fs::File,
+    identity: [u8; 16],
+    profile: MemoryProfile,
+) -> Result<(), String> {
+    anchor_icu();
+    use std::os::windows::io::AsRawHandle;
+    let verdict = unsafe {
+        rjs_aot_load_handle_with_profile(
+            file.as_raw_handle() as isize,
+            identity.as_ptr(),
+            profile as u32,
+        )
+    };
+    if verdict == 1 {
+        Ok(())
+    } else {
+        Err(format!(
+            "native AOT image rejected (verdict {verdict}, memory profile {profile:?})"
+        ))
+    }
+}
+
+/// Read-only diagnostics for the image on this VM thread; no initialization.
+pub fn memory_settings() -> Option<MemorySettings> {
+    let (mut structure_heap_size_kb, mut marked_block_cage_size_mb, mut read_only) = (0, 0, 0);
+    let profile = match unsafe {
+        rjs_aot_memory_settings(
+            &mut structure_heap_size_kb,
+            &mut marked_block_cage_size_mb,
+            &mut read_only,
+        )
+    } {
+        0 => MemoryProfile::Default,
+        1 => MemoryProfile::Compact,
+        _ => return None,
+    };
+    Some(MemorySettings {
+        profile,
+        structure_heap_size_kb,
+        marked_block_cage_size_mb,
+        initial_image_read_only: read_only != 0,
+    })
 }
 
 /// The native backend is selected on this VM thread.
@@ -152,5 +279,99 @@ impl Context {
             2 => Err(Error::BadArg),
             status => Err(Error::Engine(status)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Read};
+    struct Chunked {
+        bytes: Vec<u8>,
+        offset: usize,
+        interrupted: bool,
+    }
+    impl Read for Chunked {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let count = 3.min(out.len()).min(self.bytes.len() - self.offset);
+            out[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+    #[test]
+    fn streaming_digest_matches_empty_and_chunked_images() {
+        assert_eq!(digest_reader(io::empty()).unwrap(), digest_hex(&[]));
+        let bytes = (0..100_000).map(|x| (x % 251) as u8).collect::<Vec<_>>();
+        assert_eq!(
+            digest_reader(Chunked {
+                bytes: bytes.clone(),
+                offset: 0,
+                interrupted: false
+            })
+            .unwrap(),
+            digest_hex(&bytes)
+        );
+    }
+    #[test]
+    fn streaming_digest_preserves_reader_errors() {
+        struct Failed;
+        impl Read for Failed {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "image read denied",
+                ))
+            }
+        }
+        let error = digest_reader(Failed).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "image read denied");
+    }
+    #[test]
+    fn profile_is_typed_and_does_not_change_compile_identity() {
+        assert_eq!(MemoryProfile::default(), MemoryProfile::Default);
+        assert_eq!(MemoryProfile::Default as u32, 0);
+        assert_eq!(MemoryProfile::Compact as u32, 1);
+        assert!(COMPILE_OPTIONS.contains("references=narrow"));
+        assert!(!COMPILE_OPTIONS.contains("Compact"));
+    }
+    #[test]
+    fn invalid_ffi_profile_is_rejected_before_initialization_or_file_access() {
+        let verdict = unsafe {
+            rjs_aot_load_file_with_profile(std::ptr::null(), 0, std::ptr::null(), u32::MAX)
+        };
+        assert_eq!(verdict, 11); // pinned ImageVerdict::OptionsConflict
+    }
+    #[test]
+    fn original_c_loader_symbol_remains_available() {
+        unsafe extern "C" {
+            fn rjs_aot_load_file(path: *const u16, length: usize, identity: *const u8) -> u32;
+        }
+        assert_eq!(
+            unsafe { rjs_aot_load_file(std::ptr::null(), 0, std::ptr::null()) },
+            6
+        );
+    }
+    #[test]
+    fn invalid_handles_and_profiles_are_rejected_before_initialization() {
+        let identity = [0u8; 16];
+        assert_eq!(
+            unsafe { rjs_aot_load_handle_with_profile(0, identity.as_ptr(), 0) },
+            17
+        );
+        assert_eq!(
+            unsafe { rjs_aot_load_handle_with_profile(-1, identity.as_ptr(), 1) },
+            17
+        );
+        assert_eq!(
+            unsafe { rjs_aot_load_handle_with_profile(0, identity.as_ptr(), u32::MAX) },
+            11
+        );
+        assert!(memory_settings().is_none());
     }
 }

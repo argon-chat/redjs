@@ -25,7 +25,9 @@
 #include <atomic>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <unordered_set>
+#include <utility>
 #include <windows.h>
 
 using namespace JSC;
@@ -44,7 +46,14 @@ struct RjsAotCompilation {
 };
 std::atomic<bool> contextWasCreated { false };
 std::atomic<bool> compilerInitialized { false };
+std::once_flag nativeHelpersInitialized;
 thread_local bool imageActive { false };
+// Profile values are part of the loader ABI, never of the image ABI.
+enum class MemoryProfile : uint32_t { Default = 0, Compact = 1 };
+constexpr uint32_t noMemoryProfile = UINT32_MAX;
+std::atomic<uint32_t> initializedMemoryProfile { noMemoryProfile };
+thread_local MemoryProfile imageMemoryProfile { MemoryProfile::Default };
+thread_local const void* initialImageView { nullptr };
 thread_local std::unordered_set<JSGlobalObject*> startedRealms;
 const AOT::ModuleHost moduleHost { };
 
@@ -137,57 +146,153 @@ extern "C" void rjs_aot_compilation_free(void* handle)
     delete static_cast<RjsAotCompilation*>(handle);
 }
 
-extern "C" uint32_t rjs_aot_load_file(const char16_t* path, size_t length, const uint8_t* identity)
+namespace {
+// Both entry points transfer an owned file here. Only Accepted releases it
+// and the view into the engine's process-lifetime borrow; every failure drops
+// the RAII owners, including the cell-cage check before image publication.
+struct OwnedHandle {
+    HANDLE value;
+    explicit OwnedHandle(HANDLE value) : value(value) { }
+    OwnedHandle(const OwnedHandle&) = delete;
+    OwnedHandle& operator=(const OwnedHandle&) = delete;
+    ~OwnedHandle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    HANDLE release() { return std::exchange(value, INVALID_HANDLE_VALUE); }
+};
+struct OwnedView {
+    void* value;
+    explicit OwnedView(void* value) : value(value) { }
+    OwnedView(const OwnedView&) = delete;
+    OwnedView& operator=(const OwnedView&) = delete;
+    ~OwnedView() { if (value) UnmapViewOfFile(value); }
+    void* release() { return std::exchange(value, nullptr); }
+};
+AOT::Wire::ImageVerdict checkLoad(uint32_t rawProfile)
 {
     using AOT::Wire::ImageVerdict;
-    if (!path || !identity || contextWasCreated.load(std::memory_order_acquire))
-        return static_cast<uint32_t>(ImageVerdict::AlreadyInUse);
+    if (rawProfile > static_cast<uint32_t>(MemoryProfile::Compact))
+        return ImageVerdict::OptionsConflict;
+    auto initializedProfile = initializedMemoryProfile.load(std::memory_order_acquire);
+    if (initializedProfile != noMemoryProfile && initializedProfile != rawProfile)
+        return ImageVerdict::OptionsConflict;
+    if (contextWasCreated.load(std::memory_order_acquire))
+        return ImageVerdict::AlreadyInUse;
     if (compilerInitialized.load(std::memory_order_acquire))
-        return static_cast<uint32_t>(ImageVerdict::OptionsConflict);
-    std::wstring terminated(reinterpret_cast<const wchar_t*>(path), length);
-    HANDLE file = CreateFileW(terminated.c_str(), GENERIC_READ | GENERIC_EXECUTE,
-        FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        return ImageVerdict::OptionsConflict;
+    return ImageVerdict::Accepted;
+}
+uint32_t loadOwnedFile(HANDLE owned, const uint8_t* identity, uint32_t rawProfile)
+{
+    using AOT::Wire::ImageVerdict;
+    OwnedHandle file(owned);
+    auto preflight = checkLoad(rawProfile);
+    if (preflight != ImageVerdict::Accepted)
+        return static_cast<uint32_t>(preflight);
+    if (!identity)
+        return static_cast<uint32_t>(ImageVerdict::AlreadyInUse);
+    auto profile = static_cast<MemoryProfile>(rawProfile);
+    auto initializedProfile = initializedMemoryProfile.load(std::memory_order_acquire);
     LARGE_INTEGER size;
-    if (file == INVALID_HANDLE_VALUE)
-        return static_cast<uint32_t>(ImageVerdict::CannotReadExecutable);
-    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0) {
-        CloseHandle(file);
+    if (!GetFileSizeEx(file.value, &size) || size.QuadPart <= 0)
         return static_cast<uint32_t>(ImageVerdict::Truncated);
-    }
-    HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_WRITECOPY, 0, 0, nullptr);
-    void* bytes = mapping ? MapViewOfFile(mapping, FILE_MAP_COPY, 0, 0, 0) : nullptr;
-    if (mapping)
-        CloseHandle(mapping);
-    if (!bytes) {
-        CloseHandle(file);
+    // Immutable metadata/input view; the engine maps executable regions and
+    // writable private clones separately through this exact retained file.
+    OwnedHandle mapping(CreateFileMappingW(file.value, nullptr, PAGE_READONLY, 0, 0, nullptr));
+    OwnedView view(mapping.value ? MapViewOfFile(mapping.value, FILE_MAP_READ, 0, 0, 0) : nullptr);
+    if (!view.value)
         return static_cast<uint32_t>(ImageVerdict::CannotMapCode);
-    }
-    Options::initialize([] {
+    bool customized = false;
+    Options::initialize([&] {
+        customized = true;
+        initializedMemoryProfile.store(rawProfile, std::memory_order_release);
+        if (profile == MemoryProfile::Compact) {
+            Options::structureHeapSizeInKB() = 262144;
+            Options::markedBlockCageSizeInMB() = 1024;
+        }
         Options::useAOT() = true;
         Options::useJIT() = false;
         Options::useSharedArrayBuffer() = true;
         Options::useTemporal() = true;
         Options::useExplicitResourceManagement() = true;
     });
-    if (rjs_init(nullptr) || !Options::useAOT() || Options::useJIT()) {
-        UnmapViewOfFile(bytes); CloseHandle(file);
+    if (rjs_init(nullptr) || !Options::useAOT() || Options::useJIT()
+        || (profile == MemoryProfile::Compact && ((!customized && initializedProfile != rawProfile)
+            || Options::structureHeapSizeInKB() != 262144 || Options::markedBlockCageSizeInMB() != 1024))) {
         return static_cast<uint32_t>(ImageVerdict::OptionsConflict);
     }
-    AOT::BuiltinBindings::bindNativeHelpersOfEngine();
+    // The engine helper registry is one-time even when an image is rejected.
+    std::call_once(nativeHelpersInitialized, [] { AOT::BuiltinBindings::bindNativeHelpersOfEngine(); });
     std::array<uint8_t, 16> expected;
     std::memcpy(expected.data(), identity, 16);
-    auto verdict = AOT::useImage({ static_cast<const uint8_t*>(bytes), static_cast<size_t>(size.QuadPart) },
-        AOT::ImageFile { reinterpret_cast<intptr_t>(file), 0 }, expected);
-    if (verdict != ImageVerdict::Accepted) {
-        UnmapViewOfFile(bytes);
-        CloseHandle(file);
-        return static_cast<uint32_t>(verdict);
-    }
-    // Accepted images borrow their mappings and file for the thread's lifetime.
-    if (!AOT::Image::current()->header().options.useWideReferences() && !MarkedBlockCage::require())
+    std::span<const uint8_t> imageBytes { static_cast<const uint8_t*>(view.value), static_cast<size_t>(size.QuadPart) };
+    // Validate before reading the header and before publishing a borrowed view.
+    auto checked = AOT::Image::check(imageBytes, expected);
+    if (checked != ImageVerdict::Accepted)
+        return static_cast<uint32_t>(checked);
+    const auto& header = *reinterpret_cast<const AOT::ImageHeader*>(view.value);
+    if (!header.options.useWideReferences() && !MarkedBlockCage::require())
         return static_cast<uint32_t>(ImageVerdict::NeedsCellCage);
+    auto verdict = AOT::useImage(imageBytes, AOT::ImageFile { reinterpret_cast<intptr_t>(file.value), 0 }, expected);
+    if (verdict != ImageVerdict::Accepted)
+        return static_cast<uint32_t>(verdict);
+    imageMemoryProfile = profile;
+    initialImageView = view.release();
+    file.release();
     imageActive = true;
     return static_cast<uint32_t>(verdict);
+}
+}
+
+extern "C" uint32_t rjs_aot_load_file_with_profile(const char16_t* path, size_t length, const uint8_t* identity, uint32_t rawProfile)
+{
+    auto verdict = checkLoad(rawProfile);
+    if (verdict != AOT::Wire::ImageVerdict::Accepted)
+        return static_cast<uint32_t>(verdict);
+    if (!path || !identity)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::AlreadyInUse);
+    std::wstring terminated(reinterpret_cast<const wchar_t*>(path), length);
+    HANDLE file = CreateFileW(terminated.c_str(), GENERIC_READ | GENERIC_EXECUTE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+    return loadOwnedFile(file, identity, rawProfile);
+}
+
+extern "C" uint32_t rjs_aot_load_handle_with_profile(intptr_t rawFile, const uint8_t* identity, uint32_t rawProfile)
+{
+    auto verdict = checkLoad(rawProfile);
+    if (verdict != AOT::Wire::ImageVerdict::Accepted)
+        return static_cast<uint32_t>(verdict);
+    if (!identity)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::AlreadyInUse);
+    HANDLE original = reinterpret_cast<HANDLE>(rawFile);
+    if (!original || original == INVALID_HANDLE_VALUE)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+    HANDLE duplicate = INVALID_HANDLE_VALUE;
+    if (!DuplicateHandle(GetCurrentProcess(), original, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+    return loadOwnedFile(duplicate, identity, rawProfile);
+}
+
+// Retain the original C loader ABI and its engine-default capacity policy.
+extern "C" uint32_t rjs_aot_load_file(const char16_t* path, size_t length, const uint8_t* identity)
+{
+    return rjs_aot_load_file_with_profile(path, length, identity, static_cast<uint32_t>(MemoryProfile::Default));
+}
+
+extern "C" uint32_t rjs_aot_memory_settings(uint64_t* structureHeapKB, uint64_t* cellCageMB, uint32_t* readOnly)
+{
+    if (!imageActive)
+        return noMemoryProfile;
+    if (structureHeapKB)
+        *structureHeapKB = Options::structureHeapSizeInKB();
+    if (cellCageMB)
+        *cellCageMB = Options::markedBlockCageSizeInMB();
+    if (readOnly) {
+        MEMORY_BASIC_INFORMATION info { };
+        *readOnly = VirtualQuery(initialImageView, &info, sizeof(info)) == sizeof(info)
+            && info.Protect == PAGE_READONLY;
+    }
+    return static_cast<uint32_t>(imageMemoryProfile);
 }
 
 extern "C" void* rjs_aot_create_context()
