@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use kurbo::{Affine, Rect};
 use peniko::{BlendMode, Color, Compose, Extend, Fill, ImageQuality, ImageSampler, InterpolationAlphaSpace, Mix};
+use vello_cpu::filter_effects::{Filter, FilterFunction, FilterPrimitive, EdgeMode};
 use vello_cpu::{
     Image as VImage, ImageId, ImageSource, PaintType, PixelMetadata, Pixmap, RasterizerSettings, RenderContext,
     Resources, TargetInit,
@@ -164,6 +165,78 @@ impl CpuBackend {
     }
 
     fn encode(&mut self, ctx: &mut RenderContext, c: &Cmd, reg: &mut Registered) {
+        let draw = match c {
+            Cmd::Fill { draw, .. } | Cmd::Stroke { draw, .. } | Cmd::Image { draw, .. } => draw,
+            _ => { self.encode_plain(ctx, c, reg); return; }
+        };
+        if draw.effects.is_empty() { self.encode_plain(ctx, c, reg); return; }
+        // HTML draws the shadow and filtered source separately with the chosen
+        // operator. A fused drop-shadow would be wrong for copy/destination-in.
+        if draw.effects.shadow.is_some() { self.encode_effect_pass(ctx, c, draw, reg, true); }
+        self.encode_effect_pass(ctx, c, draw, reg, false);
+    }
+
+    fn encode_effect_pass(&mut self, ctx: &mut RenderContext, c: &Cmd, draw: &Draw, reg: &mut Registered, shadow: bool) {
+        if draw.clip.is_none() { self.encode_effect(ctx, c, draw, reg, shadow); return; }
+        // A clip must not discard source pixels before blur. Vello clip paths
+        // also restrict the source of nested filter layers, so isolate this
+        // exceptional path and clip its completed pixels at final composition.
+        let mut layer = CpuBackend::new(self.width, self.height);
+        let mut isolated = RenderContext::new(self.width as u16, self.height as u16);
+        let mut resources = Registered::new();
+        let mut source_draw = draw.clone();
+        source_draw.op = CompositeOp::SourceOver;
+        source_draw.clip = None;
+        layer.encode_effect(&mut isolated, c, &source_draw, &mut resources, shadow);
+        isolated.flush();
+        isolated.render(&mut layer.pix, &mut layer.res);
+        let image = layer.snapshot();
+        let bounds = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
+        self.encode_plain(ctx, &Cmd::Image {
+            image, src: bounds, dst: bounds, transform: Affine::IDENTITY, quality: Quality::Nearest,
+            draw: Draw { op: draw.op, alpha: 1.0, clip: draw.clip.clone(), effects: Default::default() },
+        }, reg);
+    }
+
+    fn encode_effect(&mut self, ctx: &mut RenderContext, c: &Cmd, draw: &Draw, reg: &mut Registered, shadow: bool) {
+        let depth = if draw.op.is_unbounded() {
+            begin(ctx, draw)
+        } else {
+            let n = push_clips(ctx, &draw.clip);
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, Some(draw.op.blend_mode()), None, None, None);
+            n
+        };
+        ctx.set_transform(Affine::IDENTITY);
+        ctx.set_blend_mode(BlendMode::default());
+        if shadow {
+            if let Some(s) = &draw.effects.shadow {
+                ctx.push_layer(None, None, None, None, Some(Filter::from_primitive(FilterPrimitive::DropShadowOnly {
+                    dx: s.x, dy: s.y, std_deviation: s.sigma,
+                    color: Color::new(s.color), edge_mode: EdgeMode::default(),
+                })));
+            }
+        }
+        // Nested filters run innermost first, in CSS declaration order.
+        for radius in draw.effects.blurs.iter().rev() {
+            ctx.push_layer(None, None, None, None, Some(Filter::from_function(FilterFunction::Blur { radius: *radius })));
+        }
+        let mut source = c.clone();
+        let d = match &mut source {
+            Cmd::Fill { draw, .. } | Cmd::Stroke { draw, .. } | Cmd::Image { draw, .. } => draw,
+            _ => unreachable!(),
+        };
+        d.op = CompositeOp::SourceOver;
+        d.clip = None;
+        d.effects = Default::default();
+        self.encode_plain(ctx, &source, reg);
+        for _ in &draw.effects.blurs { ctx.pop_layer(); }
+        if shadow { ctx.pop_layer(); }
+        ctx.pop_layer();
+        pop_clips(ctx, depth);
+    }
+
+    fn encode_plain(&mut self, ctx: &mut RenderContext, c: &Cmd, reg: &mut Registered) {
         match c {
             Cmd::Fill { path, even_odd, transform, paint, draw } => {
                 let depth = begin(ctx, draw);
@@ -416,7 +489,7 @@ mod tests {
     use kurbo::{BezPath, Shape};
 
     fn draw(op: CompositeOp) -> Draw {
-        Draw { op, alpha: 1.0, clip: None }
+        Draw { op, alpha: 1.0, clip: None, effects: Default::default() }
     }
     fn rect(x: f64, y: f64, w: f64, h: f64) -> BezPath {
         Rect::new(x, y, x + w, y + h).to_path(0.1)
@@ -493,7 +566,7 @@ mod tests {
             even_odd: false,
             transform: Affine::IDENTITY,
             paint: Paint::Solid(BLUE),
-            draw: Draw { op: CompositeOp::Copy, alpha: 1.0, clip },
+            draw: Draw { op: CompositeOp::Copy, alpha: 1.0, clip, effects: Default::default() },
         }]);
         assert_eq!(px(&mut b, 0, 0), [0, 0, 255, 255]);
         assert_eq!(px(&mut b, 2, 5), [0, 0, 0, 0], "inside the clip: copied (cleared)");

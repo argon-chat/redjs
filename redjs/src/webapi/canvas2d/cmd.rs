@@ -24,6 +24,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+pub use super::effects::{Effects, Shadow};
 
 use kurbo::{Affine, BezPath, Rect, Stroke};
 use peniko::{BlendMode, Compose, Mix};
@@ -282,6 +283,7 @@ pub struct Draw {
     /// `globalAlpha`, 0..=1.
     pub alpha: f32,
     pub clip: Option<Arc<Clip>>,
+    pub effects: Effects,
 }
 
 /// `imageSmoothingEnabled` + `imageSmoothingQuality`.

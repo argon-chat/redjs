@@ -188,7 +188,18 @@ impl Ctx {
     }
 
     fn draw(&self) -> Draw {
-        Draw { op: self.st.op, alpha: self.st.alpha as f32, clip: self.st.clip.clone() }
+        let s = &self.st;
+        Draw {
+            op: s.op, alpha: s.alpha as f32, clip: s.clip.clone(),
+            effects: super::effects::Effects {
+                blurs: super::effects::blurs(&s.filter).unwrap_or_default(),
+                shadow: (s.shadow_color[3] > 0 && (s.shadow_blur > 0.0 || s.shadow_x != 0.0 || s.shadow_y != 0.0))
+                    .then(|| super::effects::Shadow {
+                        color: color::to_f32(s.shadow_color), x: s.shadow_x as f32,
+                        y: s.shadow_y as f32, sigma: (s.shadow_blur * 0.5) as f32,
+                    }),
+            },
+        }
     }
 
     fn quality(&self) -> Quality {
@@ -211,15 +222,8 @@ impl Ctx {
     }
 
     fn advise_unpainted(&self) {
-        let s = &self.st;
-        if s.shadow_color[3] > 0 && (s.shadow_blur > 0.0 || s.shadow_x != 0.0 || s.shadow_y != 0.0) {
-            super::advise(
-                "canvas:shadow",
-                "canvas: shadows (shadowBlur/shadowColor/shadowOffset*) are not drawn yet; the shape is drawn without one".into(),
-            );
-        }
-        if s.filter != "none" {
-            super::advise("canvas:filter", format!("canvas: ctx.filter = \"{}\" is not applied yet; drawing unfiltered", s.filter));
+        if super::effects::blurs(&self.st.filter).is_none() {
+            super::advise("canvas:filter", format!("canvas: ctx.filter = \"{}\" is not implemented; supported: none and blur()", self.st.filter));
         }
     }
 
@@ -827,18 +831,8 @@ fn is_length(s: &str) -> bool {
         && !(unit.is_empty() && num.parse::<f64>().ok() != Some(0.0))
 }
 
-/// A CSS `font` shorthand: at least a size and a family.
-fn is_font(s: &str) -> bool {
-    let toks: Vec<&str> = s.split_whitespace().collect();
-    toks.iter().enumerate().any(|(i, t)| {
-        let size = t.split('/').next().unwrap_or("");
-        let unit_ok = ["px", "pt", "em", "rem", "%", "pc", "in", "cm", "mm", "ex", "ch", "vw", "vh"]
-            .iter()
-            .any(|u| size.strip_suffix(u).map(|n| n.parse::<f64>().is_ok()).unwrap_or(false))
-            || ["xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large", "smaller", "larger"].contains(&size);
-        unit_ok && i + 1 < toks.len()
-    })
-}
+/// A valid CSS font shorthand; invalid assignments retain the prior font.
+fn is_font(s: &str) -> bool { super::text::Font::parse(s).is_some() }
 
 string_attr!(get_font, set_font, font, "font", |s| is_font(&s));
 string_attr!(get_filter, set_filter, filter, "filter", |s| !s.trim().is_empty());
@@ -1593,70 +1587,68 @@ unsafe fn domexception_throw_val(g: *mut c_void, name: &str, msg: &str) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Natives: text (not drawn yet)
+// Natives: shaped text (font outlines use the ordinary fill/stroke stream)
 // ---------------------------------------------------------------------------
 
-fn advise_text() {
-    super::advise(
-        "canvas:text",
-        "canvas: fillText/strokeText draw nothing yet, and measureText's widths are estimates from the font size; \
-         text on a canvas lands with the glyph renderer"
-            .into(),
-    );
+fn text_options(st: &State) -> super::text::Options<'_> {
+    super::text::Options {
+        font: &st.font, direction: st.direction, letter_spacing: &st.letter_spacing,
+        word_spacing: &st.word_spacing, kerning: st.font_kerning,
+        stretch: st.font_stretch, caps: st.font_variant_caps, lang: &st.lang,
+    }
 }
 
-unsafe extern "sysv64" fn m_fill_text(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let _ = this_ctx!(g, cf, "fillText");
-    advise_text();
+unsafe fn draw_text(g: *mut c_void, cf: *mut c_void, stroke: bool) -> u64 {
+    // Complete JS conversions before borrowing the native context: a valueOf
+    // or toString callback is allowed to reenter and mutate canvas state.
+    let Ok(value) = arg_str(g, cf, 0) else { return UNDEF };
+    let x = n(g, cf, 1);
+    let y = n(g, cf, 2);
+    let max_width = if cf_arg(cf, 3) == UNDEF { f64::INFINITY } else { n(g, cf, 3) };
+    let cx = if stroke { this_ctx!(g, cf, "strokeText") } else { this_ctx!(g, cf, "fillText") };
+    if !finite(&[x, y]) || max_width.is_nan() || max_width <= 0.0 { return UNDEF; }
+    let Some(id) = crate::context::id_of(g) else { return UNDEF };
+    let layout = super::text::layout(id, &value, text_options(&cx.st));
+    let path = layout.positioned(x, y, cx.st.text_align, cx.st.text_baseline, max_width);
+    if path.elements().is_empty() { return UNDEF; }
+    cx.advise_unpainted();
+    if stroke {
+        cx.push(Cmd::Stroke { path, style: cx.stroke_style(), transform: cx.st.xf,
+            paint: paint_of(&cx.st.stroke), draw: cx.draw() });
+    } else {
+        cx.push(Cmd::Fill { path, even_odd: false, transform: cx.st.xf,
+            paint: paint_of(&cx.st.fill), draw: cx.draw() });
+    }
     UNDEF
 }
 
-/// The px size in a `font` shorthand (10 when unreadable).
-fn font_px(font: &str) -> f64 {
-    for t in font.split_whitespace() {
-        let size = t.split('/').next().unwrap_or("");
-        for (unit, k) in [("px", 1.0), ("pt", 4.0 / 3.0), ("rem", 16.0), ("em", 10.0), ("%", 0.1)] {
-            if let Some(v) = size.strip_suffix(unit).and_then(|v| v.parse::<f64>().ok()) {
-                return v * k;
-            }
-        }
-    }
-    10.0
-}
+unsafe extern "sysv64" fn m_fill_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, false) }
+unsafe extern "sysv64" fn m_stroke_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, true) }
 
 unsafe extern "sysv64" fn m_measure_text(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(text) = arg_str(g, cf, 0) else { return UNDEF };
+    let Ok(value) = arg_str(g, cf, 0) else { return UNDEF };
     let cx = this_ctx!(g, cf, "measureText");
-    advise_text();
-    let px = font_px(&cx.st.font);
-    let width = text.chars().map(|c| if c.is_whitespace() { 0.28 } else if c.is_ascii() { 0.55 } else { 1.0 }).sum::<f64>() * px;
+    let Some(id) = crate::context::id_of(g) else { return UNDEF };
+    let layout = super::text::layout(id, &value, text_options(&cx.st));
+    let (x, y) = layout.anchor(cx.st.text_align, cx.st.text_baseline);
+    let (left, right, ascent, descent) = match layout.bounds() {
+        Some(bounds) => (-(bounds.x0 + x), bounds.x1 + x, -(bounds.y0 + y), bounds.y1 + y),
+        None => (0.0, 0.0, 0.0, 0.0),
+    };
     let c = classes(g);
     let m = new_object(g, c.metrics.proto);
-    let (ascent, descent) = (px * 0.8, px * 0.2);
-    let left = match cx.st.text_align {
-        "center" => width / 2.0,
-        "right" | "end" => width,
-        _ => 0.0,
-    };
     for (k, v) in [
-        ("width", width),
-        ("actualBoundingBoxLeft", left),
-        ("actualBoundingBoxRight", width - left),
-        ("fontBoundingBoxAscent", ascent),
-        ("fontBoundingBoxDescent", descent),
-        ("actualBoundingBoxAscent", ascent),
-        ("actualBoundingBoxDescent", descent),
-        ("emHeightAscent", ascent),
-        ("emHeightDescent", descent),
-        ("hangingBaseline", ascent * 0.8),
-        ("alphabeticBaseline", 0.0),
-        ("ideographicBaseline", -descent),
-    ] {
-        define(g, m, k, enc_f64(v), 1);
-    }
+        ("width", layout.width),
+        ("actualBoundingBoxLeft", left), ("actualBoundingBoxRight", right),
+        ("fontBoundingBoxAscent", layout.ascent - y),
+        ("fontBoundingBoxDescent", layout.descent + y),
+        ("actualBoundingBoxAscent", ascent), ("actualBoundingBoxDescent", descent),
+        ("emHeightAscent", layout.ascent - y), ("emHeightDescent", layout.descent + y),
+        ("hangingBaseline", layout.ascent * 0.8 - y),
+        ("alphabeticBaseline", -y), ("ideographicBaseline", -layout.descent - y),
+    ] { define(g, m, k, enc_f64(v), 1); }
     m
 }
-
 unsafe extern "sysv64" fn m_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     UNDEF
 }
@@ -2150,7 +2142,7 @@ pub(crate) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         ("isPointInPath", 2, m_is_point_in_path),
         ("isPointInStroke", 2, m_is_point_in_stroke),
         ("fillText", 3, m_fill_text),
-        ("strokeText", 3, m_fill_text),
+        ("strokeText", 3, m_stroke_text),
         ("measureText", 1, m_measure_text),
         ("drawImage", 3, m_draw_image),
         ("createImageData", 1, m_create_image_data),

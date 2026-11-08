@@ -315,11 +315,120 @@ fn an_embedder_image_is_a_bitmap_from_the_hook_and_carries_its_origin() {
     assert!(r.starts_with("ERROR:"), "{r}");
 }
 
+fn text_canvas(c: &Context, w: u32, h: u32) {
+    canvas(c, w, h);
+    assert!(super::text::register_font(crate::context::id_of(c.raw()).unwrap(), super::text::FontRegistration {
+        family: "Canvas Fixture".into(),
+        data: include_bytes!("../../../testdata/fonts/Roboto-Regular.ttf").to_vec(),
+        weight: "normal".into(), style: "normal".into(), stretch: "normal".into(), unicode_range: vec![],
+    }));
+    s(c, "cx.font = '40px \"Canvas Fixture\"'; globalThis.ink = () => { const a = cx.getImageData(0,0,oc.width,oc.height).data; let n=0; for(let i=3;i<a.length;i+=4) if(a[i]) n++; return n; }; 0");
+}
+
 #[test]
-fn text_measures_and_draws_nothing_without_throwing() {
+fn canvas_text_renders_real_font_outlines_and_strokes_independently() {
     let c = ctx();
-    canvas(&c, 10, 10);
-    ok(&c, "(cx.font = '20px sans-serif', cx.measureText('hello')) instanceof TextMetrics && cx.measureText('hello').width > 20");
-    s(&c, "cx.fillText('hi', 0, 10); cx.strokeText('hi', 0, 10); 0");
-    assert_eq!(s(&c, "px(1, 9)"), "0,0,0,0");
+    text_canvas(&c, 200, 100);
+    s(&c, "cx.fillStyle = 'red'; cx.fillText('Hello Ж', 5, 55); 0");
+    ok(&c, "ink() > 200 && cx.measureText('Hello Ж') instanceof TextMetrics");
+    ok(&c, "(() => { const p=cx.getImageData(0,0,200,100).data; return p.some((v,i) => i%4===0 && v>100); })()");
+    let filled = s(&c, "cx.clearRect(0,0,200,100); cx.fillText('H',10,55); ink()").parse::<u32>().unwrap();
+    let stroked = s(&c, "cx.clearRect(0,0,200,100); cx.strokeStyle='blue'; cx.lineWidth=1; cx.strokeText('H',10,55); ink()").parse::<u32>().unwrap();
+    assert!(filled > stroked && stroked > 30, "fill={filled}, stroke={stroked}");
+    ok(&c, "(() => { const p=cx.getImageData(0,0,200,100).data; return p.some((v,i)=>i%4===2 && v>100) && !p.some((v,i)=>i%4===0 && v>100); })()");
+}
+
+#[test]
+fn canvas_text_metrics_use_proportional_advances_ink_bounds_and_baselines() {
+    let c = ctx();
+    text_canvas(&c, 200, 100);
+    ok(&c, "cx.measureText('iiii').width < cx.measureText('WWWW').width / 2");
+    ok(&c, "(() => { const a=cx.measureText('Hg'), b=cx.measureText(' '); return a.actualBoundingBoxAscent>20 && a.actualBoundingBoxDescent>1 && a.fontBoundingBoxAscent>=a.actualBoundingBoxAscent && b.width>0 && b.actualBoundingBoxAscent===0; })()");
+    ok(&c, "(() => { const a=cx.measureText('Hello'); cx.textAlign='center'; const b=cx.measureText('Hello'); return Math.abs(b.actualBoundingBoxLeft-a.actualBoundingBoxLeft-a.width/2)<0.001 && Math.abs(b.actualBoundingBoxRight-a.actualBoundingBoxRight+a.width/2)<0.001; })()");
+    ok(&c, "(() => { cx.textBaseline='alphabetic'; const a=cx.measureText('Hg'); cx.textBaseline='top'; const b=cx.measureText('Hg'); return Math.abs(b.fontBoundingBoxAscent)<0.001 && b.alphabeticBaseline<0 && Math.abs(a.actualBoundingBoxAscent-b.actualBoundingBoxAscent-a.fontBoundingBoxAscent)<0.001; })()");
+    ok(&c, "cx.measureText('').width===0 && cx.measureText('').actualBoundingBoxRight===0");
+}
+
+#[test]
+fn canvas_text_obeys_max_width_transform_clip_and_preserves_current_path() {
+    let c = ctx();
+    text_canvas(&c, 200, 100);
+    s(&c, "cx.beginPath(); cx.rect(0,0,5,5); cx.save(); cx.translate(10,10); cx.fillText('WWWW',0,40,30); cx.restore(); 0");
+    ok(&c, "ink()>50 && cx.getImageData(42,0,158,100).data.every(v=>v===0)");
+    s(&c, "cx.clearRect(0,0,200,100); cx.fill(); 0");
+    assert_eq!(s(&c, "ink()"), "25");
+    s(&c, "cx.clearRect(0,0,200,100); cx.save(); cx.beginPath(); cx.rect(0,0,15,100); cx.clip(); cx.fillText('WWWW',0,50); cx.restore(); 0");
+    ok(&c, "ink()>0 && cx.getImageData(16,0,184,100).data.every(v=>v===0)");
+    s(&c, "cx.clearRect(0,0,200,100); cx.fillText('Hello',0,50,0); cx.fillText('Hello',0,50,-1); cx.fillText('Hello',NaN,50); 0");
+    assert_eq!(s(&c, "ink()"), "0");
+}
+
+#[test]
+fn canvas_text_spacing_whitespace_kerning_and_rtl_alignment_are_real() {
+    let c = ctx();
+    text_canvas(&c, 200, 100);
+    ok(&c, "cx.measureText('a\\nb\\tc').width===cx.measureText('a b c').width");
+    ok(&c, "(() => { const a=cx.measureText('Hello').width; cx.letterSpacing='2px'; const b=cx.measureText('Hello').width; cx.letterSpacing='0px'; return Math.abs(b-a-8)<0.01; })()");
+    ok(&c, "(() => { const a=cx.measureText('a b').width; cx.wordSpacing='7px'; const b=cx.measureText('a b').width; cx.wordSpacing='0px'; return Math.abs(b-a-7)<0.01; })()");
+    ok(&c, "(() => { cx.fontKerning='normal'; const a=cx.measureText('AV').width; cx.fontKerning='none'; return cx.measureText('AV').width>a; })()");
+    ok(&c, "(() => { cx.direction='rtl'; cx.textAlign='start'; const a=cx.measureText('Hg'); cx.textAlign='right'; const b=cx.measureText('Hg'); return a.width===b.width && a.actualBoundingBoxLeft===b.actualBoundingBoxLeft && a.actualBoundingBoxRight===b.actualBoundingBoxRight; })()");
+}
+
+#[test]
+fn canvas_text_font_loading_invalidates_cached_fallback_layouts() {
+    let c = ctx();
+    canvas(&c, 200, 100);
+    s(&c, "cx.font='40px \"Delayed Canvas Fixture\", monospace'; globalThis.before=cx.measureText('iiii').width; 0");
+    assert!(super::text::register_font(crate::context::id_of(c.raw()).unwrap(), super::text::FontRegistration {
+        family: "Delayed Canvas Fixture".into(), data: include_bytes!("../../../testdata/fonts/Roboto-Regular.ttf").to_vec(),
+        weight: "400".into(), style: "normal".into(), stretch: "normal".into(), unicode_range: vec![],
+    }));
+    ok(&c, "cx.measureText('iiii').width < before/2");
+    s(&c, "cx.font='italic bold 18px/1.5 \"Delayed Canvas Fixture\", \"Missing, Quoted\", sans-serif'; 0");
+    ok(&c, "cx.font.includes('18px') && cx.measureText('Текст').width>0");
+}
+
+#[test]
+fn blur_and_shadow_are_painted_in_bitmap_space() {
+    let c = ctx();
+    canvas(&c, 64, 48);
+    ok(&c, r#"(() => {
+      cx.filter='blur(3px)'; cx.fillStyle='red'; cx.fillRect(20,15,12,12);
+      const core=cx.getImageData(25,20,1,1).data, halo=cx.getImageData(18,20,1,1).data;
+      return core[0]>200 && core[3]>150 && halo[0]>200 && halo[3]>0 && halo[3]<core[3];
+    })()"#);
+    ok(&c, r#"(() => {
+      cx.clearRect(0,0,64,48); cx.filter='none'; cx.shadowColor='blue';
+      cx.shadowBlur=6; cx.shadowOffsetX=15; cx.fillStyle='white'; cx.fillRect(10,15,8,8);
+      const core=cx.getImageData(13,18,1,1).data, shadow=cx.getImageData(28,18,1,1).data;
+      return core[0]>240 && core[3]===255 && shadow[2]>200 && shadow[0]===0 && shadow[3]>0;
+    })()"#);
+    ok(&c, r#"(() => {
+      cx.clearRect(0,0,64,48); cx.shadowColor='transparent'; cx.filter='blur(3px)';
+      cx.save(); cx.beginPath(); cx.rect(22,0,42,48); cx.clip(); cx.fillRect(18,12,4,12); cx.restore();
+      return cx.getImageData(23,18,1,1).data[3]>0 && cx.getImageData(21,18,1,1).data[3]===0;
+    })()"#);
+}
+
+#[test]
+fn canvas_shadow_and_filter_state_restore_and_clear_bypass() {
+    let c = ctx();
+    canvas(&c, 64, 48);
+    ok(&c, r#"(() => {
+      cx.filter='blur(2px)'; cx.shadowColor='red'; cx.shadowBlur=8;
+      cx.save(); cx.filter='blur(4px)'; cx.shadowColor='blue'; cx.restore();
+      if(cx.filter!=='blur(2px)' || cx.shadowColor!=='#ff0000') return false;
+      cx.fillStyle='white'; cx.fillRect(10,10,20,20); cx.clearRect(0,0,64,48);
+      return !cx.getImageData(0,0,64,48).data.some(Boolean);
+    })()"#);
+}
+
+#[test]
+fn canvas_text_unknown_glyphs_remain_visible_and_controls_do_not_paint() {
+    let c = ctx();
+    text_canvas(&c, 200, 100);
+    s(&c, "cx.fillText(String.fromCodePoint(0x10ffff),10,50); 0");
+    ok(&c, "ink()>0");
+    s(&c, "cx.clearRect(0,0,200,100); cx.fillText('\\u200d\\ufe0f',10,50); 0");
+    assert_eq!(s(&c, "ink()"), "0");
 }

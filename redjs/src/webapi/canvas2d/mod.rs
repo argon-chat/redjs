@@ -10,8 +10,8 @@
 //!   (kurbo geometry, straight sRGB colours, premultiplied images with ids).
 //! * [`surface`]: one canvas bitmap — a [`Backend`] plus the commands not yet
 //!   given to it, flushed when something needs the pixels.
-//! * `cpu`: the built-in backend, vello_cpu. An embedder installs another
-//!   ([`set_host`]) — vue-native's is vello_gpu over the host's wgpu device —
+//! * `cpu`: the built-in backend, vello_cpu. An embedder may install another
+//!   through [`set_host`] while keeping the same command stream
 //!   and the context does not change.
 //!
 //! ## What an embedder gets
@@ -24,10 +24,24 @@
 //!   tells its frame loop that some presented canvas drew since the last
 //!   frame, so an idle canvas costs one atomic load a frame.
 //!
-//! ## Not yet (each says so once, on stderr, when used)
+//! ## Text and effects
 //!
-//! Text is not drawn (`fillText`/`strokeText` do nothing, `measureText`
-//! estimates from the font size), shadows and `filter` are not applied,
+//! `fillText` and `strokeText` shape platform or registered CSS fonts into
+//! ordinary fill/stroke paths. `measureText` uses shaped advances, font metrics
+//! and actual ink bounds. Alignment, baselines, spacing, kerning, direction and
+//! `maxWidth` use the same layout; no separate glyph backend is required.
+//! Embedders register decoded web fonts with [`text::register_font`] before
+//! applying private family renames. Registrations and layout caches belong to
+//! one JS context and are released with it. Colour-only glyphs use an outline
+//! fallback; this is not a colour-emoji rasterizer.
+//!
+//! The built-in CPU backend applies `shadowColor`, `shadowBlur`, offsets and
+//! lists of CSS `blur(<px>)` filters in bitmap space, before the final canvas
+//! clip. Other CSS filters emit an advisory. Replacement backends must honour
+//! [`cmd::Draw::effects`] as well as the existing paint/composite/clip state.
+//!
+//! ## Remaining limits
+//!
 //! `{ alpha: false }` keeps an alpha channel, and a canvas is never tainted
 //! (the origin-clean flag is tracked, see `Surface::readable`).
 
@@ -35,8 +49,10 @@ pub mod cmd;
 mod color;
 mod context;
 mod cpu;
+mod effects;
 pub(crate) mod encode;
 pub mod surface;
+pub mod text;
 
 use core::ffi::c_void;
 use std::collections::HashSet;
@@ -72,6 +88,7 @@ pub(crate) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
+    text::forget(gone.id);
     context::forget(gone);
 }
 

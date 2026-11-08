@@ -39,6 +39,9 @@ resvg = { version = "0.46.0", default-features = false, features = ["text", "sys
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline"], optional = true }
 kurbo = { version = "0.13.1", default-features = false, features = ["std"], optional = true }
 peniko = { version = "0.6.1", default-features = false, features = ["std"], optional = true }
+fontdb = { version = "0.23.0", optional = true }
+rustybuzz = { version = "0.20.1", optional = true }
+unicode-bidi = { version = "0.3.18", optional = true }
 # Audio: the native Web Audio implementation (webapi/audio.rs) maps the
 # WebAudio node graph onto Firewheel's; symphonium (the same decoder firewheel
 # uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the game formats.
@@ -158,7 +161,7 @@ yoga-host = []
 svg-images = ["dep:resvg"]
 # CanvasRenderingContext2D + a real OffscreenCanvas (webapi/canvas2d). Off,
 # bootstrap.js keeps its pixel-copy OffscreenCanvas stub.
-canvas = ["dep:vello_cpu", "dep:kurbo", "dep:peniko"]
+canvas = ["dep:vello_cpu", "dep:kurbo", "dep:peniko", "dep:fontdb", "dep:rustybuzz", "dep:unicode-bidi"]
 
 # ---------------------------------------------------------------------------
 # Web platform surfaces that need something only the EMBEDDER has.
