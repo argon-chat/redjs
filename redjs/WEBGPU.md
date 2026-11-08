@@ -1,7 +1,7 @@
-# Native WebGPU (experimental)
+# Native WebGPU
 
 `redjs` feature `webgpu` installs native JavaScriptCore classes backed by
-`wgpu`, without a browser or a TypeScript implementation. It is off by default.
+`wgpu`, without a browser or a TypeScript implementation. It is enabled by default; `--no-default-features` remains available to headless embedders.
 Windows uses DirectX 12. Metal/Vulkan dependencies are configured for other
 platforms; only Windows has been qualified in this change.
 
@@ -174,10 +174,10 @@ The conversion contract follows [WebGPU external-image copies](https://gpuweb.gi
 - Full WebIDL/error semantics: e.g. some lifecycle/capability failures currently
   throw a TypeError or InvalidStateError rather than producing an invalid object.
 
-In particular, **do not enable this feature in a shipped UI merely to expose
-`navigator.gpu`**. Applications that detect only adapter presence can otherwise
-open an editor that needs unsupported video uploads or other
-missing APIs. Canvas presentation alone does not qualify a complete editor.
+The API is enabled in normal builds. Applications must still check the specific
+capabilities they need: adapter presence does not imply video-frame imports,
+WebCodecs or every optional WebGPU feature. The SDK qualifies its image-editor
+path independently from the remaining video and activity work.
 
 The standard contract is [WebGPU](https://gpuweb.github.io/gpuweb/); the Rust
 backend is pinned to `gfx-rs/wgpu` revision

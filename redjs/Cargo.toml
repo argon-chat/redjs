@@ -122,9 +122,9 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 [features]
 # Experimental native images; never enabled by default. Requires the matching frontend table.
 native-aot = []
-# Native compute/offscreen WebGPU. Opt in until the embedder supplies canvas presentation.
+# Native WebGPU is part of the default web API surface; GPU acquisition is lazy.
 webgpu = ["dep:wgpu", "dep:pollster", "dep:half"]
-default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas"]
+default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas", "webgpu"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
 # decodeAudioData beyond the game formats: AAC-LC + the MP4/M4A, CAF, MKV and

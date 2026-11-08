@@ -111,7 +111,8 @@ In C#, these are `InstallWebGlobals()`,
 A render loop can pump once per frame.
 
 The default Cargo features include `audio`, `physics`, `mesh`, `css-host`,
-`yoga-host`, `indexeddb`, `svg-images`, and `canvas`. Use
+`yoga-host`, `indexeddb`, `svg-images`, `canvas`, and `webgpu`. Native GPU
+acquisition is lazy; see the [WebGPU support notes](redjs/WEBGPU.md). Use
 `--no-default-features` for a smaller starting point, then enable what you need.
 
 Some additions are opt-in:
@@ -123,7 +124,6 @@ Some additions are opt-in:
 | `indexeddb-sqlite` | Persistent IndexedDB when the host supplies its storage configuration |
 | `net-h2` | Pooled HTTP/1.1 and HTTP/2 for fetch |
 | `audio-codecs-extra` | More audio formats, including AAC-LC and ALAC |
-| `webgpu` | Experimental native WebGPU; see the [support notes](redjs/WEBGPU.md) |
 
 These APIs cover parts of the web platform. DOM, rendering, permissions, and
 OS integration depend on what the host provides. The
