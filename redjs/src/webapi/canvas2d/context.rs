@@ -536,6 +536,97 @@ pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u
     Some((s.read_straight(0, 0, w, h), w, h))
 }
 
+/// External uploads preserve premultiplied canvas pixels; they do not pass
+/// through ImageData or silently mark an origin-unclean bitmap clean.
+#[cfg(feature = "webgpu")]
+pub(crate) unsafe fn external_pixels(
+    g: *mut c_void,
+    v: u64,
+    depth: u8,
+) -> Result<super::super::image::ExternalImage, ()> {
+    use super::super::image::external::fail;
+    use super::super::image::{external_pixels as resolve, ExternalImage};
+    let c = classes(g);
+    let mut gpu = v;
+    let mut surface = None;
+    if let Some(off) = host_data::<Off>(g, c.off_cls, v) {
+        let (w, h, kind) = (off.width, off.height, off.kind);
+        if w == 0 || h == 0 {
+            return fail(g, "InvalidStateError", "Canvas has no pixels");
+        }
+        let ctx = get_a(g, v, c.s_ctx);
+        if kind == 3 {
+            gpu = ctx;
+        } else if let Some(cx) = ctx_of(g, ctx) {
+            surface = Some(cx.surface.clone());
+        } else {
+            return Ok(ExternalImage {
+                width: w,
+                height: h,
+                rgba: vec![0; w as usize * h as usize * 4],
+                premultiplied: true,
+                origin_clean: true,
+            });
+        }
+    } else if let Some(cx) = ctx_of(g, v) {
+        surface = Some(cx.surface.clone());
+    }
+    if let Some(surface) = surface {
+        let mut surface = surface.lock().unwrap();
+        let clean = surface.origin_clean;
+        let image = surface.snapshot();
+        return Ok(ExternalImage {
+            width: image.width,
+            height: image.height,
+            rgba: image.data.clone(),
+            premultiplied: true,
+            origin_clean: clean,
+        });
+    }
+    if let Some(result) = super::super::webgpu::canvas::premul_pixels(g, gpu) {
+        return match result {
+            Ok((rgba, width, height)) if width > 0 && height > 0 => Ok(ExternalImage {
+                width,
+                height,
+                rgba,
+                premultiplied: true,
+                origin_clean: true,
+            }),
+            Ok(_) => fail(g, "InvalidStateError", "Canvas has no pixels"),
+            Err(e) => fail(g, "OperationError", &e),
+        };
+    }
+    let hook = hooks().lock().unwrap().get(&(g as usize)).copied();
+    if let Some(hook) = hook {
+        let got = call(g, hook, UNDEF, &[v]).map_err(|e| {
+            glue::rjs_throw(g, e);
+        })?;
+        if got != NULL && got != UNDEF && got != v {
+            return resolve(g, got, depth + 1);
+        }
+        if got == NULL {
+            if let Some((w, h)) = blank_mirror(g, v) {
+                if w == 0 || h == 0 {
+                    return fail(g, "InvalidStateError", "Canvas has no pixels");
+                }
+                return Ok(ExternalImage {
+                    width: w,
+                    height: h,
+                    rgba: vec![0; w as usize * h as usize * 4],
+                    premultiplied: true,
+                    origin_clean: true,
+                });
+            }
+            return fail(
+                g,
+                "InvalidStateError",
+                "External image source has no readable frame",
+            );
+        }
+    }
+    fail(g, "TypeError", "Unsupported external image source")
+}
+
 // ---------------------------------------------------------------------------
 // Natives: helpers
 // ---------------------------------------------------------------------------

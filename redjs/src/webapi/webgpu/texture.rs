@@ -1,6 +1,8 @@
 //! Texture resources, render pipelines/passes, and texel-copy commands.
-//! No canvas presentation or implicit CPU image/video imports are exposed here.
+//! Canvas presentation and external image conversion live in separate modules.
 use super::*;
+#[path = "external.rs"]
+mod external;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) struct Texture {
@@ -1460,6 +1462,7 @@ pub(super) unsafe fn install(g: *mut c_void) {
         copy_texture_texture,
     );
     method(g, Kind::Queue, "writeTexture", 4, write_texture);
+    method(g, Kind::Queue, "copyExternalImageToTexture", 3, external::copy);
     constants(
         g,
         "GPUTextureUsage",

@@ -38,6 +38,9 @@ It does not open a window or access an application profile.
   blend/depth/stencil/MSAA state, draw/drawIndexed, viewport/scissor, render
   passes, texture uploads and buffer/texture copy commands.
 - Single-use command buffers, queue submission and asynchronous work completion.
+- `copyExternalImageToTexture` for native/mirror images, ImageData, ImageBitmap,
+  2D and WebGPU canvases, with crop/flipY, alpha conversion, mip/layer selection
+  and renderable unorm/float destination formats.
 - `GPUCanvasContext`: configure/unconfigure/getConfiguration/getCurrentTexture,
   SameObject drawing buffers, exclusive 2D/WebGPU context selection, resize and
   frame expiry. Native `OffscreenCanvas` requires the `canvas` feature; embedders
@@ -112,10 +115,35 @@ wide-gamut/HDR and extended tone mapping fail explicitly. This bridge returns
 premultiplied RGBA8 CPU pixels; zero-copy native texture import is a later host
 integration.
 
+## External image uploads
+
+`GPUQueue.copyExternalImageToTexture` snapshots native pixels after all JS
+argument getters/conversions, retains temporary wrappers through GC, and
+rechecks the destination after the embedder source hook. A later bitmap
+close, source mutation or canvas resize cannot change an issued upload.
+ImageBitmap/ImageData preserve straight RGBA; canvas sources preserve
+premultiplied RGBA, including RGB channels above alpha. Matching RGBA8 alpha
+modes copy rows directly; BGRA swizzles and alpha/float conversions run natively.
+
+Destination textures require `COPY_DST | RENDER_ATTACHMENT`, one sample and
+2D dimension. Supported targets are R/RG/RGBA/BGRA 8-bit unorm, RGBA/BGRA sRGB,
+R/RG/RGBA float16/float32 and RGB10A2 unorm. Only sRGB color encoding is
+implemented; display-p3 fails explicitly. Source crop and destination mip/layer
+ranges are validated independently; flipY reverses the selected source region.
+Converted upload buffers are capped at 256 MiB.
+
+Origin-unclean host metadata produces `SecurityError`; it is preserved through
+mirror-image hooks and 2D canvas snapshots. This consumes the embedding
+runtime's existing origin policy, not a complete browser network/CORS boundary.
+VideoFrame, HTML video frame import and GPU-to-GPU zero-copy imports remain
+unimplemented. A WebGPU canvas source currently uses an explicit GPU readback.
+
+The conversion contract follows [WebGPU external-image copies](https://gpuweb.github.io/gpuweb/#dom-gpuqueue-copyexternalimagetotexture).
+
 ## Not implemented yet
 
 - Native swapchains and zero-copy shared-texture presentation.
-- `copyExternalImageToTexture`, external video textures and zero-copy video.
+- External video textures, VideoFrame/HTML video uploads and zero-copy video.
 - SharedArrayBuffer uploads (rejected until an atomic native copy path exists).
 - Async pipeline factories, query sets/timestamps, render bundles, optional
   compressed formats/features, WebGPU CTS qualification.
@@ -125,7 +153,7 @@ integration.
 
 In particular, **do not enable this feature in a shipped UI merely to expose
 `navigator.gpu`**. Applications that detect only adapter presence can otherwise
-open an editor that needs unsupported external image/video uploads or other
+open an editor that needs unsupported video uploads or other
 missing APIs. Canvas presentation alone does not qualify a complete editor.
 
 The standard contract is [WebGPU](https://gpuweb.github.io/gpuweb/); the Rust

@@ -25,6 +25,11 @@ use super::fsutil;
 use super::util::*;
 use crate::glue;
 
+#[cfg(feature = "webgpu")]
+pub(crate) mod external;
+#[cfg(feature = "webgpu")]
+pub(crate) use external::{external_pixels, ExternalImage};
+
 pub struct BitmapData {
     pub width: u32,
     pub height: u32,

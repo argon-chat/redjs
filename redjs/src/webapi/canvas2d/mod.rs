@@ -84,3 +84,8 @@ pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u
 
 #[cfg(test)]
 mod jsc_tests;
+
+#[cfg(feature = "webgpu")]
+pub(crate) unsafe fn external_pixels(g: *mut c_void, v: u64, depth: u8) -> Result<super::image::ExternalImage, ()> {
+    context::external_pixels(g, v, depth)
+}

@@ -2567,6 +2567,7 @@ dependencies = [
  "flate2",
  "getrandom 0.3.4",
  "h2",
+ "half",
  "http",
  "http-body",
  "http-body-util",
