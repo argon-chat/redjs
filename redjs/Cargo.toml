@@ -97,6 +97,10 @@ tokio-native-tls = { version = "0.3", optional = true }
 # in the browser and another in the shipped game (`packages/redcss`, `.refactor/UI-CSS-ENGINE-DESIGN.md`).
 redcss = { path = "../../redcss", optional = true }
 
+# Same revision as gpui_wgpu; a host can inject its existing Device/Queue without a second GPU backend.
+wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "3b3506ea31154edc04de64debda0e780cba2639c", default-features = false, features = ["std", "wgsl", "dx12", "metal", "vulkan"], optional = true }
+pollster = { version = "0.4", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 # poll(2) for the blocking transport's readiness waits (webapi/http/sock.rs).
 libc = "0.2"
@@ -113,6 +117,8 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 [features]
 # Experimental native images; never enabled by default. Requires the matching frontend table.
 native-aot = []
+# Native compute/offscreen WebGPU. Opt in until the embedder supplies canvas presentation.
+webgpu = ["dep:wgpu", "dep:pollster"]
 default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
@@ -262,6 +268,10 @@ required-features = ["audio"]
 [[example]]
 name = "aot-image"
 required-features = ["native-aot"]
+
+[[example]]
+name = "webgpu"
+required-features = ["webgpu"]
 
 [build-dependencies]
 cc = "1"

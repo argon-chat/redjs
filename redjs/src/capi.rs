@@ -158,6 +158,7 @@ extern "C" {
     );
 
     pub fn JSClassCreate(definition: *const JSClassDefinition) -> JSClassRef;
+    pub fn JSClassRelease(js_class: JSClassRef);
     pub fn JSObjectMake(ctx: JSContextRef, js_class: JSClassRef, data: *mut c_void) -> JSObjectRef;
     pub fn JSObjectGetPrivate(object: JSObjectRef) -> *mut c_void;
     pub fn JSObjectSetPrivate(object: JSObjectRef, data: *mut c_void) -> bool;

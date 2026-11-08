@@ -104,6 +104,8 @@ pub mod textcodec;
 pub mod uievents;
 pub mod url;
 pub mod util;
+#[cfg(feature = "webgpu")]
+pub mod webgpu;
 pub mod websocket;
 pub mod xhr;
 pub mod xmlser;
@@ -215,6 +217,8 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     streams::forget(gone);
     uievents::forget(gone);
     url::forget(gone);
+    #[cfg(feature = "webgpu")]
+    webgpu::forget(gone);
     websocket::forget(gone);
     xhr::forget(gone);
 }
@@ -363,6 +367,8 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // Before mediadevices / permissions / clipboard: each of them attaches to
     // whatever `navigator` exists, and it should be the real Navigator.
     navigator::install(g);
+    #[cfg(feature = "webgpu")]
+    webgpu::install(g);
     #[cfg(feature = "audio")]
     {
         audio::install(g);

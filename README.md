@@ -220,6 +220,7 @@ hacks, no JS megashim:
 
 | class | notes |
 |---|---|
+| **WebGPU** (`webgpu`, opt-in) | Native JSC interfaces over wgpu: compute, offscreen rendering, mapped buffers, textures, validation scopes/events and shared-device injection. No canvas presentation yet; [contract and standalone GPU probe](redjs/WEBGPU.md). |
 | `Event` / `CustomEvent` / `EventTarget` | WHATWG dispatch: once, duplicate suppression, `handleEvent` objects, `stopImmediatePropagation`, cancelable/`preventDefault`, on-`type` handler props, listener snapshotting |
 | `TextEncoder` / `TextDecoder` | encoder: utf-8 + real `encodeInto`; decoder: EVERY WHATWG label via encoding_rs (windows-125x, utf-16le/be, koi8, shift_jis, …), `fatal`/`ignoreBOM` honored; unknown labels → RangeError; no `{stream:true}` |
 | `Blob` | Arc-shared bytes — spec `slice()` is zero-copy; promise `arrayBuffer/bytes/text` |
