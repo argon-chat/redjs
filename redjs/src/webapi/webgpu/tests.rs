@@ -845,3 +845,7 @@ fn webgpu_texture_upload_snapshots_after_descriptor_getters() {
         "7,8,9,255"
     );
 }
+
+#[cfg(feature = "canvas")]
+#[path = "canvas_tests.rs"]
+mod canvas_tests;

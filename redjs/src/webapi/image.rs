@@ -90,6 +90,10 @@ unsafe extern "sysv64" fn bitmap_close(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// HTMLImageElement (its loaded bitmap), a canvas (feature `canvas`), or
 /// ImageData-shaped {data,width,height}.
 pub unsafe fn source_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u32, u32)> {
+    #[cfg(feature = "webgpu")]
+    if let Some(result) = super::webgpu::canvas::pixels(g, v) {
+        return result.ok();
+    }
     let st = state(g);
     if let Some(b) = host_data::<BitmapData>(g, st.bitmap_class, v) {
         return Some((b.rgba.clone(), b.width, b.height));
@@ -106,13 +110,33 @@ pub unsafe fn source_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u32, u32
     if let Some(px) = super::canvas2d::canvas_pixels(g, v) {
         return Some(px);
     }
-    // ImageData-shaped.
+    // ImageData-shaped. Root the view while dimensions execute arbitrary
+    // getters, then read/copy bytes after every observable conversion.
     let data = get(g, v, "data");
+    struct PixelRoot(*mut c_void, u64);
+    impl Drop for PixelRoot {
+        fn drop(&mut self) {
+            if is_cell(self.1) {
+                unsafe {
+                    crate::ffi::redjs_unprotect(self.0, self.1);
+                }
+            }
+        }
+    }
+    if is_cell(data) {
+        crate::ffi::redjs_protect(g, data);
+    }
+    let _root = PixelRoot(g, data);
+    let w = dec_f64(get(g, v, "width")).unwrap_or(0.0) as u32;
+    let h = dec_f64(get(g, v, "height")).unwrap_or(0.0) as u32;
     if let Some(bytes) = bufferish(g, data) {
-        let w = dec_f64(get(g, v, "width")).unwrap_or(0.0) as u32;
-        let h = dec_f64(get(g, v, "height")).unwrap_or(0.0) as u32;
-        if w > 0 && h > 0 && bytes.len() >= (w * h * 4) as usize {
-            return Some((bytes[..(w * h * 4) as usize].to_vec(), w, h));
+        if let Some(n) = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|n| n.checked_mul(4))
+        {
+            if w > 0 && h > 0 && bytes.len() >= n {
+                return Some((bytes[..n].to_vec(), w, h));
+            }
         }
     }
     None

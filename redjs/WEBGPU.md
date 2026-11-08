@@ -38,6 +38,12 @@ It does not open a window or access an application profile.
   blend/depth/stencil/MSAA state, draw/drawIndexed, viewport/scissor, render
   passes, texture uploads and buffer/texture copy commands.
 - Single-use command buffers, queue submission and asynchronous work completion.
+- `GPUCanvasContext`: configure/unconfigure/getConfiguration/getCurrentTexture,
+  SameObject drawing buffers, exclusive 2D/WebGPU context selection, resize and
+  frame expiry. Native `OffscreenCanvas` requires the `canvas` feature; embedders
+  can connect HTML canvas through the native element entry points.
+- Canvas snapshots for 2D drawImage, ImageBitmap and PNG/JPEG/WebP export, with
+  opaque/premultiplied alpha and RGBA/BGRA conversion.
 
 Bind groups retain their buffer/texture owners. Views retain their texture.
 Recorded commands retain these owners through command buffer submission, after
@@ -77,9 +83,38 @@ additional physical features needs the next validation/negotiation stage.
 This interface is a working shared-device foundation, not yet an untrusted
 activity security boundary or a GPUI renderer integration.
 
+## Canvas presentation
+
+A presented canvas is registered by its host node key. The host consumes only
+completed frames through `canvas::present`, `present_size` and
+`take_presented_changed`. `register_present` / `unregister_present` resume or
+pause a retained element without changing its selected context mode.
+
+The current bridge performs a GPU copy into reusable staging buffers, then
+asynchronous readback on one lazy worker per physical context. There are at
+most three staging leases across queued/in-flight jobs. When these are busy,
+each canvas retains only its latest deferred drawing buffer and wakes when a
+lease becomes available. Resize/reconfigure/teardown fence late completions
+by epoch. No JSC value or callback crosses onto the worker.
+
+Call the normal VM pump through the end of a frame. Presented drawing buffers
+expire after the complete rAF batch and its microtasks; submitting commands
+that still reference an expired buffer produces a validation error. Headless
+OffscreenCanvas retains its buffer until resize, reconfiguration or transfer.
+An untouched opaque canvas publishes a constant-black marker, without a CPU
+bitmap or GPU drawing-buffer allocation. Explicit pixel/image export can wait
+for a GPU snapshot and is capped at 256 MiB; normal presentation never waits
+for readback on the UI thread.
+
+Canvas formats currently support `rgba8unorm` and `bgra8unorm`, sRGB, standard
+tone mapping, and opaque/premultiplied alpha. Other presentation formats,
+wide-gamut/HDR and extended tone mapping fail explicitly. This bridge returns
+premultiplied RGBA8 CPU pixels; zero-copy native texture import is a later host
+integration.
+
 ## Not implemented yet
 
-- `GPUCanvasContext`, HTML/OffscreenCanvas WebGPU presentation, swapchains.
+- Native swapchains and zero-copy shared-texture presentation.
 - `copyExternalImageToTexture`, external video textures and zero-copy video.
 - SharedArrayBuffer uploads (rejected until an atomic native copy path exists).
 - Async pipeline factories, query sets/timestamps, render bundles, optional
@@ -90,7 +125,8 @@ activity security boundary or a GPUI renderer integration.
 
 In particular, **do not enable this feature in a shipped UI merely to expose
 `navigator.gpu`**. Applications that detect only adapter presence can otherwise
-open a WebGPU editor whose canvas cannot be presented yet.
+open an editor that needs unsupported external image/video uploads or other
+missing APIs. Canvas presentation alone does not qualify a complete editor.
 
 The standard contract is [WebGPU](https://gpuweb.github.io/gpuweb/); the Rust
 backend is pinned to `gfx-rs/wgpu` revision

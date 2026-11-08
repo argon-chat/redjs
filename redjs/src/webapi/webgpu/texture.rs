@@ -8,10 +8,11 @@ pub(super) struct Texture {
     pub size: wgpu::Extent3d,
     pub usage: wgpu::TextureUsages,
     pub destroyed: AtomicBool,
-    mip_levels: u32,
-    samples: u32,
-    dimension: String,
-    format_name: String,
+    pub(super) mip_levels: u32,
+    pub(super) samples: u32,
+    pub(super) dimension: String,
+    pub(super) format_name: String,
+    pub(super) canvas: bool,
 }
 
 /// The native view retains its texture internally, and this owner preserves
@@ -320,6 +321,7 @@ unsafe extern "sysv64" fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64
             samples,
             dimension: dimension_name,
             format_name,
+            canvas: false,
         };
         Ok(wrap(
             g,
@@ -336,6 +338,9 @@ unsafe extern "sysv64" fn create_view(g: *mut c_void, cf: *mut c_void) -> u64 {
         let Resource::Texture(t) = h.resource else {
             unreachable!()
         };
+        if t.destroyed.load(Ordering::Acquire) {
+            invalid(g, "GPUTexture has been destroyed")?;
+        }
         let d = Val::new(g, cf_arg(cf, 0));
         let label = text(g, field(g, d.v, "label")?.v, "")?;
         let format = optional_format(g, field(g, d.v, "format")?.v)?;
@@ -387,7 +392,7 @@ unsafe extern "sysv64" fn destroy_texture(g: *mut c_void, cf: *mut c_void) -> u6
         let Resource::Texture(t) = h.resource else {
             unreachable!()
         };
-        if !t.destroyed.swap(true, Ordering::AcqRel) {
+        if !t.destroyed.swap(true, Ordering::AcqRel) && !t.canvas {
             t.raw.destroy();
         }
         Ok(UNDEF)
@@ -1252,6 +1257,12 @@ unsafe extern "sysv64" fn copy_texture_buffer(g: *mut c_void, cf: *mut c_void) -
         let source = copy_texture(g, cf_arg(cf, 0), &c)?;
         let (dest, layout) = copy_buffer(g, cf_arg(cf, 1), &c)?;
         let size = extent(g, cf_arg(cf, 2))?;
+        if source.texture.destroyed.load(Ordering::Acquire)
+            || !source.texture.usage.contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            validation(g, &c, "Texture is destroyed or missing COPY_SRC usage");
+            return Ok(UNDEF);
+        }
         compute::retain_encoder(
             &encoder,
             &[
@@ -1282,6 +1293,12 @@ unsafe extern "sysv64" fn copy_buffer_texture(g: *mut c_void, cf: *mut c_void) -
         let (source, layout) = copy_buffer(g, cf_arg(cf, 0), &c)?;
         let dest = copy_texture(g, cf_arg(cf, 1), &c)?;
         let size = extent(g, cf_arg(cf, 2))?;
+        if dest.texture.destroyed.load(Ordering::Acquire)
+            || !dest.texture.usage.contains(wgpu::TextureUsages::COPY_DST)
+        {
+            validation(g, &c, "Texture is destroyed or missing COPY_DST usage");
+            return Ok(UNDEF);
+        }
         compute::retain_encoder(
             &encoder,
             &[
@@ -1312,6 +1329,18 @@ unsafe extern "sysv64" fn copy_texture_texture(g: *mut c_void, cf: *mut c_void) 
         let source = copy_texture(g, cf_arg(cf, 0), &c)?;
         let dest = copy_texture(g, cf_arg(cf, 1), &c)?;
         let size = extent(g, cf_arg(cf, 2))?;
+        if source.texture.destroyed.load(Ordering::Acquire)
+            || !source.texture.usage.contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            validation(g, &c, "Texture is destroyed or missing COPY_SRC usage");
+            return Ok(UNDEF);
+        }
+        if dest.texture.destroyed.load(Ordering::Acquire)
+            || !dest.texture.usage.contains(wgpu::TextureUsages::COPY_DST)
+        {
+            validation(g, &c, "Texture is destroyed or missing COPY_DST usage");
+            return Ok(UNDEF);
+        }
         compute::retain_encoder(
             &encoder,
             &[
@@ -1333,6 +1362,12 @@ unsafe extern "sysv64" fn write_texture(g: *mut c_void, cf: *mut c_void) -> u64 
         let dest = copy_texture(g, cf_arg(cf, 0), &c)?;
         let layout = copy_layout(g, cf_arg(cf, 2))?;
         let size = extent(g, cf_arg(cf, 3))?;
+        if dest.texture.destroyed.load(Ordering::Acquire)
+            || !dest.texture.usage.contains(wgpu::TextureUsages::COPY_DST)
+        {
+            validation(g, &c, "Texture is destroyed or missing COPY_DST usage");
+            return Ok(UNDEF);
+        }
         // Descriptor getters/coercions can modify or detach the source. Take
         // the snapshot only after they have all executed.
         let bytes = buffer::copy_source(g, source.v, 0, None)?;

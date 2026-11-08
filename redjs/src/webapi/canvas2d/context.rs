@@ -324,15 +324,17 @@ pub(crate) unsafe fn ctx_of<'a>(g: *mut c_void, v: u64) -> Option<&'a mut Ctx> {
     host_data::<Ctx>(g, c.ctx_cls, v)
 }
 
-unsafe fn read_options(g: *mut c_void, v: u64) -> Options {
+unsafe fn read_options(g: *mut c_void, v: u64) -> Result<Options, ()> {
     if !is_cell(v) {
-        return Options::default();
+        return Ok(Options::default());
     }
-    let alpha = get(g, v, "alpha");
-    Options {
-        opaque: alpha != UNDEF && !truthy_flag(alpha),
-        will_read_frequently: truthy_flag(get(g, v, "willReadFrequently")),
-    }
+    let alpha = try_get(g, v, "alpha")?;
+    let opaque = alpha != UNDEF && glue::rjs_to_boolean(g, alpha) == 0;
+    let frequent = try_get(g, v, "willReadFrequently")?;
+    Ok(Options {
+        opaque,
+        will_read_frequently: glue::rjs_to_boolean(g, frequent) != 0,
+    })
 }
 
 /// Setting a canvas's width or height: a fresh bitmap and a context back at
@@ -382,14 +384,24 @@ pub(crate) unsafe fn image_source(g: *mut c_void, v: u64) -> Result<Source, ()> 
             domexception_throw(g, "InvalidStateError", "The canvas image source has a zero width or height");
             return Err(());
         }
+        let (width, height, kind) = (off.width, off.height, off.kind);
         let ctx = get_a(g, v, c.s_ctx);
+        #[cfg(feature = "webgpu")]
+        if kind == 3 {
+            return gpu_source(g, ctx);
+        }
+        let _ = kind;
         return Ok(match ctx_of(g, ctx) {
             Some(cx) => surface_source(&cx.surface),
-            None => blank(off.width, off.height),
+            None => blank(width, height),
         });
     }
     if let Some(cx) = ctx_of(g, v) {
         return Ok(surface_source(&cx.surface));
+    }
+    #[cfg(feature = "webgpu")]
+    if super::super::webgpu::canvas::is_context(g, v) {
+        return gpu_source(g, v);
     }
     let hook = hooks().lock().unwrap().get(&(g as usize)).copied();
     if let Some(f) = hook {
@@ -401,7 +413,11 @@ pub(crate) unsafe fn image_source(g: *mut c_void, v: u64) -> Result<Source, ()> 
             }
         };
         if got == NULL {
-            return Ok(Source::Nothing);
+            return Ok(if let Some((w, h)) = blank_mirror(g, v) {
+                blank(w, h)
+            } else {
+                Source::Nothing
+            });
         }
         if got != UNDEF && got != v {
             return image_source(g, got);
@@ -412,6 +428,44 @@ pub(crate) unsafe fn image_source(g: *mut c_void, v: u64) -> Result<Source, ()> 
         "The provided value is not of type '(HTMLImageElement or HTMLCanvasElement or ImageBitmap or OffscreenCanvas or HTMLVideoElement)'",
     );
     Err(())
+}
+
+#[cfg(feature = "webgpu")]
+unsafe fn gpu_source(g: *mut c_void, v: u64) -> Result<Source, ()> {
+    match super::super::webgpu::canvas::premul_pixels(g, v) {
+        Some(Ok((data, w, h))) => Ok(Source::Pixels(
+            Arc::new(Image::from_premul(w, h, data, true)),
+            true,
+        )),
+        Some(Err(e)) => {
+            domexception_throw(g, "OperationError", &e);
+            Err(())
+        }
+        None => {
+            throw_type_error(g, "Not a GPU canvas source");
+            Err(())
+        }
+    }
+}
+
+unsafe fn blank_mirror(g: *mut c_void, v: u64) -> Option<(u32, u32)> {
+    if read_string(g, get(g, v, "tagName"))?.as_str() != "CANVAS"
+        || dec_f64(get(g, v, "__vnId")).is_none()
+    {
+        return None;
+    }
+    let w = dec_f64(get(g, v, "width"))?;
+    let h = dec_f64(get(g, v, "height"))?;
+    if !w.is_finite()
+        || !h.is_finite()
+        || w < 0.0
+        || h < 0.0
+        || w > u32::MAX as f64
+        || h > u32::MAX as f64
+    {
+        return None;
+    }
+    Some(super::surface::clamp_size(w as u32, h as u32))
 }
 
 fn surface_source(s: &SurfaceRef) -> Source {
@@ -446,7 +500,16 @@ unsafe fn domexception_throw(g: *mut c_void, name: &str, msg: &str) {
 /// `None` when `v` is none of those.
 pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u32, u32)> {
     let c = classes_opt(g)?;
+    #[cfg(feature = "webgpu")]
+    if let Some(result) = super::super::webgpu::canvas::pixels(g, v) {
+        return result.ok();
+    }
     let surface = if let Some(off) = host_data::<Off>(g, c.off_cls, v) {
+        #[cfg(feature = "webgpu")]
+        if off.kind == 3 {
+            let ctx = get_a(g, v, c.s_ctx);
+            return super::super::webgpu::canvas::pixels(g, ctx)?.ok();
+        }
         match ctx_of(g, get_a(g, v, c.s_ctx)) {
             Some(cx) => cx.surface.clone(),
             None => return Some((vec![0; off.width as usize * off.height as usize * 4], off.width, off.height)),
@@ -456,6 +519,11 @@ pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u
     } else {
         let f = hooks().lock().unwrap().get(&(g as usize)).copied()?;
         let got = call(g, f, UNDEF, &[v]).ok()?;
+        if got == NULL {
+            if let Some((w, h)) = blank_mirror(g, v) {
+                return Some((vec![0; w as usize * h as usize * 4], w, h));
+            }
+        }
         if got == v || !is_cell(got) {
             return None;
         }
@@ -1623,7 +1691,7 @@ unsafe extern "sysv64" fn m_pattern_set_transform(g: *mut c_void, cf: *mut c_voi
 pub(crate) struct Off {
     width: u32,
     height: u32,
-    /// 0 = no context yet, 1 = "2d", 2 = another kind was asked for (null).
+    /// 0 = unset, 1 = 2D, 3 = WebGPU; 4/5 = native context creation in progress.
     kind: u8,
 }
 
@@ -1667,15 +1735,26 @@ unsafe extern "sysv64" fn off_get_height(g: *mut c_void, cf: *mut c_void) -> u64
 }
 
 unsafe fn off_set_dim(g: *mut c_void, cf: *mut c_void, height: bool) -> u64 {
-    let Some(v) = enforce_dim(g, cf_arg(cf, 0), if height { "height" } else { "width" }) else { return UNDEF };
-    let o = this_off!(g, cf, "width");
-    if height {
-        o.height = v;
-    } else {
-        o.width = v;
+    let Some(v) = enforce_dim(g, cf_arg(cf, 0), if height { "height" } else { "width" }) else {
+        return UNDEF;
+    };
+    let (w, h, kind) = {
+        let o = this_off!(g, cf, "width");
+        if height {
+            o.height = v;
+        } else {
+            o.width = v;
+        }
+        (o.width, o.height, o.kind)
+    };
+    let ctx = get_a(g, cf_this(cf), classes(g).s_ctx);
+    #[cfg(feature = "webgpu")]
+    if kind == 3 {
+        let _ = super::super::webgpu::canvas::resize(g, ctx, w, h);
+        return UNDEF;
     }
-    let (w, h) = (o.width, o.height);
-    if let Some(cx) = ctx_of(g, get_a(g, cf_this(cf), classes(g).s_ctx)) {
+    let _ = kind;
+    if let Some(cx) = ctx_of(g, ctx) {
         resize(cx, w, h);
     }
     UNDEF
@@ -1690,34 +1769,73 @@ unsafe extern "sysv64" fn off_set_height(g: *mut c_void, cf: *mut c_void) -> u64
 
 unsafe extern "sysv64" fn off_get_context(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
-    let Ok(kind) = arg_str(g, cf, 0) else { return UNDEF };
-    let options = read_options(g, cf_arg(cf, 1));
+    let Ok(kind) = arg_str(g, cf, 0) else {
+        return UNDEF;
+    };
     let c = classes(g);
-    let o = this_off!(g, cf, "getContext");
-    match kind.as_str() {
-        "2d" => match o.kind {
-            0 => {
-                o.kind = 1;
-                let (w, h) = (o.width, o.height);
-                let ctx = new_context(g, this, w, h, options, None, true);
-                glue::rjs_define(g, this, c.s_ctx, ctx, 0);
-                ctx
+    let wanted = match kind.as_str() {
+        "2d" => 1,
+        "webgpu" => 3,
+        "webgl" | "webgl2" | "bitmaprenderer" => return NULL,
+        _ => return throw_type_error(g, "Invalid OffscreenRenderingContextId"),
+    };
+    #[cfg(not(feature = "webgpu"))]
+    if wanted == 3 {
+        return NULL;
+    }
+    let old = {
+        let o = this_off!(g, cf, "getContext");
+        o.kind
+    };
+    if old != 0 {
+        return if old == wanted {
+            get_a(g, this, c.s_ctx)
+        } else {
+            NULL
+        };
+    }
+    {
+        let o = this_off!(g, cf, "getContext");
+        o.kind = if wanted == 1 { 4 } else { 5 };
+    }
+    let options = if wanted == 1 {
+        match read_options(g, cf_arg(cf, 1)) {
+            Ok(o) => o,
+            Err(()) => {
+                let o = this_off!(g, cf, "getContext");
+                o.kind = 0;
+                return UNDEF;
             }
-            1 => get_a(g, this, c.s_ctx),
-            _ => NULL,
-        },
-        "webgl" | "webgl2" | "webgpu" | "bitmaprenderer" => {
-            super::advise(
-                "canvas:context-kind",
-                format!("canvas: getContext('{kind}') is not available in this runtime (only '2d'); it returns null"),
-            );
-            if o.kind == 0 {
-                o.kind = 2;
-            }
+        }
+    } else {
+        Options::default()
+    };
+    let (w, h) = {
+        let o = this_off!(g, cf, "getContext");
+        (o.width, o.height)
+    };
+    let ctx = if wanted == 1 {
+        new_context(g, this, w, h, options, None, true)
+    } else {
+        #[cfg(feature = "webgpu")]
+        {
+            super::super::webgpu::canvas::create(g, this, w, h, None)
+        }
+        #[cfg(not(feature = "webgpu"))]
+        {
             NULL
         }
-        _ => throw_type_error(g, &format!("OffscreenCanvas.getContext: '{kind}' is not a valid OffscreenRenderingContextId")),
+    };
+    glue::rjs_define(g, this, c.s_ctx, ctx, 0);
+    {
+        let o = this_off!(g, cf, "getContext");
+        o.kind = if ctx == NULL || ctx == UNDEF {
+            0
+        } else {
+            wanted
+        };
     }
+    ctx
 }
 
 /// Straight RGBA of an OffscreenCanvas's bitmap (transparent without a context).
@@ -1744,7 +1862,13 @@ unsafe extern "sysv64" fn off_convert_to_blob(g: *mut c_void, cf: *mut c_void) -
     let Some(o) = host_data::<Off>(g, classes(g).off_cls, this) else {
         return super::super::domexception::rejected(g, "TypeError", "OffscreenCanvas.convertToBlob: illegal invocation");
     };
-    let (w, h) = (o.width, o.height);
+    let (w, h, kind) = (o.width, o.height, o.kind);
+    #[cfg(feature = "webgpu")]
+    if kind == 3 {
+        let ctx = get_a(g, this, classes(g).s_ctx);
+        return super::super::webgpu::canvas::convert_to_blob(g, ctx, opts);
+    }
+    let _ = kind;
     if w == 0 || h == 0 {
         return super::super::domexception::rejected(g, "IndexSizeError", "OffscreenCanvas.convertToBlob: the canvas has no pixels");
     }
@@ -1758,7 +1882,13 @@ unsafe extern "sysv64" fn off_transfer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let c = classes(g);
     let o = this_off!(g, cf, "transferToImageBitmap");
-    let (w, h) = (o.width, o.height);
+    let (w, h, kind) = (o.width, o.height, o.kind);
+    #[cfg(feature = "webgpu")]
+    if kind == 3 {
+        let ctx = get_a(g, this, c.s_ctx);
+        return super::super::webgpu::canvas::transfer(g, ctx);
+    }
+    let _ = kind;
     let Some(cx) = ctx_of(g, get_a(g, this, c.s_ctx)) else {
         return domexception_throw_val(g, "InvalidStateError", "OffscreenCanvas.transferToImageBitmap: the canvas has no context");
     };
@@ -1782,7 +1912,9 @@ unsafe fn dim(v: u64) -> u32 {
 /// `__rjs_canvas_context(canvas, width, height, options, key?)`
 unsafe extern "sysv64" fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
     let key = dec_f64(cf_arg(cf, 4)).filter(|k| *k > 0.0).map(|k| k as u64);
-    let options = read_options(g, cf_arg(cf, 3));
+    let Ok(options) = read_options(g, cf_arg(cf, 3)) else {
+        return UNDEF;
+    };
     new_context(g, cf_arg(cf, 0), dim(cf_arg(cf, 1)), dim(cf_arg(cf, 2)), options, key, false)
 }
 

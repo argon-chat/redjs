@@ -5,7 +5,9 @@
 //! WGSL always goes through wgpu validation; no shader passthrough is exposed.
 pub mod backend;
 mod buffer;
+pub mod canvas;
 mod compute;
+mod readback;
 #[cfg(test)]
 mod tests;
 mod texture;
@@ -21,6 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Kind {
     Gpu,
+    Canvas,
     Adapter,
     Device,
     Queue,
@@ -46,6 +49,7 @@ enum Kind {
 #[derive(Clone)]
 enum Resource {
     Gpu,
+    Canvas(Arc<canvas::Surface>),
     Adapter(Arc<Adapter>),
     Device,
     Queue,
@@ -82,6 +86,9 @@ struct Classes {
     hosts: HashMap<Kind, usize>,
     types: HashMap<Kind, Class>,
     array_from: u64,
+    s_gpu_canvas: usize,
+    s_gpu_device: usize,
+    s_gpu_texture: usize,
     s_ranges: usize,
     s_lost: usize,
     s_resolve_lost: usize,
@@ -257,6 +264,18 @@ unsafe fn wrap(g: *mut c_void, kind: Kind, c: Option<Arc<Client>>, r: Resource) 
 unsafe fn invalid(g: *mut c_void, msg: &str) -> Result<(), ()> {
     throw_type_error(g, msg);
     Err(())
+}
+// Canvas texture destruction closes JS write access while its drawing buffer
+// remains readable by the presenter. Recorded commands must honor that logical
+// lifetime even though the underlying native texture is still alive.
+fn resource_alive(r: &Resource) -> bool {
+    match r {
+        Resource::Buffer(b) => !b.destroyed.load(Ordering::Acquire),
+        Resource::Texture(t) => !t.destroyed.load(Ordering::Acquire),
+        Resource::TextureView(v) => !v._owner.destroyed.load(Ordering::Acquire),
+        Resource::BindGroup(b) => b._resources.iter().all(resource_alive),
+        _ => true,
+    }
 }
 unsafe fn validation(g: *mut c_void, c: &Arc<Client>, msg: &str) {
     route_errors(
@@ -555,6 +574,7 @@ unsafe fn drain(g: *mut c_void) -> usize {
         .unwrap_or_default();
     for (id, loss) in ids {
         release_buffers(g, id);
+        canvas::device_destroyed(id);
         if let Some(target) = device_target(g, id) {
             resolve_loss(g, target.v, loss.reason, &loss.message);
         } else if let Some(r) = states()
@@ -1046,6 +1066,7 @@ unsafe extern "sysv64" fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
         let c = h.client.unwrap();
         release_buffers(g, c.id);
         c.destroy();
+        canvas::device_destroyed(c.id);
         resolve_loss(
             g,
             cf_this(cf),
@@ -1157,6 +1178,9 @@ pub(crate) unsafe fn install(g: *mut c_void) {
         hosts: HashMap::new(),
         types: HashMap::new(),
         array_from: from.v,
+        s_gpu_canvas: atom_priv(g, "webgpu.canvas") as usize,
+        s_gpu_device: atom_priv(g, "webgpu.canvasDevice") as usize,
+        s_gpu_texture: atom_priv(g, "webgpu.canvasTexture") as usize,
         s_ranges: atom_priv(g, "webgpu.ranges") as usize,
         s_lost: atom_priv(g, "webgpu.lost") as usize,
         s_resolve_lost: atom_priv(g, "webgpu.resolveLost") as usize,
@@ -1300,6 +1324,7 @@ pub(crate) unsafe fn install(g: *mut c_void) {
     buffer::install(g);
     compute::install(g);
     texture::install(g);
+    canvas::install(g);
     let nav = Val::new(g, get(g, global, "navigator"));
     let gpu = wrap(g, Kind::Gpu, None, Resource::Gpu);
     define(g, nav.v, "gpu", gpu, 1 | 2);
@@ -1372,6 +1397,7 @@ unsafe fn constants(g: *mut c_void, name: &str, values: &[(&str, u32)]) {
     define(g, glue::rjs_global(g), name, o.v, 1 | 2);
 }
 pub(crate) fn forget(gone: crate::context::Gone) {
+    canvas::forget(gone);
     let s = states().lock().unwrap().remove(&gone.key);
     if let Some(s) = s {
         for r in s.clients.values() {

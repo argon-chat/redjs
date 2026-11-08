@@ -35,7 +35,7 @@ pub mod cmd;
 mod color;
 mod context;
 mod cpu;
-mod encode;
+pub(crate) mod encode;
 pub mod surface;
 
 use core::ffi::c_void;

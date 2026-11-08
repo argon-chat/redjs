@@ -946,6 +946,26 @@ unsafe extern "sysv64" fn submit(g: *mut c_void, cf: *mut c_void) -> u64 {
             }
             commands.push(raw);
         }
+        if let Err(e) = c.check() {
+            return Ok(super::super::domexception::throw(
+                g,
+                "InvalidStateError",
+                &e,
+            ));
+        }
+        // Iteration/getters above may reenter submit() or destroy resources.
+        // Revalidate the complete batch after all JavaScript has finished.
+        if commands.iter().any(|command| {
+            let command = command.lock().unwrap();
+            command.raw.is_none() || !command.resources.iter().all(resource_alive)
+        }) {
+            validation(
+                g,
+                &c,
+                "Command buffer was consumed or references a destroyed resource",
+            );
+            return Ok(UNDEF);
+        }
         let mut native_commands = Vec::with_capacity(commands.len());
         let mut resources = Vec::new();
         for command in commands {

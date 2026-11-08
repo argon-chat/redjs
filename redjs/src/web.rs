@@ -1078,6 +1078,11 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         checkpoint(g);
     }
 
+    #[cfg(feature = "webgpu")]
+    if flags & (PUMP_TIMERS | PUMP_RAF) != 0 {
+        crate::webapi::webgpu::canvas::pump(g);
+    }
+
     // Between waves, with no JS on the stack: JSC's own timers (the GC and the
     // sweeper that shrinks the heap — glue.cpp `rjs_run_loop_cycle`), then the
     // allocator's idle sweep of this thread's heaps.
