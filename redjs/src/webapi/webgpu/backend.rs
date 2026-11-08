@@ -39,6 +39,8 @@ pub struct Context {
     pub queue: Arc<wgpu::Queue>,
     pub adapter: Arc<wgpu::Adapter>,
     loss: Arc<Mutex<Option<DeviceLoss>>>,
+    // Declared last so a host generation outlives the wgpu wrappers above.
+    _owner: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl Context {
@@ -52,6 +54,21 @@ impl Context {
             device,
             queue,
             loss: Arc::new(Mutex::new(None)),
+            _owner: None,
+        }
+    }
+
+    /// Retains the renderer generation whose physical device backs these
+    /// wrappers. Logical clients may outlive the window which requested them.
+    pub fn from_shared_with_owner(
+        adapter: Arc<wgpu::Adapter>,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        owner: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            _owner: Some(owner),
+            ..Self::from_shared(adapter, device, queue)
         }
     }
 

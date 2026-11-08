@@ -41,6 +41,17 @@ pub struct NativeSource<'a> {
 /// The callback may panic; cleanup must still run. No JSC callback is allowed.
 pub unsafe trait NativeFrame: std::fmt::Debug + Send + Sync {
     fn copy_d3d11(&self, copy: &mut dyn FnMut(*mut c_void) -> bool) -> Result<bool, String>;
+
+    /// Exposes a BGRA8 D3D12 resource in RENDER_TARGET state and a readiness
+    /// fence signalled on the producer queue. The consumer waits on its GPU
+    /// queue, restores the state after copying, and retains this frame until
+    /// its own copy fence completes. No JS callback is allowed here.
+    fn copy_d3d12(
+        &self,
+        _copy: &mut dyn FnMut(*mut c_void, *mut c_void, u64) -> bool,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 pub trait NativePresenter: Send + Sync {
