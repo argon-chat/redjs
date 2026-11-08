@@ -272,6 +272,93 @@ pub unsafe extern "C" fn redjs_report_extra_memory(ctx: *mut c_void, bytes: u64)
 }
 
 // ---------------------------------------------------------------------------
+// Prepared scripts and native images
+// ---------------------------------------------------------------------------
+
+/// Generates trusted classic-script bytecode without executing it. The handle
+/// owns `bytes` until `redjs_bytecode_free`; depth=UINT32_MAX compiles all nested
+/// functions. Keep the exact source/URL and use only with this engine/options.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_bytecode_generate(
+    ctx: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
+    depth: u32, handle: *mut *mut c_void, bytes: *mut *const u8,
+    byte_length: *mut usize, out: *mut u64,
+) -> i32 {
+    glue::rjs_bytecode_generate(ctx, src, len, url, url_len, depth, handle, bytes, byte_length, out)
+}
+
+/// Frees a compiler-produced bytecode handle; null is accepted.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_bytecode_free(handle: *mut c_void) {
+    glue::rjs_bytecode_free(handle)
+}
+
+/// Evaluates trusted compiler-produced bytecode with its exact source/URL.
+/// `used` reports acceptance; a miss falls back to source before execution.
+/// Arbitrary bytes are unsafe even if their checksum is correct. JSC retains
+/// its own byte copy, so the compiler handle can be freed after this call.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_eval8_cached(
+    ctx: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
+    bytes: *const u8, byte_length: usize, used: *mut u32, out: *mut u64,
+) -> i32 {
+    glue::rjs_eval8_cached(ctx, src, len, url, url_len, bytes, byte_length, used, out)
+}
+
+/// Copies native-AOT build provenance as UTF-8 JSON, without initializing JSC.
+/// Returns the required byte length (no NUL), or zero when native-aot is off.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_aot_build_info(destination: *mut u8, capacity: usize) -> usize {
+    #[cfg(feature = "native-aot")]
+    {
+        let info = format!(
+            "{{\"frontend\":\"{}\",\"engine\":\"{}\",\"tableId\":\"{}\",\"compileOptions\":\"{}\"}}",
+            crate::aot::FRONTEND_REVISION, crate::aot::ENGINE_VERSION,
+            crate::aot::BUILD_TABLE_ID, crate::aot::COMPILE_OPTIONS,
+        );
+        if capacity >= info.len() && !destination.is_null() {
+            core::ptr::copy_nonoverlapping(info.as_ptr(), destination, info.len());
+        }
+        info.len()
+    }
+    #[cfg(not(feature = "native-aot"))]
+    { let _ = (destination, capacity); 0 }
+}
+
+/// Loads an already verified native image before JSC initialization. `file`
+/// must have read+execute access and deny write sharing. Hash/check the same
+/// file against trusted engine/frontend/table/options metadata first. The
+/// loader retains its own handle; returns 1 for acceptance, otherwise rejects.
+/// Profile 0 uses engine defaults; 1 is compact. Native-AOT-disabled builds reject.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_aot_load_handle(file: isize, identity: *const u8, profile: u32) -> u32 {
+    #[cfg(feature = "native-aot")]
+    { glue::rjs_aot_load_handle_with_profile(file, identity, profile) }
+    #[cfg(not(feature = "native-aot"))]
+    { let _ = (file, identity, profile); 0 }
+}
+
+/// Starts a one-based native entry module. Status 3 means pending top-level
+/// await (not completed success); otherwise normal redjs eval statuses apply.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_aot_run(ctx: *mut c_void, module: u32, out: *mut u64) -> i32 {
+    if ctx.is_null() || out.is_null() { return REDJS_BAD_ARG; }
+    #[cfg(feature = "native-aot")]
+    { glue::rjs_aot_run(ctx, module, out) }
+    #[cfg(not(feature = "native-aot"))]
+    { let _ = module; REDJS_BAD_ARG }
+}
+
+/// Returns 1 after a native image has been selected on this VM thread.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_aot_is_active() -> i32 {
+    #[cfg(feature = "native-aot")]
+    { glue::rjs_aot_is_active() }
+    #[cfg(not(feature = "native-aot"))]
+    { 0 }
+}
+
+// ---------------------------------------------------------------------------
 // Eval
 // ---------------------------------------------------------------------------
 

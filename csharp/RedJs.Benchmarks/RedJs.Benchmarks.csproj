@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RedJsNativePath Condition="'$(RedJsNativePath)' == ''">$(MSBuildThisFileDirectory)..\..\redjs\target\benchmarks\x86_64-pc-windows-msvc\release\redjs.dll</RedJsNativePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RedJs/RedJs.csproj" />
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="Microsoft.ClearScript.V8" Version="7.5.1.1" />
+    <PackageReference Include="Microsoft.ClearScript.V8.Native.win-x64" Version="7.5.1.1" />
+    <PackageReference Include="Jint" Version="4.17.0" />
+    <PackageReference Include="YantraJS.Core" Version="1.2.507" />
+    <PackageReference Include="Jurassic" Version="3.2.9" />
+    <PackageReference Include="NiL.JS" Version="2.6.1725" />
+    <None Include="../../pins.txt" Link="native-pins.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(RedJsNativePath)" Link="runtimes/win-x64/native/redjs.dll" CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('$(RedJsNativePath)')" />
+    <None Include="../../redjs/target/benchmarks-aot/x86_64-pc-windows-msvc/release/redjs.dll"
+          Link="runtimes/win-x64/native-aot/redjs.dll" CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('../../redjs/target/benchmarks-aot/x86_64-pc-windows-msvc/release/redjs.dll')" />
+    <None Include="obj/native-images/*.image;obj/native-images/*.image.json"
+          Link="native-images/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

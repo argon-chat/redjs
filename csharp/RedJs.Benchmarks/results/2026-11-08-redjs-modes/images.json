@@ -1,0 +1,92 @@
+[
+  {
+    "workload": "arithmetic",
+    "schema": "redjs-benchmark-native-v1",
+    "build": {
+      "target": "x86_64-windows",
+      "frontend": "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074",
+      "engine": "4d45755fed4aeef19e95beb90d3d0c884a2812bd",
+      "tableId": "4750b3540882158b35c1f7cc946edc1acb18561345bc70f9151fb913e59268b8",
+      "compileOptions": "x86_64;references=narrow;image=pic;threads=1;default-options@4d45755fed4aeef19e95beb90d3d0c884a2812bd"
+    },
+    "entry": 1,
+    "identity": "33f3265cce6628455ce0b54f35b9eb49",
+    "imageSha256": "c0c7b13c95f995d1302b12675c6285c8e94a38348502fe542faa74efe4ed160c",
+    "sourceSha256": "11a11022e304c6d5dd6041669e9c806ce7cb21a520186e25234610bfdfabb8e9"
+  },
+  {
+    "workload": "cs-to-js",
+    "schema": "redjs-benchmark-native-v1",
+    "build": {
+      "target": "x86_64-windows",
+      "frontend": "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074",
+      "engine": "4d45755fed4aeef19e95beb90d3d0c884a2812bd",
+      "tableId": "4750b3540882158b35c1f7cc946edc1acb18561345bc70f9151fb913e59268b8",
+      "compileOptions": "x86_64;references=narrow;image=pic;threads=1;default-options@4d45755fed4aeef19e95beb90d3d0c884a2812bd"
+    },
+    "entry": 1,
+    "identity": "1ea8811e37b5d243d4e4cb0f73ed3bb8",
+    "imageSha256": "bbe8e735f32d233c00cf6b808bf7db1454e1a48c5e3f13ed7c8ef29943b6b699",
+    "sourceSha256": "dd178ef7460ef8971e69bd5bfa8c896e0fe669889fbe2d1b537b86ad843aa95f"
+  },
+  {
+    "workload": "fibonacci",
+    "schema": "redjs-benchmark-native-v1",
+    "build": {
+      "target": "x86_64-windows",
+      "frontend": "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074",
+      "engine": "4d45755fed4aeef19e95beb90d3d0c884a2812bd",
+      "tableId": "4750b3540882158b35c1f7cc946edc1acb18561345bc70f9151fb913e59268b8",
+      "compileOptions": "x86_64;references=narrow;image=pic;threads=1;default-options@4d45755fed4aeef19e95beb90d3d0c884a2812bd"
+    },
+    "entry": 1,
+    "identity": "263f1e2a1b973bab50b4dc42e4ce7fff",
+    "imageSha256": "00bef9a8795578fccdc1555cbbe6b360a885caf692ab02c1b9f57b7d63433e51",
+    "sourceSha256": "a361e8a08ad1c8dad1da9af543fee168a94bf312f522c86736e26df56e671809"
+  },
+  {
+    "workload": "js-to-cs",
+    "schema": "redjs-benchmark-native-v1",
+    "build": {
+      "target": "x86_64-windows",
+      "frontend": "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074",
+      "engine": "4d45755fed4aeef19e95beb90d3d0c884a2812bd",
+      "tableId": "4750b3540882158b35c1f7cc946edc1acb18561345bc70f9151fb913e59268b8",
+      "compileOptions": "x86_64;references=narrow;image=pic;threads=1;default-options@4d45755fed4aeef19e95beb90d3d0c884a2812bd"
+    },
+    "entry": 1,
+    "identity": "7998dbc2b37cef4fd501cb1866f973fa",
+    "imageSha256": "88ef9dd3899d4496c3987b7d49d49dd9ca1644107313c7c6f5ec7e18efdb4590",
+    "sourceSha256": "f6a080a5ce4f345e9717a1c670e05e166817e11462f5684d12f51c3a0f915194"
+  },
+  {
+    "workload": "json",
+    "schema": "redjs-benchmark-native-v1",
+    "build": {
+      "target": "x86_64-windows",
+      "frontend": "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074",
+      "engine": "4d45755fed4aeef19e95beb90d3d0c884a2812bd",
+      "tableId": "4750b3540882158b35c1f7cc946edc1acb18561345bc70f9151fb913e59268b8",
+      "compileOptions": "x86_64;references=narrow;image=pic;threads=1;default-options@4d45755fed4aeef19e95beb90d3d0c884a2812bd"
+    },
+    "entry": 1,
+    "identity": "b5c55d2e0badeddf99482cdea9a90bed",
+    "imageSha256": "8dc60d8f2c6abda6714fe6a97e396c936908ae8cb9f163b054eacd277c1a0da3",
+    "sourceSha256": "6722e3270c3aaa21deafcdf8e789797216aa7ed362ed527877947ba565dfcd10"
+  },
+  {
+    "workload": "objects",
+    "schema": "redjs-benchmark-native-v1",
+    "build": {
+      "target": "x86_64-windows",
+      "frontend": "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074",
+      "engine": "4d45755fed4aeef19e95beb90d3d0c884a2812bd",
+      "tableId": "4750b3540882158b35c1f7cc946edc1acb18561345bc70f9151fb913e59268b8",
+      "compileOptions": "x86_64;references=narrow;image=pic;threads=1;default-options@4d45755fed4aeef19e95beb90d3d0c884a2812bd"
+    },
+    "entry": 1,
+    "identity": "c85e4eefbec4519eeeb3980930107b1a",
+    "imageSha256": "4275b8fdf44adde0777707ed40cc84bd45be3808f6a0a9ec69ab0ce7afe09927",
+    "sourceSha256": "5c195aacb86a270a41c199a398d1199fc37ae7dd88d19ca40460c2e0bf70d12f"
+  }
+]

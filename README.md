@@ -141,6 +141,16 @@ OS integration depend on what the host provides. The
 - **Bundle your scripts.** Evaluation runs classic scripts; there is no module
   loader, dynamic `import()`, or remote inspector yet.
 
+## Benchmarks
+
+The [C# benchmark suite](csharp/RedJs.Benchmarks/README.md) compares redjs with
+ClearScript/V8, Jint, YantraJS, Jurassic, and NiL.JS using BenchmarkDotNet.
+It covers script execution, calls in both directions, allocations, and first use.
+The [redjs modes comparison](csharp/RedJs.Benchmarks/results/2026-11-08-redjs-modes/README.md)
+covers warmed JIT, cached bytecode with JIT on or off, and native JavaScript AOT images.
+See the [recorded comparison](csharp/RedJs.Benchmarks/results/2026-11-08/README.md)
+for results and the conditions they were measured under.
+
 ## Going further
 
 - [Rust examples](redjs/examples) — audio, spatial sound, WebGPU, and engine probes.

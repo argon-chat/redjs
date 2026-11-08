@@ -37,6 +37,13 @@ namespace RedJs.Native
         ///  Creates a VM + global object and returns the context handle
         ///  (`JSGlobalObject*`). Contexts are expected to live for the process
         ///  lifetime in the player.
+        ///
+        ///  Also arms JSC's unhandled-promise-rejection hook (`crate::errors`) — here
+        ///  rather than behind an opt-in call, because the hook existing and nobody
+        ///  arming it is precisely how a rejection became an empty screen and no log
+        ///  line. Rejections surface through the same handler as pumped-callback
+        ///  throws (`redjs_set_uncaught_handler`); until one is registered they go to
+        ///  stderr.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_context_create", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void* redjs_context_create();
@@ -45,9 +52,22 @@ namespace RedJs.Native
         ///  Releases the context. ⚠ Known issue: this Bun WebKit prebuilt fastfail-
         ///  crashes in VM teardown (`JSGlobalContextRelease`). Prefer leaking contexts
         ///  (create once, keep for process lifetime). Kept for API completeness.
+        ///
+        ///  Every redjs registry keyed by this context is cleared first, so a context
+        ///  created later at the same address starts from nothing.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_context_release", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_context_release(void* ctx);
+
+        /// <summary>
+        ///  This context's process-unique id: minted at creation from one counter,
+        ///  never 0, NEVER reused — unlike the `ctx` address, which a later context can
+        ///  receive. 0 for an address redjs has never seen. Key anything that can be
+        ///  delivered to a context *later* (from another thread, after a wait) by this,
+        ///  not by the address.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_context_id", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern ulong redjs_context_id(void* ctx);
 
         /// <summary>
         ///  The global object of this context as a JS value.
@@ -73,8 +93,10 @@ namespace RedJs.Native
         internal static extern void redjs_unlock(void* ctx);
 
         /// <summary>
-        ///  Runs the microtask queue (promise reactions, await continuations). Call
-        ///  after eval/call batches — e.g. once per frame after the rAF callback.
+        ///  A microtask checkpoint: runs the microtask queue (promise reactions, await
+        ///  continuations), then — when no JS is on the stack — the post-checkpoint
+        ///  steps redjs's web APIs hang on it. Call after eval/call batches — e.g. once
+        ///  per frame after the rAF callback. Same entry point `redjs_pump` uses.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_drain_microtasks", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_drain_microtasks(void* ctx);
@@ -94,6 +116,59 @@ namespace RedJs.Native
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_report_extra_memory", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_report_extra_memory(void* ctx, ulong bytes);
+
+        /// <summary>
+        ///  Generates trusted classic-script bytecode without executing it. The handle
+        ///  owns `bytes` until `redjs_bytecode_free`; depth=UINT32_MAX compiles all nested
+        ///  functions. Keep the exact source/URL and use only with this engine/options.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_bytecode_generate", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_bytecode_generate(void* ctx, byte* src, nuint len, byte* url, nuint url_len, uint depth, void** handle, byte** bytes, nuint* byte_length, ulong* @out);
+
+        /// <summary>
+        ///  Frees a compiler-produced bytecode handle; null is accepted.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_bytecode_free", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_bytecode_free(void* handle);
+
+        /// <summary>
+        ///  Evaluates trusted compiler-produced bytecode with its exact source/URL.
+        ///  `used` reports acceptance; a miss falls back to source before execution.
+        ///  Arbitrary bytes are unsafe even if their checksum is correct. JSC retains
+        ///  its own byte copy, so the compiler handle can be freed after this call.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_eval8_cached", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_eval8_cached(void* ctx, byte* src, nuint len, byte* url, nuint url_len, byte* bytes, nuint byte_length, uint* used, ulong* @out);
+
+        /// <summary>
+        ///  Copies native-AOT build provenance as UTF-8 JSON, without initializing JSC.
+        ///  Returns the required byte length (no NUL), or zero when native-aot is off.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_aot_build_info", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern nuint redjs_aot_build_info(byte* destination, nuint capacity);
+
+        /// <summary>
+        ///  Loads an already verified native image before JSC initialization. `file`
+        ///  must have read+execute access and deny write sharing. Hash/check the same
+        ///  file against trusted engine/frontend/table/options metadata first. The
+        ///  loader retains its own handle; returns 1 for acceptance, otherwise rejects.
+        ///  Profile 0 uses engine defaults; 1 is compact. Native-AOT-disabled builds reject.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_aot_load_handle", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern uint redjs_aot_load_handle(nint file, byte* identity, uint profile);
+
+        /// <summary>
+        ///  Starts a one-based native entry module. Status 3 means pending top-level
+        ///  await (not completed success); otherwise normal redjs eval statuses apply.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_aot_run", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_aot_run(void* ctx, uint module, ulong* @out);
+
+        /// <summary>
+        ///  Returns 1 after a native image has been selected on this VM thread.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_aot_is_active", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_aot_is_active();
 
         /// <summary>
         ///  Evaluates UTF-16 source. `url` (may be empty) names the script in stack
@@ -424,9 +499,18 @@ namespace RedJs.Native
         internal static extern double redjs_now();
 
         /// <summary>
-        ///  Process-global handler for exceptions thrown by pumped callbacks:
+        ///  Process-global handler for exceptions no JS code will ever see:
         ///  `void f(ctx, exception_value)` (MS ABI). Called with the VM lock held —
         ///  extract info (redjs_error_info), don't re-enter JS.
+        ///
+        ///  Two sources today: a throw from a pumped callback (timer / rAF / idle), and
+        ///  an **unhandled promise rejection** (armed for every context at creation —
+        ///  `crate::errors`), where the value is the rejection reason. With no handler
+        ///  registered both go to stderr instead of vanishing.
+        ///
+        ///  ⚠ Print the message, not just the stack: JSC's `Error.prototype.stack` has
+        ///  no `Name: message` header line, so a `stack || message` formatter silently
+        ///  drops what went wrong. `redjs_error_info` returns the two separately.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_set_uncaught_handler", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_set_uncaught_handler(void* handler);
@@ -445,6 +529,60 @@ namespace RedJs.Native
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_webshim_install", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern int redjs_webshim_install(void* ctx, ushort* scripts_root, nuint scripts_len, ushort* assets_root, nuint assets_len);
+
+        /// <summary>
+        ///  Sets what `navigator.userAgent` reports (UTF-16), for every context in the
+        ///  process, from the next read on — before or after install. `appVersion` and
+        ///  `platform` follow it. A null `ua` restores the default,
+        ///  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0`.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_navigator_set_user_agent", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_navigator_set_user_agent(ushort* ua, nuint len);
+
+        /// <summary>
+        ///  Sets what `navigator.onLine` reports, for every context in the process,
+        ///  from any thread: `1` online, `0` offline, negative = no provider (reads
+        ///  `true`, Chromium's answer when it cannot tell). A change queues an
+        ///  `online` / `offline` event for every context's next pump; repeating the
+        ///  current state is not a change. See `webapi::navigator`.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_navigator_set_on_line", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_navigator_set_on_line(int state);
+
+        /// <summary>
+        ///  The per-pump delivery budget, process-wide, in microseconds: how long one
+        ///  `redjs_pump` may keep delivering — and waiting for — results produced on
+        ///  other threads (IndexedDB) while any are still in flight. Default 4000.
+        ///  0 = deliver what is already queued and never wait. Present in every build
+        ///  (the budget is the pump's, not IndexedDB's).
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_idb_set_budget_us", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_idb_set_budget_us(uint us);
+
+        /// <summary>
+        ///  Ends IndexedDB's work before exit: transactions that never committed are
+        ///  lost (as when a browser is killed) and every database is closed. Returns 1
+        ///  if the server finished within `timeout_ms` (or never started), 0 if not.
+        ///  A build without the `indexeddb` feature always returns 1.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_idb_shutdown", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_idb_shutdown(uint timeout_ms);
+
+        /// <summary>
+        ///  Puts IndexedDB ON DISK for an embedder with no Rust host (PEWPEW's C#):
+        ///  `folder_utf8[..len]` holds one SQLite file per database, encrypted at rest
+        ///  under `key32` (32 raw bytes the embedder keeps safe, e.g. with .NET
+        ///  `ProtectedData`) or plaintext when it is null; `quota_bytes` 0 = 1 GiB.
+        ///  Process-wide, BEFORE the first script touches `indexedDB`: returns 0 on
+        ///  success, 1 once IndexedDB is already in use (the configuration is latched
+        ///  at the first use), 2 for a bad argument, 3 in a build without
+        ///  `indexeddb-sqlite`. Call `redjs_idb_shutdown` at exit.
+        ///
+        ///  # Safety
+        ///  `folder_utf8` must point at `len` readable bytes; `key32` at 32 or be null.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_idb_configure", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern int redjs_idb_configure(byte* folder_utf8, nuint len, byte* key32, ulong quota_bytes);
 
         /// <summary>
         ///  Registers (or clears, with null) the host CONTENT PROVIDER for fetch/Image
@@ -511,6 +649,33 @@ namespace RedJs.Native
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_release_memory", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_release_memory(void* ctx);
+
+        /// <summary>
+        ///  [`redjs_release_memory`], after deleting every piece of compiled code
+        ///  (bytecode, JIT) that is not running, as JSC's own `shrinkFootprintWhenIdle`
+        ///  does; each function compiles again from its source when next called. For
+        ///  measuring how much of a heap is code rather than data, and for a host that
+        ///  wants the deepest release (a long-minimised window).
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_release_memory_and_code", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_release_memory_and_code(void* ctx);
+
+        /// <summary>
+        ///  Registers (or clears, with null) the host DIALOG handler backing `alert`,
+        ///  `confirm` and `prompt`. `handler` is
+        ///  `int32_t (int32_t kind, const uint16_t* msg, size_t msg_len, const uint16_t* def, size_t def_len, void (*sink)(void* ctx, const uint16_t* ptr, size_t len), void* sink_ctx)`
+        ///  — `kind` is 0 alert / 1 confirm / 2 prompt; the return value is ignored for
+        ///  alert, and is 0 = false/cancelled, non-zero = true/accepted otherwise. A
+        ///  prompt returning non-zero must call `sink` exactly once with the entered
+        ///  text. Called by Rust with the standard C ABI (never by JSC — no SysV
+        ///  trampoline), on the JS thread with the caller blocked: a handler that pumps
+        ///  a modal loop must not re-enter JS.
+        ///
+        ///  With NO handler registered the three globals THROW rather than returning a
+        ///  default — see `webapi::dialogs` for why that is the safer failure.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_dialog_handler_set", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_dialog_handler_set(void* ctx, void* handler);
 
 
     }

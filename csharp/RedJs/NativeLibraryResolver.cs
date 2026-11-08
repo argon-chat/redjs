@@ -26,6 +26,16 @@ internal static class NativeLibraryResolver
         if (!string.Equals(libraryName, LibName, StringComparison.Ordinal))
             return IntPtr.Zero;
 
+        // Select an explicit native build before the first engine call. A bad
+        // override fails instead of silently falling back to another engine.
+        string? overridePath = Environment.GetEnvironmentVariable("REDJS_NATIVE_LIBRARY");
+        if (!string.IsNullOrWhiteSpace(overridePath))
+        {
+            if (!Path.IsPathFullyQualified(overridePath))
+                throw new ArgumentException("REDJS_NATIVE_LIBRARY must be an absolute path");
+            return NativeLibrary.Load(overridePath);
+        }
+
         string fileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "redjs.dll"
             : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "libredjs.dylib"
             : "libredjs.so";

@@ -95,6 +95,12 @@ extern "C" {
         byte_length: *mut usize, out: *mut u64,
     ) -> i32;
     pub fn rjs_bytecode_free(handle: *mut c_void);
+    #[cfg(feature = "native-aot")]
+    pub fn rjs_aot_load_handle_with_profile(file: isize, identity: *const u8, profile: u32) -> u32;
+    #[cfg(feature = "native-aot")]
+    pub fn rjs_aot_run(context: *mut c_void, module: u32, result: *mut u64) -> i32;
+    #[cfg(feature = "native-aot")]
+    pub fn rjs_aot_is_active() -> i32;
     /// `bytes` must be a trusted JSC-produced payload, never adversarial input.
     pub fn rjs_eval8_cached(
         g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
