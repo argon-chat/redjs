@@ -501,6 +501,36 @@ pub fn external_end(id: u64) {
     }
 }
 
+/// Begins a span for an original function invoked by a JS-side wrapper.
+/// No value, guard or VM lock is retained after this function returns.
+/// # Safety
+/// Must be called FROM executing JavaScript on this context's VM thread. That
+/// invocation owns the VM lock for both this metadata read and the callback.
+/// A nonzero returned token must be balanced with `external_callback_end`.
+pub unsafe fn external_callback_begin(global: *mut core::ffi::c_void, function: u64) -> u64 {
+    if !enabled() {
+        return 0;
+    }
+    let _context = ContextScope::enter(global as usize);
+    if !current_target_active() {
+        return 0;
+    }
+    let callsite = function_callsite(global, function);
+    let name = callsite
+        .as_ref()
+        .map(|site| site.function.as_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("JavaScript callback")
+        .to_owned();
+    let mut scope = begin("js", &name, callsite);
+    let token = scope.id;
+    scope.id = 0;
+    token
+}
+pub fn external_callback_end(token: u64) {
+    external_end(token);
+}
+
 fn begin(category: &'static str, name: &str, callsite: Option<Callsite>) -> Span {
     if !enabled() {
         return Span::empty();
@@ -848,22 +878,7 @@ extern "C" {
         info: *mut FunctionInfo,
     ) -> i32;
 }
-/// Reads executable metadata, never `function.name` or another JS property.
-/// # Safety
-/// The function value must belong to this live context on its VM thread.
-pub unsafe fn js_span(global: *mut core::ffi::c_void, function: u64, name: &'static str) -> Span {
-    if !enabled() {
-        return Span::empty();
-    }
-    let scope = ContextScope::enter(global as usize);
-    let accept = current_target_active();
-    if !accept {
-        let mut result = Span::empty();
-        result._context = Some(scope);
-        return result;
-    }
-    crate::glue::rjs_lock(global);
-    let lock = JsLock(global);
+unsafe fn function_callsite(global: *mut core::ffi::c_void, function: u64) -> Option<Callsite> {
     let mut info = FunctionInfo {
         line: 0,
         column: 0,
@@ -887,7 +902,43 @@ pub unsafe fn js_span(global: *mut core::ffi::c_void, function: u64, name: &'sta
     } else {
         None
     };
-    let mut result = begin("js", name, callsite);
+    callsite
+}
+
+/// Reads executable metadata, never `function.name` or another JS property.
+/// # Safety
+/// The function value must belong to this live context on its VM thread.
+pub unsafe fn js_span(global: *mut core::ffi::c_void, function: u64, name: &'static str) -> Span {
+    js_span_inner(global, function, name, false)
+}
+unsafe fn js_span_inner(
+    global: *mut core::ffi::c_void,
+    function: u64,
+    name: &'static str,
+    intrinsic_name: bool,
+) -> Span {
+    if !enabled() {
+        return Span::empty();
+    }
+    let scope = ContextScope::enter(global as usize);
+    let accept = current_target_active();
+    if !accept {
+        let mut result = Span::empty();
+        result._context = Some(scope);
+        return result;
+    }
+    crate::glue::rjs_lock(global);
+    let lock = JsLock(global);
+    let callsite = function_callsite(global, function);
+    let label = intrinsic_name.then(|| {
+        callsite
+            .as_ref()
+            .map(|site| site.function.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(name)
+            .to_owned()
+    });
+    let mut result = begin("js", label.as_deref().unwrap_or(name), callsite);
     result._context = Some(scope);
     result._js_lock = Some(lock);
     result
@@ -992,6 +1043,109 @@ mod tests {
         assert_eq!(
             context.eval("getterCalls").expect("counter").as_number(),
             Some(0.)
+        );
+        clear();
+    }
+    fn install_original_callback_controls(context: &crate::api::Context) {
+        use crate::api::{HostArgs, Value};
+        let begin = context
+            .function("__profileBegin", 1, |global, frame| unsafe {
+                Value::number(external_callback_begin(global, HostArgs::new(frame).arg(0).0) as f64)
+                    .0
+            })
+            .expect("begin control");
+        let end = context
+            .function("__profileEnd", 1, |_global, frame| unsafe {
+                external_callback_end(HostArgs::new(frame).arg(0).as_number().unwrap_or(0.) as u64);
+                Value::undefined().0
+            })
+            .expect("end control");
+        context
+            .global_set("__profileBegin", begin)
+            .expect("begin global");
+        context.global_set("__profileEnd", end).expect("end global");
+    }
+    #[test]
+    fn timer_registered_before_recording_attributes_the_original_function() {
+        let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
+        let context = crate::api::Context::new();
+        assert_eq!(unsafe { crate::web::install(context.raw()) }, 0);
+        install_original_callback_controls(&context);
+        context.eval_named("globalThis.ran=0; function profiledTimer(){ const until=performance.now()+12; while(performance.now()<until){}; ran++; }", "vn://devtools/app/main.ts").expect("user callback");
+        context.eval_named("((cb)=>{setTimeout(function(){const token=__profileBegin(cb);if(!token)return cb.apply(this,arguments);try{return cb.apply(this,arguments)}finally{__profileEnd(token)}},0)})(profiledTimer)", "vn://vendor.js").expect("register wrapped timer before recording");
+        start(Limits::default(), Some(context.raw() as usize));
+        unsafe {
+            crate::glue::rjs_lock(context.raw());
+            crate::web::pump(
+                context.raw(),
+                crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                std::ptr::null_mut(),
+            );
+            crate::glue::rjs_unlock(context.raw());
+        }
+        stop();
+        let page = frames(0, 240).expect("recording");
+        let frame = page
+            .frames
+            .iter()
+            .find(|frame| frame.hints.iter().any(|hint| hint.code == "long-callback"))
+            .expect("actual long callback hint");
+        let detail = frame_detail(frame.id, 0, 1000).expect("frame details");
+        let original = detail
+            .spans
+            .iter()
+            .find(|span| {
+                span.callsite
+                    .as_ref()
+                    .is_some_and(|site| site.function == "profiledTimer")
+            })
+            .expect("original callback metadata");
+        assert_eq!(original.name, "profiledTimer");
+        assert_eq!(
+            original.callsite.as_ref().expect("callsite").url,
+            "vn://devtools/app/main.ts"
+        );
+        assert!(
+            frame
+                .hints
+                .iter()
+                .any(|hint| hint.code == "long-callback" && hint.span_id == Some(original.id)),
+            "hint must point at the actual user callback"
+        );
+        assert_eq!(context.eval("ran").expect("result").as_number(), Some(1.));
+        clear();
+    }
+    #[test]
+    fn recording_stopped_inside_original_callback_leaves_no_external_lifetime() {
+        let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
+        let context = crate::api::Context::new();
+        install_original_callback_controls(&context);
+        let finish = context
+            .function("__stopProfile", 0, |_global, _frame| {
+                stop();
+                crate::api::Value::undefined().0
+            })
+            .expect("stop callback");
+        context
+            .global_set("__stopProfile", finish)
+            .expect("stop global");
+        context.eval_named("function originalStop(){__stopProfile();return 42};globalThis.wrapper=function(){const token=__profileBegin(originalStop);try{return originalStop()}finally{__profileEnd(token)}}", "vn://stop-callback.js").expect("callback");
+        let wrapper = context.global_get("wrapper").expect("wrapper");
+        start(Limits::default(), Some(context.raw() as usize));
+        assert_eq!(
+            context
+                .call(wrapper, crate::api::Value::undefined(), &[])
+                .expect("call")
+                .as_number(),
+            Some(42.)
+        );
+        assert!(!enabled());
+        assert_eq!(
+            context
+                .eval("40+3")
+                .expect("subsequent VM call")
+                .as_number(),
+            Some(43.)
         );
         clear();
     }
