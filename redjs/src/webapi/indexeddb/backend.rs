@@ -97,6 +97,12 @@ pub trait Backend: Send {
     fn databases(&mut self) -> R<Vec<(Vec<u16>, u64)>>;
     /// Opens a database, creating it at version 0 if absent.
     fn open(&mut self, name: &[u16]) -> R<Box<dyn Database>>;
+    /// Inspector-only open: existing database, no creation, repair or migration.
+    fn inspect_existing(&mut self, _name: &[u16]) -> R<Box<dyn Database>> {
+        Err(BackendError::Io("This backend cannot inspect a closed database without opening it".into()))
+    }
+    fn inspect_databases(&mut self) -> R<Vec<(Vec<u16>, u64)>> { self.databases() }
+
     /// Deletes a database; returns its version (0 if it did not exist). The
     /// server only calls this with no handle of that database open.
     fn delete(&mut self, name: &[u16]) -> R<u64>;
@@ -134,6 +140,13 @@ pub trait Database: Send {
 
     // Records.
     fn get(&mut self, store: StoreId, key: &[u8]) -> R<Option<Value>>;
+    /// Bounded serialized prefix; avoids materializing a large stored Blob.
+    fn inspect_value(&mut self, store: StoreId, key: &[u8], maximum: usize) -> R<Option<(u64, Vec<u8>)>> {
+        Ok(self.get(store, key)?.map(|value| (value.len() as u64, value[..value.len().min(maximum)].to_vec())))
+    }
+    /// VM instruction budget, only around inspector reads outside writers.
+    fn inspection_budget(&mut self, _instructions: Option<u32>) {}
+
     fn put(&mut self, store: StoreId, key: &[u8], value: Value) -> R<()>;
     fn delete(&mut self, store: StoreId, key: &[u8]) -> R<()>;
     /// Keys in `(lo, hi)`, ascending (or descending), at most `limit`.

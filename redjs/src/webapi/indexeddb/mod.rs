@@ -47,6 +47,7 @@ mod common;
 mod cursor;
 mod database;
 mod factory;
+pub mod inspection;
 pub mod key;
 pub mod keypath;
 pub mod memory;

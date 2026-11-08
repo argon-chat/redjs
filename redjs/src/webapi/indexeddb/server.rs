@@ -172,6 +172,7 @@ pub enum ToServer {
     ErrorHandled { tx: TxId },
     Close { conn: ConnId },
     ContextGone { ctx: ContextId },
+    Inspect { query: super::inspection::Query, reply: Sender<Result<super::inspection::Response, String>> },
     Shutdown { done: Sender<()> },
 }
 
@@ -307,6 +308,14 @@ pub fn send(m: ToServer) {
     let _ = s.as_ref().unwrap().send(m);
 }
 
+/// Inspector messages never initialize storage or create a database.
+pub fn send_inspection(query: super::inspection::Query, reply: Sender<Result<super::inspection::Response, String>>) -> Result<bool, String> {
+    let sender = sender().lock().unwrap();
+    let Some(sender) = sender.as_ref() else { return Ok(false); };
+    sender.send(ToServer::Inspect { query, reply }).map_err(|_| "IndexedDB server is unavailable".to_string())?;
+    Ok(true)
+}
+
 fn run(rx: Receiver<ToServer>, make: Option<BackendFactory>) {
     let backend: Box<dyn Backend> = match make {
         Some(f) => f(),
@@ -413,6 +422,28 @@ struct Server {
 }
 
 impl Server {
+    fn inspect(&mut self, query: super::inspection::Query) -> Result<super::inspection::Response, String> {
+        use super::inspection::{Query, Response, DatabaseInfo};
+        if matches!(query, Query::List) {
+            let list = self.backend.inspect_databases().map_err(|error| format!("IndexedDB inspection failed: {error:?}"))?;
+            let truncated = list.len() > 256;
+            let databases = list.into_iter().take(256).filter_map(|(name, version)| {
+                let version = match self.dbs.get(&name).and_then(|entry| entry.active.as_ref()) { Some(Active::Upgrading { old, .. }) => *old, _ => version };
+                (version != 0).then(|| DatabaseInfo { name: super::inspection::text(&name), version })
+            }).collect();
+            return Ok(Response::List { available: true, backend: self.backend.describe(), databases, truncated });
+        }
+        let name = query.database().ok_or("Missing database name")?.to_vec();
+        let busy = self.txs.values().any(|transaction| transaction.db == name && transaction.mode != Mode::ReadOnly)
+            || self.dbs.get(&name).is_some_and(|entry| entry.active.is_some() || !entry.queue.is_empty());
+        if busy { return Err("IndexedDB database is busy with a write or version change; retry after the transaction completes".into()); }
+        if let Some(database) = self.dbs.get_mut(&name).and_then(|entry| entry.handle.as_deref_mut()) {
+            return super::inspection::read(database, query);
+        }
+        let mut database = self.backend.inspect_existing(&name).map_err(|error| format!("IndexedDB inspection failed: {error:?}"))?;
+        super::inspection::read(&mut *database, query)
+    }
+
     fn mark(&mut self, db: &[u16]) {
         if !self.dirty.iter().any(|d| d == db) {
             self.dirty.push(db.to_vec());
@@ -421,6 +452,10 @@ impl Server {
 
     fn handle(&mut self, m: ToServer) {
         match m {
+            ToServer::Inspect { query, reply } => {
+                let result = self.inspect(query);
+                let _ = reply.send(result);
+            }
             ToServer::Open { ctx, req, name, version } => {
                 self.dbs.entry(name.clone()).or_default().queue.push_back(Pending::Open { ctx, req, version });
                 self.mark(&name);
@@ -1338,5 +1373,31 @@ fn step(
             let _ = dir.unique();
             Ok(Some((ik, pk)))
         }
+    }
+}
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+    #[test]
+    fn inspection_refuses_active_writer_without_aborting_it() {
+        let name: Vec<u16> = "busy-inspection".encode_utf16().collect();
+        let mut backend = super::super::memory::MemoryBackend::new(1 << 20);
+        let mut database = backend.open(&name).unwrap();
+        database.begin_write(Durability::Default).unwrap();
+        database.set_version(1).unwrap();
+        database.create_store(StoreMeta { id: 1, name: vec![115], key_path: None, auto_increment: false, indexes: vec![] }).unwrap();
+        database.commit_write().unwrap();
+        database.begin_write(Durability::Default).unwrap();
+        database.put(1, b"pending", Arc::new(vec![99])).unwrap();
+        let mut server = Server { backend: Box::new(backend), dbs: HashMap::new(), conns: HashMap::new(), txs: HashMap::new(), dirty: vec![] };
+        server.dbs.insert(name.clone(), DbEntry { handle: Some(database), ..Default::default() });
+        server.txs.insert(1, Tx { ctx: ContextId(42), conn: 1, db: name.clone(), mode: Mode::ReadWrite, durability: Durability::Default, scope: vec![1], state: TxState::Running, ops: VecDeque::new(), commit: false, held: 0 });
+        let error = server.inspect(super::super::inspection::Query::Schema { database: name.clone() }).unwrap_err();
+        assert!(error.contains("busy"));
+        assert!(server.txs.contains_key(&1), "inspector aborted the application writer");
+        let database = server.dbs.get_mut(&name).unwrap().handle.as_deref_mut().unwrap();
+        assert_eq!(database.get(1, b"pending").unwrap().unwrap().as_slice(), &[99]);
+        database.rollback_write();
     }
 }

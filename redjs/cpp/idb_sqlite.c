@@ -66,7 +66,7 @@
    2.6.1): with no loadable extensions there is no table, so its pointer is
    null. Nothing calls through it. */
 #define sqlite3Apis (*(const sqlite3_api_routines *)0)
-#define SQLITE_OMIT_PROGRESS_CALLBACK 1
+/* Progress callback bounds inspector-only read queries. */
 #define SQLITE_OMIT_DECLTYPE 1
 #define SQLITE_OMIT_JSON 1
 #define SQLITE_OMIT_UTF16 1
@@ -74,7 +74,7 @@
 #define SQLITE_OMIT_GET_TABLE 1
 #define SQLITE_OMIT_TRACE 1
 #define SQLITE_OMIT_AUTHORIZATION 1
-#define SQLITE_OMIT_INCRBLOB 1
+/* Incremental Blob reads bound inspector value prefixes. */
 #define SQLITE_OMIT_DATETIME_FUNCS 1
 #define SQLITE_OMIT_COMPILEOPTION_DIAGS 1
 #define SQLITE_OMIT_INTROSPECTION_PRAGMAS 1
@@ -141,6 +141,21 @@ int rjs_sql_open(const char *path_utf8, sqlite3 **out) {
                          SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_EXRESCODE,
                          0);
 }
+int rjs_sql_open_readonly(const char *path_utf8, sqlite3 **out) {
+  return sqlite3_open_v2(path_utf8, out, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_EXRESCODE, 0);
+}
+static int rjs_sql_inspection_progress(void *state) {
+  int *remaining = (int *)state;
+  return --(*remaining) <= 0;
+}
+void rjs_sql_inspection_budget(sqlite3 *db, int *remaining) {
+  sqlite3_progress_handler(db, remaining ? 1000 : 0, remaining ? rjs_sql_inspection_progress : 0, remaining);
+}
+int rjs_sql_blob_open_readonly(sqlite3 *db, rjs_i64 rowid, sqlite3_blob **out) {
+  return sqlite3_blob_open(db, "main", "record", "value", rowid, 0, out);
+}
+int rjs_sql_blob_read(sqlite3_blob *blob, void *bytes, int count) { return sqlite3_blob_read(blob, bytes, count, 0); }
+int rjs_sql_blob_close(sqlite3_blob *blob) { return sqlite3_blob_close(blob); }
 int rjs_sql_close(sqlite3 *db) { return sqlite3_close(db); }
 int rjs_sql_exec(sqlite3 *db, const char *sql) { return sqlite3_exec(db, sql, 0, 0, 0); }
 const char *rjs_sql_errmsg(sqlite3 *db) { return sqlite3_errmsg(db); }

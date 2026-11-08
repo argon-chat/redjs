@@ -786,6 +786,7 @@ unsafe fn invoke(
 /// (a getter runs, and what it throws is the listener's exception).
 unsafe fn call_listener(g: *mut c_void, cb: u64, this: u64, event: u64) -> Result<u64, u64> {
     if is_callable(g, cb) {
+        let _profile = crate::profiling::js_span(g, cb, "Event listener callback");
         return call(g, cb, this, &[event]);
     }
     let st = state(g);
@@ -799,6 +800,7 @@ unsafe fn call_listener(g: *mut c_void, cb: u64, this: u64, event: u64) -> Resul
         glue::rjs_error_create(g, 1, m.as_ptr(), m.len(), &mut err);
         return Err(err);
     }
+    let _profile = crate::profiling::js_span(g, he, "handleEvent callback");
     call(g, he, cb, &[event])
 }
 

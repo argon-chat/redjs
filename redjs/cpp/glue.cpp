@@ -44,6 +44,9 @@
 #include <JavaScriptCore/JSCInlines.h>
 #include <JavaScriptCore/JSCJSValue.h>
 #include <JavaScriptCore/JSFunction.h>
+#include <JavaScriptCore/JSFunctionInlines.h>
+#include <JavaScriptCore/FunctionExecutable.h>
+#include <JavaScriptCore/NativeExecutable.h>
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/JSLock.h>
 #include <JavaScriptCore/JSPromise.h>
@@ -853,6 +856,49 @@ extern "C" int32_t rjs_function_create(void* g, const char16_t* name, size_t nam
     JSFunction* f = JSFunction::create(vm, go, arity, n, reinterpret_cast<RawHostFn>(sysvFn), ImplementationVisibility::Public);
     *out = JSValue::encode(JSValue(f));
     return RJS_OK;
+}
+
+struct RjsProfileFunctionInfo {
+    uint32_t line;
+    uint32_t column;
+    uint32_t nameLen;
+    uint32_t urlLen;
+    char name[192];
+    char url[768];
+};
+
+// Executable metadata avoids observable function.name/displayName getters.
+extern "C" int32_t rjs_profile_function_info(void* g, uint64_t value, RjsProfileFunctionInfo* out)
+{
+    if (!g || !out)
+        return 0;
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSFunction* function = dynamicDowncast<JSFunction>(JSValue::decode(value));
+    if (!function)
+        return 0;
+    std::memset(out, 0, sizeof(*out));
+    auto copy = [](const String& value, char* destination, size_t capacity) -> uint32_t {
+        auto bytes = value.utf8();
+        size_t length = bytes.length() < capacity ? bytes.length() : capacity;
+        if (length)
+            std::memcpy(destination, bytes.data(), length);
+        return static_cast<uint32_t>(length);
+    };
+    if (function->isHostFunction()) {
+        auto* executable = static_cast<NativeExecutable*>(function->executable());
+        out->nameLen = copy(executable->name(), out->name, sizeof(out->name));
+    } else {
+        FunctionExecutable* executable = function->jsExecutable();
+        out->nameLen = copy(executable->nameWithoutGC(), out->name, sizeof(out->name));
+        if (!executable->source().isNull() && executable->source().provider()) {
+            out->urlLen = copy(executable->sourceURL(), out->url, sizeof(out->url));
+            out->line = executable->firstLine();
+            out->column = executable->startColumn();
+        }
+    }
+    return 1;
 }
 
 extern "C" int32_t rjs_call(void* g, uint64_t fnVal, uint64_t thisVal, const uint64_t* args, uint32_t argc, uint64_t* out)

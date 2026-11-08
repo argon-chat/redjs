@@ -525,6 +525,12 @@ impl Backend for MemoryBackend {
         Ok(Box::new(Handle { db: MemHandle(db), meta }))
     }
 
+    fn inspect_existing(&mut self, name: &[u16]) -> R<Box<dyn Database>> {
+        let db = self.dbs.get(name).cloned().ok_or_else(|| BackendError::Io("Database does not exist".into()))?;
+        let meta = db.lock().unwrap().meta.clone();
+        Ok(Box::new(Handle { db: MemHandle(db), meta }))
+    }
+
     fn delete(&mut self, name: &[u16]) -> R<u64> {
         match self.dbs.remove(name) {
             Some(db) => {

@@ -433,7 +433,7 @@ pub const PUMP_CHECKPOINT_PER_TASK: u32 = 8;
 
 pub use crate::ffi::RjsPumpStats;
 
-unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64], flags: u32) {
+unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64], flags: u32, label: &'static str) {
     let mut out = 0u64;
     let per_task = flags & PUMP_CHECKPOINT_PER_TASK != 0;
     // Without a checkpoint per task, this callback's microtasks — and the
@@ -441,7 +441,10 @@ unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64], flags: u32) {
     // pump, not at the end of this callback. Modules that care (IndexedDB's
     // IDB-D1 advisory) can ask.
     let prev = COALESCED_CALLBACK.with(|c| c.replace(!per_task));
-    let rc = glue::rjs_call(g, cb, ENC_UNDEFINED, args.as_ptr(), args.len() as u32, &mut out);
+    let rc = {
+        let _profile = crate::profiling::js_span(g, cb, label);
+        glue::rjs_call(g, cb, ENC_UNDEFINED, args.as_ptr(), args.len() as u32, &mut out)
+    };
     COALESCED_CALLBACK.with(|c| c.set(prev));
     if rc == 1 {
         crate::errors::report(g, out, crate::errors::ErrKind::PumpCallback);
@@ -838,7 +841,11 @@ pub unsafe fn checkpoint(g: *mut c_void) -> Checkpoint {
     if nested {
         return Checkpoint::Nested;
     }
-    glue::rjs_drain_microtasks(g);
+    {
+        let _profile_context = crate::profiling::ContextScope::enter(g as usize);
+        let _profile = crate::profiling::span("microtask", "Promise / microtask checkpoint");
+        glue::rjs_drain_microtasks(g);
+    }
     let full = glue::rjs_in_js(g) == 0;
     if full && ANY_CHECKPOINT_HOOK.load(Ordering::Acquire) {
         let hooks: Vec<CheckpointHook> = checkpoint_hooks().read().unwrap().clone();
@@ -916,6 +923,8 @@ pub fn idle_work_stats() -> IdleWorkStats {
 }
 
 pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
+    let _profile_context = crate::profiling::ContextScope::enter(g as usize);
+    let _profile = crate::profiling::span("native", "JavaScript task pump");
     let now = now_ms();
     let key = g as usize;
     let mut timers_fired = 0u32;
@@ -940,7 +949,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
             due
         };
         for task in due_native {
-            task(g);
+            { let _profile = crate::profiling::span("native", "Async native task"); task(g); }
             if per_task {
                 checkpoint(g);
             }
@@ -968,7 +977,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
             if !still_there {
                 continue;
             }
-            fire(g, cb, &args, flags);
+            fire(g, cb, &args, flags, if repeating { "setInterval callback" } else { "setTimeout callback" });
             timers_fired += 1;
 
             let removed = {
@@ -999,7 +1008,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
         };
         let ts = [enc_double(now)];
         for (_, cb) in &batch {
-            fire(g, *cb, &ts, flags);
+            fire(g, *cb, &ts, flags, "requestAnimationFrame callback");
             raf_fired += 1;
         }
         for (_, cb) in &batch {
@@ -1030,7 +1039,7 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
             glue::rjs_define(g, deadline, a, trf, 2);
             glue::rjs_atom_free(g, a);
             for (_, cb) in &idle_batch {
-                fire(g, *cb, &[deadline], flags);
+                fire(g, *cb, &[deadline], flags, "requestIdleCallback callback");
             }
             for (_, cb) in &idle_batch {
                 capi::JSValueUnprotect(g, *cb as usize as capi::JSValueRef);

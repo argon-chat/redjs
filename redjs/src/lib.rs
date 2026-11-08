@@ -30,6 +30,7 @@ pub mod capi;
 pub mod bytecode;
 pub mod context;
 pub mod errors;
+pub mod profiling;
 pub mod ffi;
 pub mod glue;
 pub mod hostbuf;

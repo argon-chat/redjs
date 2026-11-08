@@ -93,7 +93,14 @@ pub const FORMAT: i64 = 1;
 
 extern "C" {
     fn rjs_sql_open(path: *const c_char, out: *mut *mut c_void) -> c_int;
+    fn rjs_sql_open_readonly(path: *const c_char, out: *mut *mut c_void) -> c_int;
+    fn rjs_sql_inspection_budget(db: *mut c_void, remaining: *mut c_int);
+
     fn rjs_sql_close(db: *mut c_void) -> c_int;
+    fn rjs_sql_blob_open_readonly(db: *mut c_void, rowid: i64, out: *mut *mut c_void) -> c_int;
+    fn rjs_sql_blob_read(blob: *mut c_void, bytes: *mut c_void, count: c_int) -> c_int;
+    fn rjs_sql_blob_close(blob: *mut c_void) -> c_int;
+
     fn rjs_sql_exec(db: *mut c_void, sql: *const c_char) -> c_int;
     fn rjs_sql_errmsg(db: *mut c_void) -> *const c_char;
     fn rjs_sql_errcode(db: *mut c_void) -> c_int;
@@ -178,6 +185,17 @@ impl Conn {
             return Err(e);
         }
         Ok(c)
+    }
+
+    fn open_readonly(path: &Path, key: Option<&[u8; 32]>) -> SR<Conn> {
+        let path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| SqlErr { code: 1, msg: "a NUL in the path".into() })?;
+        let mut db = core::ptr::null_mut();
+        let result = unsafe { rjs_sql_open_readonly(path.as_ptr(), &mut db) };
+        let connection = Conn { db };
+        if result != OK { return Err(if db.is_null() { SqlErr { code: result, msg: errstr(result) } } else { connection.err(result) }); }
+        if let Some(key) = key { connection.key(key)?; }
+        connection.exec("PRAGMA query_only=ON")?;
+        Ok(connection)
     }
 
     fn err(&self, rc: c_int) -> SqlErr {
@@ -595,6 +613,8 @@ struct SqliteDb {
     sp_open: bool,
     sp_schema: bool,
     tx_bytes: u64,
+    inspection_remaining: c_int,
+    inspection_only: bool,
 }
 
 fn io(e: SqlErr) -> BackendError {
@@ -727,7 +747,7 @@ impl Drop for SqliteDb {
         if self.in_tx || self.conn.in_transaction() {
             let _ = self.conn.run(&self.st.rollback, &[], |_| true);
         }
-        self.shared.lock().unwrap().open.remove(&self.stem);
+        if !self.inspection_only { self.shared.lock().unwrap().open.remove(&self.stem); }
         // Then the fields drop: statements first, then the connection, whose
         // close checkpoints the WAL into the main file and removes it.
     }
@@ -867,6 +887,7 @@ impl Database for SqliteDb {
     }
 
     fn begin_write(&mut self, durability: Durability) -> R<()> {
+        if self.inspection_only { return Err(BackendError::Io("Inspector database handles are read-only".into())); }
         if self.in_tx {
             return Err(BackendError::Io("a write transaction is already open".into()));
         }
@@ -1073,6 +1094,29 @@ impl Database for SqliteDb {
             })
             .map_err(io)?;
         Ok(out)
+    }
+
+    fn inspection_budget(&mut self, instructions: Option<u32>) {
+        self.inspection_remaining = instructions.unwrap_or(0).div_ceil(1000).max(1) as c_int;
+        unsafe { rjs_sql_inspection_budget(self.conn.db, if instructions.is_some() { &mut self.inspection_remaining } else { core::ptr::null_mut() }); }
+    }
+
+    fn inspect_value(&mut self, store: StoreId, key: &[u8], maximum: usize) -> R<Option<(u64, Vec<u8>)>> {
+        // length() avoids materializing the value; incremental Blob I/O reads
+        // only the requested prefix, including encrypted pages transparently.
+        let statement = self.conn.prepare("SELECT rowid,length(value) FROM record WHERE store_id=?1 AND key=?2").map_err(io)?;
+        let mut row = None;
+        self.conn.run(&statement, &[P::I(store as i64), P::B(key)], |value| { row = Some((value.i64(0), value.i64(1).max(0) as u64)); false }).map_err(io)?;
+        let Some((rowid, length)) = row else { return Ok(None); };
+        let mut blob = core::ptr::null_mut();
+        let result = unsafe { rjs_sql_blob_open_readonly(self.conn.db, rowid, &mut blob) };
+        if result != OK { return Err(io(self.conn.err(result))); }
+        let mut bytes = vec![0u8; length.min(maximum.min(65536) as u64) as usize];
+        let result = if bytes.is_empty() { OK } else { unsafe { rjs_sql_blob_read(blob, bytes.as_mut_ptr().cast(), bytes.len() as c_int) } };
+        let close = unsafe { rjs_sql_blob_close(blob) };
+        if result != OK { return Err(io(self.conn.err(result))); }
+        if close != OK { return Err(io(self.conn.err(close))); }
+        Ok(Some((length, bytes)))
     }
 
     fn put(&mut self, store: StoreId, key: &[u8], value: Value) -> R<()> {
@@ -1359,6 +1403,8 @@ impl SqliteBackend {
             sp_open: false,
             sp_schema: false,
             tx_bytes: 0,
+            inspection_remaining: 0,
+            inspection_only: false,
         };
         db.publish();
         self.shared.lock().unwrap().sizes.insert(stem, file_bytes(&path));
@@ -1422,6 +1468,35 @@ impl Backend for SqliteBackend {
             Ok(db) => Ok(Box::new(db)),
             Err(e) => Err(io(e)),
         }
+    }
+
+    fn inspect_databases(&mut self) -> R<Vec<(Vec<u16>, u64)>> {
+        self.ensure_lock()?;
+        let open = self.shared.lock().unwrap().open.clone();
+        let mut output = Vec::new();
+        for (path, stem) in self.files().into_iter().take(257) {
+            if let Some(metadata) = open.get(&stem) { output.push(metadata.clone()); continue; }
+            let key = self.key_for(&path);
+            let connection = Conn::open_readonly(&path, key.as_ref()).map_err(io)?;
+            if connection.query_i64("PRAGMA user_version").map_err(io)? == Some(FORMAT) {
+                let metadata = load_meta(&connection).map_err(io)?;
+                output.push((metadata.name, metadata.version));
+            }
+        }
+        output.sort();
+        Ok(output)
+    }
+
+    fn inspect_existing(&mut self, name: &[u16]) -> R<Box<dyn Database>> {
+        self.ensure_lock()?;
+        let path = self.path_of(name);
+        let key = self.key_for(&path);
+        let conn = Conn::open_readonly(&path, key.as_ref()).map_err(io)?;
+        if conn.query_i64("PRAGMA user_version").map_err(io)? != Some(FORMAT) { return Err(BackendError::Io("Unsupported IndexedDB format; inspector never repairs or upgrades databases".into())); }
+        let meta = load_meta(&conn).map_err(io)?;
+        if meta.name != name { return Err(BackendError::Io("Database identity mismatch".into())); }
+        let st = prepare_all(&conn).map_err(io)?;
+        Ok(Box::new(SqliteDb { st, ranges: HashMap::new(), conn, meta, stem: file_stem(name), shared: self.shared.clone(), in_tx: false, strict: false, sp_wanted: false, sp_open: false, sp_schema: false, tx_bytes: 0, inspection_remaining: 0, inspection_only: true }))
     }
 
     fn delete(&mut self, name: &[u16]) -> R<u64> {
@@ -1545,6 +1620,38 @@ mod tests {
     }
     fn contains(hay: &[u8], needle: &[u8]) -> bool {
         hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn inspection_is_encrypted_readonly_and_never_creates_or_repairs() {
+        let directory = dir();
+        let mut backend = backend(&directory, IdbEncryption::Encrypted([71; 32]), 1 << 26);
+        let missing = n("missing-inspector-db");
+        assert!(backend.inspect_existing(&missing).is_err());
+        assert!(!backend.path_of(&missing).exists());
+        let name = n("inspect-existing");
+        let mut database = backend.open(&name).unwrap();
+        database.begin_write(Durability::Default).unwrap();
+        database.set_version(3).unwrap();
+        database.create_store(st(1, "records")).unwrap();
+        database.put(1, b"key", Arc::new(vec![63; 1 << 20])).unwrap();
+        database.commit_write().unwrap();
+        drop(database);
+        let path = backend.path_of(&name);
+        let before = std::fs::read(&path).unwrap();
+        let mut inspection = backend.inspect_existing(&name).unwrap();
+        assert_eq!(inspection.meta().version, 3);
+        let (length, prefix) = inspection.inspect_value(1, b"key", 32).unwrap().unwrap();
+        assert_eq!(length, 1 << 20);
+        assert_eq!(prefix, vec![63; 32]);
+        assert!(inspection.begin_write(Durability::Default).is_err(), "read-only inspector accepted a write transaction");
+        drop(inspection);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "inspection rewrote the encrypted database");
+        let corrupt_name = n("corrupt-inspection");
+        let corrupt_path = backend.path_of(&corrupt_name);
+        std::fs::write(&corrupt_path, b"not a sqlite file").unwrap();
+        assert!(backend.inspect_existing(&corrupt_name).is_err());
+        assert_eq!(std::fs::read(&corrupt_path).unwrap(), b"not a sqlite file", "inspector moved or repaired corrupt bytes");
     }
 
     #[test]

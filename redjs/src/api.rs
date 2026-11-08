@@ -200,6 +200,8 @@ impl Context {
     }
 
     pub fn eval_named(&self, src: &str, url: &str) -> Result<Value> {
+        let _profile_context = crate::profiling::ContextScope::enter(self.g as usize);
+        let _profile = crate::profiling::span("js", "Evaluate JavaScript");
         let mut out = 0u64;
         let status = unsafe {
             glue::rjs_eval8(self.g, src.as_ptr(), src.len(), url.as_ptr(), url.len(), &mut out)
@@ -355,6 +357,7 @@ impl Context {
     }
 
     pub fn call(&self, f: Value, this: Value, args: &[Value]) -> Result<Value> {
+        let _profile = unsafe { crate::profiling::js_span(self.g, f.0, "JavaScript callback") };
         let mut out = 0u64;
         let status = unsafe {
             glue::rjs_call(self.g, f.0, this.0, args.as_ptr() as *const u64, args.len() as u32, &mut out)
