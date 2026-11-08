@@ -296,6 +296,20 @@ impl Client {
         }
     }
 
+    /// Transfers an expired canvas buffer to a host presentation owner. Its JS
+    /// wrapper is already invalid; physical destruction now follows that owner.
+    pub(super) fn release_presented_texture(&self, texture: &Arc<wgpu::Texture>) -> bool {
+        let mut resources = self.resources.lock().unwrap();
+        if self.destroyed.load(Ordering::Acquire) {
+            return false;
+        }
+        resources.textures.retain(|weak| {
+            weak.upgrade()
+                .is_some_and(|raw| !Arc::ptr_eq(&raw, texture))
+        });
+        true
+    }
+
     /// Explicit logical destruction. Never calls wgpu::Device::destroy.
     pub fn destroy(&self) {
         let resources = {

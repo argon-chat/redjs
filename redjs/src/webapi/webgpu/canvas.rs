@@ -1,13 +1,14 @@
-//! GPUCanvasContext and the bounded readback presentation bridge.
+//! GPUCanvasContext with a native host presenter and bounded readback fallback.
 //!
-//! The presenter is replaceable by a shared-texture host later. JSC owns only
-//! logical contexts; worker completions carry native data and are epoch-fenced.
+//! JSC owns logical contexts; expired drawing buffers can move into a native
+//! frame owner without retaining CPU pixels. Readback completions are fenced
+//! by context/resize epochs, and no JSC value crosses onto a GPU worker.
 use super::*;
 use std::collections::HashSet;
 use std::sync::{Condvar, Weak};
 use std::time::{Duration, Instant};
 
-/// A completed canvas drawing buffer for an embedder's presenter.
+/// A published canvas buffer: completed CPU pixels or an ordered native frame.
 #[derive(Debug)]
 pub struct PresentedFrame {
     /// Bitmap dimensions, zero for a constant-black marker.
@@ -17,6 +18,100 @@ pub struct PresentedFrame {
     pub rgba: Vec<u8>,
     /// Paint black at `present_size(key)` without allocating a bitmap.
     pub opaque_blank: bool,
+    /// Optional host-owned GPU frame. `rgba` is empty until an explicit snapshot.
+    pub native: Option<Arc<NativePresentation>>,
+}
+
+/// A borrowed canvas buffer. A presenter must submit its reads before returning.
+pub struct NativeSource<'a> {
+    pub client: &'a Arc<Client>,
+    pub texture: &'a Arc<wgpu::Texture>,
+    pub format: wgpu::TextureFormat,
+    pub width: u32,
+    pub height: u32,
+    pub opaque: bool,
+}
+
+/// Native texture format is straight-alpha BGRA8 on the renderer's own device.
+/// The pointer is borrowed only for the synchronous copy callback.
+///
+/// # Safety
+/// Implementors must keep a valid ID3D11Texture2D alive and acquired throughout
+/// the callback, then release/flush it before subsequent wgpu queue work.
+/// The callback may panic; cleanup must still run. No JSC callback is allowed.
+pub unsafe trait NativeFrame: std::fmt::Debug + Send + Sync {
+    fn copy_d3d11(&self, copy: &mut dyn FnMut(*mut c_void) -> bool) -> Result<bool, String>;
+}
+
+pub trait NativePresenter: Send + Sync {
+    /// None means unsupported; the bounded asynchronous readback is the fallback.
+    fn prepare(&self, source: NativeSource<'_>) -> Result<Option<Arc<dyn NativeFrame>>, String>;
+}
+fn presenter_slot() -> &'static std::sync::RwLock<Option<Arc<dyn NativePresenter>>> {
+    static PRESENTER: OnceLock<std::sync::RwLock<Option<Arc<dyn NativePresenter>>>> =
+        OnceLock::new();
+    PRESENTER.get_or_init(Default::default)
+}
+pub fn set_presenter(presenter: Option<Arc<dyn NativePresenter>>) {
+    *presenter_slot().write().unwrap() = presenter;
+}
+
+pub struct NativePresentation {
+    pub frame: Arc<dyn NativeFrame>,
+    // The expired JS texture is no longer in its client's destroy list. This
+    // owner retains exact original pixels for export and destroys it on drop,
+    // even if JS keeps the expired texture wrapper alive indefinitely.
+    source: Arc<wgpu::Texture>,
+    snapshot_client: Arc<Client>,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    opaque: bool,
+}
+impl std::fmt::Debug for NativePresentation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativePresentation")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+impl Drop for NativePresentation {
+    fn drop(&mut self) {
+        self.source.destroy();
+    }
+}
+impl NativePresentation {
+    /// Explicit readback only; normal display visits `frame` instead.
+    pub fn snapshot(&self) -> Result<Arc<PresentedFrame>, String> {
+        SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
+        let f = readback::snapshot_sync(
+            &self.snapshot_client,
+            self.source.clone(),
+            self.format,
+            self.width,
+            self.height,
+            self.opaque,
+        )?;
+        Ok(Arc::new(PresentedFrame {
+            width: f.width,
+            height: f.height,
+            rgba: f.rgba,
+            opaque_blank: false,
+            native: None,
+        }))
+    }
+}
+static NATIVE_FRAMES: AtomicU64 = AtomicU64::new(0);
+static READBACK_FRAMES: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
+/// (native display frames, asynchronous display readbacks, explicit snapshots).
+pub fn presentation_stats() -> (u64, u64, u64) {
+    (
+        NATIVE_FRAMES.load(Ordering::Relaxed),
+        READBACK_FRAMES.load(Ordering::Relaxed),
+        SNAPSHOTS.load(Ordering::Relaxed),
+    )
 }
 #[derive(Clone)]
 struct Configuration {
@@ -73,6 +168,7 @@ fn clear(opaque: bool) -> Arc<PresentedFrame> {
         height: 0,
         rgba: Vec::new(),
         opaque_blank: opaque,
+        native: None,
     })
 }
 fn notify(s: &Surface, st: &State) {
@@ -124,7 +220,7 @@ fn reset(s: &Surface, config: Option<Configuration>, dimensions: Option<(u32, u3
     notify(s, &st);
 }
 
-/// Completed frames only. A registered canvas can have no completed frame yet.
+/// Published frames only. Native hosts enforce queue ordering during import.
 pub fn present(key: u64, since: u64) -> Option<(u64, Arc<PresentedFrame>)> {
     let s = shown().lock().unwrap().get(&key)?.upgrade()?;
     let st = s.state.lock().unwrap();
@@ -437,7 +533,9 @@ unsafe extern "sysv64" fn current_texture(g: *mut c_void, cf: *mut c_void) -> u6
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: c.format,
-                    usage: c.usage | wgpu::TextureUsages::COPY_SRC,
+                    usage: c.usage
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &c.views,
                 })
         }));
@@ -496,6 +594,7 @@ fn blank(w: u32, h: u32, opaque: bool) -> Result<Arc<PresentedFrame>, String> {
         height: h,
         rgba,
         opaque_blank: false,
+        native: None,
     }))
 }
 fn snapshot(s: &Surface) -> Result<Arc<PresentedFrame>, String> {
@@ -509,12 +608,14 @@ fn snapshot(s: &Surface) -> Result<Arc<PresentedFrame>, String> {
         if c.client.check().is_ok() {
             let (w, h) = (st.width, st.height);
             drop(st);
+            SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
             let f = readback::snapshot_sync(&c.client, t.raw.clone(), c.format, w, h, c.opaque)?;
             return Ok(Arc::new(PresentedFrame {
                 width: f.width,
                 height: f.height,
                 rgba: f.rgba,
                 opaque_blank: false,
+                native: None,
             }));
         }
     }
@@ -532,7 +633,13 @@ fn snapshot(s: &Surface) -> Result<Arc<PresentedFrame>, String> {
         }
     }
     if st.last.width > 0 && st.last.height > 0 {
-        return Ok(st.last.clone());
+        let last = st.last.clone();
+        drop(st);
+        return if let Some(native) = &last.native {
+            native.snapshot()
+        } else {
+            Ok(last)
+        };
     }
     if valid {
         if let Some(e) = &st.last_error {
@@ -569,7 +676,7 @@ pub(crate) unsafe fn premul_pixels(
     Some(snapshot(&s).map(|f| (f.rgba.clone(), f.width, f.height)))
 }
 fn capture(s: &Arc<Surface>) {
-    let (t, serial, epoch, c, reader, w, h) = {
+    let (t, serial, epoch, c, w, h) = {
         let mut st = s.state.lock().unwrap();
         if !st.enabled {
             return;
@@ -590,12 +697,75 @@ fn capture(s: &Arc<Surface>) {
             discard(Some(t));
             return;
         }
-        let reader = st
-            .reader
-            .get_or_insert_with(|| readback::Reader::new(&c.client))
-            .clone();
+        (t, serial, st.epoch, c, st.width, st.height)
+    };
+    if s.key.is_some() {
+        let presenter = presenter_slot().read().unwrap().clone();
+        if let Some(presenter) = presenter {
+            let result = c.client.checked(|| {
+                presenter.prepare(NativeSource {
+                    client: &c.client,
+                    texture: &t.raw,
+                    format: c.format,
+                    width: w,
+                    height: h,
+                    opaque: c.opaque,
+                })
+            });
+            match result {
+                Ok(Some(frame)) if c.client.release_presented_texture(&t.raw) => {
+                    let native = Arc::new(NativePresentation {
+                        frame,
+                        source: t.raw.clone(),
+                        snapshot_client: Client::new(c.client.context.clone()),
+                        format: c.format,
+                        width: w,
+                        height: h,
+                        opaque: c.opaque,
+                    });
+                    let mut st = s.state.lock().unwrap();
+                    if st.epoch == epoch && serial >= st.last_serial {
+                        // Older fallback readbacks cannot improve this native frame.
+                        // Drop their lease and do not make exports wait for them.
+                        st.reader = None;
+                        st.pending.clear();
+                        st.last_serial = serial;
+                        st.last_error = None;
+                        st.last = Arc::new(PresentedFrame {
+                            width: w,
+                            height: h,
+                            rgba: Vec::new(),
+                            opaque_blank: false,
+                            native: Some(native),
+                        });
+                        st.generation = generation();
+                        NATIVE_FRAMES.fetch_add(1, Ordering::Relaxed);
+                        notify(s, &st);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    static WARNED: AtomicBool = AtomicBool::new(false);
+                    if !WARNED.swap(true, Ordering::Relaxed) {
+                        eprintln!(
+                            "[webgpu] Native presenter failed; using asynchronous readback: {e}"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let reader = {
+        let mut st = s.state.lock().unwrap();
+        if st.epoch != epoch {
+            discard(Some(t));
+            return;
+        }
         st.pending.insert(serial);
-        (t, serial, st.epoch, c, reader, st.width, st.height)
+        st.reader
+            .get_or_insert_with(|| readback::Reader::new(&c.client))
+            .clone()
     };
     let weak = Arc::downgrade(s);
     let result = reader.request(
@@ -621,10 +791,11 @@ fn capture(s: &Arc<Surface>) {
                             height: f.height,
                             rgba: f.rgba,
                             opaque_blank: false,
+                            native: None,
                         });
                         st.generation = generation();
                     }
-                    Err(e) => st.last_error = Some(e),
+                    Err(e) if serial >= st.last_serial => st.last_error = Some(e),
                     _ => {}
                 }
                 notify(&s, &st);
@@ -632,7 +803,12 @@ fn capture(s: &Arc<Surface>) {
         }),
     );
     match result {
-        Ok(true) => t.raw.destroy(),
+        Ok(true) => {
+            if s.key.is_some() {
+                READBACK_FRAMES.fetch_add(1, Ordering::Relaxed);
+            }
+            t.raw.destroy();
+        }
         Ok(false) => {
             let mut st = s.state.lock().unwrap();
             if st.epoch == epoch {
@@ -692,6 +868,11 @@ pub(super) fn device_destroyed(id: u64) {
             st.epoch = st.epoch.wrapping_add(1);
             st.pending.clear();
             st.last_error = None;
+            if st.last.native.is_some() {
+                st.last = clear(st.config.as_ref().is_some_and(|c| c.opaque));
+                st.generation = generation();
+                notify(&s, &st);
+            }
             s.changed.notify_all();
         }
     }

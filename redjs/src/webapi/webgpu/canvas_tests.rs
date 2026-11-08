@@ -99,7 +99,9 @@ fn webgpu_canvas_native_identity_and_context_modes() {
 fn webgpu_canvas_selection_survives_reentrant_and_throwing_2d_options() {
     let _host = HostGuard::new();
     let c = ctx();
-    ok(&c, r#"(() => {
+    ok(
+        &c,
+        r#"(() => {
       const canvas=new OffscreenCanvas(2,2);let blocked=false;
       const context=canvas.getContext('2d',{
         get alpha(){
@@ -113,7 +115,8 @@ fn webgpu_canvas_selection_survives_reentrant_and_throwing_2d_options() {
       const retry=new OffscreenCanvas(1,1);const marker=new Error('options');let threw=false;
       try{retry.getContext('2d',{get alpha(){throw marker;}});}catch(e){threw=e===marker;}
       return threw && retry.getContext('webgpu') instanceof GPUCanvasContext;
-    })()"#);
+    })()"#,
+    );
 }
 
 #[test]
@@ -444,4 +447,218 @@ fn webgpu_canvas_expires_after_the_whole_animation_frame_batch() {
     ok(&c,"(()=>{try{rafTexture.createView();return false;}catch(e){return e instanceof TypeError;}})()");
     canvas::unregister_present(key);
     ok(&c, "gpu.unconfigure();d.destroy();true");
+}
+
+#[derive(Debug)]
+struct TestNativeFrame(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for TestNativeFrame {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+// SAFETY: this headless test never calls the platform-copy callback or supplies
+// a raw handle. It exercises real GPU snapshots/ownership, not a fake texture.
+unsafe impl canvas::NativeFrame for TestNativeFrame {
+    fn copy_d3d11(
+        &self,
+        _: &mut dyn FnMut(*mut core::ffi::c_void) -> bool,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+struct TestPresenter {
+    drops: Arc<std::sync::atomic::AtomicUsize>,
+    source: Mutex<Option<std::sync::Weak<wgpu::Texture>>>,
+    fail: bool,
+}
+impl canvas::NativePresenter for TestPresenter {
+    fn prepare(
+        &self,
+        source: canvas::NativeSource<'_>,
+    ) -> Result<Option<Arc<dyn canvas::NativeFrame>>, String> {
+        if self.fail {
+            return Err("Intentional interop rejection".into());
+        }
+        *self.source.lock().unwrap() = Some(Arc::downgrade(source.texture));
+        Ok(Some(Arc::new(TestNativeFrame(self.drops.clone()))))
+    }
+}
+struct PresenterReset;
+impl Drop for PresenterReset {
+    fn drop(&mut self) {
+        canvas::set_presenter(None);
+    }
+}
+
+#[test]
+fn webgpu_native_presentation_owns_expired_pixels_until_last_host_frame() {
+    let _host = HostGuard::new();
+    let presenter = Arc::new(TestPresenter {
+        drops: Default::default(),
+        source: Default::default(),
+        fail: false,
+    });
+    canvas::set_presenter(Some(presenter.clone()));
+    let _reset = PresenterReset;
+    let c = ctx();
+    let before = canvas::presentation_stats();
+    assert_eq!(
+        run_canvas(
+            &c,
+            r#"
+      globalThis.gpu=__rjs_webgpu_context({},1,1,9001010);
+      gpu.configure({device:d,format:'bgra8unorm',alphaMode:'premultiplied'});
+      globalThis.expired=gpu.getCurrentTexture();paintCanvas(gpu,[0.5,0.25,0.125,0.5]);return true;
+    "#
+        ),
+        "true"
+    );
+    unsafe { pump(&c) };
+    let (_, frame) = canvas::present(9001010, 0).expect("native frame must publish synchronously");
+    assert!(
+        frame.rgba.is_empty(),
+        "normal native presentation allocates no CPU pixels"
+    );
+    let native = frame.native.clone().expect("native owner");
+    let expected = native.snapshot().unwrap().rgba.clone();
+    assert!(expected
+        .iter()
+        .zip([128u8, 64, 32, 128])
+        .all(|(&actual, wanted)| actual.abs_diff(wanted) <= 1));
+    assert!(texture_destroyed(&c, "expired"));
+    ok(
+        &c,
+        "(()=>{try{expired.createView();return false}catch(e){return e instanceof TypeError}})()",
+    );
+    ok(&c, "expired.destroy();d.destroy();gpu.unconfigure();true");
+    assert_eq!(
+        native.snapshot().unwrap().rgba,
+        expected,
+        "host snapshot survives logical JS destruction"
+    );
+    let after = canvas::presentation_stats();
+    assert!(after.0 > before.0);
+    assert_eq!(after.1, before.1, "no asynchronous display readback");
+    drop(frame);
+    drop(native);
+    assert_eq!(presenter.drops.load(Ordering::SeqCst), 1);
+    let raw = presenter
+        .source
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .upgrade()
+        .expect("expired JS wrapper still retained");
+    let scope = physical()
+        .device
+        .push_error_scope(wgpu::ErrorFilter::Validation);
+    let _ = raw.create_view(&Default::default());
+    assert!(
+        pollster::block_on(scope.pop()).is_some(),
+        "last host owner destroys the raw texture even when JS retains its expired wrapper"
+    );
+    canvas::unregister_present(9001010);
+}
+
+#[test]
+fn webgpu_rejected_native_presentation_falls_back_to_bounded_readback() {
+    let _host = HostGuard::new();
+    canvas::set_presenter(Some(Arc::new(TestPresenter {
+        drops: Default::default(),
+        source: Default::default(),
+        fail: true,
+    })));
+    let _reset = PresenterReset;
+    let c = ctx();
+    let before = canvas::presentation_stats();
+    assert_eq!(
+        run_canvas(
+            &c,
+            r#"
+      globalThis.gpu=__rjs_webgpu_context({},1,1,9001011);
+      gpu.configure({device:d,format:'rgba8unorm'});paintCanvas(gpu,[0,0,1,1]);return true;
+    "#
+        ),
+        "true"
+    );
+    let (_, frame) = frame(&c, 9001011, 0, (1, 1));
+    assert!(frame.native.is_none());
+    assert_eq!(frame.rgba, vec![0, 0, 255, 255]);
+    assert!(canvas::presentation_stats().1 > before.1);
+    let recovered = canvas::presentation_stats();
+    canvas::set_presenter(Some(Arc::new(TestPresenter {
+        drops: Default::default(),
+        source: Default::default(),
+        fail: false,
+    })));
+    ok(&c, "paintCanvas(gpu,[0,1,0,1]);true");
+    unsafe { pump(&c) };
+    let (_, fresh) = canvas::present(9001011, 0).unwrap();
+    assert!(fresh.rgba.is_empty());
+    assert_eq!(
+        fresh.native.as_ref().unwrap().snapshot().unwrap().rgba,
+        vec![0, 255, 0, 255]
+    );
+    assert_eq!(
+        canvas::presentation_stats().1,
+        recovered.1,
+        "a recovered presenter stops issuing CPU readbacks"
+    );
+    assert_eq!(
+        frame.rgba,
+        vec![0, 0, 255, 255],
+        "the old CPU frame stays immutable"
+    );
+    ok(&c, "gpu.unconfigure();d.destroy();true");
+    canvas::unregister_present(9001011);
+}
+
+#[test]
+fn webgpu_native_presentation_resize_and_withdrawal_do_not_revive_old_frames() {
+    let _host = HostGuard::new();
+    canvas::set_presenter(Some(Arc::new(TestPresenter {
+        drops: Default::default(),
+        source: Default::default(),
+        fail: false,
+    })));
+    let _reset = PresenterReset;
+    let c = ctx();
+    let before = canvas::presentation_stats();
+    assert_eq!(
+        run_canvas(
+            &c,
+            r#"
+      globalThis.gpu=__rjs_webgpu_context({},1,1,9001012);
+      gpu.configure({device:d,format:'rgba8unorm'});paintCanvas(gpu,[1,0,0,1]);return true;
+    "#
+        ),
+        "true"
+    );
+    unsafe { pump(&c) };
+    let (_, old) = canvas::present(9001012, 0).unwrap();
+    ok(&c, "__rjs_webgpu_resize(gpu,2,1);true");
+    let (_, blank) = canvas::present(9001012, 0).unwrap();
+    assert!(blank.opaque_blank && blank.native.is_none());
+    canvas::unregister_present(9001012);
+    ok(&c, "paintCanvas(gpu,[0,0,1,1]);true");
+    let paused = canvas::presentation_stats();
+    unsafe { pump(&c) };
+    assert!(canvas::present(9001012, 0).is_none());
+    assert_eq!(canvas::presentation_stats().0, paused.0);
+    canvas::register_present(9001012);
+    unsafe { pump(&c) };
+    let (_, fresh) = canvas::present(9001012, 0).unwrap();
+    assert_eq!((fresh.width, fresh.height), (2, 1));
+    assert_eq!(
+        fresh.native.as_ref().unwrap().snapshot().unwrap().rgba,
+        vec![0, 0, 255, 255, 0, 0, 255, 255]
+    );
+    assert_eq!(
+        old.native.as_ref().unwrap().snapshot().unwrap().rgba,
+        vec![255, 0, 0, 255]
+    );
+    assert_eq!(canvas::presentation_stats().1, before.1);
+    ok(&c, "gpu.unconfigure();d.destroy();true");
+    canvas::unregister_present(9001012);
 }

@@ -83,17 +83,18 @@ those of the physical device exactly. Capability-subset virtualization across
 all shaders and pipelines is not implemented, so mismatched imports fail
 explicitly. JS optional features are currently not advertised. A host requiring
 additional physical features needs the next validation/negotiation stage.
-This interface is a working shared-device foundation, not yet an untrusted
-activity security boundary or a GPUI renderer integration.
+This is a shared-device foundation; the SDK supplies its renderer integration.
+It does not by itself establish an untrusted activity security boundary.
 
 ## Canvas presentation
 
-A presented canvas is registered by its host node key. The host consumes only
-completed frames through `canvas::present`, `present_size` and
+A presented canvas is registered by its host node key. The host consumes published
+frames through `canvas::present`, `present_size` and
 `take_presented_changed`. `register_present` / `unregister_present` resume or
 pause a retained element without changing its selected context mode.
 
-The current bridge performs a GPU copy into reusable staging buffers, then
+Without an injected `canvas::NativePresenter`, the bridge performs a GPU
+copy into reusable staging buffers, then
 asynchronous readback on one lazy worker per physical context. There are at
 most three staging leases across queued/in-flight jobs. When these are busy,
 each canvas retains only its latest deferred drawing buffer and wakes when a
@@ -112,8 +113,24 @@ for readback on the UI thread.
 Canvas formats currently support `rgba8unorm` and `bgra8unorm`, sRGB, standard
 tone mapping, and opaque/premultiplied alpha. Other presentation formats,
 wide-gamut/HDR and extended tone mapping fail explicitly. This bridge returns
-premultiplied RGBA8 CPU pixels; zero-copy native texture import is a later host
-integration.
+premultiplied RGBA8 CPU pixels by default. A host can install a native
+presenter for registered drawing buffers. `PresentedFrame.native` then retains
+a platform frame, while `rgba` stays empty. The unsafe `NativeFrame` contract
+requires a live, acquired straight-BGRA D3D11 texture throughout its synchronous
+copy callback and release/flush cleanup even on unwind. The SDK implements this
+on its shared physical D3D12 device using D3D11On12; redjs contains no GPUI code.
+
+Successful native presentation transfers the expired source out of the JS
+client's destroy list into the host frame owner. JavaScript still cannot use
+that expired texture or its recorded views/commands. Explicit snapshots retain
+exact original premultiplied pixels; logical device destruction cannot destroy
+a source held by an explicit native owner. Its last owner destroys the physical
+texture, including when JS retains the expired wrapper. Resize, withdrawal and
+unconfigure preserve the existing generation rules. A presenter rejection
+retains the bounded asynchronous fallback. `canvas::presentation_stats` exposes
+native display, asynchronous display readback and explicit snapshot counts.
+There are GPU conversion/atlas copies in the SDK path; it is not a claim of
+literal copy-free sampling or lower process/GPU memory.
 
 ## External image uploads
 
@@ -147,7 +164,8 @@ The conversion contract follows [WebGPU external-image copies](https://gpuweb.gi
 
 ## Not implemented yet
 
-- Native swapchains and zero-copy shared-texture presentation.
+- Direct swapchain rendering and copy-free atlas sampling. The SDK qualifies
+  a native shared-texture import path with GPU conversion and atlas copies.
 - External video textures, VideoFrame/HTML video uploads and zero-copy video.
 - SharedArrayBuffer uploads (rejected until an atomic native copy path exists).
 - Async pipeline factories, query sets/timestamps, render bundles, optional
