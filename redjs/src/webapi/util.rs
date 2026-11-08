@@ -558,6 +558,7 @@ pub struct WebState {
     pub s_listeners: *mut c_void, // EventTarget [[listeners]] → JS Array
     pub s_event: *mut c_void,     // Event [[state]] → plain JS object
     pub s_image: *mut c_void,     // HTMLImageElement [[bitmap]] → ImageBitmap host obj
+    pub s_image_request: *mut c_void, // current load generation; fences canceled/replaced loads
     pub s_usp: *mut c_void,       // URL [[searchParams]] cache
     pub s_iter_target: *mut c_void, // iterator [[target]] → iterated host obj
 

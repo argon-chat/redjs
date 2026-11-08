@@ -121,6 +121,11 @@ integration.
 argument getters/conversions, retains temporary wrappers through GC, and
 rechecks the destination after the embedder source hook. A later bitmap
 close, source mutation or canvas resize cannot change an issued upload.
+Native `new Image()` sources support `removeAttribute('src')`: decoded pixels
+and natural dimensions are cleared, and superseded requests cannot republish
+old pixels or events. This also permits applications to release temporary
+export inputs without retaining their decoded bitmap.
+
 ImageBitmap/ImageData preserve straight RGBA; canvas sources preserve
 premultiplied RGBA, including RGB channels above alpha. Matching RGBA8 alpha
 modes copy rows directly; BGRA swizzles and alpha/float conversions run natively.

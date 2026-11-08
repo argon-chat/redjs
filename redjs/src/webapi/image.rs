@@ -184,26 +184,53 @@ unsafe extern "sysv64" fn image_get_src(g: *mut c_void, cf: *mut c_void) -> u64 
 }
 
 unsafe extern "sysv64" fn image_set_src(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let this = cf_this(cf);
-    let src = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
+    let Ok(value) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let src = read_string(g, value).unwrap_or_default();
+    set_image_source(g, cf_this(cf), src)
+}
+
+unsafe fn set_image_source(g: *mut c_void, this: u64, src: String) -> u64 {
+    let (image_slot, request_slot) = {
+        let st = state(g);
+        (st.s_image, st.s_image_request)
+    };
+    let previous = dec_f64(get_a(g, this, request_slot)).unwrap_or(0.);
+    let request = enc_f64(if previous >= 9_007_199_254_740_991. {
+        1.
+    } else {
+        previous + 1.
+    });
+    glue::rjs_define(g, this, request_slot, request, 0);
     define(g, this, "__rjs_src", js_string(g, &src), 2);
+    // Release decoded pixels immediately, including when the source is removed.
+    // A late completion must neither resurrect them nor fire stale load/error.
+    glue::rjs_define(g, this, image_slot, NULL, 0);
+    define(g, this, "naturalWidth", enc_i32(0), 0);
+    define(g, this, "naturalHeight", enc_i32(0), 0);
+    define(
+        g,
+        this,
+        "complete",
+        if src.is_empty() { TRUE } else { FALSE },
+        0,
+    );
     if src.is_empty() {
         return UNDEF;
     }
-    define(g, this, "complete", FALSE, 0);
 
-    // Spec: loading is async — decode on a later task, then dispatch
-    // load/error through the real EventTarget machinery.
     crate::ffi::redjs_protect(g, this);
     if is_blob_url(&src) {
-        // A blob: URL is resolved through this context's store, as fetch()
-        // resolves it: a path-backed one is read off the JS thread under the
-        // snapshot rule, an unknown or revoked one is an `error`.
         let failed = src.clone();
         blob_bytes(
             g,
             &src,
             Box::new(move |g, r| unsafe {
+                if get_a(g, this, state(g).s_image_request) != request {
+                    crate::ffi::redjs_unprotect(g, this);
+                    return;
+                }
                 let decoded = match r {
                     Ok(bytes) => decode_rgba(bytes),
                     Err(why) => {
@@ -211,37 +238,88 @@ unsafe extern "sysv64" fn image_set_src(g: *mut c_void, cf: *mut c_void) -> u64 
                         None
                     }
                 };
-                finish_load(g, this, &failed, decoded);
+                finish_load(g, this, &failed, request, decoded);
             }),
         );
         return UNDEF;
     }
-    crate::web::schedule_native(g, 0.0, Box::new(move |g| {
-        let fetched = fsutil::fetch_url(g, &src);
-        let decoded = if fetched.ok { decode_typed(&fetched.bytes, Some(&fetched.mime)) } else { None };
-        finish_load(g, this, &src, decoded);
-    }));
+    crate::web::schedule_native(
+        g,
+        0.0,
+        Box::new(move |g| {
+            if get_a(g, this, state(g).s_image_request) != request {
+                crate::ffi::redjs_unprotect(g, this);
+                return;
+            }
+            let fetched = fsutil::fetch_url(g, &src);
+            let decoded = if fetched.ok {
+                decode_typed(&fetched.bytes, Some(&fetched.mime))
+            } else {
+                None
+            };
+            finish_load(g, this, &src, request, decoded);
+        }),
+    );
     UNDEF
+}
+
+/// Native Image objects are offscreen image sources, not retained DOM nodes.
+/// Their source attributes still follow the DOM disposal contract.
+unsafe extern "sysv64" fn image_remove_attribute(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let this = cf_this(cf);
+    let proto = state(g).image.proto;
+    if !proto_chain_has(g, this, proto) {
+        return throw_type_error(g, "HTMLImageElement.removeAttribute: illegal invocation");
+    }
+    let Ok(name) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let name = read_string(g, name)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "src" => set_image_source(g, this, String::new()),
+        "crossorigin" => {
+            define(g, this, "crossOrigin", NULL, 0);
+            UNDEF
+        }
+        _ => UNDEF,
+    }
 }
 
 /// The end of an `<img>` load: the bitmap and `load`, or `error`. Unprotects
 /// the element the setter protected.
-unsafe fn finish_load(g: *mut c_void, this: u64, src: &str, decoded: Option<BitmapData>) {
-    let st = state(g);
+unsafe fn finish_load(
+    g: *mut c_void,
+    this: u64,
+    src: &str,
+    request: u64,
+    decoded: Option<BitmapData>,
+) {
+    let (image_slot, request_slot) = {
+        let st = state(g);
+        (st.s_image, st.s_image_request)
+    };
+    if get_a(g, this, request_slot) != request {
+        crate::ffi::redjs_unprotect(g, this);
+        return;
+    }
     match decoded {
         Some(data) => {
             // `new Image(32, 32)`'s presentational size stays; an unsized
             // image takes its natural one.
-            if dec_f64(get(g, this, "width")).unwrap_or(0.0) == 0.0 {
-                define(g, this, "width", enc_i32(data.width as i32), 0);
+            let width = dec_f64(get(g, this, "width")).unwrap_or(0.0);
+            let height = dec_f64(get(g, this, "height")).unwrap_or(0.0);
+            if get_a(g, this, request_slot) != request {
+                crate::ffi::redjs_unprotect(g, this);
+                return;
             }
-            if dec_f64(get(g, this, "height")).unwrap_or(0.0) == 0.0 {
-                define(g, this, "height", enc_i32(data.height as i32), 0);
-            }
+            if width == 0.0 { define(g, this, "width", enc_i32(data.width as i32), 0); }
+            if height == 0.0 { define(g, this, "height", enc_i32(data.height as i32), 0); }
             define(g, this, "naturalWidth", enc_i32(data.width as i32), 0);
             define(g, this, "naturalHeight", enc_i32(data.height as i32), 0);
             let bmp = create_bitmap(g, data);
-            glue::rjs_define(g, this, st.s_image, bmp, 0);
+            glue::rjs_define(g, this, image_slot, bmp, 0);
             define(g, this, "complete", TRUE, 0);
             let ev = events::new_trusted_event(g, "load");
             events::dispatch(g, this, ev);
@@ -627,7 +705,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (crate::capi::
         arity: 0,
         construct: Some(image_construct),
         parent_proto: event_target_proto,
-        methods: &[("decode", 0, image_decode_method)],
+        methods: &[("decode", 0, image_decode_method), ("removeAttribute", 1, image_remove_attribute)],
         getters: &[],
         accessors: &[("src", image_get_src, image_set_src)],
     });
@@ -674,6 +752,45 @@ mod jsc_tests {
         let mut out = std::io::Cursor::new(Vec::new());
         img.write_to(&mut out, image::ImageFormat::Png).unwrap();
         out.into_inner()
+    }
+
+    #[test]
+    fn removing_image_source_releases_pixels_and_fences_queued_loads() {
+        let c = file_ctx();
+        let data = crate::webapi::fsutil::b64_encode(&png());
+        s(&c, &format!("globalThis.imageUrl = 'data:image/png;base64,{data}'; 0"));
+        assert_eq!(run(&c, r#"
+          const image = new Image(32, 32); let loads=0, errors=0;
+          image.onload=()=>loads++;image.onerror=()=>errors++;
+          image.src=imageUrl;
+          await new Promise(resolve=>setTimeout(resolve,10));
+          if(__rjs_sourcePixels(image).length!==24)throw Error('No decoded bitmap');
+          image.removeAttribute('SRC');
+          if(image.src!==''||image.naturalWidth!==0||image.naturalHeight!==0||!image.complete||__rjs_sourcePixels(image)!==null)throw Error('Source removal retained pixels');
+          image.src=imageUrl;image.removeAttribute('src');
+          await new Promise(resolve=>setTimeout(resolve,10));
+          if(loads!==1||errors!==0||image.naturalWidth!==0)throw Error('Canceled source resurrected');
+          image.src=imageUrl;image.src=imageUrl;
+          await new Promise(resolve=>setTimeout(resolve,10));
+          if(loads!==2||errors!==0||image.naturalWidth!==3)throw Error('Replaced same-URL request was not fenced');
+          image.src='';
+          return [image.width,image.height,image.complete,__rjs_sourcePixels(image)===null].join(',');
+        "#), "32,32,true,true");
+    }
+
+    #[test]
+    fn source_removal_from_a_dimension_getter_cannot_publish_a_stale_image() {
+        let c = file_ctx();
+        let data = crate::webapi::fsutil::b64_encode(&png());
+        s(&c, &format!("globalThis.imageUrl = 'data:image/png;base64,{data}'; 0"));
+        assert_eq!(run(&c, r#"
+          const image=new Image();let loads=0;
+          image.onload=()=>loads++;
+          Object.defineProperty(image,'width',{configurable:true,get(){image.removeAttribute('src');return 0;}});
+          image.src=imageUrl;
+          await new Promise(resolve=>setTimeout(resolve,10));
+          return [loads,image.src,image.naturalWidth,image.complete,__rjs_sourcePixels(image)===null].join(',');
+        "#), "0,,0,true,true");
     }
 
     const LOAD: &str = "const load = (src) => new Promise(r => { const i = new Image(); \

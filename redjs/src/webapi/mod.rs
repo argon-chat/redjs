@@ -244,6 +244,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let s_listeners = atom_priv(g, "redjs#listeners");
     let s_event = atom_priv(g, "redjs#event");
     let s_image = atom_priv(g, "redjs#imageBitmap");
+    let s_image_request = atom_priv(g, "redjs#imageRequest");
     let s_usp = atom_priv(g, "redjs#searchParams");
     let s_iter_target = atom_priv(g, "redjs#iterTarget");
     let a_type = atom(g, "type");
@@ -272,6 +273,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         s_listeners,
         s_event,
         s_image,
+        s_image_request,
         s_usp,
         s_iter_target,
         a_type,
