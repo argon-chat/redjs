@@ -368,7 +368,8 @@ unsafe fn this_zip<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut ZipDat
     host_data::<ZipData>(g, classes(g).cls, cf_this(cf))
 }
 
-unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let name = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let Some(format) = Format::parse(&name) else {
@@ -389,7 +390,8 @@ unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     host_create(g, c.cls, proto, ZipData::new(format, decompress))
 }
 
-unsafe extern "sysv64" fn zip_push(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn zip_push(g: *mut c_void, cf: *mut c_void) -> u64 {
     let arg = cf_arg(cf, 0);
     let Some(input) = bufferish(g, arg) else {
         return throw_type_error(
@@ -409,7 +411,8 @@ unsafe extern "sysv64" fn zip_push(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn zip_finish(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn zip_finish(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(z) = this_zip(g, cf) else {
         return throw_type_error(g, "RedZip.finish called on a non-RedZip");
     };

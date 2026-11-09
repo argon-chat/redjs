@@ -18,9 +18,15 @@
        the thin redjs.lib + the WebKit archives (see packages/jscore/README.md). -->
   <PropertyGroup Condition="'$(PublishAot)' == 'true'">
     <OptimizationPreference>Speed</OptimizationPreference>
+    <RedJsUnixPlatform Condition="'$(RuntimeIdentifier)' == 'linux-x64'">linux-amd64</RedJsUnixPlatform>
+    <RedJsUnixPlatform Condition="'$(RuntimeIdentifier)' == 'osx-x64'">macos-amd64</RedJsUnixPlatform>
+    <RedJsUnixPlatform Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">macos-arm64</RedJsUnixPlatform>
+    <LinkerFlavor Condition="'$(RuntimeIdentifier)' == 'linux-x64' and '$(LinkerFlavor)' == ''">lld</LinkerFlavor>
   </PropertyGroup>
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <DirectPInvoke Include="redjs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(PublishAot)' == 'true' and '$(RedJsUnixPlatform)' == ''">
     <NativeLibrary Include="$(MSBuildThisFileDirectory)..\..\lib\win-x64\redjs.lib" />
     <NativeLibrary Include="$(MSBuildThisFileDirectory)..\..\prebuilt\bun-webkit\lib\JavaScriptCore.lib" />
     <NativeLibrary Include="$(MSBuildThisFileDirectory)..\..\prebuilt\bun-webkit\lib\WTF.lib" />
@@ -46,6 +52,30 @@
     <LinkerArg Include="ntdll.lib" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(PublishAot)' == 'true' and '$(RedJsUnixPlatform)' != ''">
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../../lib/$(RuntimeIdentifier)/libredjs.a" />
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../../prebuilt/bun-webkit-$(RedJsUnixPlatform)/lib/libJavaScriptCore.a" />
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../../prebuilt/bun-webkit-$(RedJsUnixPlatform)/lib/libWTF.a" />
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../../prebuilt/bun-webkit-$(RedJsUnixPlatform)/lib/libbmalloc.a" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(PublishAot)' == 'true' and '$(RedJsUnixPlatform)' == 'linux-amd64'">
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../../prebuilt/bun-webkit-$(RedJsUnixPlatform)/lib/libicui18n.a" />
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../../prebuilt/bun-webkit-$(RedJsUnixPlatform)/lib/libicuuc.a" />
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../../prebuilt/bun-webkit-$(RedJsUnixPlatform)/lib/libicudata.a" />
+  </ItemGroup>
+  <!-- Rust reports the system libraries/frameworks for the enabled features.
+       Read the staged report so audio, TLS and future features cannot drift
+       from this NativeAOT link's hand-maintained list. -->
+  <Target Name="RedJsUnixNativeLibraries" AfterTargets="SetupOSSpecificProps"
+          Condition="'$(PublishAot)' == 'true' and '$(RedJsUnixPlatform)' != ''">
+    <ReadLinesFromFile File="$(MSBuildThisFileDirectory)../../lib/$(RuntimeIdentifier)/native-static-libs.txt">
+      <Output TaskParameter="Lines" ItemName="RedJsNativeLinkArguments" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <LinkerArg Include="@(RedJsNativeLinkArguments)" />
+    </ItemGroup>
+  </Target>
+
   <!-- No identical-COMDAT folding in the NativeAOT link. ILC's Windows targets add
        /OPT:REF /OPT:ICF for every non-Debug publish, and JSC tells constructors from
        non-constructors by comparing native function pointers — folding can make a real
@@ -53,7 +83,7 @@
        /OPT:NOICF). ILC adds its flags INSIDE the SetupOSSpecificProps target, after this
        file's static items, so a plain <LinkerArg Include="/OPT:NOICF"/> would come first and
        lose; this swaps the item once that target has run. Verified in obj/…/link.rsp. -->
-  <Target Name="RedJsNoIcf" AfterTargets="SetupOSSpecificProps" Condition="'$(PublishAot)' == 'true'">
+  <Target Name="RedJsNoIcf" AfterTargets="SetupOSSpecificProps" Condition="'$(PublishAot)' == 'true' and '$(RedJsUnixPlatform)' == ''">
     <ItemGroup>
       <LinkerArg Remove="/OPT:ICF" />
       <LinkerArg Include="/OPT:NOICF" />

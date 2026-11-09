@@ -324,14 +324,16 @@ macro_rules! this_storage {
     };
 }
 
-unsafe extern "sysv64" fn storage_length(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn storage_length(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "length");
     let n = with_area(local, ctx, |a, _| (a.entries.len(), false));
     enc_i32(n as i32)
 }
 
 /// `key(n)` — the nth key in insertion order, or `null`.
-unsafe extern "sysv64" fn storage_key(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn storage_key(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "key");
     // WebIDL `unsigned long`: NaN/undefined → 0, negatives wrap. Anything past
     // the end is `null`, which is also where a wrapped negative lands.
@@ -346,7 +348,8 @@ unsafe extern "sysv64" fn storage_key(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn storage_get_item(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn storage_get_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "getItem");
     let Some(key) = read_string(g, cf_arg(cf, 0)) else { return UNDEF };
     let found =
@@ -357,7 +360,8 @@ unsafe extern "sysv64" fn storage_get_item(g: *mut c_void, cf: *mut c_void) -> u
     }
 }
 
-unsafe extern "sysv64" fn storage_set_item(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn storage_set_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "setItem");
     // Both arguments are `DOMString`, so both are ToString-coerced: the browser
     // behaviour every "I stored an object and got [object Object] back" bug
@@ -410,7 +414,8 @@ unsafe extern "sysv64" fn storage_set_item(g: *mut c_void, cf: *mut c_void) -> u
     }
 }
 
-unsafe extern "sysv64" fn storage_remove_item(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn storage_remove_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "removeItem");
     let Some(key) = read_string(g, cf_arg(cf, 0)) else { return UNDEF };
     with_area(local, ctx, |a, _| match a.index_of(&key) {
@@ -423,7 +428,8 @@ unsafe extern "sysv64" fn storage_remove_item(g: *mut c_void, cf: *mut c_void) -
     UNDEF
 }
 
-unsafe extern "sysv64" fn storage_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn storage_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "clear");
     with_area(local, ctx, |a, _| {
         let had = !a.entries.is_empty();
@@ -445,7 +451,8 @@ unsafe fn throw_quota_exceeded(g: *mut c_void, msg: &str) -> u64 {
 // StorageEvent
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn storage_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn storage_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "StorageEvent constructor requires a type argument");
     }
@@ -495,19 +502,24 @@ unsafe fn ev_member(g: *mut c_void, cf: *mut c_void, name: &str) -> u64 {
     get(g, slots, name)
 }
 
-unsafe extern "sysv64" fn ev_key(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ev_key(g: *mut c_void, cf: *mut c_void) -> u64 {
     ev_member(g, cf, "key")
 }
-unsafe extern "sysv64" fn ev_old_value(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ev_old_value(g: *mut c_void, cf: *mut c_void) -> u64 {
     ev_member(g, cf, "oldValue")
 }
-unsafe extern "sysv64" fn ev_new_value(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ev_new_value(g: *mut c_void, cf: *mut c_void) -> u64 {
     ev_member(g, cf, "newValue")
 }
-unsafe extern "sysv64" fn ev_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ev_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     ev_member(g, cf, "url")
 }
-unsafe extern "sysv64" fn ev_storage_area(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ev_storage_area(g: *mut c_void, cf: *mut c_void) -> u64 {
     ev_member(g, cf, "storageArea")
 }
 

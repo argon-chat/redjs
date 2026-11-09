@@ -345,13 +345,16 @@ unsafe fn pe_slot(g: *mut c_void, cf: *mut c_void, key: &str) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn pe_length_computable(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pe_length_computable(g: *mut c_void, cf: *mut c_void) -> u64 {
     pe_slot(g, cf, "lengthComputable")
 }
-unsafe extern "sysv64" fn pe_loaded(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pe_loaded(g: *mut c_void, cf: *mut c_void) -> u64 {
     pe_slot(g, cf, "loaded")
 }
-unsafe extern "sysv64" fn pe_total(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pe_total(g: *mut c_void, cf: *mut c_void) -> u64 {
     pe_slot(g, cf, "total")
 }
 
@@ -371,7 +374,8 @@ unsafe fn ull(g: *mut c_void, init: u64, key: &str) -> Result<f64, ()> {
     Ok(n.trunc().rem_euclid(18446744073709551616.0))
 }
 
-unsafe extern "sysv64" fn progress_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn progress_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(
             g,
@@ -449,7 +453,8 @@ unsafe fn handler_bag(g: *mut c_void, this: u64, create: bool) -> u64 {
 
 macro_rules! handler_accessor {
     ($get_fn:ident, $set_fn:ident, $name:literal) => {
-        unsafe extern "sysv64" fn $get_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             let bag = handler_bag(g, cf_this(cf), false);
             if !is_cell(bag) {
                 return NULL;
@@ -463,7 +468,8 @@ macro_rules! handler_accessor {
         }
         // WebIDL `[LegacyTreatNonObjectAsNull]`: anything but an object
         // (a string, a number) is stored as null.
-        unsafe extern "sysv64" fn $set_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             let bag = handler_bag(g, cf_this(cf), true);
             if is_cell(bag) {
                 let v = cf_arg(cf, 0);
@@ -1069,7 +1075,8 @@ unsafe fn invalid_state(g: *mut c_void, msg: &str) -> u64 {
     domexception::throw(g, "InvalidStateError", msg)
 }
 
-unsafe extern "sysv64" fn xhr_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     // OrdinaryCreateFromConstructor: a subclass's prototype, else ours.
     let nt = cf_new_target(cf);
@@ -1092,7 +1099,8 @@ unsafe fn base_url(g: *mut c_void) -> Option<url::Url> {
     url::Url::parse(&read_string(g, get(g, loc, "href"))?).ok()
 }
 
-unsafe extern "sysv64" fn xhr_open(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if xd(g, this).is_none() {
         return throw_type_error(g, "Illegal invocation: XMLHttpRequest.open called on a non-XMLHttpRequest");
@@ -1186,7 +1194,8 @@ unsafe extern "sysv64" fn xhr_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn xhr_set_request_header(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_set_request_header(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 2 {
         return throw_type_error(
             g,
@@ -1236,7 +1245,8 @@ unsafe fn upload_listened(g: *mut c_void, upload: u64) -> bool {
     is_cell(upload) && PROGRESS_TYPES.iter().any(|t| events::has_listener(g, upload, t))
 }
 
-unsafe extern "sysv64" fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let d = this_or_throw!(g, cf, "send");
     if d.state != OPENED {
@@ -1372,7 +1382,8 @@ unsafe extern "sysv64" fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn xhr_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let _ = this_or_throw!(g, cf, "abort");
     let owed = end_flight(g, this, true);
@@ -1394,7 +1405,8 @@ unsafe extern "sysv64" fn xhr_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn xhr_get_response_header(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_get_response_header(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(n) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
     let name = read_string(g, n).unwrap_or_default();
     let d = this_or_throw!(g, cf, "getResponseHeader");
@@ -1414,7 +1426,8 @@ unsafe extern "sysv64" fn xhr_get_response_header(g: *mut c_void, cf: *mut c_voi
     }
 }
 
-unsafe extern "sysv64" fn xhr_get_all_response_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_get_all_response_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "getAllResponseHeaders");
     if d.state < HEADERS_RECEIVED || d.error {
         return js_string(g, "");
@@ -1431,7 +1444,8 @@ unsafe extern "sysv64" fn xhr_get_all_response_headers(g: *mut c_void, cf: *mut 
     js_string(g, &out)
 }
 
-unsafe extern "sysv64" fn xhr_override_mime_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_override_mime_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(m) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
     let mime = read_string(g, m).unwrap_or_default();
     let d = this_or_throw!(g, cf, "overrideMimeType");
@@ -1448,34 +1462,40 @@ unsafe extern "sysv64" fn xhr_override_mime_type(g: *mut c_void, cf: *mut c_void
     UNDEF
 }
 
-unsafe extern "sysv64" fn xhr_ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "readyState");
     enc_i32(d.state as i32)
 }
 
-unsafe extern "sysv64" fn xhr_upload(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_upload(g: *mut c_void, cf: *mut c_void) -> u64 {
     let _ = this_or_throw!(g, cf, "upload");
     upload_of(g, cf_this(cf))
 }
 
-unsafe extern "sysv64" fn xhr_status(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_status(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "status");
     enc_i32(if d.error { 0 } else { d.status as i32 })
 }
 
-unsafe extern "sysv64" fn xhr_status_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_status_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "statusText");
     let t = if d.error { String::new() } else { d.status_text.clone() };
     js_string(g, &t)
 }
 
-unsafe extern "sysv64" fn xhr_response_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_response_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "responseURL");
     let u = if d.error { String::new() } else { d.resp_url.clone() };
     js_string(g, &u)
 }
 
-unsafe extern "sysv64" fn xhr_response_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_response_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "responseText");
     if !d.rtype.texty() {
         return invalid_state(
@@ -1494,7 +1514,8 @@ unsafe extern "sysv64" fn xhr_response_text(g: *mut c_void, cf: *mut c_void) -> 
     js_string(g, &t)
 }
 
-unsafe extern "sysv64" fn xhr_response_xml(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_response_xml(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "responseXML");
     if !matches!(d.rtype, RType::Empty | RType::Document) {
         return invalid_state(
@@ -1512,7 +1533,8 @@ unsafe extern "sysv64" fn xhr_response_xml(g: *mut c_void, cf: *mut c_void) -> u
     NULL
 }
 
-unsafe extern "sysv64" fn xhr_response(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_response(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let d = this_or_throw!(g, cf, "response");
     if d.rtype.texty() {
@@ -1566,12 +1588,14 @@ unsafe extern "sysv64" fn xhr_response(g: *mut c_void, cf: *mut c_void) -> u64 {
     v
 }
 
-unsafe extern "sysv64" fn xhr_response_type_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_response_type_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "responseType");
     js_string(g, d.rtype.name())
 }
 
-unsafe extern "sysv64" fn xhr_response_type_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_response_type_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(v) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
     let s = read_string(g, v).unwrap_or_default();
     let d = this_or_throw!(g, cf, "responseType");
@@ -1588,12 +1612,14 @@ unsafe extern "sysv64" fn xhr_response_type_set(g: *mut c_void, cf: *mut c_void)
     UNDEF
 }
 
-unsafe extern "sysv64" fn xhr_timeout_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_timeout_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "timeout");
     enc_f64(d.timeout_ms as f64)
 }
 
-unsafe extern "sysv64" fn xhr_timeout_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_timeout_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(n) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
     // WebIDL `unsigned long`: modulo 2^32.
     let ms = if n.is_finite() { n.trunc().rem_euclid(4294967296.0) as u32 } else { 0 };
@@ -1603,12 +1629,14 @@ unsafe extern "sysv64" fn xhr_timeout_set(g: *mut c_void, cf: *mut c_void) -> u6
     UNDEF
 }
 
-unsafe extern "sysv64" fn xhr_with_credentials_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_with_credentials_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "withCredentials");
     enc_bool(d.with_credentials)
 }
 
-unsafe extern "sysv64" fn xhr_with_credentials_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn xhr_with_credentials_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = glue::rjs_to_boolean(g, cf_arg(cf, 0)) != 0;
     let d = this_or_throw!(g, cf, "withCredentials");
     if (d.state != UNSENT && d.state != OPENED) || d.send_flag {

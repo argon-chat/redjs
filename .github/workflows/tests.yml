@@ -1,0 +1,122 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.platform.runner }}, ${{ matrix.suite.name }})
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rid: linux-x64
+          - runner: macos-26-intel
+            target: x86_64-apple-darwin
+            rid: osx-x64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            rid: osx-arm64
+        suite:
+          - name: core
+            features: ''
+          # GPU tests need hardware; css-host belongs to PEWPEW, and yoga-host
+          # requires separately fetched Yoga sources. All other stable APIs run.
+          - name: web
+            features: audio,audio-codecs-extra,physics,mesh,svg-images,canvas,indexeddb-sqlite,storages,clipboard,battery,net-h2
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      # IndexedDB's latency guards share one process-wide server; concurrent
+      # library scenarios would measure contention from each other's traffic.
+      RUST_TEST_THREADS: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: redjs
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-20 lld curl unzip pkg-config libssl-dev libasound2-dev
+          echo 'CC=clang-20' >> "$GITHUB_ENV"
+          echo 'CXX=clang++-20' >> "$GITHUB_ENV"
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --target "${{ matrix.platform.target }}"
+          rustup default 1.97.1
+      - name: Provide the disabled optional redcss manifest
+        run: |
+          # Cargo resolves optional path manifests even with css-host disabled.
+          mkdir -p redcss/src
+          cat > redcss/Cargo.toml <<'TOML'
+          [package]
+          name = "redcss"
+          version = "0.1.0"
+          edition = "2021"
+          TOML
+          echo 'compile_error!("CI does not support the css-host feature");' > redcss/src/lib.rs
+      - name: Cache pinned native dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            redjs/prebuilt
+            redjs/redjs/cpp/mimalloc
+          key: redjs-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('redjs/pins.txt') }}
+      - name: Fetch and verify native dependencies
+        run: bash ./redjs/setup.sh
+      - name: Run Rust tests
+        working-directory: redjs/redjs
+        env:
+          TEST_FEATURES: ${{ matrix.suite.features }}
+        run: |
+          args=(test --release --locked --target "${{ matrix.platform.target }}" --no-default-features)
+          if [[ -n "$TEST_FEATURES" ]]; then args+=(--features "$TEST_FEATURES"); fi
+          cargo "${args[@]}"
+      - name: Check host callback ABI
+        if: matrix.suite.name == 'core'
+        working-directory: redjs/redjs
+        run: cargo test --locked --package redjs-macros --target "${{ matrix.platform.target }}"
+      - name: Check WebGPU compilation
+        if: matrix.suite.name == 'web'
+        working-directory: redjs/redjs
+        # Compilation needs no GPU; the real-device tests stay opt-in.
+        run: cargo check --locked --target "${{ matrix.platform.target }}" --no-default-features --features webgpu
+      - name: Stage native library for C#
+        if: matrix.suite.name == 'web'
+        env:
+          TEST_FEATURES: ${{ matrix.suite.features }}
+        run: bash ./redjs/build.sh --features "$TEST_FEATURES"
+      - uses: actions/setup-dotnet@v4
+        if: matrix.suite.name == 'web'
+        with:
+          dotnet-version: 10.0.x
+      - name: Run C# shared-library smoke tests
+        if: matrix.suite.name == 'web' && runner.os == 'macOS'
+        run: dotnet run --project redjs/csharp/RedJs.Smoke --configuration Release
+      - name: Run C# NativeAOT smoke tests
+        if: matrix.suite.name == 'web'
+        run: |
+          dotnet publish redjs/csharp/RedJs.Smoke --configuration Release --runtime "${{ matrix.platform.rid }}" -p:PublishAot=true --output artifacts/csharp-aot
+          ./artifacts/csharp-aot/RedJs.Smoke

@@ -1040,7 +1040,8 @@ fn host_functions(ctx: &Context) {
     assert_eq!(v.as_number(), Some(200000.0));
 
     // Direct sysv64 host function — the zero-overhead Rust path.
-    unsafe extern "sysv64" fn native_mul(_g: *mut c_void, cf: *mut c_void) -> u64 {
+    #[redjs::host_fn]
+    unsafe fn native_mul(_g: *mut c_void, cf: *mut c_void) -> u64 {
         let args = HostArgs::new(cf);
         let a = args.arg(0).as_number().unwrap_or(0.0);
         let b = args.arg(1).as_number().unwrap_or(0.0);
@@ -1533,10 +1534,14 @@ fn engine_surface(ctx: &Context) {
 
     // Native: walk from inside a host fn back out through JSC to here, once
     // from interpreted code and once from a hot (JIT-compiled) loop.
-    native_unwind_through_js(ctx, "hostWalk(true)");
-    native_unwind_through_js(ctx, "for (let i = 0; i < 50000; i++) hostWalk(i === 49999)");
+    #[cfg(windows)]
+    {
+        native_unwind_through_js(ctx, "hostWalk(true)");
+        native_unwind_through_js(ctx, "for (let i = 0; i < 50000; i++) hostWalk(i === 49999)");
+    }
 }
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn RtlCaptureContext(context: *mut X64Context);
@@ -1556,8 +1561,10 @@ extern "system" {
 /// The x64 `CONTEXT` record (1232 bytes, 16-aligned), read by offset: Rsp at
 /// 0x98, Rip at 0xF8.
 #[repr(C, align(16))]
+#[cfg(windows)]
 struct X64Context([u8; 0x4d0]);
 
+#[cfg(windows)]
 impl X64Context {
     fn get(&self, at: usize) -> u64 {
         u64::from_le_bytes(self.0[at..at + 8].try_into().unwrap())
@@ -1578,6 +1585,7 @@ impl X64Context {
 /// tables. A tool that uses it — some profilers, `_CrtDumpMemoryLeaks`-style
 /// allocation stacks — will not see past JS on any prebuilt.
 #[inline(never)]
+#[cfg(windows)]
 fn capture_stack() -> Vec<usize> {
     const RSP: usize = 0x98;
     const RIP: usize = 0xf8;
@@ -1611,6 +1619,7 @@ fn capture_stack() -> Vec<usize> {
 /// test harness, the thread start) must be the TAIL of `inside` — i.e. the
 /// unwinder got through every JSC frame in between.
 #[inline(never)]
+#[cfg(windows)]
 fn native_unwind_through_js(ctx: &Context, src: &str) {
     thread_local! {
         static INSIDE: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };

@@ -25,24 +25,28 @@ fn advise_document_cookie(write: bool) {
     });
 }
 
-unsafe extern "sysv64" fn document_cookie_get(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn document_cookie_get(g: *mut c_void, _cf: *mut c_void) -> u64 {
     advise_document_cookie(false);
     js_string(g, "")
 }
 
-unsafe extern "sysv64" fn document_cookie_set(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn document_cookie_set(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     advise_document_cookie(true);
     UNDEF
 }
 
-unsafe extern "sysv64" fn get_element_by_id(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_element_by_id(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let id = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let v = get(g, st.elements, &id);
     if is_cell(v) { v } else { NULL }
 }
 
-unsafe extern "sysv64" fn query_selector(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn query_selector(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let sel = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     if let Some(id) = sel.strip_prefix('#') {
@@ -57,7 +61,8 @@ unsafe extern "sysv64" fn query_selector(g: *mut c_void, cf: *mut c_void) -> u64
     NULL
 }
 
-unsafe extern "sysv64" fn create_element(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_element(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let tag = read_string(g, cf_arg(cf, 0)).unwrap_or_default().to_ascii_lowercase();
     if tag == "img" {
@@ -87,7 +92,8 @@ unsafe extern "sysv64" fn create_element(g: *mut c_void, cf: *mut c_void) -> u64
     el
 }
 
-unsafe extern "sysv64" fn dom_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dom_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     NULL
 }
 
@@ -98,7 +104,8 @@ unsafe extern "sysv64" fn dom_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
 
 /// `matchMedia(query)` → a MediaQueryList-shaped EventTarget that never
 /// matches (no media features on a game host).
-unsafe extern "sysv64" fn match_media(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn match_media(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let query = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let mql = new_object(g, st.event_target.proto);
@@ -113,7 +120,8 @@ unsafe extern "sysv64" fn match_media(g: *mut c_void, cf: *mut c_void) -> u64 {
     mql
 }
 
-unsafe extern "sysv64" fn io_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn io_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     // IntersectionObserver(callback, options?) — inert: nothing intersects in
     // a game host; observe/unobserve/disconnect are no-ops, records are empty.
     let proto = {
@@ -127,11 +135,13 @@ unsafe extern "sysv64" fn io_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     obj
 }
 
-unsafe extern "sysv64" fn io_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn io_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn io_take_records(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn io_take_records(g: *mut c_void, _cf: *mut c_void) -> u64 {
     new_array(g)
 }
 

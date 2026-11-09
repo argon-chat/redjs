@@ -168,7 +168,8 @@ unsafe fn rejected_named(g: *mut c_void, name: &str, msg: &str) -> u64 {
 // Clipboard
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn clipboard_read_text(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn clipboard_read_text(g: *mut c_void, _cf: *mut c_void) -> u64 {
     match host() {
         None => {
             advise_no_host();
@@ -190,7 +191,8 @@ unsafe extern "sysv64" fn clipboard_read_text(g: *mut c_void, _cf: *mut c_void) 
     }
 }
 
-unsafe extern "sysv64" fn clipboard_write_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn clipboard_write_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     // `data` is a `DOMString`, so it is ToString-coerced — `writeText(42)`
     // writes "42" in a browser and writes "42" here. A conversion that throws
     // (a Symbol, a throwing toString) rejects with WHAT it threw, as WebIDL
@@ -332,7 +334,8 @@ unsafe fn item_type_list(g: *mut c_void, types: u64) -> Vec<String> {
 
 /// `new ClipboardItem(items, options)` — WebIDL's record conversion: the keys
 /// are read once, in order, and each value once.
-unsafe extern "sysv64" fn item_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     const WHO: &str = "Failed to construct 'ClipboardItem'";
     let items = cf_arg(cf, 0);
     if !super::blob::is_object(g, items) {
@@ -398,7 +401,8 @@ unsafe extern "sysv64" fn item_construct(g: *mut c_void, cf: *mut c_void) -> u64
     this
 }
 
-unsafe extern "sysv64" fn item_types(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_types(g: *mut c_void, cf: *mut c_void) -> u64 {
     let types = slot_get(g, cf_this(cf), Slot::Types);
     if !is_cell(types) {
         return throw_type_error(g, "Illegal invocation");
@@ -406,7 +410,8 @@ unsafe extern "sysv64" fn item_types(g: *mut c_void, cf: *mut c_void) -> u64 {
     types
 }
 
-unsafe extern "sysv64" fn item_style(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_style(g: *mut c_void, cf: *mut c_void) -> u64 {
     let style = slot_get(g, cf_this(cf), Slot::Style);
     if style == UNDEF {
         return throw_type_error(g, "Illegal invocation");
@@ -417,7 +422,8 @@ unsafe extern "sysv64" fn item_style(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// The reaction that turns a settled representation into its Blob: bound to
 /// the type, called with the value. A Blob is itself; a string becomes a Blob
 /// of the type.
-unsafe extern "sysv64" fn to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let v = cf_arg(cf, 1);
     if super::blob::data_of(g, v).is_some() {
@@ -433,7 +439,8 @@ unsafe extern "sysv64" fn to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// `item.getType(type)` — a promise of the representation's Blob.
-unsafe extern "sysv64" fn item_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let record = slot_get(g, this, Slot::Items);
     if !is_cell(record) {
@@ -460,7 +467,8 @@ unsafe extern "sysv64" fn item_get_type(g: *mut c_void, cf: *mut c_void) -> u64 
 }
 
 /// `ClipboardItem.supports(type)` — what `write()` would take.
-unsafe extern "sysv64" fn item_supports(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_supports(g: *mut c_void, cf: *mut c_void) -> u64 {
     let ty = match dom_string(g, cf_arg(cf, 0)) {
         Ok(t) => t,
         Err(e) => {
@@ -476,7 +484,8 @@ unsafe extern "sysv64" fn item_supports(g: *mut c_void, cf: *mut c_void) -> u64 
 // read() / write()
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn clipboard_read(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn clipboard_read(g: *mut c_void, _cf: *mut c_void) -> u64 {
     const WHO: &str = "Failed to execute 'read' on 'Clipboard'";
     let Some(h) = host() else {
         advise_no_host();
@@ -505,7 +514,8 @@ unsafe extern "sysv64" fn clipboard_read(g: *mut c_void, _cf: *mut c_void) -> u6
 
 /// The reaction that writes once every representation has settled: bound to
 /// the types, called with the values in the same order.
-unsafe extern "sysv64" fn write_settled(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn write_settled(g: *mut c_void, cf: *mut c_void) -> u64 {
     const WHO: &str = "Failed to execute 'write' on 'Clipboard'";
     let types = item_type_list(g, cf_arg(cf, 0));
     let values = cf_arg(cf, 1);
@@ -541,7 +551,8 @@ unsafe extern "sysv64" fn write_settled(g: *mut c_void, cf: *mut c_void) -> u64 
 
 /// `navigator.clipboard.write(data)` — one `ClipboardItem`, every
 /// representation settled first, then written at once.
-unsafe extern "sysv64" fn clipboard_write(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn clipboard_write(g: *mut c_void, cf: *mut c_void) -> u64 {
     const WHO: &str = "Failed to execute 'write' on 'Clipboard'";
     let list = match call_static(g, "Array", "from", &[cf_arg(cf, 0)]) {
         Ok(l) => l,
@@ -584,7 +595,8 @@ unsafe extern "sysv64" fn clipboard_write(g: *mut c_void, cf: *mut c_void) -> u6
 // document.execCommand
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn exec_command(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn exec_command(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cmd = read_string(g, cf_arg(cf, 0)).unwrap_or_default().to_ascii_lowercase();
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
@@ -602,7 +614,8 @@ unsafe extern "sysv64" fn exec_command(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// everything, which is the answer that makes the usual
 /// `if (document.queryCommandSupported("copy"))` guard take the branch that
 /// actually works here.
-unsafe extern "sysv64" fn query_command_false(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn query_command_false(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     FALSE
 }
 

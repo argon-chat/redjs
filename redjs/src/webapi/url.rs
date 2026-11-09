@@ -45,7 +45,8 @@ unsafe fn this_usp<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut UspDat
 // URL
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn url_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn url_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let input = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let base_v = cf_arg(cf, 1);
@@ -77,7 +78,8 @@ unsafe extern "sysv64" fn url_construct(g: *mut c_void, cf: *mut c_void) -> u64 
 
 macro_rules! url_getter {
     ($name:ident, |$u:ident| $body:expr) => {
-        unsafe extern "sysv64" fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             match this_url(g, cf) {
                 Some(d) => {
                     let $u = &d.url;
@@ -127,7 +129,8 @@ unsafe fn resync_usp(g: *mut c_void, d: &mut UrlData) {
     }
 }
 
-unsafe extern "sysv64" fn set_href(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_href(g: *mut c_void, cf: *mut c_void) -> u64 {
     let s = arg_str(g, cf);
     let Some(d) = this_url(g, cf) else {
         return throw_type_error(g, "URL setter called on a non-URL");
@@ -144,7 +147,8 @@ unsafe extern "sysv64" fn set_href(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 macro_rules! url_setter {
     ($name:ident, |$u:ident, $s:ident| $body:expr) => {
-        unsafe extern "sysv64" fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             let $s = arg_str(g, cf);
             let Some(d) = this_url(g, cf) else {
                 return throw_type_error(g, "URL setter called on a non-URL");
@@ -193,7 +197,8 @@ url_setter!(set_host, |u, s| {
     }
 });
 
-unsafe extern "sysv64" fn url_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn url_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_url(g, cf) {
         Some(d) => {
             let s = d.url.as_str().to_string();
@@ -203,7 +208,8 @@ unsafe extern "sysv64" fn url_to_string(g: *mut c_void, cf: *mut c_void) -> u64 
     }
 }
 
-unsafe extern "sysv64" fn get_search_params(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_search_params(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let Some(d) = this_url(g, cf) else {
         return throw_type_error(g, "URL.searchParams called on a non-URL");
@@ -219,7 +225,8 @@ unsafe extern "sysv64" fn get_search_params(g: *mut c_void, cf: *mut c_void) -> 
     d.usp
 }
 
-unsafe extern "sysv64" fn can_parse(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn can_parse(g: *mut c_void, cf: *mut c_void) -> u64 {
     let input = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let base_v = cf_arg(cf, 1);
     let ok = if base_v != UNDEF && base_v != NULL {
@@ -309,7 +316,8 @@ unsafe fn origin_part(g: *mut c_void) -> String {
     o
 }
 
-unsafe extern "sysv64" fn create_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Failed to execute 'createObjectURL' on 'URL': 1 argument required, but only 0 present.");
     }
@@ -327,7 +335,8 @@ unsafe extern "sysv64" fn create_object_url(g: *mut c_void, cf: *mut c_void) -> 
 
 /// `revokeObjectURL(url)`: anything that is not a `blob:` URL of this
 /// context's store is ignored, as the spec says — never an error.
-unsafe extern "sysv64" fn revoke_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn revoke_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Failed to execute 'revokeObjectURL' on 'URL': 1 argument required, but only 0 present.");
     }
@@ -542,7 +551,8 @@ unsafe fn usp_init(g: *mut c_void, init: u64) -> Result<Vec<(String, String)>, (
     Ok(list)
 }
 
-unsafe extern "sysv64" fn usp_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let Ok(list) = usp_init(g, cf_arg(cf, 0)) else { return UNDEF };
     let nt = cf_new_target(cf);
@@ -568,7 +578,8 @@ unsafe fn usp_arg(g: *mut c_void, cf: *mut c_void, i: u32) -> String {
     read_string(g, cf_arg(cf, i)).unwrap_or_default()
 }
 
-unsafe extern "sysv64" fn usp_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let k = usp_arg(g, cf, 0);
     match this_usp(g, cf) {
         Some(d) => match d.list.iter().find(|(key, _)| *key == k) {
@@ -582,7 +593,8 @@ unsafe extern "sysv64" fn usp_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn usp_get_all(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_get_all(g: *mut c_void, cf: *mut c_void) -> u64 {
     let k = usp_arg(g, cf, 0);
     let arr = new_array(g);
     if let Some(d) = this_usp(g, cf) {
@@ -595,7 +607,8 @@ unsafe extern "sysv64" fn usp_get_all(g: *mut c_void, cf: *mut c_void) -> u64 {
     arr
 }
 
-unsafe extern "sysv64" fn usp_has(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     let k = usp_arg(g, cf, 0);
     match this_usp(g, cf) {
         Some(d) => enc_bool(d.list.iter().any(|(key, _)| *key == k)),
@@ -603,7 +616,8 @@ unsafe extern "sysv64" fn usp_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn usp_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     let k = usp_arg(g, cf, 0);
     let v = usp_arg(g, cf, 1);
     if let Some(d) = this_usp(g, cf) {
@@ -626,7 +640,8 @@ unsafe extern "sysv64" fn usp_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn usp_append(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_append(g: *mut c_void, cf: *mut c_void) -> u64 {
     let k = usp_arg(g, cf, 0);
     let v = usp_arg(g, cf, 1);
     if let Some(d) = this_usp(g, cf) {
@@ -636,7 +651,8 @@ unsafe extern "sysv64" fn usp_append(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn usp_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     let k = usp_arg(g, cf, 0);
     if let Some(d) = this_usp(g, cf) {
         d.list.retain(|(key, _)| *key != k);
@@ -645,7 +661,8 @@ unsafe extern "sysv64" fn usp_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn usp_sort(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_sort(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(d) = this_usp(g, cf) {
         d.list.sort_by(|a, b| a.0.cmp(&b.0));
         sync_parent(g, d);
@@ -653,7 +670,8 @@ unsafe extern "sysv64" fn usp_sort(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn usp_for_each(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_for_each(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cb = cf_arg(cf, 0);
     let this_arg = cf_arg(cf, 1);
     let this_v = cf_this(cf);
@@ -671,7 +689,8 @@ unsafe extern "sysv64" fn usp_for_each(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn usp_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_usp(g, cf) {
         Some(d) => {
             let s = serialize_query(&d.list);
@@ -681,7 +700,8 @@ unsafe extern "sysv64" fn usp_to_string(g: *mut c_void, cf: *mut c_void) -> u64 
     }
 }
 
-unsafe extern "sysv64" fn usp_get_size(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_get_size(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_usp(g, cf) {
         Some(d) => enc_i32(d.list.len() as i32),
         None => throw_type_error(g, "URLSearchParams.size called on wrong this"),
@@ -710,19 +730,23 @@ unsafe fn make_iter(g: *mut c_void, cf: *mut c_void, kind: u8) -> u64 {
     it
 }
 
-unsafe extern "sysv64" fn usp_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_iter(g, cf, 0)
 }
 
-unsafe extern "sysv64" fn usp_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_iter(g, cf, 1)
 }
 
-unsafe extern "sysv64" fn usp_values(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_values(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_iter(g, cf, 2)
 }
 
-unsafe extern "sysv64" fn usp_iter_next(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usp_iter_next(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let this_v = cf_this(cf);
     let Some(it) = host_data::<UspIterData>(g, st.usp_iter_class, this_v) else {
@@ -761,7 +785,8 @@ unsafe extern "sysv64" fn usp_iter_next(g: *mut c_void, cf: *mut c_void) -> u64 
     result
 }
 
-unsafe extern "sysv64" fn iter_self(_g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn iter_self(_g: *mut c_void, cf: *mut c_void) -> u64 {
     cf_this(cf)
 }
 

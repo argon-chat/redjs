@@ -380,7 +380,8 @@ unsafe fn new_device_info(g: *mut c_void, kind: &str, device_id: &str, label: &s
 
 macro_rules! info_getter {
     ($fn_name:ident, $slot:literal) => {
-        unsafe extern "sysv64" fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
             let slots = info_slots(g, cf_this(cf));
             if !is_cell(slots) {
                 return throw_type_error(g, concat!("MediaDeviceInfo.", $slot, " on wrong this"));
@@ -397,7 +398,8 @@ info_getter!(info_get_group_id, "groupId");
 
 /// Spec: `toJSON()` returns a plain object with the same four members — how the
 /// application logs and persists a device without dragging the class along.
-unsafe extern "sysv64" fn info_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn info_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let slots = info_slots(g, cf_this(cf));
     if !is_cell(slots) {
         return throw_type_error(g, "MediaDeviceInfo.toJSON on wrong this");
@@ -419,7 +421,8 @@ unsafe extern "sysv64" fn info_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// from the format a capture of this device runs at. `{}` for the anonymous
 /// entry listed while capture is not allowed (no id: nothing to describe), and
 /// only the ids when the device is gone.
-unsafe extern "sysv64" fn input_get_capabilities(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn input_get_capabilities(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let slots = info_slots(g, this);
     if !is_cell(slots) || !proto_chain_has(g, this, classes(g).input.proto) {
@@ -485,7 +488,8 @@ unsafe fn push_kind(g: *mut c_void, arr: u64, i: &mut u32, kind: &str, devices: 
     }
 }
 
-unsafe extern "sysv64" fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void) -> u64 {
     let arr = new_array(g);
     let mut i = 0u32;
 
@@ -514,7 +518,8 @@ unsafe extern "sysv64" fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void)
 
 /// Replaced by mediastream.js. Left as the answer if that script ever fails to
 /// install, so the failure is named rather than `undefined is not a function`.
-unsafe extern "sysv64" fn md_get_user_media(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn md_get_user_media(g: *mut c_void, _cf: *mut c_void) -> u64 {
     super::domexception::rejected(
         g,
         "NotSupportedError",

@@ -257,7 +257,8 @@ unsafe fn is_navigator(g: *mut c_void, v: u64) -> bool {
 
 macro_rules! nav_getter {
     ($name:ident, |$ua:ident| $body:expr) => {
-        unsafe extern "sysv64" fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             if !is_navigator(g, cf_this(cf)) {
                 return throw_type_error(g, "Illegal invocation");
             }
@@ -278,14 +279,16 @@ nav_getter!(get_product_sub, |_ua| "20030107");
 nav_getter!(get_vendor, |_ua| "");
 nav_getter!(get_vendor_sub, |_ua| "");
 
-unsafe extern "sysv64" fn get_hardware_concurrency(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_hardware_concurrency(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_navigator(g, cf_this(cf)) {
         return throw_type_error(g, "Illegal invocation");
     }
     enc_i32(hardware_concurrency().min(i32::MAX as usize) as i32)
 }
 
-unsafe extern "sysv64" fn get_on_line(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_on_line(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_navigator(g, cf_this(cf)) {
         return throw_type_error(g, "Illegal invocation");
     }

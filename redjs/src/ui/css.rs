@@ -29,7 +29,8 @@ use crate::glue;
 use crate::webapi::util::{cf_arg, define, js_string, new_object, read_string, throw_type_error, HostFn, UNDEF};
 
 /// `RedCss.parseSheet(css: string): string` — the compiled-sheet JSON.
-unsafe extern "sysv64" fn parse_sheet(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn parse_sheet(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(src) = read_string(g, cf_arg(cf, 0)) else {
         return throw_type_error(g, "RedCss.parseSheet expects a string");
     };
@@ -37,7 +38,8 @@ unsafe extern "sysv64" fn parse_sheet(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// `RedCss.parseInline(body: string): string` — an inline `style` prop's declaration list.
-unsafe extern "sysv64" fn parse_inline(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn parse_inline(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(src) = read_string(g, cf_arg(cf, 0)) else {
         return throw_type_error(g, "RedCss.parseInline expects a string");
     };
@@ -49,7 +51,8 @@ unsafe extern "sysv64" fn parse_inline(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// Two arguments here rather than the wasm build's `prop\0value` packing: the wasm form exists to
 /// avoid a second `alloc` across the linear-memory boundary, which is not a cost that exists when
 /// the call is a direct one.
-unsafe extern "sysv64" fn parse_decl(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn parse_decl(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (Some(prop), Some(value)) = (read_string(g, cf_arg(cf, 0)), read_string(g, cf_arg(cf, 1))) else {
         return throw_type_error(g, "RedCss.parseDecl expects (prop, value)");
     };
@@ -67,7 +70,8 @@ unsafe extern "sysv64" fn parse_decl(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// `RedCss.props(): string` — the property registry as a sorted JSON array.
-unsafe extern "sysv64" fn props(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn props(g: *mut c_void, _cf: *mut c_void) -> u64 {
     let mut names: Vec<&str> = redcss::value::PORTED.to_vec();
     names.sort_unstable();
     let body: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();

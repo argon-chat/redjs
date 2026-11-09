@@ -22,13 +22,15 @@ unsafe fn crypto_bag(g: *mut c_void, receiver: u64) -> Option<u64> {
 unsafe fn is_subtle(g: *mut c_void, receiver: u64) -> bool {
     is_cell(receiver) && get_a(g, receiver, state(g).s_subtle_crypto) == receiver
 }
-unsafe extern "sysv64" fn get_subtle(g: *mut c_void, frame: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_subtle(g: *mut c_void, frame: *mut c_void) -> u64 {
     let Some(bag) = crypto_bag(g, cf_this(frame)) else {
         return throw_type_error(g, "Illegal invocation");
     };
     get(g, bag, "subtle")
 }
-unsafe extern "sysv64" fn get_random_values(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_random_values(g: *mut c_void, cf: *mut c_void) -> u64 {
     if crypto_bag(g, cf_this(cf)).is_none() {
         return throw_type_error(g, "Illegal invocation");
     }
@@ -75,7 +77,8 @@ unsafe extern "sysv64" fn get_random_values(g: *mut c_void, cf: *mut c_void) -> 
     view // spec: returns the same array
 }
 
-unsafe extern "sysv64" fn random_uuid(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn random_uuid(g: *mut c_void, cf: *mut c_void) -> u64 {
     if crypto_bag(g, cf_this(cf)).is_none() {
         return throw_type_error(g, "Illegal invocation");
     }
@@ -92,7 +95,8 @@ unsafe extern "sysv64" fn random_uuid(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// crypto.subtle.digest(algorithm, data) → Promise<ArrayBuffer>.
 /// `algorithm` is a name string or `{ name }` per spec.
-unsafe extern "sysv64" fn subtle_digest(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn subtle_digest(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_subtle(g, cf_this(cf)) {
         return throw_type_error(g, "Illegal invocation");
     }

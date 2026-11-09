@@ -411,13 +411,15 @@ unsafe fn ordinary_proto(g: *mut c_void, new_target: u64, fallback: u64) -> u64 
 
 macro_rules! point_accessors {
     ($get:ident, $set:ident, $idx:expr) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             match this_point(g, cf) {
                 Some(p) => enc_f64(p.p[$idx]),
                 None => throw_type_error(g, "DOMPoint getter called on a non-DOMPoint"),
             }
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             let v = arg_num(g, cf, 0, 0.0);
             match this_point(g, cf) {
                 Some(p) => {
@@ -434,7 +436,8 @@ point_accessors!(pt_get_y, pt_set_y, 1);
 point_accessors!(pt_get_z, pt_set_z, 2);
 point_accessors!(pt_get_w, pt_set_w, 3);
 
-unsafe extern "sysv64" fn point_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn point_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let p = [
         arg_num(g, cf, 0, 0.0),
@@ -446,7 +449,8 @@ unsafe extern "sysv64" fn point_construct(g: *mut c_void, cf: *mut c_void) -> u6
     host_create(g, c.point_class, proto, PointData { p })
 }
 
-unsafe extern "sysv64" fn point_matrix_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn point_matrix_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(pt) = this_point(g, cf) else {
         return throw_type_error(g, "DOMPoint.matrixTransform called on a non-DOMPoint");
     };
@@ -457,7 +461,8 @@ unsafe extern "sysv64" fn point_matrix_transform(g: *mut c_void, cf: *mut c_void
     }
 }
 
-unsafe extern "sysv64" fn point_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn point_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(pt) = this_point(g, cf) else {
         return throw_type_error(g, "DOMPoint.toJSON called on a non-DOMPoint");
     };
@@ -506,10 +511,12 @@ unsafe fn comp_set_impl(g: *mut c_void, cf: *mut c_void, idx: usize) -> u64 {
 macro_rules! matrix_accessors {
     ($($get:ident, $set:ident, $idx:expr;)*) => {
         $(
-            unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
                 comp_get_impl(g, cf, $idx)
             }
-            unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
                 comp_set_impl(g, cf, $idx)
             }
         )*
@@ -550,14 +557,16 @@ unsafe fn define_components(g: *mut c_void, proto: u64, writable: bool) {
 // DOMMatrix — transforms
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn mat_get_is_2d(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn mat_get_is_2d(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_mat(g, cf) {
         Some(d) => enc_bool(d.m.is2d),
         None => throw_type_error(g, "DOMMatrixReadOnly.is2D called on a non-DOMMatrix"),
     }
 }
 
-unsafe extern "sysv64" fn mat_get_is_identity(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn mat_get_is_identity(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_mat(g, cf) {
         Some(d) => enc_bool(d.m.is_identity()),
         None => throw_type_error(g, "DOMMatrixReadOnly.isIdentity called on a non-DOMMatrix"),
@@ -659,11 +668,13 @@ unsafe fn build_flip_y(_g: *mut c_void, _cf: *mut c_void) -> Option<Mat> {
 macro_rules! transform_pair {
     ($($ro:ident, $rw:ident, $build:path, $name:literal;)*) => {
         $(
-            unsafe extern "sysv64" fn $ro(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $ro(g: *mut c_void, cf: *mut c_void) -> u64 {
                 let r = $build(g, cf);
                 finish(g, cf, false, r, $name)
             }
-            unsafe extern "sysv64" fn $rw(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $rw(g: *mut c_void, cf: *mut c_void) -> u64 {
                 let r = $build(g, cf);
                 finish(g, cf, true, r, $name)
             }
@@ -700,7 +711,8 @@ const TRANSFORMS: &[(&str, &str, u32, HostFn, HostFn)] = &[
     ("flipY", "flipYSelf", 0, x_flip_y, x_flip_y_self),
 ];
 
-unsafe extern "sysv64" fn op_pre_multiply_self(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_pre_multiply_self(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(other) = mat_of(g, cf_arg(cf, 0)) else {
         return throw_type_error(g, "DOMMatrix.preMultiplySelf: argument is not a matrix");
     };
@@ -727,15 +739,18 @@ unsafe fn invert_impl(g: *mut c_void, cf: *mut c_void, mutate: bool) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn op_inverse(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_inverse(g: *mut c_void, cf: *mut c_void) -> u64 {
     invert_impl(g, cf, false)
 }
 
-unsafe extern "sysv64" fn op_invert_self(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_invert_self(g: *mut c_void, cf: *mut c_void) -> u64 {
     invert_impl(g, cf, true)
 }
 
-unsafe extern "sysv64" fn op_transform_point(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_transform_point(g: *mut c_void, cf: *mut c_void) -> u64 {
     let arg = cf_arg(cf, 0);
     let p = if is_cell(arg) {
         match host_data::<PointData>(g, classes(g).point_class, arg) {
@@ -784,15 +799,18 @@ unsafe fn to_typed(g: *mut c_void, cf: *mut c_void, kind: u32) -> u64 {
     out
 }
 
-unsafe extern "sysv64" fn op_to_f32(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_to_f32(g: *mut c_void, cf: *mut c_void) -> u64 {
     to_typed(g, cf, 8)
 }
 
-unsafe extern "sysv64" fn op_to_f64(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_to_f64(g: *mut c_void, cf: *mut c_void) -> u64 {
     to_typed(g, cf, 9)
 }
 
-unsafe extern "sysv64" fn op_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = this_mat(g, cf) else {
         return throw_type_error(g, "DOMMatrixReadOnly.toString called on a non-DOMMatrix");
     };
@@ -812,11 +830,13 @@ const CSS_REFUSAL: &str = "parses a CSS <transform-list>, which this runtime doe
     the engine's only CSS front end is the redcss crate and it exposes no transform-list entry \
     point. Build the matrix from components or a 6/16-number sequence instead.";
 
-unsafe extern "sysv64" fn op_set_matrix_value(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_set_matrix_value(g: *mut c_void, _cf: *mut c_void) -> u64 {
     throw_type_error(g, &format!("DOMMatrix.setMatrixValue {CSS_REFUSAL}"))
 }
 
-unsafe extern "sysv64" fn op_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn op_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = this_mat(g, cf) else {
         return throw_type_error(g, "DOMMatrixReadOnly.toJSON called on a non-DOMMatrix");
     };
@@ -868,7 +888,8 @@ unsafe fn matrix_from_init(g: *mut c_void, init: u64) -> Result<Mat, String> {
 
 macro_rules! matrix_ctor {
     ($name:ident, $proto:ident) => {
-        unsafe extern "sysv64" fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             let c = classes(g);
             match matrix_from_init(g, cf_arg(cf, 0)) {
                 Ok(m) => {
@@ -883,14 +904,16 @@ macro_rules! matrix_ctor {
 matrix_ctor!(matrix_construct_rw, rw);
 matrix_ctor!(matrix_construct_ro, ro);
 
-unsafe extern "sysv64" fn static_from_matrix(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn static_from_matrix(g: *mut c_void, cf: *mut c_void) -> u64 {
     match mat_of(g, cf_arg(cf, 0)) {
         Some(m) => new_matrix(g, m),
         None => new_matrix(g, IDENTITY),
     }
 }
 
-unsafe extern "sysv64" fn static_from_array(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn static_from_array(g: *mut c_void, cf: *mut c_void) -> u64 {
     let arg = cf_arg(cf, 0);
     let mut ta = crate::ffi::RjsTaInfo::default();
     let mut v: Vec<f64> = Vec::new();

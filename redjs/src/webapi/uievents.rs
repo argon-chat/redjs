@@ -481,7 +481,8 @@ unsafe fn slot_get(g: *mut c_void, cf: *mut c_void, key: &str, label: &str) -> u
 macro_rules! slot_getters {
     ($($fn_name:ident, $key:literal, $label:literal;)*) => {
         $(
-            unsafe extern "sysv64" fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
                 slot_get(g, cf, $key, $label)
             }
         )*
@@ -541,17 +542,21 @@ slot_getters! {
 
 /// CSSOM View §"pageX": `clientX + scrollX`, and there is no scrolling
 /// viewport here, so the scroll offset is 0.
-unsafe extern "sysv64" fn m_page_x(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_page_x(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot_get(g, cf, "clientX", "MouseEvent.pageX")
 }
-unsafe extern "sysv64" fn m_page_y(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_page_y(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot_get(g, cf, "clientY", "MouseEvent.pageY")
 }
 /// `x`/`y` are defined as aliases of `clientX`/`clientY`.
-unsafe extern "sysv64" fn m_x(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_x(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot_get(g, cf, "clientX", "MouseEvent.x")
 }
-unsafe extern "sysv64" fn m_y(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_y(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot_get(g, cf, "clientY", "MouseEvent.y")
 }
 
@@ -575,15 +580,18 @@ unsafe fn modifier_state(g: *mut c_void, cf: *mut c_void, label: &str) -> u64 {
     enc_bool(truthy_flag(get(g, s, slot)))
 }
 
-unsafe extern "sysv64" fn m_get_modifier_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_get_modifier_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     modifier_state(g, cf, "MouseEvent.getModifierState")
 }
 
-unsafe extern "sysv64" fn k_get_modifier_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn k_get_modifier_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     modifier_state(g, cf, "KeyboardEvent.getModifierState")
 }
 
-unsafe extern "sysv64" fn p_empty_list(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn p_empty_list(g: *mut c_void, _cf: *mut c_void) -> u64 {
     new_array(g)
 }
 
@@ -593,7 +601,8 @@ unsafe extern "sysv64" fn p_empty_list(g: *mut c_void, _cf: *mut c_void) -> u64 
 
 macro_rules! event_ctor {
     ($name:ident, $field:ident, $init:path, $label:literal) => {
-        unsafe extern "sysv64" fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             if cf_argc(cf) < 1 {
                 return throw_type_error(g, concat!($label, " constructor requires a type argument"));
             }
@@ -613,7 +622,8 @@ event_ctor!(focus_construct, focus, init_focus_event, "FocusEvent");
 event_ctor!(input_construct, input, init_input_event, "InputEvent");
 event_ctor!(pointer_construct, pointer, init_pointer_event, "PointerEvent");
 
-unsafe extern "sysv64" fn drag_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn drag_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "DragEvent constructor requires a type argument");
     }
@@ -657,7 +667,8 @@ unsafe fn make_dt(g: *mut c_void, proto: u64, data: DataTransferData) -> u64 {
     dt
 }
 
-unsafe extern "sysv64" fn dt_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let proto = ordinary_create_proto(g, cf_new_target(cf), c.dt.proto);
     make_dt(g, proto, DataTransferData::default())
@@ -741,7 +752,8 @@ unsafe fn string_arg(g: *mut c_void, cf: *mut c_void, i: u32, n: u32, who: &str)
     Ok(read_string(g, s).unwrap_or_default())
 }
 
-unsafe extern "sysv64" fn dt_get_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_get_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.getData called on a non-DataTransfer");
     }
@@ -752,7 +764,8 @@ unsafe extern "sysv64" fn dt_get_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     js_string(g, &v)
 }
 
-unsafe extern "sysv64" fn dt_set_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_set_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.setData called on a non-DataTransfer");
     }
@@ -766,7 +779,8 @@ unsafe extern "sysv64" fn dt_set_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn dt_clear_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_clear_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.clearData called on a non-DataTransfer");
     }
@@ -785,7 +799,8 @@ unsafe extern "sysv64" fn dt_clear_data(g: *mut c_void, cf: *mut c_void) -> u64 
 }
 
 /// `types`: a frozen array (a new one per read).
-unsafe extern "sysv64" fn dt_types(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_types(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = this_dt(g, cf) else {
         return throw_type_error(g, "DataTransfer.types called on a non-DataTransfer");
     };
@@ -801,7 +816,8 @@ unsafe extern "sysv64" fn dt_types(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// `files`: a new FileList per read over the SAME File objects, empty unless
 /// the data is readable (HTML: protected mode shows no files).
-unsafe extern "sysv64" fn dt_files(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_files(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(d) = this_dt(g, cf) else {
         return throw_type_error(g, "DataTransfer.files called on a non-DataTransfer");
@@ -816,14 +832,16 @@ unsafe extern "sysv64" fn dt_files(g: *mut c_void, cf: *mut c_void) -> u64 {
     super::file::create_file_list(g, &files)
 }
 
-unsafe extern "sysv64" fn dt_items(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_items(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.items called on a non-DataTransfer");
     }
     get(g, bag(g, cf_this(cf)), "list")
 }
 
-unsafe extern "sysv64" fn dt_get_drop(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_get_drop(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_dt(g, cf) {
         Some(d) => {
             let v = d.drop_effect.clone();
@@ -835,7 +853,8 @@ unsafe extern "sysv64" fn dt_get_drop(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// `dropEffect` takes one of its four values in any mode; anything else is
 /// ignored (HTML).
-unsafe extern "sysv64" fn dt_set_drop(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_set_drop(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.dropEffect called on a non-DataTransfer");
     }
@@ -849,7 +868,8 @@ unsafe extern "sysv64" fn dt_set_drop(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn dt_get_effect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_get_effect(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_dt(g, cf) {
         Some(d) => {
             let v = d.effect_allowed.clone();
@@ -861,7 +881,8 @@ unsafe extern "sysv64" fn dt_get_effect(g: *mut c_void, cf: *mut c_void) -> u64 
 
 /// `effectAllowed` changes only in read/write mode (dragstart), and only to
 /// one of its nine values (HTML).
-unsafe extern "sysv64" fn dt_set_effect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_set_effect(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.effectAllowed called on a non-DataTransfer");
     }
@@ -876,7 +897,8 @@ unsafe extern "sysv64" fn dt_set_effect(g: *mut c_void, cf: *mut c_void) -> u64 
     UNDEF
 }
 
-unsafe extern "sysv64" fn dt_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dt_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     UNDEF
 }
 
@@ -904,7 +926,8 @@ unsafe fn this_list<'a>(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<(
     owner(g, this).ok_or_else(|| throw_type_error(g, "DataTransferItemList: lost its DataTransfer"))
 }
 
-unsafe extern "sysv64" fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_list(g, cf, "length") {
         Ok((_, d)) => enc_f64(d.visible().len() as f64),
         Err(e) => e,
@@ -913,7 +936,8 @@ unsafe extern "sysv64" fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// `add(data, type)` / `add(file)`. `null` unless read/write; a second
 /// string item of a type is a NotSupportedError.
-unsafe extern "sysv64" fn list_add(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_add(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Err(e) = this_list(g, cf, "add") {
         return e;
     }
@@ -953,7 +977,8 @@ unsafe extern "sysv64" fn list_add(g: *mut c_void, cf: *mut c_void) -> u64 {
     item_obj(g, dt, id)
 }
 
-unsafe extern "sysv64" fn list_remove(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_remove(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Err(e) = this_list(g, cf, "remove") {
         return e;
     }
@@ -983,7 +1008,8 @@ unsafe extern "sysv64" fn list_remove(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn list_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (dt, d) = match this_list(g, cf, "clear") {
         Ok(v) => v,
         Err(e) => return e,
@@ -1013,7 +1039,8 @@ unsafe fn this_item(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<Optio
     Ok(d.visible().iter().find(|i| i.id == id).cloned().map(|i| (dt, d.mode, i)))
 }
 
-unsafe extern "sysv64" fn item_kind(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_kind(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "kind") {
         Ok(Some((_, _, i))) => js_string(g, if matches!(i.kind, ItemKind::Text(_)) { "string" } else { "file" }),
         Ok(None) => js_string(g, ""),
@@ -1021,7 +1048,8 @@ unsafe extern "sysv64" fn item_kind(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn item_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "type") {
         Ok(Some((_, _, i))) => js_string(g, &i.mime),
         Ok(None) => js_string(g, ""),
@@ -1038,7 +1066,8 @@ unsafe impl Send for AsString {}
 
 /// `getAsString(callback)`: the data is delivered from a queued task, never
 /// synchronously, and only for a readable string item.
-unsafe extern "sysv64" fn item_get_as_string(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_get_as_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     let found = match this_item(g, cf, "getAsString") {
         Ok(v) => v,
         Err(e) => return e,
@@ -1080,7 +1109,8 @@ unsafe extern "sysv64" fn item_get_as_string(g: *mut c_void, cf: *mut c_void) ->
 }
 
 /// `getAsFile()`: the File of a readable file item, else `null`.
-unsafe extern "sysv64" fn item_get_as_file(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_get_as_file(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "getAsFile") {
         Ok(Some((dt, mode, i))) if mode.readable() && matches!(i.kind, ItemKind::File { .. }) => {
             let f = get(g, get(g, bag(g, dt), "files"), &i.id.to_string());
@@ -1094,7 +1124,8 @@ unsafe extern "sysv64" fn item_get_as_file(g: *mut c_void, cf: *mut c_void) -> u
 /// `getAsFileSystemHandle()` (File System Access): defined only while the host
 /// has a hook installed, so `'getAsFileSystemHandle' in item` tells the truth.
 /// `null` for a string item, a script-added File, or outside drop/dragstart.
-unsafe extern "sysv64" fn item_get_as_handle(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn item_get_as_handle(g: *mut c_void, cf: *mut c_void) -> u64 {
     // A promise-returning operation REJECTS on a bad `this` (WebIDL), so the
     // brand check makes the TypeError without throwing it.
     if host_data::<DtItemData>(g, classes(g).item_cls, cf_this(cf)).is_none() {

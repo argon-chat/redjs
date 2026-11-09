@@ -20,7 +20,7 @@ Compact gives the Structure heap a 256 MiB capacity and the narrow-reference cel
 
 `memory_settings()` reports the selected profile, actual configured option values and the current protection of the initial image view, without initializing JSC. A Default structure-heap value of zero means engine automatic sizing; it does not mean no memory is allocated.
 
-The initial image view uses `PAGE_READONLY` / `FILE_MAP_READ`. The engine receives the retained read/execute file handle and still creates its own executable mappings and writable private clones. The initial view is not a writable private copy of the entire image. Its view and handle remain alive for the accepted image's lifetime.
+The initial image view uses `PAGE_READONLY` / `FILE_MAP_READ` on Windows and `mmap(PROT_READ, MAP_PRIVATE)` on Unix. The engine receives the retained file handle or descriptor and still creates its own executable mappings and writable private clones. Its initial view and file remain alive for the accepted image's lifetime. Windows denies write sharing; Unix callers must keep the published inode immutable for that lifetime.
 
 Hosts that verify an image must pass the verified file object to
 `load_image_file_with_profile(&File, identity, profile)`, not hash one file and

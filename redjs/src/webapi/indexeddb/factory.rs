@@ -24,7 +24,8 @@ unsafe fn denied(g: *mut c_void) -> bool {
     cl(g).borrow().opaque
 }
 
-unsafe extern "sysv64" fn factory_open(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn factory_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_factory(g, cf_this(cf)) {
         return illegal(g);
     }
@@ -60,7 +61,8 @@ unsafe extern "sysv64" fn factory_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     req
 }
 
-unsafe extern "sysv64" fn factory_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn factory_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_factory(g, cf_this(cf)) {
         return illegal(g);
     }
@@ -103,7 +105,8 @@ unsafe fn server_promise(g: *mut c_void, kind: PromiseKind, msg: impl FnOnce(cra
     p
 }
 
-unsafe extern "sysv64" fn factory_databases(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn factory_databases(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_factory(g, cf_this(cf)) {
         return domexception::rejected_with(g, {
             let m: Vec<u16> = "Illegal invocation".encode_utf16().collect();
@@ -118,7 +121,8 @@ unsafe extern "sysv64" fn factory_databases(g: *mut c_void, cf: *mut c_void) -> 
     server_promise(g, PromiseKind::Databases, |ctx, req| ToServer::Databases { ctx, req })
 }
 
-unsafe extern "sysv64" fn factory_cmp(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn factory_cmp(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_factory(g, cf_this(cf)) {
         return illegal(g);
     }
@@ -147,7 +151,8 @@ unsafe fn is_open_request(g: *mut c_void, v: u64) -> bool {
     req_of(g, v).map(|r| r.open).unwrap_or(false)
 }
 
-unsafe extern "sysv64" fn req_result(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_result(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(rd) = req_of(g, this) else { return illegal(g) };
     if !rd.done {
@@ -156,7 +161,8 @@ unsafe extern "sysv64" fn req_result(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "result")
 }
 
-unsafe extern "sysv64" fn req_error(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_error(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(rd) = req_of(g, this) else { return illegal(g) };
     if !rd.done {
@@ -165,7 +171,8 @@ unsafe extern "sysv64" fn req_error(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "error")
 }
 
-unsafe extern "sysv64" fn req_source(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_source(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_request(g, this) {
         return illegal(g);
@@ -173,7 +180,8 @@ unsafe extern "sysv64" fn req_source(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "source")
 }
 
-unsafe extern "sysv64" fn req_transaction(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_transaction(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_request(g, this) {
         return illegal(g);
@@ -181,7 +189,8 @@ unsafe extern "sysv64" fn req_transaction(g: *mut c_void, cf: *mut c_void) -> u6
     bget(g, this, "transaction")
 }
 
-unsafe extern "sysv64" fn req_ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(rd) = req_of(g, cf_this(cf)) else { return illegal(g) };
     js_string(g, if rd.done { "done" } else { "pending" })
 }
@@ -195,7 +204,8 @@ handler!(req_get_onupgradeneeded, req_set_onupgradeneeded, "onupgradeneeded", is
 // IDBVersionChangeEvent
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn vce_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn vce_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Failed to construct 'IDBVersionChangeEvent': 1 argument required, but only 0 present.");
     }
@@ -235,11 +245,13 @@ unsafe fn vce_field(g: *mut c_void, cf: *mut c_void, f: &str) -> u64 {
     v
 }
 
-unsafe extern "sysv64" fn vce_old(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn vce_old(g: *mut c_void, cf: *mut c_void) -> u64 {
     vce_field(g, cf, "idbOld")
 }
 
-unsafe extern "sysv64" fn vce_new(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn vce_new(g: *mut c_void, cf: *mut c_void) -> u64 {
     vce_field(g, cf, "idbNew")
 }
 
@@ -247,12 +259,14 @@ unsafe extern "sysv64" fn vce_new(g: *mut c_void, cf: *mut c_void) -> u64 {
 // DOMStringList
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(l) = list_of(g, cf_this(cf)) else { return illegal(g) };
     enc_f64(l.items.len() as f64)
 }
 
-unsafe extern "sysv64" fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if list_of(g, this).is_none() {
         return illegal(g);
@@ -272,7 +286,8 @@ unsafe extern "sysv64" fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn list_contains(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_contains(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if list_of(g, this).is_none() {
         return illegal(g);
@@ -307,7 +322,8 @@ unsafe fn make_range(g: *mut c_void, lower: Option<(Key, bool)>, upper: Option<(
     obj
 }
 
-unsafe extern "sysv64" fn kr_only(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_only(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, K, "only") {
         return UNDEF;
     }
@@ -315,7 +331,8 @@ unsafe extern "sysv64" fn kr_only(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_range(g, Some((k.clone(), false)), Some((k, false)))
 }
 
-unsafe extern "sysv64" fn kr_lower_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_lower_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, K, "lowerBound") {
         return UNDEF;
     }
@@ -324,7 +341,8 @@ unsafe extern "sysv64" fn kr_lower_bound(g: *mut c_void, cf: *mut c_void) -> u64
     make_range(g, Some((k, open)), None)
 }
 
-unsafe extern "sysv64" fn kr_upper_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_upper_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, K, "upperBound") {
         return UNDEF;
     }
@@ -333,7 +351,8 @@ unsafe extern "sysv64" fn kr_upper_bound(g: *mut c_void, cf: *mut c_void) -> u64
     make_range(g, None, Some((k, open)))
 }
 
-unsafe extern "sysv64" fn kr_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 2, K, "bound") {
         return UNDEF;
     }
@@ -351,7 +370,8 @@ unsafe extern "sysv64" fn kr_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_range(g, Some((lo, lo_open)), Some((hi, hi_open)))
 }
 
-unsafe extern "sysv64" fn kr_includes(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_includes(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if range_of(g, this).is_none() {
         return illegal(g);
@@ -363,7 +383,8 @@ unsafe extern "sysv64" fn kr_includes(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_bool(range_of(g, this).map(|r| r.range.contains(&k.encode())).unwrap_or(false))
 }
 
-unsafe extern "sysv64" fn kr_lower(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_lower(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if range_of(g, this).is_none() {
         return illegal(g);
@@ -371,7 +392,8 @@ unsafe extern "sysv64" fn kr_lower(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "lower")
 }
 
-unsafe extern "sysv64" fn kr_upper(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_upper(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if range_of(g, this).is_none() {
         return illegal(g);
@@ -379,12 +401,14 @@ unsafe extern "sysv64" fn kr_upper(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "upper")
 }
 
-unsafe extern "sysv64" fn kr_lower_open(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_lower_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(r) = range_of(g, cf_this(cf)) else { return illegal(g) };
     enc_bool(bound_open(&r.range.lower))
 }
 
-unsafe extern "sysv64" fn kr_upper_open(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn kr_upper_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(r) = range_of(g, cf_this(cf)) else { return illegal(g) };
     enc_bool(bound_open(&r.range.upper))
 }
@@ -404,7 +428,8 @@ unsafe fn illegal_promise(g: *mut c_void) -> u64 {
     domexception::rejected_with(g, e)
 }
 
-unsafe extern "sysv64" fn sm_estimate(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sm_estimate(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_storage(g, cf_this(cf)) {
         return illegal_promise(g);
     }
@@ -413,18 +438,21 @@ unsafe extern "sysv64" fn sm_estimate(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// A desktop app's data is never evicted by this runtime: `true` is the
 /// honest answer to both (IDB-D7).
-unsafe extern "sysv64" fn sm_persist(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sm_persist(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_storage(g, cf_this(cf)) {
         return illegal_promise(g);
     }
     resolved_promise(g, TRUE)
 }
 
-pub(super) unsafe extern "sysv64" fn get_indexed_db(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(super) unsafe fn get_indexed_db(g: *mut c_void, _cf: *mut c_void) -> u64 {
     try_cl(g).map(|c| c.borrow().factory).unwrap_or(UNDEF)
 }
 
-pub(super) unsafe extern "sysv64" fn get_storage(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(super) unsafe fn get_storage(g: *mut c_void, _cf: *mut c_void) -> u64 {
     try_cl(g).map(|c| c.borrow().storage).unwrap_or(UNDEF)
 }
 

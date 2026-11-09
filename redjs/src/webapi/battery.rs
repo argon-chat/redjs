@@ -190,7 +190,8 @@ unsafe fn branded(g: *mut c_void, value: u64) -> Option<(ContextId, usize, Batte
 
 macro_rules! battery_getter {
     ($name:ident, $field:ident, $encode:ident) => {
-        unsafe extern "sysv64" fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             match branded(g, cf_this(cf)) {
                 Some((_, _, state)) => $encode(state.$field),
                 None => throw_type_error(g, "Illegal invocation"),
@@ -220,10 +221,12 @@ unsafe fn set_handler(g: *mut c_void, cf: *mut c_void, name: &str) -> u64 {
 
 macro_rules! battery_handler {
     ($get:ident, $set:ident, $name:literal) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             get_handler(g, cf, $name)
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             set_handler(g, cf, $name)
         }
     };
@@ -234,7 +237,8 @@ battery_handler!(get_on_charging_time, set_on_charging_time, "onchargingtimechan
 battery_handler!(get_on_discharging_time, set_on_discharging_time, "ondischargingtimechange");
 battery_handler!(get_on_level, set_on_level, "onlevelchange");
 
-pub(super) unsafe extern "sysv64" fn get_battery(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(super) unsafe fn get_battery(g: *mut c_void, cf: *mut c_void) -> u64 {
     let id = crate::context::ensure(g);
     let navigator = registry().lock().unwrap().get(&id.0).expect("battery installed after navigator").navigator;
     if cf_this(cf) != navigator {

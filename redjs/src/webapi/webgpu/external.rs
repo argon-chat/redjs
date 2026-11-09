@@ -193,7 +193,8 @@ fn validate_destination(
     Encoding::for_format(t.raw.format()).ok_or("Unsupported external copy destination format")
 }
 
-pub(super) unsafe extern "sysv64" fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
         let c = client(g, &h)?;

@@ -95,7 +95,8 @@ pub unsafe fn request_data<'a>(g: *mut c_void, v: u64) -> Option<&'a mut Request
 
 macro_rules! req_getter {
     ($name:ident, |$d:ident, $g:ident| $body:expr) => {
-        unsafe extern "sysv64" fn $name($g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name($g: *mut c_void, cf: *mut c_void) -> u64 {
             match request_data($g, cf_this(cf)) {
                 Some($d) => $body,
                 None => throw_type_error($g, "Request getter called on a non-Request"),
@@ -145,7 +146,8 @@ req_getter!(req_body_used, |d, g| {
     enc_bool(d.body_used)
 });
 
-unsafe extern "sysv64" fn req_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let slot = atom_priv(g, "redjs#reqHeaders");
     let cached = get_a(g, this, slot);
@@ -174,7 +176,8 @@ unsafe fn req_take_body(g: *mut c_void, cf: *mut c_void, who: &str) -> Result<Ve
     Ok(d.body.as_ref().map(|b| b.as_slice().to_vec()).unwrap_or_default())
 }
 
-unsafe extern "sysv64" fn req_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     match req_take_body(g, cf, "text") {
         Ok(b) => {
             let s = String::from_utf8_lossy(&b).into_owned();
@@ -184,7 +187,8 @@ unsafe extern "sysv64" fn req_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn req_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     match req_take_body(g, cf, "json") {
         Ok(b) => {
@@ -199,7 +203,8 @@ unsafe extern "sysv64" fn req_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn req_array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     match req_take_body(g, cf, "arrayBuffer") {
         Ok(b) => {
             let u8v = make_u8(g, &b);
@@ -209,7 +214,8 @@ unsafe extern "sysv64" fn req_array_buffer(g: *mut c_void, cf: *mut c_void) -> u
     }
 }
 
-unsafe extern "sysv64" fn req_bytes(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_bytes(g: *mut c_void, cf: *mut c_void) -> u64 {
     match req_take_body(g, cf, "bytes") {
         Ok(b) => {
             let u8v = make_u8(g, &b);
@@ -219,7 +225,8 @@ unsafe extern "sysv64" fn req_bytes(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn req_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn req_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = request_data(g, cf_this(cf)) else {
         return throw_type_error(g, "Request.clone called on a non-Request");
     };
@@ -429,7 +436,8 @@ pub fn check_supported(plan: &Plan) -> Result<(), String> {
     Ok(())
 }
 
-unsafe extern "sysv64" fn request_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn request_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let plan = match build_plan(g, cf_arg(cf, 0), cf_arg(cf, 1)) {
         Ok(p) => p,
         Err(m) => return throw_type_error(g, &format!("new Request: {m}")),

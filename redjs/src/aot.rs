@@ -10,8 +10,18 @@ use std::path::Path;
 pub const FRONTEND_REVISION: &str = "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074";
 pub const ENGINE_VERSION: &str = env!("REDJS_AOT_ENGINE_VERSION");
 pub const BUILD_TABLE_ID: &str = env!("REDJS_AOT_TABLE_ID");
+#[cfg(windows)]
 pub const COMPILE_OPTIONS: &str = concat!(
-    "x86_64;references=narrow;image=pic;threads=1;default-options@",
+    env!("REDJS_AOT_TARGET_ARCH"),
+    ";references=narrow;image=pic;threads=1;default-options@",
+    env!("REDJS_AOT_ENGINE_VERSION")
+);
+#[cfg(unix)]
+pub const COMPILE_OPTIONS: &str = concat!(
+    env!("REDJS_AOT_TARGET_ARCH"),
+    ";os=",
+    env!("REDJS_AOT_TARGET_OS"),
+    ";references=narrow;image=pic;threads=1;default-options@",
     env!("REDJS_AOT_ENGINE_VERSION")
 );
 pub fn digest_hex(bytes: &[u8]) -> String {
@@ -178,17 +188,31 @@ pub unsafe fn load_image_with_profile(
     profile: MemoryProfile,
 ) -> Result<(), String> {
     anchor_icu();
-    use std::os::windows::ffi::OsStrExt;
-    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    let verdict = unsafe {
-        rjs_aot_load_file_with_profile(wide.as_ptr(), wide.len(), identity.as_ptr(), profile as u32)
-    };
-    if verdict == 1 {
-        Ok(())
-    } else {
-        Err(format!(
-            "native AOT image rejected (verdict {verdict}, memory profile {profile:?})"
-        ))
+    #[cfg(unix)]
+    {
+        let file = std::fs::File::open(path)
+            .map_err(|error| format!("cannot open native AOT image: {error}"))?;
+        return unsafe { load_image_file_with_profile(&file, identity, profile) };
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        let verdict = unsafe {
+            rjs_aot_load_file_with_profile(
+                wide.as_ptr(),
+                wide.len(),
+                identity.as_ptr(),
+                profile as u32,
+            )
+        };
+        if verdict == 1 {
+            Ok(())
+        } else {
+            Err(format!(
+                "native AOT image rejected (verdict {verdict}, memory profile {profile:?})"
+            ))
+        }
     }
 }
 
@@ -200,23 +224,25 @@ pub unsafe fn load_image_with_profile(
 /// # Safety
 /// The native-code trust and exact ABI requirements of [`load_image`] apply.
 /// A read checksum is not authentication. The caller must keep the verified
-/// file immutable for the native image lifetime. Open while denying write
-/// sharing, which the retained duplicate preserves. A retained path alone is
-/// not a file identity.
+/// file immutable for the native image lifetime. On Windows, deny write sharing;
+/// the retained duplicate preserves it. On Unix, publish immutable artifacts
+/// and do not modify the retained inode. A retained path alone is not a file identity.
 pub unsafe fn load_image_file_with_profile(
     file: &std::fs::File,
     identity: [u8; 16],
     profile: MemoryProfile,
 ) -> Result<(), String> {
     anchor_icu();
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
+    #[cfg(windows)]
     use std::os::windows::io::AsRawHandle;
-    let verdict = unsafe {
-        rjs_aot_load_handle_with_profile(
-            file.as_raw_handle() as isize,
-            identity.as_ptr(),
-            profile as u32,
-        )
-    };
+    #[cfg(windows)]
+    let descriptor = file.as_raw_handle() as isize;
+    #[cfg(unix)]
+    let descriptor = file.as_raw_fd() as isize;
+    let verdict =
+        unsafe { rjs_aot_load_handle_with_profile(descriptor, identity.as_ptr(), profile as u32) };
     if verdict == 1 {
         Ok(())
     } else {
@@ -360,8 +386,14 @@ mod tests {
     #[test]
     fn invalid_handles_and_profiles_are_rejected_before_initialization() {
         let identity = [0u8; 16];
+        #[cfg(windows)] // Unix descriptor zero is a valid file (stdin).
         assert_eq!(
             unsafe { rjs_aot_load_handle_with_profile(0, identity.as_ptr(), 0) },
+            17
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            unsafe { rjs_aot_load_handle_with_profile(isize::MAX, identity.as_ptr(), 0) },
             17
         );
         assert_eq!(

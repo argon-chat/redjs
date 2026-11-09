@@ -344,11 +344,12 @@ impl Context {
         check(status, out)
     }
 
-    /// Registers a raw `extern "sysv64"` host function (zero-overhead path).
+    /// Registers a raw JSC host function (zero-overhead path).
     ///
     /// # Safety
-    /// `f` must follow the JSC host convention for this build:
-    /// `extern "sysv64" fn(*mut c_void, *mut c_void) -> u64`.
+    /// `f` must follow the JSC host convention for this target. Declare it
+    /// with `#[redjs::host_fn]`: SysV on Windows x64, the C ABI on Unix.
+    /// The historical method name is retained for existing embedders.
     pub unsafe fn function_sysv(&self, name: &str, arity: u32, f: *const c_void) -> Result<Value> {
         let name16: Vec<u16> = name.encode_utf16().collect();
         let mut out = 0u64;

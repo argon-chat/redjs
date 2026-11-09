@@ -278,15 +278,18 @@ unsafe fn put_impl(g: *mut c_void, cf: *mut c_void, no_overwrite: bool) -> u64 {
     place(g, tx, this, Op::Put { store: sid, key, value: bytes, no_overwrite })
 }
 
-unsafe extern "sysv64" fn store_put(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_put(g: *mut c_void, cf: *mut c_void) -> u64 {
     put_impl(g, cf, false)
 }
 
-unsafe extern "sysv64" fn store_add(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_add(g: *mut c_void, cf: *mut c_void) -> u64 {
     put_impl(g, cf, true)
 }
 
-unsafe extern "sysv64" fn store_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(sd) = store_of(g, this) else { return illegal(g) };
     let sid = sd.meta.id;
@@ -298,7 +301,8 @@ unsafe extern "sysv64" fn store_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     place(g, tx, this, Op::Delete { store: sid, range })
 }
 
-unsafe extern "sysv64" fn store_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(sd) = store_of(g, this) else { return illegal(g) };
     let sid = sd.meta.id;
@@ -308,7 +312,8 @@ unsafe extern "sysv64" fn store_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 macro_rules! reads {
     ($($f:ident => $kind:expr, $index:expr;)*) => {
-        $(unsafe extern "sysv64" fn $f(g: *mut c_void, cf: *mut c_void) -> u64 {
+        $(#[crate::host_fn]
+        unsafe fn $f(g: *mut c_void, cf: *mut c_void) -> u64 {
             read(g, cf, $kind, $index)
         })*
     };
@@ -331,7 +336,8 @@ reads! {
     index_open_key_cursor => Read::KeyCursor, true;
 }
 
-unsafe extern "sysv64" fn store_index(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_index(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if store_of(g, this).is_none() {
         return illegal(g);
@@ -387,7 +393,8 @@ unsafe fn conn_store<'a>(g: *mut c_void, tx: u64, sid: StoreId) -> Option<&'a mu
     db_of(g, db)?.meta.stores.iter_mut().find(|s| s.id == sid)
 }
 
-unsafe extern "sysv64" fn store_create_index(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_create_index(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if store_of(g, this).is_none() {
         return illegal(g);
@@ -431,7 +438,8 @@ unsafe extern "sysv64" fn store_create_index(g: *mut c_void, cf: *mut c_void) ->
     index_handle(g, this, &meta)
 }
 
-unsafe extern "sysv64" fn store_delete_index(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_delete_index(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if store_of(g, this).is_none() {
         return illegal(g);
@@ -460,13 +468,15 @@ unsafe extern "sysv64" fn store_delete_index(g: *mut c_void, cf: *mut c_void) ->
     UNDEF
 }
 
-unsafe extern "sysv64" fn store_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(sd) = store_of(g, cf_this(cf)) else { return illegal(g) };
     let n = sd.meta.name.clone();
     js_string16(g, &n)
 }
 
-unsafe extern "sysv64" fn store_set_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_set_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if store_of(g, this).is_none() {
         return illegal(g);
@@ -507,20 +517,23 @@ unsafe fn cached_key_path(g: *mut c_void, this: u64, kp: Option<KeyPath>) -> u64
     v
 }
 
-unsafe extern "sysv64" fn store_key_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_key_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(sd) = store_of(g, this) else { return illegal(g) };
     let kp = sd.meta.key_path.clone();
     cached_key_path(g, this, kp)
 }
 
-unsafe extern "sysv64" fn store_index_names(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_index_names(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(sd) = store_of(g, cf_this(cf)) else { return illegal(g) };
     let names = sd.meta.indexes.iter().map(|i| i.name.clone()).collect();
     string_list(g, names, true)
 }
 
-unsafe extern "sysv64" fn store_transaction(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_transaction(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if store_of(g, this).is_none() {
         return illegal(g);
@@ -528,7 +541,8 @@ unsafe extern "sysv64" fn store_transaction(g: *mut c_void, cf: *mut c_void) -> 
     bget(g, this, "transaction")
 }
 
-unsafe extern "sysv64" fn store_auto_increment(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn store_auto_increment(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(sd) = store_of(g, cf_this(cf)) else { return illegal(g) };
     enc_bool(sd.meta.auto_increment)
 }
@@ -537,13 +551,15 @@ unsafe extern "sysv64" fn store_auto_increment(g: *mut c_void, cf: *mut c_void) 
 // IDBIndex
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn index_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn index_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(idd) = index_of(g, cf_this(cf)) else { return illegal(g) };
     let n = idd.meta.name.clone();
     js_string16(g, &n)
 }
 
-unsafe extern "sysv64" fn index_set_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn index_set_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if index_of(g, this).is_none() {
         return illegal(g);
@@ -576,7 +592,8 @@ unsafe extern "sysv64" fn index_set_name(g: *mut c_void, cf: *mut c_void) -> u64
     UNDEF
 }
 
-unsafe extern "sysv64" fn index_object_store(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn index_object_store(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if index_of(g, this).is_none() {
         return illegal(g);
@@ -584,19 +601,22 @@ unsafe extern "sysv64" fn index_object_store(g: *mut c_void, cf: *mut c_void) ->
     bget(g, this, "objectStore")
 }
 
-unsafe extern "sysv64" fn index_key_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn index_key_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(idd) = index_of(g, this) else { return illegal(g) };
     let kp = idd.meta.key_path.clone();
     cached_key_path(g, this, Some(kp))
 }
 
-unsafe extern "sysv64" fn index_multi_entry(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn index_multi_entry(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(idd) = index_of(g, cf_this(cf)) else { return illegal(g) };
     enc_bool(idd.meta.multi_entry)
 }
 
-unsafe extern "sysv64" fn index_unique(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn index_unique(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(idd) = index_of(g, cf_this(cf)) else { return illegal(g) };
     enc_bool(idd.meta.unique)
 }

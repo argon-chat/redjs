@@ -36,25 +36,32 @@ unsafe fn slot(g: *mut c_void, cf: *mut c_void, name: &str) -> u64 {
     }
     get(g, slots_of(g, cf_this(cf)), name)
 }
-unsafe extern "sysv64" fn parameters(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn parameters(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot(g, cf, "parameters")
 }
-unsafe extern "sysv64" fn port(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn port(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot(g, cf, "port")
 }
-unsafe extern "sysv64" fn name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn name(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot(g, cf, "processorName")
 }
-unsafe extern "sysv64" fn channel_count(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn channel_count(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     enc_i32(2)
 }
-unsafe extern "sysv64" fn channel_mode(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn channel_mode(g: *mut c_void, _cf: *mut c_void) -> u64 {
     js_string(g, "explicit")
 }
-unsafe extern "sysv64" fn interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
     slot(g, cf, "channelInterpretation")
 }
-unsafe extern "sysv64" fn close_port(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn close_port(g: *mut c_void, cf: *mut c_void) -> u64 {
     let object = cf_this(cf);
     let Some(port) = host_data::<PortHandle>(g, classes(g).worklet_port_cls, object) else {
         return throw_type_error(g, "NativeAudioWorkletPort.close called on wrong this");
@@ -66,13 +73,15 @@ unsafe extern "sysv64" fn close_port(g: *mut c_void, cf: *mut c_void) -> u64 {
     glue::rjs_define(g, object, classes(g).s_audio, UNDEF, 0);
     UNDEF
 }
-unsafe extern "sysv64" fn start_port(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn start_port(g: *mut c_void, cf: *mut c_void) -> u64 {
     if host_data::<PortHandle>(g, classes(g).worklet_port_cls, cf_this(cf)).is_none() {
         return throw_type_error(g, "NativeAudioWorkletPort.start called on wrong this");
     }
     UNDEF // Native state notifications start immediately, including addEventListener.
 }
-unsafe extern "sysv64" fn post_message(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn post_message(g: *mut c_void, _cf: *mut c_void) -> u64 {
     super::super::domexception::throw(
         g,
         "NotSupportedError",
@@ -201,7 +210,8 @@ unsafe fn validate(g: *mut c_void, options: u64) -> Result<bool, ()> {
     }
 }
 
-pub(super) unsafe extern "sysv64" fn load(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(super) unsafe fn load(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(engine) = this_engine_handle(g, cf) else {
         return throw_type_error(
             g,
@@ -489,7 +499,8 @@ mod tests {
     #[test]
     fn temporary_option_dictionaries_survive_gc_in_getters_and_coercions() {
         let c = ctx();
-        unsafe extern "sysv64" fn collect(g: *mut super::c_void, _cf: *mut super::c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn collect(g: *mut super::c_void, _cf: *mut super::c_void) -> u64 {
             crate::ffi::redjs_gc(g, 0);
             super::UNDEF
         }

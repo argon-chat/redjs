@@ -173,7 +173,8 @@ unsafe fn read_string(g: *mut c_void, v: u64) -> String {
 /// `(promise, reason)` — JSC calls this with the rejected promise and its
 /// reason once the microtask queue has settled and nothing has attached a
 /// handler. SysV, like every other Rust host function here (no trampoline).
-unsafe extern "sysv64" fn on_unhandled_rejection(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn on_unhandled_rejection(g: *mut c_void, cf: *mut c_void) -> u64 {
     let args = crate::api::HostArgs::new(cf);
     let reason = args.arg(1).0;
     report(g, reason, ErrKind::UnhandledRejection);

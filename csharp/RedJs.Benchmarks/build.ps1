@@ -21,14 +21,16 @@ if ($NativeAot) {
 if (-not $SkipNativeBuild) {
     Push-Location (Join-Path $repoRoot 'redjs')
     try {
-        cargo build --release --lib --no-default-features --target x86_64-pc-windows-msvc --target-dir target/benchmarks
+        cargo rustc --release --lib --crate-type 'rlib,cdylib,staticlib' --no-default-features --target x86_64-pc-windows-msvc --target-dir target/benchmarks
         if ($LASTEXITCODE -ne 0) { throw 'Native redjs build failed' }
         if ($NativeAot) {
             $previousTable = $env:REDJS_AOT_BUILTIN_TABLE_DIR
             try {
                 $env:REDJS_AOT_BUILTIN_TABLE_DIR = $BuiltinTable
-                cargo build --release --lib --example aot-image --no-default-features --features native-aot --target x86_64-pc-windows-msvc --target-dir target/benchmarks-aot
+                cargo rustc --release --lib --crate-type 'rlib,cdylib,staticlib' --no-default-features --features native-aot --target x86_64-pc-windows-msvc --target-dir target/benchmarks-aot
                 if ($LASTEXITCODE -ne 0) { throw 'Native AOT redjs build failed' }
+                cargo build --release --example aot-image --no-default-features --features native-aot --target x86_64-pc-windows-msvc --target-dir target/benchmarks-aot
+                if ($LASTEXITCODE -ne 0) { throw 'Native AOT probe build failed' }
             }
             finally { $env:REDJS_AOT_BUILTIN_TABLE_DIR = $previousTable }
         }

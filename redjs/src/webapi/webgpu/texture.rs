@@ -245,7 +245,8 @@ unsafe fn color(g: *mut c_void, v: u64) -> Result<wgpu::Color, ()> {
     Ok(wgpu::Color { r, g: green, b, a })
 }
 
-unsafe extern "sysv64" fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -333,7 +334,8 @@ unsafe extern "sysv64" fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64
         ))
     })
 }
-unsafe extern "sysv64" fn create_view(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_view(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Texture)?;
         let c = client(g, &h)?;
@@ -388,7 +390,8 @@ unsafe extern "sysv64" fn create_view(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-unsafe extern "sysv64" fn destroy_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn destroy_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Texture)?;
         let Resource::Texture(t) = h.resource else {
@@ -402,7 +405,8 @@ unsafe extern "sysv64" fn destroy_texture(g: *mut c_void, cf: *mut c_void) -> u6
 }
 macro_rules! texture_getter {
     ($fn:ident,$expr:expr) => {
-        unsafe extern "sysv64" fn $fn(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             run(g, || {
                 let h = this(g, cf, Kind::Texture)?;
                 let Resource::Texture(t) = h.resource else {
@@ -436,7 +440,8 @@ texture_getter!(texture_usage, |_g, t: &Texture| enc_f64(
     t.usage.bits() as f64
 ));
 
-unsafe extern "sysv64" fn create_sampler(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_sampler(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -543,7 +548,8 @@ struct VertexLayout {
     step: wgpu::VertexStepMode,
     attributes: Vec<wgpu::VertexAttribute>,
 }
-unsafe extern "sysv64" fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -783,7 +789,8 @@ unsafe extern "sysv64" fn create_render_pipeline(g: *mut c_void, cf: *mut c_void
         ))
     })
 }
-unsafe extern "sysv64" fn render_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn render_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::RenderPipeline)?;
         let c = client(g, &h)?;
@@ -865,7 +872,8 @@ unsafe fn stencil_ops(g: *mut c_void, v: u64) -> Result<Option<wgpu::Operations<
         store: parse_store(g, required(g, v, "stencilStoreOp")?.v)?,
     }))
 }
-unsafe extern "sysv64" fn begin_render_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn begin_render_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -1016,7 +1024,8 @@ unsafe fn pass_this(
     };
     Ok((c, pass))
 }
-unsafe extern "sysv64" fn pass_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let h = owned(g, cf_arg(cf, 0), Kind::RenderPipeline, &c)?;
@@ -1027,7 +1036,8 @@ unsafe extern "sysv64" fn pass_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pass_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let index = uint(g, cf_arg(cf, 0), 0)?;
@@ -1076,7 +1086,8 @@ unsafe fn buffer_range(
     }
     Ok((b, offset..end))
 }
-unsafe extern "sysv64" fn pass_vertex_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_vertex_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let slot = uint(g, cf_arg(cf, 0), 0)?;
@@ -1095,7 +1106,8 @@ unsafe extern "sysv64" fn pass_vertex_buffer(g: *mut c_void, cf: *mut c_void) ->
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pass_index_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_index_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let format = parse_index(g, cf_arg(cf, 1))?;
@@ -1114,7 +1126,8 @@ unsafe fn draw_range(g: *mut c_void, start: u32, count: u32) -> Result<std::ops:
     };
     Ok(start..end)
 }
-unsafe extern "sysv64" fn pass_draw(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_draw(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let count = uint(g, cf_arg(cf, 0), 0)?;
@@ -1127,7 +1140,8 @@ unsafe extern "sysv64" fn pass_draw(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pass_draw_indexed(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_draw_indexed(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let count = uint(g, cf_arg(cf, 0), 0)?;
@@ -1143,7 +1157,8 @@ unsafe extern "sysv64" fn pass_draw_indexed(g: *mut c_void, cf: *mut c_void) -> 
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pass_viewport(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_viewport(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let x = float(g, cf_arg(cf, 0), 0.)?;
@@ -1156,7 +1171,8 @@ unsafe extern "sysv64" fn pass_viewport(g: *mut c_void, cf: *mut c_void) -> u64 
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pass_scissor(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_scissor(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let x = uint(g, cf_arg(cf, 0), 0)?;
@@ -1167,7 +1183,8 @@ unsafe extern "sysv64" fn pass_scissor(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pass_blend(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_blend(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let color = color(g, cf_arg(cf, 0))?;
@@ -1175,7 +1192,8 @@ unsafe extern "sysv64" fn pass_blend(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pass_stencil(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_stencil(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let reference = uint(g, cf_arg(cf, 0), 0)?;
@@ -1183,7 +1201,8 @@ unsafe extern "sysv64" fn pass_stencil(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn end_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn end_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
         let (mut raw, owner) = {
@@ -1249,7 +1268,8 @@ unsafe fn copy_buffer(
     };
     Ok((buffer, copy_layout(g, v.v)?))
 }
-unsafe extern "sysv64" fn copy_texture_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn copy_texture_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -1285,7 +1305,8 @@ unsafe extern "sysv64" fn copy_texture_buffer(g: *mut c_void, cf: *mut c_void) -
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn copy_buffer_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn copy_buffer_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -1321,7 +1342,8 @@ unsafe extern "sysv64" fn copy_buffer_texture(g: *mut c_void, cf: *mut c_void) -
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn copy_texture_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn copy_texture_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -1356,7 +1378,8 @@ unsafe extern "sysv64" fn copy_texture_texture(g: *mut c_void, cf: *mut c_void) 
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn write_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn write_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
         let c = client(g, &h)?;

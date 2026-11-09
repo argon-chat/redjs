@@ -73,18 +73,21 @@ pub(super) const TRANSACTION: ClassSpec<'static> = ClassSpec {
 // IDBDatabase
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn db_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn db_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(dd) = db_of(g, cf_this(cf)) else { return illegal(g) };
     let n = dd.meta.name.clone();
     js_string16(g, &n)
 }
 
-unsafe extern "sysv64" fn db_version(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn db_version(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(dd) = db_of(g, cf_this(cf)) else { return illegal(g) };
     enc_f64(dd.meta.version as f64)
 }
 
-unsafe extern "sysv64" fn db_store_names(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn db_store_names(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(dd) = db_of(g, cf_this(cf)) else { return illegal(g) };
     let names = dd.meta.stores.iter().map(|s| s.name.clone()).collect();
     string_list(g, names, true)
@@ -100,7 +103,8 @@ unsafe fn live_upgrade(g: *mut c_void, db: u64) -> Option<u64> {
     Some(o)
 }
 
-unsafe extern "sysv64" fn db_transaction(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn db_transaction(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_db(g, this) {
         return illegal(g);
@@ -221,7 +225,8 @@ unsafe fn upgrade_tx(g: *mut c_void, db: u64, method: &str) -> Option<u64> {
     Some(tx)
 }
 
-unsafe extern "sysv64" fn db_create_store(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn db_create_store(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_db(g, this) {
         return illegal(g);
@@ -276,7 +281,8 @@ unsafe extern "sysv64" fn db_create_store(g: *mut c_void, cf: *mut c_void) -> u6
     store_handle(g, tx, &meta)
 }
 
-unsafe extern "sysv64" fn db_delete_store(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn db_delete_store(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_db(g, this) {
         return illegal(g);
@@ -313,7 +319,8 @@ unsafe fn mark_store_deleted(g: *mut c_void, tx: u64, id: StoreId) {
     }
 }
 
-unsafe extern "sysv64" fn db_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn db_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(dd) = db_of(g, this) else { return illegal(g) };
     if !dd.close_pending {
@@ -332,7 +339,8 @@ unsafe extern "sysv64" fn db_close(g: *mut c_void, cf: *mut c_void) -> u64 {
 // IDBTransaction
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn tx_object_store(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_object_store(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_tx(g, this) {
         return illegal(g);
@@ -354,7 +362,8 @@ unsafe extern "sysv64" fn tx_object_store(g: *mut c_void, cf: *mut c_void) -> u6
     store_handle(g, this, &meta)
 }
 
-unsafe extern "sysv64" fn tx_commit(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_commit(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(td) = tx_of(g, this) else { return illegal(g) };
     if td.state != TxState::Active {
@@ -364,7 +373,8 @@ unsafe extern "sysv64" fn tx_commit(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn tx_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(td) = tx_of(g, this) else { return illegal(g) };
     if matches!(td.state, TxState::Committing | TxState::Finished) {
@@ -375,7 +385,8 @@ unsafe extern "sysv64" fn tx_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn tx_store_names(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_store_names(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(td) = tx_of(g, this) else { return illegal(g) };
     if td.upgrade {
@@ -387,7 +398,8 @@ unsafe extern "sysv64" fn tx_store_names(g: *mut c_void, cf: *mut c_void) -> u64
     string_list(g, names, false)
 }
 
-unsafe extern "sysv64" fn tx_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(td) = tx_of(g, cf_this(cf)) else { return illegal(g) };
     js_string(
         g,
@@ -399,7 +411,8 @@ unsafe extern "sysv64" fn tx_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
     )
 }
 
-unsafe extern "sysv64" fn tx_durability(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_durability(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(td) = tx_of(g, cf_this(cf)) else { return illegal(g) };
     js_string(
         g,
@@ -411,7 +424,8 @@ unsafe extern "sysv64" fn tx_durability(g: *mut c_void, cf: *mut c_void) -> u64 
     )
 }
 
-unsafe extern "sysv64" fn tx_db(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_db(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_tx(g, this) {
         return illegal(g);
@@ -419,7 +433,8 @@ unsafe extern "sysv64" fn tx_db(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "db")
 }
 
-unsafe extern "sysv64" fn tx_error(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn tx_error(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_tx(g, this) {
         return illegal(g);

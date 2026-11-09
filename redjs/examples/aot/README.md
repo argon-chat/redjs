@@ -7,6 +7,14 @@ Generate the full matching builtin table with the embedder's pinned generator
 `REDJS_AOT_BUILTIN_TABLE_DIR` at it. An engine-only table cannot consume the
 full frontend's builtin IDs.
 
+The compiler and loader also build on Linux x64 and macOS x64/arm64. Native
+images are specific to their OS and architecture; Unix `COMPILE_OPTIONS`
+includes both, and a host must validate the matching manifest before loading.
+The Rust path loader uses an open file descriptor on Unix (including non-UTF-8
+paths), duplicates it for the engine, and maps the initial view read-only.
+Keep that inode immutable while the image is in use. Windows keeps its existing
+UTF-16 path / retained-handle API and write-sharing policy.
+
 From `redjs/`, with the pinned frontend on `$frontend` and an isolated `$out`:
 
 ```powershell

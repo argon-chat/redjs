@@ -355,7 +355,8 @@ unsafe fn route_errors(g: *mut c_void, id: u64, errors: Vec<backend::GpuError>) 
         }
     }
 }
-unsafe extern "sysv64" fn gpu_error_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn gpu_error_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let message = text(g, cf_arg(cf, 0), "")?;
         let o = Val::new(g, ordinary_create(g, cf_new_target(cf), UNDEF));
@@ -363,7 +364,8 @@ unsafe extern "sysv64" fn gpu_error_construct(g: *mut c_void, cf: *mut c_void) -
         Ok(o.v)
     })
 }
-unsafe extern "sysv64" fn error_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn error_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let init = Val::new(g, cf_arg(cf, 1));
         let error = field(g, init.v, "error")?;
@@ -590,7 +592,8 @@ unsafe fn drain(g: *mut c_void) -> usize {
     n
 }
 
-unsafe extern "sysv64" fn request_adapter(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn request_adapter(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this(g, cf, Kind::Gpu)?;
         let o = Val::new(g, cf_arg(cf, 0));
@@ -622,7 +625,8 @@ unsafe extern "sysv64" fn request_adapter(g: *mut c_void, cf: *mut c_void) -> u6
         ))
     })
 }
-unsafe extern "sysv64" fn preferred_format(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn preferred_format(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this(g, cf, Kind::Gpu)?;
         Ok(js_string(g, "bgra8unorm"))
@@ -638,7 +642,8 @@ unsafe fn feature_flags(g: *mut c_void, cf: *mut c_void) -> Result<wgpu::Feature
     };
     Ok(f)
 }
-unsafe extern "sysv64" fn feature_size(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn feature_size(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let f = feature_flags(g, cf)?;
         Ok(enc_f64(
@@ -649,7 +654,8 @@ unsafe extern "sysv64" fn feature_size(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-unsafe extern "sysv64" fn feature_has(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn feature_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let f = feature_flags(g, cf)?;
         let name = text(g, cf_arg(cf, 0), "")?;
@@ -687,13 +693,16 @@ unsafe fn feature_iterator(g: *mut c_void, cf: *mut c_void, entries: bool) -> Re
         glue::rjs_throw(g, e);
     })
 }
-unsafe extern "sysv64" fn feature_values(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn feature_values(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || feature_iterator(g, cf, false))
 }
-unsafe extern "sysv64" fn feature_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn feature_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || feature_iterator(g, cf, true))
 }
-unsafe extern "sysv64" fn feature_each(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn feature_each(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let f = feature_flags(g, cf)?;
         let cb = cf_arg(cf, 0);
@@ -735,7 +744,8 @@ unsafe fn plain(g: *mut c_void, kind: Kind) -> u64 {
 fn feature_names() -> Vec<(&'static str, wgpu::Features)> {
     Vec::new()
 }
-unsafe extern "sysv64" fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
         let Resource::Adapter(a) = h.resource else {
@@ -756,7 +766,8 @@ unsafe extern "sysv64" fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u
         }))
     })
 }
-unsafe extern "sysv64" fn device_features(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn device_features(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let slot = states().lock().unwrap()[&(g as usize)]
@@ -776,7 +787,8 @@ unsafe fn limits_object(g: *mut c_void, l: &wgpu::Limits) -> u64 {
     limits_fields!(write);
     o.v
 }
-unsafe extern "sysv64" fn adapter_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn adapter_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
         let Resource::Adapter(a) = h.resource else {
@@ -797,7 +809,8 @@ unsafe extern "sysv64" fn adapter_limits(g: *mut c_void, cf: *mut c_void) -> u64
         }))
     })
 }
-unsafe extern "sysv64" fn device_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn device_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let slot = states().lock().unwrap()[&(g as usize)]
@@ -810,7 +823,8 @@ unsafe extern "sysv64" fn device_limits(g: *mut c_void, cf: *mut c_void) -> u64 
         }))
     })
 }
-unsafe extern "sysv64" fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
         let Resource::Adapter(a) = h.resource else {
@@ -846,7 +860,8 @@ unsafe extern "sysv64" fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(o.v)
     })
 }
-unsafe extern "sysv64" fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
         let Resource::Adapter(a) = h.resource else {
@@ -918,7 +933,8 @@ unsafe fn make_device(g: *mut c_void, c: Arc<Client>) -> u64 {
         );
     o.v
 }
-unsafe extern "sysv64" fn lost(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn lost(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this(g, cf, Kind::Device)?;
         let sl = states().lock().unwrap()[&(g as usize)]
@@ -1060,7 +1076,8 @@ unsafe fn resolve_loss(g: *mut c_void, target: u64, reason: &str, message: &str)
         }
     }
 }
-unsafe extern "sysv64" fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = h.client.unwrap();
@@ -1076,7 +1093,8 @@ unsafe extern "sysv64" fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn push_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn push_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = h.client.as_ref().unwrap();
@@ -1100,7 +1118,8 @@ unsafe extern "sysv64" fn push_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn pop_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pop_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let scope = states()

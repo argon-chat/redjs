@@ -139,7 +139,8 @@ pub unsafe fn state_of(g: *mut c_void, event: u64) -> Option<u64> {
 
 macro_rules! event_getter {
     ($fn_name:ident, $field:literal) => {
-        pub unsafe extern "sysv64" fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        pub unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
             match event_state(g, cf_this(cf)) {
                 Some(s) => get(g, s, $field),
                 None => throw_type_error(g, concat!("Event.prototype.", $field, " called on a non-Event")),
@@ -168,7 +169,8 @@ unsafe fn set_canceled(g: *mut c_void, s: u64) {
     }
 }
 
-unsafe extern "sysv64" fn prevent_default(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn prevent_default(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
         Some(s) => {
             set_canceled(g, s);
@@ -178,7 +180,8 @@ unsafe extern "sysv64" fn prevent_default(g: *mut c_void, cf: *mut c_void) -> u6
     }
 }
 
-unsafe extern "sysv64" fn stop_propagation(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stop_propagation(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
         Some(s) => {
             define(g, s, "stopProp", TRUE, 0);
@@ -188,7 +191,8 @@ unsafe extern "sysv64" fn stop_propagation(g: *mut c_void, cf: *mut c_void) -> u
     }
 }
 
-unsafe extern "sysv64" fn stop_immediate(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stop_immediate(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
         Some(s) => {
             define(g, s, "stopProp", TRUE, 0);
@@ -201,7 +205,8 @@ unsafe extern "sysv64" fn stop_immediate(g: *mut c_void, cf: *mut c_void) -> u64
 
 /// The invocation targets of the path, target first — a fresh array each call,
 /// empty outside dispatch (DOM: "if path is empty, return composedPath").
-unsafe extern "sysv64" fn composed_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn composed_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(s) = event_state(g, cf_this(cf)) else {
         return throw_type_error(g, "Event.prototype.composedPath called on a non-Event");
     };
@@ -217,14 +222,16 @@ unsafe extern "sysv64" fn composed_path(g: *mut c_void, cf: *mut c_void) -> u64 
 }
 
 /// Legacy `cancelBubble`: reads the stop-propagation flag; setting `true` sets it.
-unsafe extern "sysv64" fn get_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
         Some(s) => get(g, s, "stopProp"),
         None => throw_type_error(g, "Event.prototype.cancelBubble called on a non-Event"),
     }
 }
 
-unsafe extern "sysv64" fn set_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(s) = event_state(g, cf_this(cf)) {
         if glue::rjs_to_boolean(g, cf_arg(cf, 0)) != 0 {
             define(g, s, "stopProp", TRUE, 0);
@@ -234,14 +241,16 @@ unsafe extern "sysv64" fn set_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> 
 }
 
 /// Legacy `returnValue`: `!defaultPrevented`; setting `false` cancels.
-unsafe extern "sysv64" fn get_return_value(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_return_value(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
         Some(s) => enc_bool(!truthy_flag(get(g, s, "defaultPrevented"))),
         None => throw_type_error(g, "Event.prototype.returnValue called on a non-Event"),
     }
 }
 
-unsafe extern "sysv64" fn set_return_value(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_return_value(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(s) = event_state(g, cf_this(cf)) {
         if glue::rjs_to_boolean(g, cf_arg(cf, 0)) == 0 {
             set_canceled(g, s);
@@ -251,7 +260,8 @@ unsafe extern "sysv64" fn set_return_value(g: *mut c_void, cf: *mut c_void) -> u
 }
 
 /// Legacy `initEvent(type, bubbles = false, cancelable = false)`.
-unsafe extern "sysv64" fn init_event_legacy(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn init_event_legacy(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(s) = event_state(g, cf_this(cf)) else {
         return throw_type_error(g, "Event.prototype.initEvent called on a non-Event");
     };
@@ -352,7 +362,8 @@ pub unsafe fn init_event(g: *mut c_void, this_obj: u64, ty: u64, init: u64, deta
     glue::rjs_define(g, this_obj, st.s_event, s, 0);
 }
 
-unsafe extern "sysv64" fn event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Event constructor requires a type argument");
     }
@@ -362,7 +373,8 @@ unsafe extern "sysv64" fn event_construct(g: *mut c_void, cf: *mut c_void) -> u6
     obj
 }
 
-unsafe extern "sysv64" fn custom_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn custom_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "CustomEvent constructor requires a type argument");
     }
@@ -555,7 +567,8 @@ unsafe fn find_entry(g: *mut c_void, list: u64, ty: u64, cb: u64, capture: bool)
     None
 }
 
-pub unsafe extern "sysv64" fn add_event_listener(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub unsafe fn add_event_listener(g: *mut c_void, cf: *mut c_void) -> u64 {
     let target = target_this(g, cf);
     if cf_argc(cf) < 2 {
         return throw_type_error(
@@ -594,7 +607,8 @@ pub unsafe extern "sysv64" fn add_event_listener(g: *mut c_void, cf: *mut c_void
     UNDEF
 }
 
-pub unsafe extern "sysv64" fn remove_event_listener(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub unsafe fn remove_event_listener(g: *mut c_void, cf: *mut c_void) -> u64 {
     let target = target_this(g, cf);
     if cf_argc(cf) < 2 {
         return throw_type_error(
@@ -813,7 +827,8 @@ unsafe fn between_listeners(g: *mut c_void) {
     }
 }
 
-pub unsafe extern "sysv64" fn dispatch_event(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub unsafe fn dispatch_event(g: *mut c_void, cf: *mut c_void) -> u64 {
     let target = target_this(g, cf);
     let event = cf_arg(cf, 0);
     let Some(s) = event_state(g, event) else {
@@ -831,7 +846,8 @@ pub unsafe extern "sysv64" fn dispatch_event(g: *mut c_void, cf: *mut c_void) ->
     enc_bool(!dispatch_path(g, event, &path).canceled)
 }
 
-unsafe extern "sysv64" fn event_target_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn event_target_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let obj = ordinary_create(g, cf_new_target(cf), st.event_target.proto);
     // The listener list up front: it is also what makes `new EventTarget()`
@@ -914,7 +930,8 @@ mod tests {
     use super::*;
     use crate::webapi::testing::*;
 
-    unsafe extern "sysv64" fn force_init_gc(g: *mut c_void, _cf: *mut c_void) -> u64 {
+    #[crate::host_fn]
+    unsafe fn force_init_gc(g: *mut c_void, _cf: *mut c_void) -> u64 {
         glue::rjs_gc(g, 0);
         UNDEF
     }

@@ -551,7 +551,8 @@ pub unsafe fn read_node(g: *mut c_void, node: u64, depth: u32) -> Option<XNode> 
 // The JS class
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let proto = {
         let nt = cf_new_target(cf);
         let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
@@ -564,7 +565,8 @@ unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     new_object(g, proto)
 }
 
-unsafe extern "sysv64" fn serialize_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn serialize_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     let root = cf_arg(cf, 0);
     match read_node(g, root, 0) {
         Some(tree) => js_string(g, &serialize(&tree)),

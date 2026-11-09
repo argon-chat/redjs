@@ -897,7 +897,8 @@ pub unsafe fn create(g: *mut c_void, proto: u64, bytes: Vec<u8>, mime: String) -
     host_create(g, st.blob_class, proto, BlobData { source: Source::Memory(Arc::new(bytes)), offset: 0, len, mime, file: None })
 }
 
-unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let Ok(parts) = convert_parts(g, cf_arg(cf, 0), "Blob") else { return UNDEF };
     let Ok((mime, native)) = convert_bag(g, cf_arg(cf, 1), "Blob") else { return UNDEF };
@@ -910,14 +911,16 @@ unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     host_create(g, st.blob_class, proto, BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: None })
 }
 
-unsafe extern "sysv64" fn get_size(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_size(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_blob(g, cf) {
         Some(b) => enc_f64(b.len as f64),
         None => throw_type_error(g, "Blob.prototype.size called on a non-Blob"),
     }
 }
 
-unsafe extern "sysv64" fn get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_blob(g, cf) {
         Some(b) => {
             let mime = b.mime.clone();
@@ -1018,21 +1021,25 @@ unsafe fn read_method(g: *mut c_void, cf: *mut c_void, as_: As, name: &str) -> u
     }
 }
 
-unsafe extern "sysv64" fn array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     read_method(g, cf, As::ArrayBuffer, "arrayBuffer")
 }
 
-unsafe extern "sysv64" fn bytes_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bytes_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
     read_method(g, cf, As::Bytes, "bytes")
 }
 
-unsafe extern "sysv64" fn text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn text(g: *mut c_void, cf: *mut c_void) -> u64 {
     read_method(g, cf, As::Text, "text")
 }
 
 /// `slice(start, end, contentType)`: a window onto the same source — never a
 /// read, whichever source it is.
-unsafe extern "sysv64" fn slice(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn slice(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let Some(b) = this_blob(g, cf) else {
         return throw_type_error(g, "Blob.prototype.slice called on a non-Blob");
@@ -1072,7 +1079,8 @@ unsafe extern "sysv64" fn slice(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// A memory Blob is read a chunk at a time; a path-backed one is read once,
 /// off the JS thread, and then chunked — the true pull source is the m16
 /// "native byte source" seam, phase 2 (A-F2 past 64 MiB says so).
-unsafe extern "sysv64" fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Some(b) = this_blob(g, cf) else {
         return throw_type_error(g, "Blob.prototype.stream called on a non-Blob");

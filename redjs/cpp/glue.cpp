@@ -72,7 +72,9 @@
 // directive puts it in the objects, so a consumer that links the THIN
 // redjs.lib by hand (the player's NativeAOT csproj) gets it without having to
 // learn that it changed.
+#if defined(_WIN32)
 #pragma comment(lib, "ntdll")
+#endif
 
 using namespace JSC;
 
@@ -216,10 +218,13 @@ extern "C" void rjs_layout(RjsLayout* out)
 // prebuilt's own headers — <unicode/udata.h> carries the renaming and
 // U_ICUDATA_ENTRY_POINT expands to the blob's symbol — so an ICU bump in the
 // prebuilt is a recompile, not an edit.
+#if !defined(__APPLE__)
 extern "C" const char U_ICUDATA_ENTRY_POINT[];
+#endif
 
 extern "C" int32_t rjs_init(const char* options)
 {
+#if !defined(__APPLE__)
     static bool icuReady = false;
     if (!icuReady) {
         icuReady = true;
@@ -228,6 +233,7 @@ extern "C" int32_t rjs_init(const char* options)
         if (U_FAILURE(err))
             fprintf(stderr, "[redjs] udata_setCommonData failed: %s (%d)\n", u_errorName(err), static_cast<int>(err));
     }
+#endif
     JSC::initialize();
     if (options && *options) {
         if (!Options::setOptions(options))

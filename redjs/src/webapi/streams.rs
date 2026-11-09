@@ -348,14 +348,16 @@ unsafe fn proto_for(g: *mut c_void, cf: *mut c_void, fallback: u64) -> u64 {
     if is_cell(p) { p } else { fallback }
 }
 
-unsafe extern "sysv64" fn readable_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn readable_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let hwm = arg_num(g, cf, 0, 1.0);
     let proto = proto_for(g, cf, c.readable.proto);
     host_create(g, c.readable_cls, proto, ReadableCore::new(hwm))
 }
 
-unsafe extern "sysv64" fn writable_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn writable_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let hwm = arg_num(g, cf, 0, 1.0);
     let proto = proto_for(g, cf, c.writable.proto);
@@ -367,13 +369,15 @@ unsafe extern "sysv64" fn writable_construct(g: *mut c_void, cf: *mut c_void) ->
 macro_rules! bool_field {
     ($core:ident, $this:path, $($get:ident, $set:ident, $field:ident;)*) => {
         $(
-            unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
                 match $this(g, cf) {
                     Some(d) => enc_bool(d.$field),
                     None => throw_type_error(g, concat!(stringify!($core), " getter on wrong this")),
                 }
             }
-            unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
                 let v = truthy_flag(cf_arg(cf, 0));
                 match $this(g, cf) {
                     Some(d) => {
@@ -401,14 +405,16 @@ bool_field!(WritableCore, this_writable,
     w_get_close_requested, w_set_close_requested, close_requested;
 );
 
-unsafe extern "sysv64" fn r_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => enc_i32(d.state as i32),
         None => throw_type_error(g, "ReadableCore.state on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn r_set_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_set_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = arg_num(g, cf, 0, 0.0) as i32;
     let Some(d) = this_readable(g, cf) else {
         return throw_type_error(g, "ReadableCore.state on wrong this");
@@ -421,14 +427,16 @@ unsafe extern "sysv64" fn r_set_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn r_get_close_requested(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_get_close_requested(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => enc_bool(d.close_requested),
         None => throw_type_error(g, "ReadableCore.closeRequested on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn r_get_desired_size(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_get_desired_size(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => match d.desired_size() {
             Some(v) => enc_f64(v),
@@ -438,14 +446,16 @@ unsafe extern "sysv64" fn r_get_desired_size(g: *mut c_void, cf: *mut c_void) ->
     }
 }
 
-unsafe extern "sysv64" fn r_get_can_close_or_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_get_can_close_or_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => enc_bool(d.can_close_or_enqueue()),
         None => throw_type_error(g, "ReadableCore.canCloseOrEnqueue on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn r_get_queue_length(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_get_queue_length(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => enc_i32(d.queue.len() as i32),
         None => throw_type_error(g, "ReadableCore.queueLength on wrong this"),
@@ -454,7 +464,8 @@ unsafe extern "sysv64" fn r_get_queue_length(g: *mut c_void, cf: *mut c_void) ->
 
 /// 0 ok, 1 the size was not a finite non-negative number (the caller throws a
 /// RangeError), 2 the stream cannot accept chunks any more.
-unsafe extern "sysv64" fn r_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
     let size = arg_num(g, cf, 0, 1.0);
     let Some(d) = this_readable(g, cf) else {
         return throw_type_error(g, "ReadableCore.enqueue on wrong this");
@@ -468,28 +479,32 @@ unsafe extern "sysv64" fn r_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn r_dequeue(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_dequeue(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => enc_bool(d.dequeue()),
         None => throw_type_error(g, "ReadableCore.dequeue on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn r_request_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_request_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => enc_bool(d.request_close()),
         None => throw_type_error(g, "ReadableCore.requestClose on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn r_close_if_drained(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_close_if_drained(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => enc_bool(d.close_if_drained()),
         None => throw_type_error(g, "ReadableCore.closeIfDrained on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn r_begin_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_begin_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     let n = arg_num(g, cf, 0, 0.0).max(0.0) as usize;
     match this_readable(g, cf) {
         Some(d) => enc_bool(d.begin_pull(n)),
@@ -497,7 +512,8 @@ unsafe extern "sysv64" fn r_begin_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn r_end_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_end_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     let n = arg_num(g, cf, 0, 0.0).max(0.0) as usize;
     match this_readable(g, cf) {
         Some(d) => enc_bool(d.end_pull(n)),
@@ -505,7 +521,8 @@ unsafe extern "sysv64" fn r_end_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn r_reset_queue(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn r_reset_queue(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_readable(g, cf) {
         Some(d) => {
             d.queue.reset();
@@ -517,14 +534,16 @@ unsafe extern "sysv64" fn r_reset_queue(g: *mut c_void, cf: *mut c_void) -> u64 
 
 // ---- writable ---------------------------------------------------------------
 
-unsafe extern "sysv64" fn w_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_writable(g, cf) {
         Some(d) => enc_i32(d.state as i32),
         None => throw_type_error(g, "WritableCore.state on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn w_set_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_set_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = arg_num(g, cf, 0, 0.0) as i32;
     let Some(d) = this_writable(g, cf) else {
         return throw_type_error(g, "WritableCore.state on wrong this");
@@ -538,35 +557,40 @@ unsafe extern "sysv64" fn w_set_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn w_get_desired_size(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_get_desired_size(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_writable(g, cf) {
         Some(d) => enc_f64(d.desired_size()),
         None => throw_type_error(g, "WritableCore.desiredSize on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn w_get_backpressure(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_get_backpressure(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_writable(g, cf) {
         Some(d) => enc_bool(d.backpressure),
         None => throw_type_error(g, "WritableCore.backpressure on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn w_update_backpressure(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_update_backpressure(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_writable(g, cf) {
         Some(d) => enc_bool(d.update_backpressure()),
         None => throw_type_error(g, "WritableCore.updateBackpressure on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn w_get_queue_length(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_get_queue_length(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_writable(g, cf) {
         Some(d) => enc_i32(d.queue.len() as i32),
         None => throw_type_error(g, "WritableCore.queueLength on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn w_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
     let size = arg_num(g, cf, 0, 1.0);
     let Some(d) = this_writable(g, cf) else {
         return throw_type_error(g, "WritableCore.enqueue on wrong this");
@@ -577,14 +601,16 @@ unsafe extern "sysv64" fn w_enqueue(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn w_dequeue(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_dequeue(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_writable(g, cf) {
         Some(d) => enc_bool(d.dequeue()),
         None => throw_type_error(g, "WritableCore.dequeue on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn w_reset_queue(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn w_reset_queue(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_writable(g, cf) {
         Some(d) => {
             d.queue.reset();

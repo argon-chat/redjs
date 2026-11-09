@@ -23,6 +23,15 @@ webkit.aot     = 1
 webkit.asset   = bun-webkit-windows-amd64-aot.tar.gz
 webkit.sha256  = fd79937b7f8becd5c0961646cd7f8af4409122e9cf710ffd766dc0c89df1f619
 
+# Unix builds of the SAME engine and AOT variant. Keep Windows keys above
+# stable: existing embedders read them directly.
+webkit.linux-amd64.asset = bun-webkit-linux-amd64-aot.tar.gz
+webkit.linux-amd64.sha256 = 272dc41de092856bb981278003034ea6b7f2e64f45060bb2b535105648fd5146
+webkit.macos-amd64.asset = bun-webkit-macos-amd64-aot.tar.gz
+webkit.macos-amd64.sha256 = e885a3ab78b63c90e58b96eafab4e05dc45d4b9a39bdc86bd4fc9fe3a8aae74a
+webkit.macos-arm64.asset = bun-webkit-macos-arm64-aot.tar.gz
+webkit.macos-arm64.sha256 = a99495ecb18ab63d037ef27799af25ce9c8084936b4d6c4542bb90936ab84cf8
+
 # oven-sh/mimalloc, the allocator this JSC build calls
 # directly (USE_MIMALLOC=1, USE_EXTERNAL_MIMALLOC=1): the embedder links it.
 # Same commit as Bun 7ca0042d3's scripts/build/deps/mimalloc.ts. MIT.

@@ -389,14 +389,19 @@ pub unsafe fn rejected_promise(g: *mut c_void, kind: u32, msg: &str) -> u64 {
 
 // ---- native class builder ----------------------------------------------------------
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub type HostFn = unsafe extern "sysv64" fn(*mut c_void, *mut c_void) -> u64;
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+pub type HostFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u64;
 
 /// The generic "constructor called without new" / callable-only thrower.
-pub unsafe extern "sysv64" fn ctor_requires_new(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub unsafe fn ctor_requires_new(g: *mut c_void, _cf: *mut c_void) -> u64 {
     throw_type_error(g, "Constructor requires 'new'")
 }
 
-pub unsafe extern "sysv64" fn illegal_constructor(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub unsafe fn illegal_constructor(g: *mut c_void, _cf: *mut c_void) -> u64 {
     throw_type_error(g, "Illegal constructor")
 }
 

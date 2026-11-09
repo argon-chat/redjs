@@ -184,7 +184,8 @@ unsafe fn arg_name(g: *mut c_void, cf: *mut c_void, i: u32) -> Option<String> {
     valid_name(&s).then(|| s.to_ascii_lowercase())
 }
 
-unsafe extern "sysv64" fn h_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let list = match from_init(g, cf_arg(cf, 0)) {
         Ok(l) => l,
         Err(m) => return throw_type_error(g, &format!("new Headers: {m}")),
@@ -198,7 +199,8 @@ unsafe extern "sysv64" fn h_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     host_create(g, c.cls, proto, HeadersData { list })
 }
 
-unsafe extern "sysv64" fn h_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(name) = arg_name(g, cf, 0) else {
         return throw_type_error(g, "Headers.get: invalid header name");
     };
@@ -213,7 +215,8 @@ unsafe extern "sysv64" fn h_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     js_string(g, &joined)
 }
 
-unsafe extern "sysv64" fn h_get_set_cookie(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_get_set_cookie(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = this_data(g, cf) else {
         return throw_type_error(g, "Headers.getSetCookie called on a non-Headers");
     };
@@ -226,7 +229,8 @@ unsafe extern "sysv64" fn h_get_set_cookie(g: *mut c_void, cf: *mut c_void) -> u
     arr
 }
 
-unsafe extern "sysv64" fn h_has(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(name) = arg_name(g, cf, 0) else {
         return throw_type_error(g, "Headers.has: invalid header name");
     };
@@ -236,7 +240,8 @@ unsafe extern "sysv64" fn h_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn h_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(name) = arg_name(g, cf, 0) else {
         return throw_type_error(g, "Headers.set: invalid header name");
     };
@@ -252,7 +257,8 @@ unsafe extern "sysv64" fn h_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn h_append(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_append(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(name) = arg_name(g, cf, 0) else {
         return throw_type_error(g, "Headers.append: invalid header name");
     };
@@ -267,7 +273,8 @@ unsafe extern "sysv64" fn h_append(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn h_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(name) = arg_name(g, cf, 0) else {
         return throw_type_error(g, "Headers.delete: invalid header name");
     };
@@ -278,7 +285,8 @@ unsafe extern "sysv64" fn h_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn h_for_each(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_for_each(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cb = cf_arg(cf, 0);
     let this_v = cf_this(cf);
     let Some(d) = this_data(g, cf) else {
@@ -323,13 +331,16 @@ unsafe fn iterate(g: *mut c_void, cf: *mut c_void, what: u8, who: &str) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn h_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
     iterate(g, cf, 0, "entries")
 }
-unsafe extern "sysv64" fn h_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
     iterate(g, cf, 1, "keys")
 }
-unsafe extern "sysv64" fn h_values(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_values(g: *mut c_void, cf: *mut c_void) -> u64 {
     iterate(g, cf, 2, "values")
 }
 

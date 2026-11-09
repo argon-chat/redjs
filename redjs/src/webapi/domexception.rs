@@ -282,7 +282,8 @@ unsafe fn proto_from(g: *mut c_void, new_target: u64, fallback: u64) -> Result<u
     Ok(if is_cell(p) { p } else { fallback })
 }
 
-unsafe extern "sysv64" fn dom_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dom_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(c) = classes(g) else { return illegal_constructor(g, cf) };
     let Ok(message) = arg_string(g, cf_arg(cf, 0), "") else { return UNDEF };
     let Ok(name) = arg_string(g, cf_arg(cf, 1), "Error") else { return UNDEF };
@@ -311,7 +312,8 @@ unsafe fn options_member(g: *mut c_void, options: u64, key: &str) -> Result<Opti
     Ok(Some(d))
 }
 
-unsafe extern "sysv64" fn quota_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn quota_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(c) = classes(g) else { return illegal_constructor(g, cf) };
     let Ok(message) = arg_string(g, cf_arg(cf, 0), "") else { return UNDEF };
     let options = cf_arg(cf, 1);
@@ -347,7 +349,8 @@ unsafe extern "sysv64" fn quota_construct(g: *mut c_void, cf: *mut c_void) -> u6
 
 macro_rules! slot_getter {
     ($fn_name:ident, $iface:literal, $slot:literal) => {
-        unsafe extern "sysv64" fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
             let this = cf_this(cf);
             let slots = classes(g).and_then(|c| slot_of(g, c, this));
             match slots {

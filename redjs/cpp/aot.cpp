@@ -23,12 +23,21 @@
 #include <JavaScriptCore/VM.h>
 #include <wtf/text/StringBuilder.h>
 #include <atomic>
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
 #include <utility>
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <climits>
+#endif
 
 using namespace JSC;
 using namespace WTF;
@@ -163,19 +172,35 @@ namespace {
 // and the view into the engine's process-lifetime borrow; every failure drops
 // the RAII owners, including the cell-cage check before image publication.
 struct OwnedHandle {
+#if defined(_WIN32)
     HANDLE value;
     explicit OwnedHandle(HANDLE value) : value(value) { }
     OwnedHandle(const OwnedHandle&) = delete;
     OwnedHandle& operator=(const OwnedHandle&) = delete;
     ~OwnedHandle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
     HANDLE release() { return std::exchange(value, INVALID_HANDLE_VALUE); }
+#else
+    int value;
+    explicit OwnedHandle(int value) : value(value) { }
+    OwnedHandle(const OwnedHandle&) = delete;
+    OwnedHandle& operator=(const OwnedHandle&) = delete;
+    ~OwnedHandle() { if (value >= 0) close(value); }
+    int release() { return std::exchange(value, -1); }
+#endif
 };
 struct OwnedView {
     void* value;
-    explicit OwnedView(void* value) : value(value) { }
+    size_t length;
+    explicit OwnedView(void* value, size_t length) : value(value), length(length) { }
     OwnedView(const OwnedView&) = delete;
     OwnedView& operator=(const OwnedView&) = delete;
-    ~OwnedView() { if (value) UnmapViewOfFile(value); }
+    ~OwnedView() {
+#if defined(_WIN32)
+        if (value) UnmapViewOfFile(value);
+#else
+        if (value) munmap(value, length);
+#endif
+    }
     void* release() { return std::exchange(value, nullptr); }
 };
 AOT::Wire::ImageVerdict checkLoad(uint32_t rawProfile)
@@ -192,7 +217,7 @@ AOT::Wire::ImageVerdict checkLoad(uint32_t rawProfile)
         return ImageVerdict::OptionsConflict;
     return ImageVerdict::Accepted;
 }
-uint32_t loadOwnedFile(HANDLE owned, const uint8_t* identity, uint32_t rawProfile)
+uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, const uint8_t* identity, uint32_t rawProfile)
 {
     using AOT::Wire::ImageVerdict;
     OwnedHandle file(owned);
@@ -203,13 +228,24 @@ uint32_t loadOwnedFile(HANDLE owned, const uint8_t* identity, uint32_t rawProfil
         return static_cast<uint32_t>(ImageVerdict::AlreadyInUse);
     auto profile = static_cast<MemoryProfile>(rawProfile);
     auto initializedProfile = initializedMemoryProfile.load(std::memory_order_acquire);
+#if defined(_WIN32)
     LARGE_INTEGER size;
     if (!GetFileSizeEx(file.value, &size) || size.QuadPart <= 0)
         return static_cast<uint32_t>(ImageVerdict::Truncated);
     // Immutable metadata/input view; the engine maps executable regions and
     // writable private clones separately through this exact retained file.
     OwnedHandle mapping(CreateFileMappingW(file.value, nullptr, PAGE_READONLY, 0, 0, nullptr));
-    OwnedView view(mapping.value ? MapViewOfFile(mapping.value, FILE_MAP_READ, 0, 0, 0) : nullptr);
+    auto fileSize = static_cast<size_t>(size.QuadPart);
+    OwnedView view(mapping.value ? MapViewOfFile(mapping.value, FILE_MAP_READ, 0, 0, 0) : nullptr, fileSize);
+#else
+    struct stat metadata;
+    if (fstat(file.value, &metadata) || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0
+        || static_cast<uint64_t>(metadata.st_size) > SIZE_MAX)
+        return static_cast<uint32_t>(ImageVerdict::Truncated);
+    auto fileSize = static_cast<size_t>(metadata.st_size);
+    auto* mapped = mmap(nullptr, fileSize, PROT_READ, MAP_PRIVATE, file.value, 0);
+    OwnedView view(mapped == MAP_FAILED ? nullptr : mapped, fileSize);
+#endif
     if (!view.value)
         return static_cast<uint32_t>(ImageVerdict::CannotMapCode);
     bool customized = false;
@@ -235,7 +271,7 @@ uint32_t loadOwnedFile(HANDLE owned, const uint8_t* identity, uint32_t rawProfil
     std::call_once(nativeHelpersInitialized, registerEmbeddingHost);
     std::array<uint8_t, 16> expected;
     std::memcpy(expected.data(), identity, 16);
-    std::span<const uint8_t> imageBytes { static_cast<const uint8_t*>(view.value), static_cast<size_t>(size.QuadPart) };
+    std::span<const uint8_t> imageBytes { static_cast<const uint8_t*>(view.value), fileSize };
     // Validate before reading the header and before publishing a borrowed view.
     auto checked = AOT::Image::check(imageBytes, expected);
     if (checked != ImageVerdict::Accepted)
@@ -243,7 +279,12 @@ uint32_t loadOwnedFile(HANDLE owned, const uint8_t* identity, uint32_t rawProfil
     const auto& header = *reinterpret_cast<const AOT::ImageHeader*>(view.value);
     if (!header.options.useWideReferences() && !MarkedBlockCage::require())
         return static_cast<uint32_t>(ImageVerdict::NeedsCellCage);
-    auto verdict = AOT::useImage(imageBytes, AOT::ImageFile { reinterpret_cast<intptr_t>(file.value), 0 }, expected);
+#if defined(_WIN32)
+    auto descriptor = reinterpret_cast<intptr_t>(file.value);
+#else
+    auto descriptor = static_cast<intptr_t>(file.value);
+#endif
+    auto verdict = AOT::useImage(imageBytes, AOT::ImageFile { descriptor, 0 }, expected);
     if (verdict != ImageVerdict::Accepted)
         return static_cast<uint32_t>(verdict);
     imageMemoryProfile = profile;
@@ -261,11 +302,22 @@ extern "C" uint32_t rjs_aot_load_file_with_profile(const char16_t* path, size_t 
         return static_cast<uint32_t>(verdict);
     if (!path || !identity)
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::AlreadyInUse);
+#if defined(_WIN32)
     std::wstring terminated(reinterpret_cast<const wchar_t*>(path), length);
     HANDLE file = CreateFileW(terminated.c_str(), GENERIC_READ | GENERIC_EXECUTE,
         FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE)
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+#else
+    // The public C ABI keeps UTF-16 paths on every platform. Rust's Unix API
+    // uses the descriptor entry point so non-UTF-8 filesystem paths also work.
+    if (std::find(path, path + length, char16_t { 0 }) != path + length)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+    auto terminated = String(std::span<const char16_t> { path, length }).utf8();
+    int file = open(reinterpret_cast<const char*>(terminated.data()), O_RDONLY | O_CLOEXEC);
+    if (file < 0)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+#endif
     return loadOwnedFile(file, identity, rawProfile);
 }
 
@@ -276,12 +328,20 @@ extern "C" uint32_t rjs_aot_load_handle_with_profile(intptr_t rawFile, const uin
         return static_cast<uint32_t>(verdict);
     if (!identity)
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::AlreadyInUse);
+#if defined(_WIN32)
     HANDLE original = reinterpret_cast<HANDLE>(rawFile);
     if (!original || original == INVALID_HANDLE_VALUE)
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
     HANDLE duplicate = INVALID_HANDLE_VALUE;
     if (!DuplicateHandle(GetCurrentProcess(), original, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+#else
+    if (rawFile < 0 || rawFile > INT_MAX)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+    int duplicate = fcntl(static_cast<int>(rawFile), F_DUPFD_CLOEXEC, 0);
+    if (duplicate < 0)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+#endif
     return loadOwnedFile(duplicate, identity, rawProfile);
 }
 
@@ -300,9 +360,13 @@ extern "C" uint32_t rjs_aot_memory_settings(uint64_t* structureHeapKB, uint64_t*
     if (cellCageMB)
         *cellCageMB = Options::markedBlockCageSizeInMB();
     if (readOnly) {
+#if defined(_WIN32)
         MEMORY_BASIC_INFORMATION info { };
         *readOnly = VirtualQuery(initialImageView, &info, sizeof(info)) == sizeof(info)
             && info.Protect == PAGE_READONLY;
+#else
+        *readOnly = initialImageView != nullptr; // OwnedView was mapped PROT_READ.
+#endif
     }
     return static_cast<uint32_t>(imageMemoryProfile);
 }

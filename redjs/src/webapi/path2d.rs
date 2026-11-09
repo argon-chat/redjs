@@ -754,7 +754,8 @@ pub unsafe fn path_of<'a>(g: *mut c_void, v: u64) -> Option<&'a mut PathData> {
     host_data::<PathData>(g, classes(g).cls, v)
 }
 
-unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let arg = cf_arg(cf, 0);
     let p = if arg == UNDEF || arg == NULL {
@@ -777,7 +778,8 @@ unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// onto a thrown TypeError naming the spec's DOMException.
 macro_rules! path_method {
     ($name:ident, $label:literal, |$p:ident, $g:ident, $cf:ident| $body:expr) => {
-        unsafe extern "sysv64" fn $name($g: *mut c_void, $cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name($g: *mut c_void, $cf: *mut c_void) -> u64 {
             let Some(data) = this_path($g, $cf) else {
                 return throw_type_error($g, concat!("Path2D.prototype.", $label, " called on a non-Path2D"));
             };
@@ -880,7 +882,8 @@ pub(crate) unsafe fn throw_geometry_error(g: *mut c_void, e: &str) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn m_round_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_round_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let radii = match read_radii(g, cf_arg(cf, 4)) {
         Ok(r) => r,
         // Spec: a radii list of size other than 1–4 is a RangeError.
@@ -901,7 +904,8 @@ unsafe extern "sysv64" fn m_round_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn m_add_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_add_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let other = match host_data::<PathData>(g, c.cls, cf_arg(cf, 0)) {
         Some(o) => o.p.clone(),
@@ -915,7 +919,8 @@ unsafe extern "sysv64" fn m_add_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_to_segments(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_to_segments(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(data) = this_path(g, cf) else {
         return throw_type_error(g, "Path2D.prototype.toSegments called on a non-Path2D");
     };

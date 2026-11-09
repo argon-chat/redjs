@@ -746,7 +746,8 @@ unsafe extern "C" fn measure_trampoline(
 
 // ---- lifecycle ---------------------------------------------------------------
 
-unsafe extern "sysv64" fn ctor(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctor(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((cls, default_proto)) = class_of(g) else {
         return throw_type_error(g, "RedYoga not installed");
     };
@@ -760,7 +761,8 @@ unsafe extern "sysv64" fn ctor(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// Explicit teardown — the supported path, because it is the only one that may
 /// touch JS (detach the scratch views, unprotect the measure functions).
-unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
     if in_layout() {
         return throw_type_error(g, "RedYoga: cannot free a world during layout");
     }
@@ -790,18 +792,21 @@ unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- views -------------------------------------------------------------------
 
-unsafe extern "sysv64" fn get_generation(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_generation(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     enc_f64(wd.generation as f64)
 }
 
-unsafe extern "sysv64" fn get_scratch(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_scratch(g: *mut c_void, cf: *mut c_void) -> u64 {
     world!(g, cf).scratch.view()
 }
 
 // ---- tree --------------------------------------------------------------------
 
-unsafe extern "sysv64" fn create_node(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let node = YGNodeNew();
     if node.is_null() {
@@ -816,7 +821,8 @@ unsafe extern "sysv64" fn create_node(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// detaches from the parent first (`packages/ui/src/tree/UIDocument.ts:260-273`) —
 /// but does not rely on it: `YGNodeFree` removes the node from its owner itself,
 /// and orphans any children, whose slots stay valid.
-unsafe extern "sysv64" fn free_node(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn free_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let slot = arg_u(cf, 0);
     let Some(rec) = wd.nodes.remove(slot) else {
@@ -826,7 +832,8 @@ unsafe extern "sysv64" fn free_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn insert_child(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn insert_child(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let parent = node_of!(g, wd, arg_u(cf, 0));
     let child = node_of!(g, wd, arg_u(cf, 1));
@@ -848,7 +855,8 @@ unsafe extern "sysv64" fn insert_child(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn remove_child(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn remove_child(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let parent = node_of!(g, wd, arg_u(cf, 0));
     let child = node_of!(g, wd, arg_u(cf, 1));
@@ -859,14 +867,16 @@ unsafe extern "sysv64" fn remove_child(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- style -------------------------------------------------------------------
 
-unsafe extern "sysv64" fn apply_style(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn apply_style(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let node = node_of!(g, wd, arg_u(cf, 0));
     apply_style_to(node, &wd.scratch.data()[..STYLE_SLOTS]);
     UNDEF
 }
 
-unsafe extern "sysv64" fn set_measure_func(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_measure_func(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let slot = arg_u(cf, 0);
     let Some(rec) = wd.nodes.get(slot).copied() else {
@@ -917,7 +927,8 @@ unsafe extern "sysv64" fn set_measure_func(g: *mut c_void, cf: *mut c_void) -> u
     UNDEF
 }
 
-unsafe extern "sysv64" fn mark_dirty(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn mark_dirty(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let node = node_of!(g, wd, arg_u(cf, 0));
     // Yoga aborts on `markDirty` without a measure func (`cpp/yoga/YGNode.cpp:111`).
@@ -931,7 +942,8 @@ unsafe extern "sysv64" fn mark_dirty(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- layout ------------------------------------------------------------------
 
-unsafe extern "sysv64" fn calculate_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn calculate_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let node = node_of!(g, wd, arg_u(cf, 0));
     let w = arg_avail(cf, 1);
@@ -967,7 +979,8 @@ unsafe extern "sysv64" fn calculate_layout(g: *mut c_void, cf: *mut c_void) -> u
 /// `calculateLayout` ran on re-raises its own flag on EVERY pass, clean or not
 /// (`cpp/yoga/algorithm/CalculateLayout.cpp:2311-2320`). The wasm adapter has the
 /// same behaviour — it is the same yoga — so this is parity, not a regression.
-unsafe extern "sysv64" fn sync_node(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sync_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let node = node_of!(g, wd, arg_u(cf, 0));
     if !YGNodeGetHasNewLayout(node) {

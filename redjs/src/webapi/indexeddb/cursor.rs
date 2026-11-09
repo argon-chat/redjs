@@ -103,7 +103,8 @@ unsafe fn step(g: *mut c_void, cur: u64, tx: u64, key: Option<Vec<u8>>, pkey: Op
     rearm(g, tx, req, id, op);
 }
 
-unsafe extern "sysv64" fn advance(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn advance(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -120,7 +121,8 @@ unsafe extern "sysv64" fn advance(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn continue_(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn continue_(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -147,7 +149,8 @@ unsafe extern "sysv64" fn continue_(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn continue_primary_key(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn continue_primary_key(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -208,7 +211,8 @@ unsafe fn effective_key(g: *mut c_void, cur: u64) -> Option<Vec<u8>> {
     }
 }
 
-unsafe extern "sysv64" fn update(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn update(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -240,7 +244,8 @@ unsafe extern "sysv64" fn update(g: *mut c_void, cf: *mut c_void) -> u64 {
     place(g, tx, this, Op::Put { store: sid, key: Some(ek), value: bytes, no_overwrite: false })
 }
 
-unsafe extern "sysv64" fn delete(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -255,7 +260,8 @@ unsafe extern "sysv64" fn delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     place(g, tx, this, Op::Delete { store: sid, range: Range::only(ek) })
 }
 
-unsafe extern "sysv64" fn source(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn source(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -263,12 +269,14 @@ unsafe extern "sysv64" fn source(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "source")
 }
 
-unsafe extern "sysv64" fn direction_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn direction_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(cd) = cursor_of(g, cf_this(cf)) else { return illegal(g) };
     js_string(g, dir_str(cd.dir))
 }
 
-unsafe extern "sysv64" fn key_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn key_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -276,7 +284,8 @@ unsafe extern "sysv64" fn key_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "key")
 }
 
-unsafe extern "sysv64" fn primary_key(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn primary_key(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -284,7 +293,8 @@ unsafe extern "sysv64" fn primary_key(g: *mut c_void, cf: *mut c_void) -> u64 {
     bget(g, this, "primaryKey")
 }
 
-unsafe extern "sysv64" fn request(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn request(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if !is_cursor(g, this) {
         return illegal(g);
@@ -293,7 +303,8 @@ unsafe extern "sysv64" fn request(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// `IDBCursorWithValue.prototype.value`.
-pub(super) unsafe extern "sysv64" fn value(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(super) unsafe fn value(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     match cursor_of(g, this) {
         Some(cd) if !cd.key_only => bget(g, this, "value"),

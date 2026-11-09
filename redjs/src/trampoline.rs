@@ -1,4 +1,4 @@
-//! SysV→MS host-function trampoline pool.
+//! Platform host-function trampoline pool.
 //!
 //! JSC host functions on Windows x64 (this Bun WebKit build) are called with
 //! the System V AMD64 convention (`JSC_HOST_CALL_ATTRIBUTES = sysv_abi`).
@@ -7,6 +7,8 @@
 //! calls `t<i>` (SysV), which forwards to the stored MS-ABI pointer. rustc
 //! emits the correct ABI transition (shadow space, xmm6-15/rsi/rdi are
 //! callee-saved in MS and caller-saved in SysV, so this direction is cheap).
+//! On Unix, both JSC and the stored callback use the platform C ABI; the
+//! generated entries keep the same pool and closure lifetime contract.
 //!
 //! Slots are write-once (publication via `kind` with Release/Acquire) and are
 //! never freed: host functions live as long as the process, which matches the
@@ -23,9 +25,9 @@ include!(concat!(env!("OUT_DIR"), "/trampolines.rs"));
 const ENC_UNDEFINED: u64 = 0x0a;
 
 pub const KIND_VACANT: u32 = 0;
-/// `EncodedJSValue f(JSGlobalObject*, CallFrame*)` — MS ABI (C# static).
+/// `EncodedJSValue f(JSGlobalObject*, CallFrame*)` — platform C ABI (C# static).
 pub const KIND_BARE: u32 = 1;
-/// `EncodedJSValue f(JSGlobalObject*, CallFrame*, void* data)` — MS ABI.
+/// `EncodedJSValue f(JSGlobalObject*, CallFrame*, void* data)` — platform C ABI.
 pub const KIND_DATA: u32 = 2;
 
 type BareFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u64;
@@ -47,7 +49,7 @@ const SLOT_INIT: Slot = Slot {
 static SLOTS: [Slot; TRAMPOLINE_COUNT] = [SLOT_INIT; TRAMPOLINE_COUNT];
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 
-/// Reserves a slot and returns the SysV entry point JSC should call, or
+/// Reserves a slot and returns the native entry point JSC should call, or
 /// `None` if the pool is exhausted.
 pub(crate) fn acquire(kind: u32, f: *const c_void, data: *mut c_void) -> Option<*const c_void> {
     let i = NEXT_SLOT.fetch_add(1, Ordering::Relaxed);
@@ -118,7 +120,7 @@ unsafe extern "C" fn closure_adapter(g: *mut c_void, cf: *mut c_void, data: *mut
 }
 
 /// Registers a Rust closure in the pool (leaks the closure — host functions
-/// are process-lifetime). Returns the SysV entry point.
+/// are process-lifetime). Returns the native JSC entry point.
 pub fn acquire_closure(f: HostClosure) -> Option<*const c_void> {
     let data = Box::into_raw(Box::new(ClosureState {
         active: AtomicBool::new(false),

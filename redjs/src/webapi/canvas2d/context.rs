@@ -675,12 +675,14 @@ unsafe fn styles_slot(g: *mut c_void, this: u64) -> u64 {
 // Natives: state
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn get_canvas(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_canvas(g: *mut c_void, cf: *mut c_void) -> u64 {
     let _ = this_ctx!(g, cf, "canvas");
     get_a(g, cf_this(cf), classes(g).s_canvas)
 }
 
-unsafe extern "sysv64" fn m_save(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_save(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let arr = styles_slot(g, this);
     let cx = this_ctx!(g, cf, "save");
@@ -692,7 +694,8 @@ unsafe extern "sysv64" fn m_save(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_restore(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_restore(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "restore");
     if let Some(s) = cx.stack.pop() {
         cx.st = s;
@@ -700,7 +703,8 @@ unsafe extern "sysv64" fn m_restore(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_reset(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_reset(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let cx = this_ctx!(g, cf, "reset");
     let (w, h) = {
@@ -712,12 +716,14 @@ unsafe extern "sysv64" fn m_reset(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_is_context_lost(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_is_context_lost(g: *mut c_void, cf: *mut c_void) -> u64 {
     let _ = this_ctx!(g, cf, "isContextLost");
     FALSE
 }
 
-unsafe extern "sysv64" fn m_get_context_attributes(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_get_context_attributes(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "getContextAttributes");
     let o = cx.surface.lock().unwrap().options;
     let out = new_object(g, UNDEF);
@@ -730,11 +736,13 @@ unsafe extern "sysv64" fn m_get_context_attributes(g: *mut c_void, cf: *mut c_vo
 
 macro_rules! num_attr {
     ($get:ident, $set:ident, $field:ident, $what:literal, |$v:ident| $ok:expr) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             let cx = this_ctx!(g, cf, $what);
             enc_f64(cx.st.$field as f64)
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             let Ok($v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
             let cx = this_ctx!(g, cf, $what);
             if $v.is_finite() && $ok {
@@ -756,11 +764,13 @@ num_attr!(get_shadow_y, set_shadow_y, shadow_y, "shadowOffsetY", |v| true);
 /// An enumerated attribute: the setter ignores anything not in `$values`.
 macro_rules! enum_attr {
     ($get:ident, $set:ident, $field:ident, $what:literal, $values:expr) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             let cx = this_ctx!(g, cf, $what);
             js_string(g, cx.st.$field)
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
             let cx = this_ctx!(g, cf, $what);
             let values: &[&'static str] = &$values;
@@ -807,11 +817,13 @@ enum_attr!(
 
 macro_rules! string_attr {
     ($get:ident, $set:ident, $field:ident, $what:literal, |$s:ident| $ok:expr) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             let cx = this_ctx!(g, cf, $what);
             js_string(g, &cx.st.$field)
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             let Ok($s) = arg_str(g, cf, 0) else { return UNDEF };
             let cx = this_ctx!(g, cf, $what);
             if $ok {
@@ -840,12 +852,14 @@ string_attr!(get_letter_spacing, set_letter_spacing, letter_spacing, "letterSpac
 string_attr!(get_word_spacing, set_word_spacing, word_spacing, "wordSpacing", |s| is_length(&s));
 string_attr!(get_lang, set_lang, lang, "lang", |s| true);
 
-unsafe extern "sysv64" fn get_composite(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_composite(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "globalCompositeOperation");
     js_string(g, cx.st.op.name())
 }
 
-unsafe extern "sysv64" fn set_composite(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_composite(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
     let cx = this_ctx!(g, cf, "globalCompositeOperation");
     if let Some(op) = CompositeOp::parse(&s) {
@@ -854,19 +868,22 @@ unsafe extern "sysv64" fn set_composite(g: *mut c_void, cf: *mut c_void) -> u64 
     UNDEF
 }
 
-unsafe extern "sysv64" fn get_smoothing(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_smoothing(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "imageSmoothingEnabled");
     enc_bool(cx.st.smoothing)
 }
 
-unsafe extern "sysv64" fn set_smoothing(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_smoothing(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = truthy_flag(cf_arg(cf, 0));
     let cx = this_ctx!(g, cf, "imageSmoothingEnabled");
     cx.st.smoothing = v;
     UNDEF
 }
 
-unsafe extern "sysv64" fn get_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "lineCap");
     js_string(g, match cx.st.cap {
         Cap::Butt => "butt",
@@ -875,7 +892,8 @@ unsafe extern "sysv64" fn get_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-unsafe extern "sysv64" fn set_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
     let cx = this_ctx!(g, cf, "lineCap");
     match s.as_str() {
@@ -887,7 +905,8 @@ unsafe extern "sysv64" fn set_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn get_line_join(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_line_join(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "lineJoin");
     js_string(g, match cx.st.join {
         Join::Miter => "miter",
@@ -896,7 +915,8 @@ unsafe extern "sysv64" fn get_line_join(g: *mut c_void, cf: *mut c_void) -> u64 
     })
 }
 
-unsafe extern "sysv64" fn set_line_join(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_line_join(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
     let cx = this_ctx!(g, cf, "lineJoin");
     match s.as_str() {
@@ -908,12 +928,14 @@ unsafe extern "sysv64" fn set_line_join(g: *mut c_void, cf: *mut c_void) -> u64 
     UNDEF
 }
 
-unsafe extern "sysv64" fn get_shadow_color(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_shadow_color(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "shadowColor");
     js_string(g, &color::serialize(cx.st.shadow_color))
 }
 
-unsafe extern "sysv64" fn set_shadow_color(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_shadow_color(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
     let cx = this_ctx!(g, cf, "shadowColor");
     match color::parse(&s) {
@@ -971,20 +993,25 @@ unsafe fn set_style(g: *mut c_void, cf: *mut c_void, stroke: bool) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn get_fill_style(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_fill_style(g: *mut c_void, cf: *mut c_void) -> u64 {
     get_style(g, cf, false)
 }
-unsafe extern "sysv64" fn set_fill_style(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_fill_style(g: *mut c_void, cf: *mut c_void) -> u64 {
     set_style(g, cf, false)
 }
-unsafe extern "sysv64" fn get_stroke_style(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_stroke_style(g: *mut c_void, cf: *mut c_void) -> u64 {
     get_style(g, cf, true)
 }
-unsafe extern "sysv64" fn set_stroke_style(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_stroke_style(g: *mut c_void, cf: *mut c_void) -> u64 {
     set_style(g, cf, true)
 }
 
-unsafe extern "sysv64" fn m_set_line_dash(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_set_line_dash(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = cf_arg(cf, 0);
     if !is_cell(v) {
         return throw_type_error(g, "CanvasRenderingContext2D.setLineDash: the argument is not a sequence");
@@ -1006,7 +1033,8 @@ unsafe extern "sysv64" fn m_set_line_dash(g: *mut c_void, cf: *mut c_void) -> u6
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_get_line_dash(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_get_line_dash(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "getLineDash");
     let dash = cx.st.dash.clone();
     let arr = new_array(g);
@@ -1020,7 +1048,8 @@ unsafe extern "sysv64" fn m_get_line_dash(g: *mut c_void, cf: *mut c_void) -> u6
 // Natives: transforms
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn m_scale(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_scale(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (x, y) = (n(g, cf, 0), n(g, cf, 1));
     let cx = this_ctx!(g, cf, "scale");
     if finite(&[x, y]) {
@@ -1029,7 +1058,8 @@ unsafe extern "sysv64" fn m_scale(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_rotate(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_rotate(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = n(g, cf, 0);
     let cx = this_ctx!(g, cf, "rotate");
     if a.is_finite() {
@@ -1038,7 +1068,8 @@ unsafe extern "sysv64" fn m_rotate(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_translate(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_translate(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (x, y) = (n(g, cf, 0), n(g, cf, 1));
     let cx = this_ctx!(g, cf, "translate");
     if finite(&[x, y]) {
@@ -1051,7 +1082,8 @@ unsafe fn six(g: *mut c_void, cf: *mut c_void) -> [f64; 6] {
     [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4), n(g, cf, 5)]
 }
 
-unsafe extern "sysv64" fn m_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
     let m = six(g, cf);
     let cx = this_ctx!(g, cf, "transform");
     if finite(&m) {
@@ -1060,7 +1092,8 @@ unsafe extern "sysv64" fn m_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_set_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_set_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
     let m = if cf_argc(cf) <= 1 {
         let v = cf_arg(cf, 0);
         if v == UNDEF {
@@ -1081,13 +1114,15 @@ unsafe extern "sysv64" fn m_set_transform(g: *mut c_void, cf: *mut c_void) -> u6
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_reset_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_reset_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "resetTransform");
     cx.st.xf = Affine::IDENTITY;
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_get_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_get_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "getTransform");
     let m = cx.st.xf.as_coeffs();
     super::super::geometry::new_matrix(g, super::super::geometry::Mat::from_2d(m))
@@ -1097,19 +1132,22 @@ unsafe extern "sysv64" fn m_get_transform(g: *mut c_void, cf: *mut c_void) -> u6
 // Natives: the current path
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn m_begin_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_begin_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "beginPath");
     cx.path = Path::new();
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_close_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_close_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "closePath");
     cx.path.close();
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_move_to(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_move_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (x, y) = (n(g, cf, 0), n(g, cf, 1));
     let cx = this_ctx!(g, cf, "moveTo");
     if finite(&[x, y]) {
@@ -1119,7 +1157,8 @@ unsafe extern "sysv64" fn m_move_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_line_to(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_line_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (x, y) = (n(g, cf, 0), n(g, cf, 1));
     let cx = this_ctx!(g, cf, "lineTo");
     if finite(&[x, y]) {
@@ -1129,7 +1168,8 @@ unsafe extern "sysv64" fn m_line_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_quad_to(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_quad_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3)];
     let cx = this_ctx!(g, cf, "quadraticCurveTo");
     if finite(&a) {
@@ -1140,7 +1180,8 @@ unsafe extern "sysv64" fn m_quad_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_bezier_to(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_bezier_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = six(g, cf);
     let cx = this_ctx!(g, cf, "bezierCurveTo");
     if finite(&a) {
@@ -1152,7 +1193,8 @@ unsafe extern "sysv64" fn m_bezier_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3)];
     let cx = this_ctx!(g, cf, "rect");
     if finite(&a) {
@@ -1203,7 +1245,8 @@ fn user_geometry(cx: &mut Ctx, f: impl FnOnce(&mut Path) -> Result<(), &'static 
     Ok(())
 }
 
-unsafe extern "sysv64" fn m_arc(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_arc(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4)];
     let ccw = truthy_flag(cf_arg(cf, 5));
     let cx = this_ctx!(g, cf, "arc");
@@ -1213,7 +1256,8 @@ unsafe extern "sysv64" fn m_arc(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn m_ellipse(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_ellipse(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4), n(g, cf, 5), n(g, cf, 6)];
     let ccw = truthy_flag(cf_arg(cf, 7));
     let cx = this_ctx!(g, cf, "ellipse");
@@ -1223,7 +1267,8 @@ unsafe extern "sysv64" fn m_ellipse(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn m_arc_to(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_arc_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4)];
     let cx = this_ctx!(g, cf, "arcTo");
     match user_geometry(cx, |p| p.arc_to(a[0], a[1], a[2], a[3], a[4])) {
@@ -1232,7 +1277,8 @@ unsafe extern "sysv64" fn m_arc_to(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn m_round_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_round_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let radii = match path2d::read_radii(g, cf_arg(cf, 4)) {
         Ok(r) => r,
         Err(e) => return throw_error(g, 2, &e),
@@ -1275,7 +1321,8 @@ unsafe fn path_and_rule(g: *mut c_void, cf: *mut c_void) -> Result<(Option<BezPa
     Ok((None, fill_rule(g, a0)?))
 }
 
-unsafe extern "sysv64" fn m_fill(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_fill(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok((user, even_odd)) = path_and_rule(g, cf) else { return UNDEF };
     let cx = this_ctx!(g, cf, "fill");
     let Some(inv) = cx.inverse() else { return UNDEF };
@@ -1285,7 +1332,8 @@ unsafe extern "sysv64" fn m_fill(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_stroke(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_stroke(g: *mut c_void, cf: *mut c_void) -> u64 {
     let user = path2d::path_of(g, cf_arg(cf, 0)).map(|p| bez_of(&p.p));
     let cx = this_ctx!(g, cf, "stroke");
     let Some(inv) = cx.inverse() else { return UNDEF };
@@ -1295,7 +1343,8 @@ unsafe extern "sysv64" fn m_stroke(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_clip(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_clip(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok((user, even_odd)) = path_and_rule(g, cf) else { return UNDEF };
     let cx = this_ctx!(g, cf, "clip");
     let path = match user {
@@ -1306,7 +1355,8 @@ unsafe extern "sysv64" fn m_clip(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_is_point_in_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_is_point_in_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a0 = cf_arg(cf, 0);
     let (user, x, y, rule_arg) = match path2d::path_of(g, a0) {
         Some(p) => (Some(bez_of(&p.p)), n(g, cf, 1), n(g, cf, 2), cf_arg(cf, 3)),
@@ -1325,7 +1375,8 @@ unsafe extern "sysv64" fn m_is_point_in_path(g: *mut c_void, cf: *mut c_void) ->
     enc_bool(if even_odd { w % 2 != 0 } else { w != 0 })
 }
 
-unsafe extern "sysv64" fn m_is_point_in_stroke(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_is_point_in_stroke(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a0 = cf_arg(cf, 0);
     let (user, x, y) = match path2d::path_of(g, a0) {
         Some(p) => (Some(bez_of(&p.p)), n(g, cf, 1), n(g, cf, 2)),
@@ -1346,7 +1397,8 @@ unsafe fn rect_args(g: *mut c_void, cf: *mut c_void) -> Option<Rect> {
     finite(&a).then(|| Rect::new(a[0], a[1], a[0] + a[2], a[1] + a[3]))
 }
 
-unsafe extern "sysv64" fn m_clear_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_clear_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let r = rect_args(g, cf);
     let cx = this_ctx!(g, cf, "clearRect");
     if let Some(r) = r {
@@ -1357,7 +1409,8 @@ unsafe extern "sysv64" fn m_clear_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_fill_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_fill_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let r = rect_args(g, cf);
     let cx = this_ctx!(g, cf, "fillRect");
     if let Some(r) = r {
@@ -1375,7 +1428,8 @@ unsafe extern "sysv64" fn m_fill_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_stroke_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_stroke_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let r = rect_args(g, cf);
     let cx = this_ctx!(g, cf, "strokeRect");
     let Some(r) = r else { return UNDEF };
@@ -1395,7 +1449,8 @@ unsafe extern "sysv64" fn m_stroke_rect(g: *mut c_void, cf: *mut c_void) -> u64 
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_draw_image(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_draw_image(g: *mut c_void, cf: *mut c_void) -> u64 {
     let argc = cf_argc(cf);
     if argc != 3 && argc != 5 && argc != 9 {
         return throw_type_error(g, &format!("CanvasRenderingContext2D.drawImage: {argc} arguments is not a valid overload (3, 5 or 9)"));
@@ -1479,7 +1534,8 @@ unsafe fn checked_size(g: *mut c_void, w: f64, h: f64, what: &str) -> Option<(u3
     Some((w as u32, h as u32))
 }
 
-unsafe extern "sysv64" fn m_create_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_create_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if ctx_of(g, cf_this(cf)).is_none() {
         return throw_type_error(g, "CanvasRenderingContext2D.createImageData: illegal invocation");
     }
@@ -1494,7 +1550,8 @@ unsafe extern "sysv64" fn m_create_image_data(g: *mut c_void, cf: *mut c_void) -
     new_image_data(g, w, h, None)
 }
 
-unsafe extern "sysv64" fn m_get_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_get_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3)];
     if ctx_of(g, cf_this(cf)).is_none() {
         return throw_type_error(g, "CanvasRenderingContext2D.getImageData: illegal invocation");
@@ -1523,7 +1580,8 @@ unsafe extern "sysv64" fn m_get_image_data(g: *mut c_void, cf: *mut c_void) -> u
     new_image_data(g, w, h, Some(&px))
 }
 
-unsafe extern "sysv64" fn m_put_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_put_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     let argc = cf_argc(cf);
     if argc != 3 && argc != 7 {
         return throw_type_error(g, "CanvasRenderingContext2D.putImageData: expected 3 or 7 arguments");
@@ -1622,10 +1680,13 @@ unsafe fn draw_text(g: *mut c_void, cf: *mut c_void, stroke: bool) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_fill_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, false) }
-unsafe extern "sysv64" fn m_stroke_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, true) }
+#[crate::host_fn]
+unsafe fn m_fill_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, false) }
+#[crate::host_fn]
+unsafe fn m_stroke_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, true) }
 
-unsafe extern "sysv64" fn m_measure_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_measure_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(value) = arg_str(g, cf, 0) else { return UNDEF };
     let cx = this_ctx!(g, cf, "measureText");
     let Some(id) = crate::context::id_of(g) else { return UNDEF };
@@ -1649,7 +1710,8 @@ unsafe extern "sysv64" fn m_measure_text(g: *mut c_void, cf: *mut c_void) -> u64
     ] { define(g, m, k, enc_f64(v), 1); }
     m
 }
-unsafe extern "sysv64" fn m_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     UNDEF
 }
 
@@ -1662,7 +1724,8 @@ unsafe fn new_gradient(g: *mut c_void, kind: GradientKind) -> u64 {
     host_create(g, c.grad_cls, c.grad.proto, Arc::new(Mutex::new(Gradient { kind, stops: Vec::new() })))
 }
 
-unsafe extern "sysv64" fn m_linear_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_linear_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3)];
     let _ = this_ctx!(g, cf, "createLinearGradient");
     if !finite(&a) {
@@ -1671,7 +1734,8 @@ unsafe extern "sysv64" fn m_linear_gradient(g: *mut c_void, cf: *mut c_void) -> 
     new_gradient(g, GradientKind::Linear { x0: a[0], y0: a[1], x1: a[2], y1: a[3] })
 }
 
-unsafe extern "sysv64" fn m_radial_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_radial_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = six(g, cf);
     let _ = this_ctx!(g, cf, "createRadialGradient");
     if !finite(&a) {
@@ -1683,7 +1747,8 @@ unsafe extern "sysv64" fn m_radial_gradient(g: *mut c_void, cf: *mut c_void) -> 
     new_gradient(g, GradientKind::Radial { x0: a[0], y0: a[1], r0: a[2], x1: a[3], y1: a[4], r1: a[5] })
 }
 
-unsafe extern "sysv64" fn m_conic_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_conic_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2)];
     let _ = this_ctx!(g, cf, "createConicGradient");
     if !finite(&a) {
@@ -1692,7 +1757,8 @@ unsafe extern "sysv64" fn m_conic_gradient(g: *mut c_void, cf: *mut c_void) -> u
     new_gradient(g, GradientKind::Conic { angle: a[0], x: a[1], y: a[2] })
 }
 
-unsafe extern "sysv64" fn m_add_color_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_add_color_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(offset) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
     let Ok(text) = arg_str(g, cf, 1) else { return UNDEF };
     let c = classes(g);
@@ -1718,7 +1784,8 @@ unsafe extern "sysv64" fn m_add_color_stop(g: *mut c_void, cf: *mut c_void) -> u
     UNDEF
 }
 
-unsafe extern "sysv64" fn m_create_pattern(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_create_pattern(g: *mut c_void, cf: *mut c_void) -> u64 {
     if ctx_of(g, cf_this(cf)).is_none() {
         return throw_type_error(g, "CanvasRenderingContext2D.createPattern: illegal invocation");
     }
@@ -1750,7 +1817,8 @@ unsafe extern "sysv64" fn m_create_pattern(g: *mut c_void, cf: *mut c_void) -> u
     )
 }
 
-unsafe extern "sysv64" fn m_pattern_set_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn m_pattern_set_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
     let m = super::super::geometry::mat_of(g, cf_arg(cf, 0));
     let c = classes(g);
     let Some(p) = host_data::<Arc<Mutex<Pattern>>>(g, c.pat_cls, cf_this(cf)) else {
@@ -1787,7 +1855,8 @@ unsafe fn enforce_dim(g: *mut c_void, v: u64, what: &str) -> Option<u32> {
     Some(d.trunc() as u32)
 }
 
-unsafe extern "sysv64" fn off_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(w) = enforce_dim(g, cf_arg(cf, 0), "width") else { return UNDEF };
     let Some(h) = enforce_dim(g, cf_arg(cf, 1), "height") else { return UNDEF };
     let c = classes(g);
@@ -1808,11 +1877,13 @@ macro_rules! this_off {
     };
 }
 
-unsafe extern "sysv64" fn off_get_width(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_get_width(g: *mut c_void, cf: *mut c_void) -> u64 {
     let o = this_off!(g, cf, "width");
     enc_f64(o.width as f64)
 }
-unsafe extern "sysv64" fn off_get_height(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_get_height(g: *mut c_void, cf: *mut c_void) -> u64 {
     let o = this_off!(g, cf, "height");
     enc_f64(o.height as f64)
 }
@@ -1843,14 +1914,17 @@ unsafe fn off_set_dim(g: *mut c_void, cf: *mut c_void, height: bool) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn off_set_width(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_set_width(g: *mut c_void, cf: *mut c_void) -> u64 {
     off_set_dim(g, cf, false)
 }
-unsafe extern "sysv64" fn off_set_height(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_set_height(g: *mut c_void, cf: *mut c_void) -> u64 {
     off_set_dim(g, cf, true)
 }
 
-unsafe extern "sysv64" fn off_get_context(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_get_context(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let Ok(kind) = arg_str(g, cf, 0) else {
         return UNDEF;
@@ -1938,7 +2012,8 @@ unsafe fn type_and_quality(g: *mut c_void, ty: u64, q: u64) -> (String, Option<f
     (t, dec_f64(q))
 }
 
-unsafe extern "sysv64" fn off_convert_to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_convert_to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let opts = cf_arg(cf, 0);
     let (ty, q) = if is_cell(opts) { type_and_quality(g, get(g, opts, "type"), get(g, opts, "quality")) } else { ("image/png".into(), None) };
@@ -1961,7 +2036,8 @@ unsafe extern "sysv64" fn off_convert_to_blob(g: *mut c_void, cf: *mut c_void) -
     resolved_promise(g, blob)
 }
 
-unsafe extern "sysv64" fn off_transfer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn off_transfer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let c = classes(g);
     let o = this_off!(g, cf, "transferToImageBitmap");
@@ -1993,7 +2069,8 @@ unsafe fn dim(v: u64) -> u32 {
 }
 
 /// `__rjs_canvas_context(canvas, width, height, options, key?)`
-unsafe extern "sysv64" fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
     let key = dec_f64(cf_arg(cf, 4)).filter(|k| *k > 0.0).map(|k| k as u64);
     let Ok(options) = read_options(g, cf_arg(cf, 3)) else {
         return UNDEF;
@@ -2002,7 +2079,8 @@ unsafe extern "sysv64" fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// `__rjs_canvas_resize(ctx, width, height)`
-unsafe extern "sysv64" fn h_resize(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_resize(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (w, h) = (dim(cf_arg(cf, 1)), dim(cf_arg(cf, 2)));
     let ctx = cf_arg(cf, 0);
     let Some(cx) = ctx_of(g, ctx) else { return throw_type_error(g, "__rjs_canvas_resize: not a context") };
@@ -2028,7 +2106,8 @@ unsafe fn element_pixels(g: *mut c_void, ctx: u64, w: u32, h: u32) -> (Vec<u8>, 
 }
 
 /// `__rjs_canvas_data_url(ctx|null, width, height, type, quality)`
-unsafe extern "sysv64" fn h_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (ty, q) = type_and_quality(g, cf_arg(cf, 3), cf_arg(cf, 4));
     let (px, w, h) = element_pixels(g, cf_arg(cf, 0), dim(cf_arg(cf, 1)), dim(cf_arg(cf, 2)));
     js_string(g, &super::encode::data_url(&px, w, h, &ty, q))
@@ -2036,7 +2115,8 @@ unsafe extern "sysv64" fn h_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// `__rjs_canvas_blob(ctx|null, width, height, type, quality)` → Blob, or
 /// null for an empty bitmap (HTML: toBlob's callback then gets null).
-unsafe extern "sysv64" fn h_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (ty, q) = type_and_quality(g, cf_arg(cf, 3), cf_arg(cf, 4));
     let (px, w, h) = element_pixels(g, cf_arg(cf, 0), dim(cf_arg(cf, 1)), dim(cf_arg(cf, 2)));
     if w == 0 || h == 0 {
@@ -2050,7 +2130,8 @@ unsafe extern "sysv64" fn h_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// something drawable. `fn(value)` returns a context, an ImageBitmap (or
 /// anything else drawImage takes), `null` for "a valid source with nothing to
 /// draw yet", or `undefined` for "not an image source" (a TypeError).
-unsafe extern "sysv64" fn h_source_hook(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_source_hook(g: *mut c_void, cf: *mut c_void) -> u64 {
     let f = cf_arg(cf, 0);
     let mut hooks = hooks().lock().unwrap();
     if let Some(old) = hooks.remove(&(g as usize)) {
@@ -2064,7 +2145,8 @@ unsafe extern "sysv64" fn h_source_hook(g: *mut c_void, cf: *mut c_void) -> u64 
 }
 
 /// `__rjs_canvas_info(ctx)` → `{ backend, width, height, generation, originClean }` (tests, devtools).
-unsafe extern "sysv64" fn h_info(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(cx) = ctx_of(g, cf_arg(cf, 0)) else { return NULL };
     let s = cx.surface.lock().unwrap();
     let out = new_object(g, UNDEF);

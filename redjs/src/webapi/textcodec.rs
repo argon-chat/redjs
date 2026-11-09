@@ -22,15 +22,18 @@ unsafe fn proto_of_global_class(g: *mut c_void, name: &str) -> u64 {
 
 // ---- TextEncoder ------------------------------------------------------------
 
-unsafe extern "sysv64" fn encoder_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn encoder_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     ordinary_create(g, cf_new_target(cf), proto_of_global_class(g, "TextEncoder"))
 }
 
-unsafe extern "sysv64" fn encoder_get_encoding(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn encoder_get_encoding(g: *mut c_void, _cf: *mut c_void) -> u64 {
     js_string(g, "utf-8")
 }
 
-unsafe extern "sysv64" fn encode(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn encode(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = cf_arg(cf, 0);
     if v == UNDEF {
         return make_u8(g, &[]);
@@ -41,7 +44,8 @@ unsafe extern "sysv64" fn encode(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// encodeInto(source, destination) → { read, written } (spec: write as many
 /// full code points as fit into the destination Uint8Array).
-unsafe extern "sysv64" fn encode_into(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn encode_into(g: *mut c_void, cf: *mut c_void) -> u64 {
     let s = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let mut ta = crate::ffi::RjsTaInfo::default();
     if glue::rjs_typedarray_info(g, cf_arg(cf, 1), &mut ta) != 0 || ta.kind != 2 || ta.detached != 0 {
@@ -71,7 +75,8 @@ unsafe extern "sysv64" fn encode_into(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- TextDecoder ------------------------------------------------------------
 
-unsafe extern "sysv64" fn decoder_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn decoder_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let label_v = cf_arg(cf, 0);
     let label = if label_v == UNDEF { "utf-8".to_string() } else { read_string(g, label_v).unwrap_or_default() };
     let Some(enc) = encoding_rs::Encoding::for_label(label.trim().as_bytes()) else {
@@ -99,7 +104,8 @@ unsafe extern "sysv64" fn decoder_construct(g: *mut c_void, cf: *mut c_void) -> 
     obj
 }
 
-unsafe extern "sysv64" fn decode(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn decode(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let name = read_string(g, get(g, this, "encoding")).unwrap_or_else(|| "utf-8".into());
     let Some(enc) = encoding_rs::Encoding::for_label(name.as_bytes()) else {
@@ -130,7 +136,8 @@ unsafe extern "sysv64" fn decode(g: *mut c_void, cf: *mut c_void) -> u64 {
     js_string(g, &owned)
 }
 
-unsafe extern "sysv64" fn decoder_get_encoding(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn decoder_get_encoding(g: *mut c_void, cf: *mut c_void) -> u64 {
     // Own data prop shadows this getter on real instances; the getter only
     // answers for the bare prototype.
     let _ = cf;

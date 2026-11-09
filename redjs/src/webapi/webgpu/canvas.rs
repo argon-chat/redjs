@@ -349,13 +349,15 @@ pub(crate) unsafe fn resize(g: *mut c_void, ctx: u64, w: u32, h: u32) -> Result<
     glue::rjs_define(g, ctx, slots(g).2, UNDEF, 1 | 2);
     Ok(())
 }
-unsafe extern "sysv64" fn get_canvas(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_canvas(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this_surface(g, cf)?;
         Ok(get_a(g, cf_this(cf), slots(g).0))
     })
 }
-unsafe extern "sysv64" fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
         let d = Val::new(g, cf_arg(cf, 0));
@@ -455,7 +457,8 @@ unsafe extern "sysv64" fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn unconfigure(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn unconfigure(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
         reset(&s, None, None);
@@ -464,7 +467,8 @@ unsafe extern "sysv64" fn unconfigure(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn configuration(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn configuration(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
         let config = s.state.lock().unwrap().config.clone();
@@ -493,7 +497,8 @@ unsafe extern "sysv64" fn configuration(g: *mut c_void, cf: *mut c_void) -> u64 
         Ok(o.v)
     })
 }
-unsafe extern "sysv64" fn current_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn current_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
         let (c, w, h, existing, epoch) = {
@@ -908,7 +913,8 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     }
 }
 
-unsafe extern "sysv64" fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let owner = cf_arg(cf, 0);
         if !is_cell(owner) {
@@ -920,7 +926,8 @@ unsafe extern "sysv64" fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(create(g, owner, w, h, (key != 0).then_some(key)))
     })
 }
-unsafe extern "sysv64" fn h_resize(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_resize(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let w = uint(g, cf_arg(cf, 1), 0)?;
         let h = uint(g, cf_arg(cf, 2), 0)?;
@@ -948,7 +955,8 @@ unsafe fn capture_args(
     })?;
     Ok((f, ty, q))
 }
-unsafe extern "sysv64" fn h_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         #[cfg(feature = "canvas")]
         {
@@ -970,7 +978,8 @@ unsafe extern "sysv64" fn h_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
     })
 }
-unsafe extern "sysv64" fn h_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn h_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         #[cfg(feature = "canvas")]
         {

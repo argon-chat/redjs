@@ -42,6 +42,8 @@
 //! engine after pulling a new pin.
 //!
 //! Prebuilt location: `BUN_WEBKIT_DIR` env or `../prebuilt/bun-webkit`.
+//! Unix uses platform-specific directories under `prebuilt`, Clang with the
+//! platform C++ standard library, and native system libraries/frameworks.
 
 use std::env;
 use std::fmt::Write as _;
@@ -55,12 +57,29 @@ const TRAMPOLINE_COUNT: usize = 2048;
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let windows = target_os == "windows";
+    let platform = match (target_os.as_str(), target_arch.as_str()) {
+        ("windows", "x86_64") => "windows-amd64",
+        ("linux", "x86_64") => "linux-amd64",
+        ("macos", "x86_64") => "macos-amd64",
+        ("macos", "aarch64") => "macos-arm64",
+        _ => panic!("redjs has no pinned prebuilt for {target_os}/{target_arch}"),
+    };
 
     generate_trampolines(&out_dir);
 
     let webkit = env::var("BUN_WEBKIT_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| manifest.parent().unwrap().join("prebuilt").join("bun-webkit"));
+        .unwrap_or_else(|_| {
+            let directory = if windows {
+                "bun-webkit".to_owned()
+            } else {
+                format!("bun-webkit-{platform}")
+            };
+            manifest.parent().unwrap().join("prebuilt").join(directory)
+        });
     let lib = webkit.join("lib");
     let inc = webkit.join("include");
 
@@ -75,27 +94,36 @@ fn main() {
     // battle_test/bench_jsc): clang-cl, C++23, static CRT, NDEBUG, and the
     // prebuilt's own cmakeconfig.h force-included so every USE_/ENABLE_ flag
     // (incl. USE_BUN_JSC_ADDITIONS) matches its ABI exactly.
-    let mut glue = cc::Build::new();
-    glue.cpp(true)
-        .compiler("clang-cl")
-        .static_crt(true)
-        .file("cpp/glue.cpp")
+    let mut glue = native_build(true, windows);
+    glue.file("cpp/glue.cpp")
         .include(&inc)
         .include("cpp/compat") // PlatformEnableWin.h is missing from the prebuilt archive
-        .flag("/std:c++23preview")
-        .flag("/W0")
-        .flag("-Wno-inconsistent-dllimport")
-        .flag("/FIcmakeconfig.h")
         .define("NDEBUG", None)
         .define("STATICALLY_LINKED_WITH_JavaScriptCore", "1")
         .define("STATICALLY_LINKED_WITH_WTF", "1")
         .define("STATICALLY_LINKED_WITH_BMALLOC", "1")
-        .define("BUILDING_WITH_CMAKE", "1")
-        .define("NOMINMAX", None)
-        .define("WIN32", None)
-        .define("_WINDOWS", None)
-        .define("WIN32_LEAN_AND_MEAN", "1")
-        .define("_CRT_SECURE_NO_WARNINGS", None);
+        .define("BUILDING_WITH_CMAKE", "1");
+    if windows {
+        glue.flag("/std:c++23preview")
+            .flag("/W0")
+            .flag("-Wno-inconsistent-dllimport")
+            .flag("/FIcmakeconfig.h")
+            .define("NOMINMAX", None)
+            .define("WIN32", None)
+            .define("_WINDOWS", None)
+            .define("WIN32_LEAN_AND_MEAN", "1")
+            .define("_CRT_SECURE_NO_WARNINGS", None);
+    } else {
+        // WebKit's release headers require optimized inlines even when the
+        // Rust host is built in debug mode.
+        glue.opt_level(2)
+            .flag("-std=c++23")
+            .flag("-include")
+            .flag("cmakeconfig.h")
+            .flag("-fno-exceptions")
+            .flag("-fno-rtti")
+            .flag("-w");
+    }
 
     // An AOT-enabled prebuilt leaves its generated builtin table to the
     // embedder. Use the exact real table shipped in the verified archive:
@@ -124,6 +152,8 @@ fn main() {
             generated.clone()
         };
         if native_aot {
+            println!("cargo:rustc-env=REDJS_AOT_TARGET_ARCH={target_arch}");
+            println!("cargo:rustc-env=REDJS_AOT_TARGET_OS={target_os}");
             println!(
                 "cargo:rustc-env=REDJS_AOT_ENGINE_VERSION={}",
                 pin(&pins, "webkit.version")
@@ -164,6 +194,15 @@ fn main() {
             "AOTBuiltinTableTypes.cpp",
             "AOTSchemaInlineBuiltins.cpp",
         ] {
+            // Unix prebuilts already compile the engine-owned bindings and
+            // wire schema into libJavaScriptCore. Only frontend tables remain
+            // external; compiling these two again would duplicate symbols.
+            if !windows
+                && (name == "AOTBuiltinTableEngineBindings.cpp"
+                    || name == "AOTSchemaInlineBuiltins.cpp")
+            {
+                continue;
+            }
             let source = if name == "AOTBuiltinTableEngineBindings.cpp"
                 || name == "AOTSchemaInlineBuiltins.cpp"
             {
@@ -197,22 +236,25 @@ fn main() {
     // requirement.
     if env::var_os("CARGO_FEATURE_YOGA_HOST").is_some() {
         let yoga_dir = manifest.join("cpp").join("yoga");
-        let mut yoga = cc::Build::new();
-        yoga.cpp(true)
-            .compiler("clang-cl")
-            .static_crt(true)
-            .include(manifest.join("cpp"))
-            .flag("/std:c++20")
-            .flag("/EHsc")
-            .flag("/W0")
-            .define("NDEBUG", None)
-            .define("NOMINMAX", None)
-            .define("_CRT_SECURE_NO_WARNINGS", None);
+        let mut yoga = native_build(true, windows);
+        yoga.include(manifest.join("cpp")).define("NDEBUG", None);
+        if windows {
+            yoga.flag("/std:c++20")
+                .flag("/EHsc")
+                .flag("/W0")
+                .define("NOMINMAX", None)
+                .define("_CRT_SECURE_NO_WARNINGS", None);
+        } else {
+            yoga.flag("-std=c++20").flag("-w");
+        }
         let mut yoga_sources = Vec::new();
         collect_cpp(&yoga_dir, &mut yoga_sources);
         yoga_sources.sort(); // deterministic object order
         if yoga_sources.is_empty() {
-            panic!("no .cpp sources under {} — vendored yoga is missing", yoga_dir.display());
+            panic!(
+                "no .cpp sources under {} — vendored yoga is missing",
+                yoga_dir.display()
+            );
         }
         yoga.files(&yoga_sources).compile("redjs_yoga");
         // Directory form: cargo walks it recursively, so headers and any future
@@ -253,13 +295,15 @@ fn main() {
     //
     // It is NOT the Rust global allocator: Rust keeps the system heap, mimalloc
     // serves JSC (and whatever JSC hands out) only.
-    cc::Build::new()
-        .cpp(true)
-        .compiler("clang-cl")
-        .static_crt(true)
+    let mut allocator = native_build(true, windows);
+    if windows {
+        allocator.flag("/TP");
+    } else {
+        allocator.flag("-x").flag("c++");
+    }
+    allocator
         .file(mimalloc.join("src").join("static.c"))
         .include(mimalloc.join("include"))
-        .flag("/TP")
         .flag("-w")
         .define("MI_STATIC_LIB", None)
         .define("MI_SKIP_COLLECT_ON_EXIT", "1")
@@ -281,19 +325,27 @@ fn main() {
     // benchmarks that say what it costs). /Gy + /Gw put every function and
     // global in its own COMDAT, so the linker drops what nothing reaches.
     if env::var_os("CARGO_FEATURE_INDEXEDDB_SQLITE").is_some() {
-        let mc = manifest.parent().unwrap().join("prebuilt").join("sqlite3mc");
+        let mc = manifest
+            .parent()
+            .unwrap()
+            .join("prebuilt")
+            .join("sqlite3mc");
         check_sqlite3mc(&mc, &pins);
-        cc::Build::new()
-            .compiler("clang-cl")
-            .static_crt(true)
+        let mut sqlite = native_build(false, windows);
+        if windows {
+            sqlite
+                .flag("/Gy")
+                .flag("/Gw")
+                .define("_CRT_SECURE_NO_WARNINGS", None);
+        } else {
+            sqlite.flag("-ffunction-sections").flag("-fdata-sections");
+        }
+        sqlite
             .file("cpp/idb_sqlite.c")
             .include(&mc)
             .opt_level_str("s")
-            .flag("/Gy")
-            .flag("/Gw")
             .flag("-w")
             .define("NDEBUG", None)
-            .define("_CRT_SECURE_NO_WARNINGS", None)
             .compile("redjs_sqlite");
         println!("cargo:rerun-if-changed=cpp/idb_sqlite.c");
         println!("cargo:rerun-if-changed={}", mc.join(".redjs-pin").display());
@@ -304,18 +356,64 @@ fn main() {
     // WebKit static libs. `-bundle`: not embedded into the staticlib artifact
     // (kept thin; NativeAOT link adds these libs itself), still linked into
     // the cdylib/test binaries as usual.
-    for l in ["JavaScriptCore", "WTF", "bmalloc", "sicudt", "sicuin", "sicuuc"] {
+    let libraries: &[&str] = if windows {
+        &[
+            "JavaScriptCore",
+            "WTF",
+            "bmalloc",
+            "sicudt",
+            "sicuin",
+            "sicuuc",
+        ]
+    } else if target_os == "linux" {
+        &[
+            "JavaScriptCore",
+            "WTF",
+            "bmalloc",
+            "icui18n",
+            "icuuc",
+            "icudata",
+        ]
+    } else {
+        &["JavaScriptCore", "WTF", "bmalloc"]
+    };
+    for l in libraries {
         println!("cargo:rustc-link-lib=static:-bundle={l}");
     }
 
     // Windows system libs WebKit pulls in. `ntdll`: the JIT/LLInt unwind-info
     // registration (`RtlAddGrowableFunctionTable`) — glue.cpp also carries it
     // as a /DEFAULTLIB directive for hand-written consumer links.
-    for l in [
-        "user32", "ole32", "oleaut32", "advapi32", "shell32", "shlwapi", "winmm", "bcrypt",
-        "dbghelp", "userenv", "ws2_32", "synchronization", "usp10", "rpcrt4", "crypt32", "ntdll",
-    ] {
-        println!("cargo:rustc-link-lib=dylib={l}");
+    if windows {
+        for l in [
+            "user32",
+            "ole32",
+            "oleaut32",
+            "advapi32",
+            "shell32",
+            "shlwapi",
+            "winmm",
+            "bcrypt",
+            "dbghelp",
+            "userenv",
+            "ws2_32",
+            "synchronization",
+            "usp10",
+            "rpcrt4",
+            "crypt32",
+            "ntdll",
+        ] {
+            println!("cargo:rustc-link-lib=dylib={l}");
+        }
+    } else if target_os == "linux" {
+        for library in ["dl", "pthread", "m", "rt", "atomic"] {
+            println!("cargo:rustc-link-lib=dylib={library}");
+        }
+    } else {
+        println!("cargo:rustc-link-lib=dylib=icucore");
+        for framework in ["CoreFoundation", "Foundation", "Security"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
     }
 
     // No identical-COMDAT folding in the images THIS package links (redjs.dll,
@@ -329,23 +427,49 @@ fn main() {
     // scopes link args to the package that prints them — so an embedder that
     // links its own executable (vue-native's vn-app) says the same thing in
     // its own build script.
-    println!("cargo:rustc-link-arg=/OPT:NOICF");
+    if windows {
+        println!("cargo:rustc-link-arg=/OPT:NOICF");
+    }
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cpp/glue.cpp");
     println!("cargo:rerun-if-changed=cpp/compat/wtf/PlatformEnableWin.h");
     // setup.ps1 rewrites the stamp only after a verified fetch, so it stands
     // for the whole mimalloc tree.
-    println!("cargo:rerun-if-changed={}", mimalloc.join(".redjs-pin").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        mimalloc.join(".redjs-pin").display()
+    );
     println!("cargo:rerun-if-changed={}", pins_path.display());
-    println!("cargo:rerun-if-changed={}", inc.join("cmakeconfig.h").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        inc.join("cmakeconfig.h").display()
+    );
     println!("cargo:rerun-if-env-changed=BUN_WEBKIT_DIR");
+}
+
+fn native_build(cpp: bool, windows: bool) -> cc::Build {
+    let mut build = cc::Build::new();
+    build.cpp(cpp);
+    if windows {
+        build.compiler("clang-cl").static_crt(true);
+    } else {
+        let variable = if cpp { "CXX" } else { "CC" };
+        let compiler =
+            env::var(variable).unwrap_or_else(|_| if cpp { "clang++" } else { "clang" }.into());
+        build.compiler(compiler).pic(true);
+    }
+    build
 }
 
 /// `pins.txt`: `key = value` lines, `#` comments. See that file.
 fn read_pins(path: &Path) -> Vec<(String, String)> {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e} — it pins the prebuilt redjs builds against", path.display()));
+    let text = fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read {}: {e} — it pins the prebuilt redjs builds against",
+            path.display()
+        )
+    });
     text.lines()
         .filter_map(|raw| {
             let line = raw.split('#').next().unwrap().trim();
@@ -368,7 +492,8 @@ fn pin<'a>(pins: &'a [(String, String)], key: &str) -> &'a str {
 fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
     let want = pin(pins, "webkit.version");
     let cfg = webkit.join("include").join("cmakeconfig.h");
-    let fix = "Run vendor/redjs/setup.ps1 (packages/jscore/setup.ps1 in PEWPEW): it fetches the pinned \
+    let fix =
+        "Run vendor/redjs/setup.ps1 (packages/jscore/setup.ps1 in PEWPEW): it fetches the pinned \
                prebuilt and REPLACES one at any other version. Or point BUN_WEBKIT_DIR at an \
                extraction of the pinned tarball.";
     let Ok(text) = fs::read_to_string(&cfg) else {
@@ -389,18 +514,29 @@ fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
              Building would compile the glue against one engine's internal headers and link\n\
              whatever is on disk — refusing.\n{fix}\n",
             webkit.display(),
-            have.as_deref().unwrap_or("unidentified (no BUN_WEBKIT_VERSION)"),
+            have.as_deref()
+                .unwrap_or("unidentified (no BUN_WEBKIT_VERSION)"),
         ),
     }
     let want_aot = pin(pins, "webkit.aot");
-    let have_aot = text.lines().find_map(|line| {
-        line.trim().strip_prefix("#define BUN_WEBKIT_ENABLE_AOT ")
-    }).map(str::trim);
-    assert_eq!(have_aot, Some(want_aot),
-        "JSC AOT variant mismatch at {}: wanted ENABLE_AOT={want_aot}. {fix}", webkit.display());
-    if !webkit.join("lib").join("JavaScriptCore.lib").is_file() {
+    let have_aot = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("#define BUN_WEBKIT_ENABLE_AOT "))
+        .map(str::trim);
+    assert_eq!(
+        have_aot,
+        Some(want_aot),
+        "JSC AOT variant mismatch at {}: wanted ENABLE_AOT={want_aot}. {fix}",
+        webkit.display()
+    );
+    let library = if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "JavaScriptCore.lib"
+    } else {
+        "libJavaScriptCore.a"
+    };
+    if !webkit.join("lib").join(library).is_file() {
         panic!(
-            "\n\n{} names the pinned build but has no lib/JavaScriptCore.lib — an interrupted \
+            "\n\n{} names the pinned build but has no lib/{library} — an interrupted \
              extraction?\n{fix}\n",
             webkit.display()
         );
@@ -411,7 +547,9 @@ fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
 /// extracted tree's sha256 matched pins.txt.
 fn check_mimalloc(dir: &Path, pins: &[(String, String)]) {
     let want = pin(pins, "mimalloc.commit");
-    let have = fs::read_to_string(dir.join(".redjs-pin")).ok().map(|s| s.trim().to_owned());
+    let have = fs::read_to_string(dir.join(".redjs-pin"))
+        .ok()
+        .map(|s| s.trim().to_owned());
     if have.as_deref() != Some(want) || !dir.join("src").join("static.c").is_file() {
         panic!(
             "\n\nmimalloc sources at {} are {}, but redjs pins oven-sh/mimalloc@{want} (pins.txt).\n\
@@ -427,8 +565,14 @@ fn check_mimalloc(dir: &Path, pins: &[(String, String)]) {
 /// only after the release asset's sha256 AND the extracted tree's matched
 /// pins.txt; a stamp naming anything else is a tree this build refuses.
 fn check_sqlite3mc(dir: &Path, pins: &[(String, String)]) {
-    let want = format!("{} {}", pin(pins, "sqlite3mc.version"), pin(pins, "sqlite3mc.tree-sha256"));
-    let have = fs::read_to_string(dir.join(".redjs-pin")).ok().map(|s| s.trim().to_owned());
+    let want = format!(
+        "{} {}",
+        pin(pins, "sqlite3mc.version"),
+        pin(pins, "sqlite3mc.tree-sha256")
+    );
+    let have = fs::read_to_string(dir.join(".redjs-pin"))
+        .ok()
+        .map(|s| s.trim().to_owned());
     if have.as_deref() != Some(want.as_str()) || !dir.join("sqlite3mc_amalgamation.c").is_file() {
         panic!(
             "\n\nthe SQLite3 Multiple Ciphers amalgamation at {} is {}, but redjs pins `{want}` (pins.txt).\n\
@@ -442,7 +586,9 @@ fn check_sqlite3mc(dir: &Path, pins: &[(String, String)]) {
 
 /// Collects every `.cpp` under `dir`, recursively.
 fn collect_cpp(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -454,6 +600,11 @@ fn collect_cpp(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
 }
 
 fn generate_trampolines(out_dir: &std::path::Path) {
+    let abi = if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "sysv64"
+    } else {
+        "C"
+    };
     let mut s = String::with_capacity(TRAMPOLINE_COUNT * 160);
     let _ = writeln!(
         s,
@@ -463,12 +614,12 @@ fn generate_trampolines(out_dir: &std::path::Path) {
     for i in 0..TRAMPOLINE_COUNT {
         let _ = writeln!(
             s,
-            "unsafe extern \"sysv64\" fn t{i}(g: *mut core::ffi::c_void, cf: *mut core::ffi::c_void) -> u64 {{ crate::trampoline::dispatch({i}, g, cf) }}"
+            "unsafe extern \"{abi}\" fn t{i}(g: *mut core::ffi::c_void, cf: *mut core::ffi::c_void) -> u64 {{ crate::trampoline::dispatch({i}, g, cf) }}"
         );
     }
     let _ = writeln!(
         s,
-        "pub(crate) static TRAMPOLINES: [unsafe extern \"sysv64\" fn(*mut core::ffi::c_void, *mut core::ffi::c_void) -> u64; {TRAMPOLINE_COUNT}] = ["
+        "pub(crate) static TRAMPOLINES: [unsafe extern \"{abi}\" fn(*mut core::ffi::c_void, *mut core::ffi::c_void) -> u64; {TRAMPOLINE_COUNT}] = ["
     );
     for i in 0..TRAMPOLINE_COUNT {
         let _ = writeln!(s, "    t{i},");

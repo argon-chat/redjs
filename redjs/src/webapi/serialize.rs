@@ -514,7 +514,8 @@ pub unsafe fn install(g: *mut c_void) {
 // structuredClone(value, { transfer })
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn structured_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn structured_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Failed to execute 'structuredClone': 1 argument required, but only 0 present.");
     }

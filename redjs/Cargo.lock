@@ -2811,6 +2811,7 @@ dependencies = [
  "rapier2d",
  "rapier3d",
  "redcss",
+ "redjs-macros",
  "resvg",
  "rustybuzz",
  "sha1",
@@ -2825,6 +2826,10 @@ dependencies = [
  "zbus",
  "zstd-sys",
 ]
+
+[[package]]
+name = "redjs-macros"
+version = "0.1.0"
 
 [[package]]
 name = "redox_syscall"

@@ -170,7 +170,8 @@ pub mod testing {
     }
 }
 
-unsafe extern "sysv64" fn print(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn print(g: *mut c_void, cf: *mut c_void) -> u64 {
     let level = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0) as i32;
     let msg = read_string(g, cf_arg(cf, 1)).unwrap_or_default();
     match level {

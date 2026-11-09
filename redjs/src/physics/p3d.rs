@@ -675,7 +675,8 @@ fn collider_builder_from_scratch(
 
 // ---- lifecycle --------------------------------------------------------------
 
-unsafe extern "sysv64" fn ctor(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctor(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((cls, default_proto)) = class_of(g) else {
         return throw_type_error(g, "RedPhysics3D not installed");
     };
@@ -687,7 +688,8 @@ unsafe extern "sysv64" fn ctor(g: *mut c_void, cf: *mut c_void) -> u64 {
     host_create::<WorldData>(g, cls, proto, wd)
 }
 
-unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((cls, _)) = class_of(g) else { return UNDEF };
     let Some(wd) = host_data::<WorldData>(g, cls, cf_this(cf)) else {
         return throw_type_error(g, "RedPhysics3D method called on wrong this");
@@ -713,38 +715,46 @@ unsafe extern "sysv64" fn free(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- views / config ---------------------------------------------------------
 
-unsafe extern "sysv64" fn generation(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn generation(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     enc_f64(wd.generation as f64)
 }
 
-unsafe extern "sysv64" fn get_poses(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_poses(g: *mut c_void, cf: *mut c_void) -> u64 {
     world!(g, cf).poses.view()
 }
 
-unsafe extern "sysv64" fn get_poses_prev(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_poses_prev(g: *mut c_void, cf: *mut c_void) -> u64 {
     world!(g, cf).prev_poses.view()
 }
 
-unsafe extern "sysv64" fn get_events(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_events(g: *mut c_void, cf: *mut c_void) -> u64 {
     world!(g, cf).events.view()
 }
 
-unsafe extern "sysv64" fn get_queries(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_queries(g: *mut c_void, cf: *mut c_void) -> u64 {
     world!(g, cf).queries.view()
 }
 
-unsafe extern "sysv64" fn get_scratch(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_scratch(g: *mut c_void, cf: *mut c_void) -> u64 {
     world!(g, cf).scratch.view()
 }
 
-unsafe extern "sysv64" fn set_gravity(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_gravity(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     wd.world.gravity = Vector::new(arg_f(cf, 0) as f32, arg_f(cf, 1) as f32, arg_f(cf, 2) as f32);
     UNDEF
 }
 
-unsafe extern "sysv64" fn set_timestep(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_timestep(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let dt = arg_f(cf, 0) as f32;
     if dt > 0.0 {
@@ -753,7 +763,8 @@ unsafe extern "sysv64" fn set_timestep(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn set_solver_iterations(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_solver_iterations(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let n = arg_u(cf, 0) as usize;
     if n > 0 {
@@ -783,7 +794,8 @@ fn reseed_all_poses(wd: &mut WorldData) {
     }
 }
 
-unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let s: Vec<f64> = wd.scratch.data()[..CREATE_BODY_FIELDS].to_vec();
     let (builder, body_type, explicit_mass) = body_builder_from_scratch(&s);
@@ -825,7 +837,8 @@ unsafe extern "sysv64" fn create_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_f64(id as f64)
 }
 
-unsafe extern "sysv64" fn remove_body(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn remove_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let Some(rec) = wd.bodies.remove(id) else { return UNDEF };
@@ -854,7 +867,8 @@ unsafe extern "sysv64" fn remove_body(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- colliders --------------------------------------------------------------
 
-unsafe extern "sysv64" fn add_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn add_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let body_id = arg_u(cf, 0);
     let Some((body, body_type)) = wd.bodies.get(body_id).map(|r| (r.handle, r.body_type)) else {
@@ -907,7 +921,8 @@ unsafe extern "sysv64" fn add_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_f64(id as f64)
 }
 
-unsafe extern "sysv64" fn remove_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn remove_collider(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let Some(rec) = wd.colliders.remove(id) else { return UNDEF };
@@ -920,7 +935,8 @@ unsafe extern "sysv64" fn remove_collider(g: *mut c_void, cf: *mut c_void) -> u6
 
 /// setBodyEventsEnabled(bodyId, enabled) — mirrors the WASM adapter's
 /// setEventHandler: collision/trigger events only flow for opted-in bodies.
-unsafe extern "sysv64" fn set_body_events_enabled(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_body_events_enabled(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let body_id = arg_u(cf, 0);
     let enabled = cf_arg(cf, 1) == TRUE || arg_f(cf, 1) != 0.0;
@@ -950,7 +966,8 @@ unsafe extern "sysv64" fn set_body_events_enabled(g: *mut c_void, cf: *mut c_voi
 
 // ---- step -------------------------------------------------------------------
 
-unsafe extern "sysv64" fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn step(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let dt = arg_f(cf, 0) as f32;
     if dt <= 0.0 {
@@ -1065,7 +1082,8 @@ unsafe fn arg_vec3(cf: *mut c_void, i: u32) -> Vector {
     )
 }
 
-unsafe extern "sysv64" fn apply_force(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn apply_force(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let Some(handle) = wd.body(id) else { return UNDEF };
@@ -1075,14 +1093,16 @@ unsafe extern "sysv64" fn apply_force(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn apply_impulse(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn apply_impulse(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.apply_impulse(arg_vec3(cf, 1), true);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn apply_torque(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn apply_torque(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let Some(handle) = wd.body(id) else { return UNDEF };
@@ -1092,14 +1112,16 @@ unsafe extern "sysv64" fn apply_torque(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn apply_angular_impulse(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn apply_angular_impulse(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.apply_torque_impulse(arg_vec3(cf, 1), true);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn get_linear_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_linear_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let Some(handle) = wd.body(id) else { return FALSE };
@@ -1112,14 +1134,16 @@ unsafe extern "sysv64" fn get_linear_velocity(g: *mut c_void, cf: *mut c_void) -
     TRUE
 }
 
-unsafe extern "sysv64" fn set_linear_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_linear_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.set_linvel(arg_vec3(cf, 1), true);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn get_angular_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_angular_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let Some(handle) = wd.body(id) else { return FALSE };
@@ -1132,35 +1156,40 @@ unsafe extern "sysv64" fn get_angular_velocity(g: *mut c_void, cf: *mut c_void) 
     TRUE
 }
 
-unsafe extern "sysv64" fn set_angular_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_angular_velocity(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.set_angvel(arg_vec3(cf, 1), true);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn set_linear_damping(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_linear_damping(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.set_linear_damping(arg_f(cf, 1) as f32);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn set_angular_damping(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_angular_damping(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.set_angular_damping(arg_f(cf, 1) as f32);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn set_gravity_scale(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_gravity_scale(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.set_gravity_scale(arg_f(cf, 1) as f32, true);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn get_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let m = wd
@@ -1171,7 +1200,8 @@ unsafe extern "sysv64" fn get_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_f64(m as f64)
 }
 
-unsafe extern "sysv64" fn set_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let target = arg_f(cf, 1) as f32;
@@ -1191,21 +1221,24 @@ unsafe extern "sysv64" fn set_mass(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn sleep_body(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sleep_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.sleep();
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn wake_body(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn wake_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.wake_up(true);
         UNDEF
     })
 }
 
-unsafe extern "sysv64" fn is_sleeping(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn is_sleeping(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let id = arg_u(cf, 0);
     let v = wd
@@ -1218,7 +1251,8 @@ unsafe extern "sysv64" fn is_sleeping(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// Kinematic drive: the subsystem pushes authored transforms into
 /// kinematic-position-based bodies (next-position target).
-unsafe extern "sysv64" fn set_kinematic_target(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_kinematic_target(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.set_next_kinematic_position(Pose::from_parts(
             arg_vec3(cf, 1),
@@ -1229,7 +1263,8 @@ unsafe extern "sysv64" fn set_kinematic_target(g: *mut c_void, cf: *mut c_void) 
 }
 
 /// Teleport (editor/scripts moving bodies directly).
-unsafe extern "sysv64" fn set_body_position(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn set_body_position(g: *mut c_void, cf: *mut c_void) -> u64 {
     with_body_mut!(g, cf, wd, rb, {
         rb.set_position(
             Pose::from_parts(
@@ -1381,7 +1416,8 @@ fn move_character_core(
 }
 
 /// configureCharacter(bodyId) — reads the 13-field scratch layout; keyed by body slot.
-unsafe extern "sysv64" fn configure_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn configure_character(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let body_id = arg_u(cf, 0);
     let s: Vec<f64> = wd.scratch.data()[..CONFIGURE_CHARACTER_FIELDS].to_vec();
@@ -1390,7 +1426,8 @@ unsafe extern "sysv64" fn configure_character(g: *mut c_void, cf: *mut c_void) -
     UNDEF
 }
 
-unsafe extern "sysv64" fn remove_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn remove_character(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     wd.characters.remove(&arg_u(cf, 0));
     UNDEF
@@ -1398,7 +1435,8 @@ unsafe extern "sysv64" fn remove_character(g: *mut c_void, cf: *mut c_void) -> u
 
 /// moveCharacter(bodyId, dx, dy, dz, dt) → scratch [0..2]=applied [3]=grounded;
 /// returns true when a controller actually ran.
-unsafe extern "sysv64" fn move_character(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn move_character(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let body_id = arg_u(cf, 0);
     let desired = arg_vec3(cf, 1);
@@ -1433,7 +1471,8 @@ fn body_slot_of_collider(wd: &WorldData, ch: ColliderHandle) -> f32 {
         .unwrap_or(-1.0)
 }
 
-unsafe extern "sysv64" fn raycast(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn raycast(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let origin = arg_vec3(cf, 0);
     let dir = arg_vec3(cf, 3);
@@ -1462,7 +1501,8 @@ unsafe extern "sysv64" fn raycast(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_f64(1.0)
 }
 
-unsafe extern "sysv64" fn raycast_all(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn raycast_all(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let origin = arg_vec3(cf, 0);
     let dir = arg_vec3(cf, 3);
@@ -1523,7 +1563,8 @@ fn collect_shape_overlaps(wd: &WorldData, pos: Vector, shape: &dyn Shape, mask: 
     slots
 }
 
-unsafe extern "sysv64" fn overlap_sphere(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn overlap_sphere(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let pos = arg_vec3(cf, 0);
     let r = (arg_f(cf, 3) as f32).max(1e-4);
@@ -1533,7 +1574,8 @@ unsafe extern "sysv64" fn overlap_sphere(g: *mut c_void, cf: *mut c_void) -> u64
     write_overlap_hits(g, wd, &slots)
 }
 
-unsafe extern "sysv64" fn overlap_box(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn overlap_box(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let pos = arg_vec3(cf, 0);
     let half = Vector::new(
@@ -1547,7 +1589,8 @@ unsafe extern "sysv64" fn overlap_box(g: *mut c_void, cf: *mut c_void) -> u64 {
     write_overlap_hits(g, wd, &slots)
 }
 
-unsafe extern "sysv64" fn overlap_point(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn overlap_point(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let pos = arg_vec3(cf, 0);
     let mask = if cf_arg(cf, 3) == UNDEF { u32::MAX } else { arg_u(cf, 3) };
@@ -1584,7 +1627,8 @@ fn hsla_to_rgba(c: [f32; 4]) -> [f32; 4] {
 /// debugRender() — snapshot collider wireframes into the queries buffer as
 /// per-vertex records (DEBUG_STRIDE, 2 vertices per segment); returns the vertex
 /// count. Reuses `queries` like raycastAll — the adapter drains it synchronously.
-unsafe extern "sysv64" fn debug_render(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn debug_render(g: *mut c_void, cf: *mut c_void) -> u64 {
     use rapier3d::pipeline::{
         DebugRenderBackend, DebugRenderMode, DebugRenderObject, DebugRenderPipeline,
         DebugRenderStyle,
@@ -1626,7 +1670,8 @@ unsafe extern "sysv64" fn debug_render(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- diagnostics ------------------------------------------------------------
 
-unsafe extern "sysv64" fn diagnostics(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn diagnostics(g: *mut c_void, cf: *mut c_void) -> u64 {
     let wd = world!(g, cf);
     let body_count = wd.bodies.iter().count();
     let collider_count = wd.colliders.iter().count();

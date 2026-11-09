@@ -124,21 +124,24 @@ unsafe fn this_signal_slots(g: *mut c_void, cf: *mut c_void) -> Option<u64> {
 
 // ---- AbortSignal ------------------------------------------------------------
 
-unsafe extern "sysv64" fn sig_get_aborted(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sig_get_aborted(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_signal_slots(g, cf) {
         Some(s) => get(g, s, "aborted"),
         None => throw_type_error(g, "AbortSignal.aborted on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn sig_get_reason(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sig_get_reason(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_signal_slots(g, cf) {
         Some(s) => get(g, s, "reason"),
         None => throw_type_error(g, "AbortSignal.reason on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn sig_throw_if_aborted(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sig_throw_if_aborted(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(s) = this_signal_slots(g, cf) else {
         return throw_type_error(g, "AbortSignal.throwIfAborted on wrong this");
     };
@@ -149,14 +152,16 @@ unsafe extern "sysv64" fn sig_throw_if_aborted(g: *mut c_void, cf: *mut c_void) 
 }
 
 /// AbortSignal.abort(reason) — a pre-aborted signal.
-unsafe extern "sysv64" fn sig_static_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sig_static_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     let reason = cf_arg(cf, 0);
     let reason = if reason == UNDEF { default_reason(g, "AbortError", "signal is aborted without reason") } else { reason };
     new_signal(g, true, reason)
 }
 
 /// AbortSignal.timeout(ms) — aborts with a TimeoutError via the scheduler.
-unsafe extern "sysv64" fn sig_static_timeout(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn sig_static_timeout(g: *mut c_void, cf: *mut c_void) -> u64 {
     let ms = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0).max(0.0);
     let sig = new_signal(g, false, UNDEF);
     crate::ffi::redjs_protect(g, sig);
@@ -170,7 +175,8 @@ unsafe extern "sysv64" fn sig_static_timeout(g: *mut c_void, cf: *mut c_void) ->
 
 // ---- AbortController --------------------------------------------------------
 
-unsafe extern "sysv64" fn ctrl_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctrl_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let obj = ordinary_create(g, cf_new_target(cf), c.controller.proto);
     let slots = new_object(g, UNDEF);
@@ -179,7 +185,8 @@ unsafe extern "sysv64" fn ctrl_construct(g: *mut c_void, cf: *mut c_void) -> u64
     obj
 }
 
-unsafe extern "sysv64" fn ctrl_get_signal(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctrl_get_signal(g: *mut c_void, cf: *mut c_void) -> u64 {
     let slots = slots_of(g, cf_this(cf));
     if !is_cell(slots) {
         return throw_type_error(g, "AbortController.signal on wrong this");
@@ -187,7 +194,8 @@ unsafe extern "sysv64" fn ctrl_get_signal(g: *mut c_void, cf: *mut c_void) -> u6
     get(g, slots, "signal")
 }
 
-unsafe extern "sysv64" fn ctrl_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctrl_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     let slots = slots_of(g, cf_this(cf));
     if !is_cell(slots) {
         return throw_type_error(g, "AbortController.abort on wrong this");

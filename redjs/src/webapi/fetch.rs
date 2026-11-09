@@ -220,7 +220,8 @@ unsafe fn take_body(g: *mut c_void, cf: *mut c_void, who: &str) -> Result<Arc<Ve
 
 macro_rules! resp_getter {
     ($name:ident, |$d:ident, $g:ident| $body:expr) => {
-        unsafe extern "sysv64" fn $name($g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name($g: *mut c_void, cf: *mut c_void) -> u64 {
             match this_resp($g, cf) {
                 Some($d) => $body,
                 None => throw_type_error($g, "Response getter called on a non-Response"),
@@ -259,7 +260,8 @@ resp_getter!(resp_type, |d, g| {
 });
 
 /// Cached per spec identity: `res.headers === res.headers`.
-unsafe extern "sysv64" fn resp_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let slot = atom_priv(g, "redjs#respHeaders");
     let cached = get_a(g, this, slot);
@@ -280,7 +282,8 @@ unsafe extern "sysv64" fn resp_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// `Response.body` — a `ReadableStream` over the buffered bytes (see the module
 /// header for why buffered). `null` for a null-body response, per spec.
-unsafe extern "sysv64" fn resp_body(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let slot = atom_priv(g, "redjs#bodyStream");
     let cached = get_a(g, this, slot);
@@ -356,7 +359,8 @@ unsafe fn make_body_stream(g: *mut c_void, bytes: &[u8]) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn resp_array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let bytes = match take_body(g, cf, "arrayBuffer") {
         Ok(b) => b,
         Err(p) => return p,
@@ -366,7 +370,8 @@ unsafe extern "sysv64" fn resp_array_buffer(g: *mut c_void, cf: *mut c_void) -> 
     resolved_promise(g, buffer)
 }
 
-unsafe extern "sysv64" fn resp_bytes(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_bytes(g: *mut c_void, cf: *mut c_void) -> u64 {
     let bytes = match take_body(g, cf, "bytes") {
         Ok(b) => b,
         Err(p) => return p,
@@ -375,7 +380,8 @@ unsafe extern "sysv64" fn resp_bytes(g: *mut c_void, cf: *mut c_void) -> u64 {
     resolved_promise(g, u8v)
 }
 
-unsafe extern "sysv64" fn resp_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     let bytes = match take_body(g, cf, "text") {
         Ok(b) => b,
         Err(p) => return p,
@@ -384,7 +390,8 @@ unsafe extern "sysv64" fn resp_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     resolved_promise(g, js_string(g, &s))
 }
 
-unsafe extern "sysv64" fn resp_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let bytes = match take_body(g, cf, "json") {
         Ok(b) => b,
@@ -400,7 +407,8 @@ unsafe extern "sysv64" fn resp_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn resp_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     let mime = match this_resp(g, cf) {
         Some(d) => d.mime(),
         None => return reject_refusal(g, "Response.blob called on a non-Response"),
@@ -413,7 +421,8 @@ unsafe extern "sysv64" fn resp_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     resolved_promise(g, b)
 }
 
-unsafe extern "sysv64" fn resp_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn resp_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = this_resp(g, cf) else {
         return throw_type_error(g, "Response.clone called on a non-Response");
     };
@@ -464,7 +473,8 @@ unsafe fn response_init(g: *mut c_void, init: u64, default_mime: Option<String>)
     Ok((status, status_text, list))
 }
 
-unsafe extern "sysv64" fn response_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn response_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let body_v = cf_arg(cf, 0);
     let (bytes, implied, has_body) = match extract_body(g, body_v) {
         Ok(Some((b, m))) => (b, m, true),
@@ -490,7 +500,8 @@ unsafe extern "sysv64" fn response_construct(g: *mut c_void, cf: *mut c_void) ->
 }
 
 /// `Response.json(data, init)`.
-unsafe extern "sysv64" fn response_static_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn response_static_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let global = glue::rjs_global(g);
     let stringify = get(g, get(g, global, "JSON"), "stringify");
     let text = match call(g, stringify, UNDEF, &[cf_arg(cf, 0)]) {
@@ -523,7 +534,8 @@ unsafe extern "sysv64" fn response_static_json(g: *mut c_void, cf: *mut c_void) 
 /// legitimate `status: 0` in this module, and it is tagged `type: "error"` so
 /// it can never be mistaken for the fake one that used to come back from
 /// `fetch('https://…')`.
-unsafe extern "sysv64" fn response_static_error(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn response_static_error(g: *mut c_void, _cf: *mut c_void) -> u64 {
     create_response(g, RespData {
         bytes: Arc::new(Vec::new()),
         headers: Vec::new(),
@@ -555,7 +567,8 @@ fn bridge_class() -> capi::JSClassRef {
 /// The `abort` listener. A listener OBJECT rather than a function, because a
 /// native function value cannot carry the `Arc<Cancel>`; DOM listeners may be
 /// objects with `handleEvent` (and `events::call_listener` honours that).
-unsafe extern "sysv64" fn bridge_handle_event(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bridge_handle_event(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(d) = host_data::<BridgeData>(g, bridge_class(), cf_this(cf)) {
         d.cancel.abort();
     }
@@ -799,7 +812,8 @@ unsafe fn fetch_local(g: *mut c_void, plan: &Plan) -> u64 {
     resolved_promise(g, resp)
 }
 
-unsafe extern "sysv64" fn fetch_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fetch_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
     // Spec: `fetch` reports argument problems by REJECTING, never by throwing.
     let plan = match build_plan(g, cf_arg(cf, 0), cf_arg(cf, 1)) {
         Ok(p) => p,

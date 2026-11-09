@@ -1928,7 +1928,8 @@ fn advise_wide_output(channels: usize) {
 /// `InvalidAccessError`, an output index past `numberOfOutputs` or an input
 /// index past the destination's `numberOfInputs` an `IndexSizeError`. A
 /// connection whose termini already exist is ignored, as the spec says.
-unsafe extern "sysv64" fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let Some(src) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioNode.connect called on wrong this");
@@ -2018,7 +2019,8 @@ unsafe extern "sysv64" fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// connection that does not exist is an `InvalidAccessError`.
 /// `disconnect(audioParam)` is always the latter: `connect` refuses a param, so
 /// nothing can be connected to one.
-unsafe extern "sysv64" fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let Some(src) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioNode.disconnect called on wrong this");
@@ -2156,7 +2158,8 @@ unsafe extern "sysv64" fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u6
     }
 }
 
-unsafe extern "sysv64" fn node_get_number_of_inputs(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn node_get_number_of_inputs(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioNode.numberOfInputs on wrong this");
     };
@@ -2164,7 +2167,8 @@ unsafe extern "sysv64" fn node_get_number_of_inputs(g: *mut c_void, cf: *mut c_v
     enc_i32(gl.nodes.get(&h).map(|r| r.web_inputs()).unwrap_or(0) as i32)
 }
 
-unsafe extern "sysv64" fn node_get_number_of_outputs(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn node_get_number_of_outputs(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioNode.numberOfOutputs on wrong this");
     };
@@ -2211,7 +2215,8 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
     }
 }
 
-unsafe extern "sysv64" fn param_get_value(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn param_get_value(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_param(g, cf) {
         Some(p) => {
             let gl = glob().lock().unwrap();
@@ -2221,7 +2226,8 @@ unsafe extern "sysv64" fn param_get_value(g: *mut c_void, cf: *mut c_void) -> u6
     }
 }
 
-unsafe extern "sysv64" fn param_set_value(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn param_set_value(g: *mut c_void, cf: *mut c_void) -> u64 {
     let native = this_param(g, cf).is_some_and(|p| matches!(p.kind, P_NATIVE_ENABLED | P_NATIVE_THRESHOLD));
     let v = if native {
         let Ok(v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF; };
@@ -2277,24 +2283,29 @@ unsafe fn param_schedule(g: *mut c_void, cf: *mut c_void, mk: impl FnOnce(f64, f
     this
 }
 
-unsafe extern "sysv64" fn param_set_value_at(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn param_set_value_at(g: *mut c_void, cf: *mut c_void) -> u64 {
     param_schedule(g, cf, |v, t| Tl::Set { t, v })
 }
 
-unsafe extern "sysv64" fn param_linear_ramp(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn param_linear_ramp(g: *mut c_void, cf: *mut c_void) -> u64 {
     param_schedule(g, cf, |v, t| Tl::Lin { t, v })
 }
 
-unsafe extern "sysv64" fn param_exp_ramp(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn param_exp_ramp(g: *mut c_void, cf: *mut c_void) -> u64 {
     param_schedule(g, cf, |v, t| Tl::Exp { t, v })
 }
 
-unsafe extern "sysv64" fn param_set_target(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn param_set_target(g: *mut c_void, cf: *mut c_void) -> u64 {
     let tau = dec_f64(cf_arg(cf, 2)).unwrap_or(0.01);
     param_schedule(g, cf, move |v, t| Tl::Target { t, v, tau })
 }
 
-unsafe extern "sysv64" fn param_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn param_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
     let t = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
     let this = cf_this(cf);
     let Some(p) = this_param(g, cf) else {
@@ -2324,21 +2335,24 @@ unsafe fn wrap_buffer(g: *mut c_void, buf: Arc<PlanarBuffer>) -> u64 {
     host_create(g, c.buffer_cls, c.buffer.proto, BufData { buf })
 }
 
-unsafe extern "sysv64" fn buf_get_sample_rate(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn buf_get_sample_rate(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_buf(g, cf) {
         Some(b) => enc_f64(b.buf.sample_rate as f64),
         None => throw_type_error(g, "AudioBuffer.sampleRate on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn buf_get_length(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn buf_get_length(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_buf(g, cf) {
         Some(b) => enc_f64(b.buf.data.first().map(|c| c.len()).unwrap_or(0) as f64),
         None => throw_type_error(g, "AudioBuffer.length on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn buf_get_duration(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn buf_get_duration(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_buf(g, cf) {
         Some(b) => {
             let frames = b.buf.data.first().map(|c| c.len()).unwrap_or(0) as f64;
@@ -2348,14 +2362,16 @@ unsafe extern "sysv64" fn buf_get_duration(g: *mut c_void, cf: *mut c_void) -> u
     }
 }
 
-unsafe extern "sysv64" fn buf_get_channels(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn buf_get_channels(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_buf(g, cf) {
         Some(b) => enc_i32(b.buf.data.len() as i32),
         None => throw_type_error(g, "AudioBuffer.numberOfChannels on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn buf_get_channel_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn buf_get_channel_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     let i = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0) as usize;
     let Some(b) = this_buf(g, cf) else {
         return throw_type_error(g, "AudioBuffer.getChannelData on wrong this");
@@ -2376,7 +2392,8 @@ unsafe extern "sysv64" fn buf_get_channel_data(g: *mut c_void, cf: *mut c_void) 
     out
 }
 
-unsafe extern "sysv64" fn buf_copy_to_channel(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn buf_copy_to_channel(g: *mut c_void, cf: *mut c_void) -> u64 {
     let src = cf_arg(cf, 0);
     let ch = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0) as usize;
     let start = dec_f64(cf_arg(cf, 2)).unwrap_or(0.0) as usize;
@@ -2408,12 +2425,14 @@ impl Clone for PlanarBuffer {
 // AudioBufferSourceNode
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn src_get_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_get_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let slots = slots_of(g, cf_this(cf));
     get(g, slots, "buffer")
 }
 
-unsafe extern "sysv64" fn src_set_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_set_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let v = cf_arg(cf, 0);
     let Some(handle) = this_node_handle(g, cf) else {
@@ -2431,7 +2450,8 @@ unsafe extern "sysv64" fn src_set_buffer(g: *mut c_void, cf: *mut c_void) -> u64
     UNDEF
 }
 
-unsafe extern "sysv64" fn src_get_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_get_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioBufferSourceNode.loop on wrong this");
     };
@@ -2441,7 +2461,8 @@ unsafe extern "sysv64" fn src_get_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// `loop` — read by the playing [`SourceSample`] on every block, so setting it
 /// during playback loops (or stops looping) from the current playhead.
-unsafe extern "sysv64" fn src_set_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_set_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = cf_arg(cf, 0) == 0x7; // true
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioBufferSourceNode.loop on wrong this");
@@ -2487,28 +2508,34 @@ unsafe fn src_set_loop_point(g: *mut c_void, cf: *mut c_void, end: bool) -> u64 
     UNDEF
 }
 
-unsafe extern "sysv64" fn src_get_loop_start(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_get_loop_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     src_loop_point(g, cf, false)
 }
 
-unsafe extern "sysv64" fn src_set_loop_start(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_set_loop_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     src_set_loop_point(g, cf, false)
 }
 
-unsafe extern "sysv64" fn src_get_loop_end(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_get_loop_end(g: *mut c_void, cf: *mut c_void) -> u64 {
     src_loop_point(g, cf, true)
 }
 
-unsafe extern "sysv64" fn src_set_loop_end(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_set_loop_end(g: *mut c_void, cf: *mut c_void) -> u64 {
     src_set_loop_point(g, cf, true)
 }
 
-unsafe extern "sysv64" fn src_get_onended(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_get_onended(g: *mut c_void, cf: *mut c_void) -> u64 {
     let slots = slots_of(g, cf_this(cf));
     get(g, slots, "onended")
 }
 
-unsafe extern "sysv64" fn src_set_onended(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_set_onended(g: *mut c_void, cf: *mut c_void) -> u64 {
     let slots = slots_of(g, cf_this(cf));
     define(g, slots, "onended", cf_arg(cf, 0), 0);
     UNDEF
@@ -2518,7 +2545,8 @@ unsafe extern "sysv64" fn src_set_onended(g: *mut c_void, cf: *mut c_void) -> u6
 /// `AudioBufferSourceNode` and `OscillatorNode`; `do_start` dispatches on the
 /// node's `Params` (`offset` and `duration` are ignored for an oscillator,
 /// whose `start(when)` has neither).
-unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     let when = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
     let offset = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0);
     // Absent = play to the end (or loop until stopped).
@@ -2561,7 +2589,8 @@ unsafe extern "sysv64" fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn src_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn src_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
     let when = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0);
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "AudioScheduledSourceNode.stop on wrong this");
@@ -2583,7 +2612,8 @@ unsafe extern "sysv64" fn src_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
 // OscillatorNode.type
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn osc_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn osc_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "OscillatorNode.type on wrong this");
     };
@@ -2596,7 +2626,8 @@ unsafe extern "sysv64" fn osc_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     js_string(g, name)
 }
 
-unsafe extern "sysv64" fn osc_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn osc_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     let raw = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "OscillatorNode.type on wrong this");
@@ -2637,7 +2668,8 @@ unsafe fn this_sink(g: *mut c_void, cf: *mut c_void) -> Option<pcm::PcmSink> {
 /// Present mostly so the seam is testable and demoable without writing native
 /// code; the production producer is native and never crosses the VM lock.
 /// Returns the number of frames accepted (0 when the graph is not consuming).
-unsafe extern "sysv64" fn stream_push(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream_push(g: *mut c_void, cf: *mut c_void) -> u64 {
     let src = cf_arg(cf, 0);
     let Some(sink) = this_sink(g, cf) else {
         // A closed node accepting pushes silently would look identical to a
@@ -2662,7 +2694,8 @@ unsafe extern "sysv64" fn stream_push(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// (and renders silence) until it is disconnected and collected; only the push
 /// side goes away, so a native producer still holding a `PcmSink` starts
 /// getting `NotReady` instead of writing into a stream nobody reads.
-unsafe extern "sysv64" fn stream_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(h) = this_node_handle(g, cf) {
         pcm::unregister(h);
     }
@@ -2670,30 +2703,35 @@ unsafe extern "sysv64" fn stream_close(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// Seconds of audio buffered ahead of the device; `null` when not streaming.
-unsafe extern "sysv64" fn stream_get_queued(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream_get_queued(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_sink(g, cf).and_then(|s| s.occupied_seconds()) {
         Some(v) => enc_f64(v),
         None => NULL,
     }
 }
 
-unsafe extern "sysv64" fn stream_get_available(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream_get_available(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_f64(this_sink(g, cf).map(|s| s.available_frames()).unwrap_or(0) as f64)
 }
 
 /// Read-AND-CLEAR, exactly like the native side: reading tells you whether it
 /// happened since your last read, so a meter cannot latch on forever.
-unsafe extern "sysv64" fn stream_get_underflowed(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream_get_underflowed(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_bool(this_sink(g, cf).map(|s| s.underflowed()).unwrap_or(false))
 }
 
-unsafe extern "sysv64" fn stream_get_overflowed(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream_get_overflowed(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_bool(this_sink(g, cf).map(|s| s.overflowed()).unwrap_or(false))
 }
 
 /// Is the graph actually pulling frames? False while the context has no output
 /// stream, or before the processor's first block.
-unsafe extern "sysv64" fn stream_get_ready(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn stream_get_ready(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_bool(this_sink(g, cf).map(|s| s.is_ready()).unwrap_or(false))
 }
 
@@ -2701,7 +2739,8 @@ unsafe extern "sysv64" fn stream_get_ready(g: *mut c_void, cf: *mut c_void) -> u
 // BiquadFilterNode.type / AnalyserNode extras
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn biquad_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn biquad_get_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "BiquadFilterNode.type on wrong this");
     };
@@ -2720,7 +2759,8 @@ unsafe extern "sysv64" fn biquad_get_type(g: *mut c_void, cf: *mut c_void) -> u6
     js_string(g, s)
 }
 
-unsafe extern "sysv64" fn biquad_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn biquad_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "BiquadFilterNode.type on wrong this");
@@ -2777,10 +2817,12 @@ unsafe fn panner_write(g: *mut c_void, cf: *mut c_void, apply: impl FnOnce(&mut 
 /// [refDistance, maxDistance, rolloffFactor] and [inner°, outer°, outerGain] accessors.
 macro_rules! panner_f32_accessor {
     ($get:ident, $set:ident, $field:ident, $idx:expr, $clamp:expr) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             panner_read(g, cf, |rec| rec.$field[$idx] as f64)
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             let v = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0) as f32;
             panner_write(g, cf, |rec| rec.$field[$idx] = ($clamp)(v))
         }
@@ -2793,7 +2835,8 @@ panner_f32_accessor!(panner_get_cone_inner, panner_set_cone_inner, cone, 0, |v: 
 panner_f32_accessor!(panner_get_cone_outer, panner_set_cone_outer, cone, 1, |v: f32| v);
 panner_f32_accessor!(panner_get_cone_gain, panner_set_cone_gain, cone, 2, |v: f32| v);
 
-unsafe extern "sysv64" fn panner_get_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn panner_get_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "PannerNode.distanceModel on wrong this");
     };
@@ -2806,7 +2849,8 @@ unsafe extern "sysv64" fn panner_get_distance_model(g: *mut c_void, cf: *mut c_v
     js_string(g, s)
 }
 
-unsafe extern "sysv64" fn panner_set_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn panner_set_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let model = match ty.as_str() {
         "linear" => DistModel::Linear,
@@ -2817,7 +2861,8 @@ unsafe extern "sysv64" fn panner_set_distance_model(g: *mut c_void, cf: *mut c_v
 }
 
 /// Real HRTF (W-MIX MIX-20): switches the node's panning mode live.
-unsafe extern "sysv64" fn panner_get_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn panner_get_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "PannerNode.panningModel on wrong this");
     };
@@ -2826,7 +2871,8 @@ unsafe extern "sysv64" fn panner_get_panning_model(g: *mut c_void, cf: *mut c_vo
     js_string(g, if hrtf { "HRTF" } else { "equalpower" })
 }
 
-unsafe extern "sysv64" fn panner_set_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn panner_set_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let hrtf = ty == "HRTF";
     let Some(handle) = this_node_handle(g, cf) else {
@@ -2911,7 +2957,8 @@ unsafe fn analyser_spectrum(g: *mut c_void, cf: *mut c_void) -> Option<Vec<f32>>
     Some(smooth.clone())
 }
 
-unsafe extern "sysv64" fn analyser_float_time(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn analyser_float_time(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(out) = analyser_out::<f32>(g, cf, 8) else { return UNDEF };
     match analyser_time_domain(g, cf) {
         Some(data) => {
@@ -2923,7 +2970,8 @@ unsafe extern "sysv64" fn analyser_float_time(g: *mut c_void, cf: *mut c_void) -
     UNDEF
 }
 
-unsafe extern "sysv64" fn analyser_byte_time(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn analyser_byte_time(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(out) = analyser_out::<u8>(g, cf, 2) else { return UNDEF };
     match analyser_time_domain(g, cf) {
         Some(data) => {
@@ -2936,7 +2984,8 @@ unsafe extern "sysv64" fn analyser_byte_time(g: *mut c_void, cf: *mut c_void) ->
     UNDEF
 }
 
-unsafe extern "sysv64" fn analyser_float_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn analyser_float_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(out) = analyser_out::<f32>(g, cf, 8) else { return UNDEF };
     match analyser_spectrum(g, cf) {
         Some(mags) => {
@@ -2949,7 +2998,8 @@ unsafe extern "sysv64" fn analyser_float_freq(g: *mut c_void, cf: *mut c_void) -
     UNDEF
 }
 
-unsafe extern "sysv64" fn analyser_byte_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn analyser_byte_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
     let min_db = analyser_slot_f64(g, cf, "minDecibels", -100.0) as f32;
     let max_db = analyser_slot_f64(g, cf, "maxDecibels", -30.0) as f32;
     let range = (max_db - min_db).max(1e-6);
@@ -2966,11 +3016,13 @@ unsafe extern "sysv64" fn analyser_byte_freq(g: *mut c_void, cf: *mut c_void) ->
     UNDEF
 }
 
-unsafe extern "sysv64" fn analyser_get_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn analyser_get_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_i32(analyser_fft_size(g, cf) as i32)
 }
 
-unsafe extern "sysv64" fn analyser_set_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn analyser_set_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = dec_f64(cf_arg(cf, 0)).unwrap_or(f64::NAN);
     if valid_fft_size(v).is_none() {
         return throw_type_error(g, "AnalyserNode.fftSize must be a power of two in [32, 4096]");
@@ -2980,17 +3032,20 @@ unsafe extern "sysv64" fn analyser_set_fft(g: *mut c_void, cf: *mut c_void) -> u
     UNDEF
 }
 
-unsafe extern "sysv64" fn analyser_bin_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn analyser_bin_count(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_i32((analyser_fft_size(g, cf) / 2) as i32)
 }
 
 // smoothingTimeConstant / minDecibels / maxDecibels — plain slot-backed accessors
 macro_rules! analyser_slot_accessor {
     ($get:ident, $set:ident, $name:literal, $default:expr) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             enc_f64(analyser_slot_f64(g, cf, $name, $default))
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             let slots = slots_of(g, cf_this(cf));
             define(g, slots, $name, cf_arg(cf, 0), 0);
             UNDEF
@@ -3007,7 +3062,8 @@ analyser_slot_accessor!(analyser_get_max_db, analyser_set_max_db, "maxDecibels",
 
 macro_rules! slot_getter {
     ($fn_name:ident, $slot:literal) => {
-        unsafe extern "sysv64" fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
             let slots = slots_of(g, cf_this(cf));
             get(g, slots, $slot)
         }
@@ -3042,7 +3098,8 @@ slot_getter!(get_slot_stream_channels, "channelCount");
 // AudioContext
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
 
     let mut fw = FirewheelContext::new(firewheel::FirewheelConfig::default());
@@ -3129,7 +3186,8 @@ unsafe extern "sysv64" fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 
     obj
 }
 
-unsafe extern "sysv64" fn ctx_get_current_time(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_get_current_time(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return throw_type_error(g, "AudioContext.currentTime on wrong this");
     };
@@ -3137,7 +3195,8 @@ unsafe extern "sysv64" fn ctx_get_current_time(g: *mut c_void, cf: *mut c_void) 
     enc_f64(gl.engines.get(&h).map(|e| e.now()).unwrap_or(0.0))
 }
 
-unsafe extern "sysv64" fn ctx_get_sample_rate(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_get_sample_rate(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return throw_type_error(g, "AudioContext.sampleRate on wrong this");
     };
@@ -3145,7 +3204,8 @@ unsafe extern "sysv64" fn ctx_get_sample_rate(g: *mut c_void, cf: *mut c_void) -
     enc_f64(gl.engines.get(&h).map(|e| e.sample_rate).unwrap_or(48_000) as f64)
 }
 
-unsafe extern "sysv64" fn ctx_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return throw_type_error(g, "AudioContext.state on wrong this");
     };
@@ -3158,7 +3218,8 @@ unsafe extern "sysv64" fn ctx_get_state(g: *mut c_void, cf: *mut c_void) -> u64 
     js_string(g, s)
 }
 
-unsafe extern "sysv64" fn ctx_get_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_get_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return throw_type_error(g, "AudioContext.sinkId on wrong this");
     };
@@ -3180,7 +3241,8 @@ unsafe extern "sysv64" fn ctx_get_sink_id(g: *mut c_void, cf: *mut c_void) -> u6
 /// - a closed context → `InvalidStateError`;
 /// - a device that will not open → the CPAL error, after restoring the
 ///   previous device so the failure is not also a silence.
-unsafe extern "sysv64" fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return rejected_promise(g, 1, "AudioContext.setSinkId on wrong this");
     };
@@ -3220,7 +3282,7 @@ unsafe extern "sysv64" fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u6
             Some(eng) if eng.state == ST_CLOSED => Outcome::Closed,
             Some(eng) => {
                 let previous = mediadevices::resolve_output(&eng.sink_id).ok().flatten();
-                if previous == device && eng.running {
+                if previous == device {
                     // Same endpoint (e.g. "" → "default"): record the new
                     // spelling, but do not interrupt the stream for it.
                     eng.sink_id = requested.clone();
@@ -3285,15 +3347,18 @@ unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) ->
     resolved_promise(g, UNDEF)
 }
 
-unsafe extern "sysv64" fn ctx_resume(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_resume(g: *mut c_void, cf: *mut c_void) -> u64 {
     ctx_set_suspended(g, cf, false)
 }
 
-unsafe extern "sysv64" fn ctx_suspend(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_suspend(g: *mut c_void, cf: *mut c_void) -> u64 {
     ctx_set_suspended(g, cf, true)
 }
 
-unsafe extern "sysv64" fn ctx_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return rejected_promise(g, 1, "AudioContext.close on wrong this");
     };
@@ -3328,17 +3393,20 @@ unsafe fn create_node_on(g: *mut c_void, engine: u64, params: Params, proto: u64
     wrap_node(g, proto, handle, jsparams)
 }
 
-unsafe extern "sysv64" fn ctx_create_gain(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_gain(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     ctx_create_node(g, cf, Params::Gain(VolumeNode::default()), c.gain.proto, &[("gain", P_GAIN, 1.0)])
 }
 
-unsafe extern "sysv64" fn ctx_create_stereo_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_stereo_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     ctx_create_node(g, cf, Params::Pan(VolumePanNode::default()), c.stereo.proto, &[("pan", P_PAN, 0.0)])
 }
 
-unsafe extern "sysv64" fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     // WebPannerNode (webapi/hrtf.rs): equal-power by default per spec, real
     // HRTF when panningModel='HRTF'. Distance/cone params live in NodeRec with
@@ -3359,7 +3427,8 @@ unsafe extern "sysv64" fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> 
     )
 }
 
-unsafe extern "sysv64" fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let svf = SvfNode::<2> { cutoff_hz: 350.0, ..Default::default() };
     ctx_create_node(
@@ -3376,7 +3445,8 @@ unsafe extern "sysv64" fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> 
     )
 }
 
-unsafe extern "sysv64" fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let params = Params::Analyser { ring: ArcGc::new(MonitorRing::new()), smooth: Vec::new() };
     ctx_create_node(g, cf, params, c.analyser.proto, &[])
@@ -3396,7 +3466,8 @@ unsafe extern "sysv64" fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -
 /// fall back correctly — but a one-shot advisory names the situation, because
 /// the failure it replaces (a graph that is connected and simply mute) has no
 /// other symptom.
-unsafe extern "sysv64" fn ctx_create_media_element_source(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_media_element_source(g: *mut c_void, cf: *mut c_void) -> u64 {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
         eprintln!(
@@ -3413,7 +3484,8 @@ unsafe extern "sysv64" fn ctx_create_media_element_source(g: *mut c_void, cf: *m
 }
 
 /// `createOscillator()` — the spec's tone generator (webapi/osc.rs).
-unsafe extern "sysv64" fn ctx_create_oscillator(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_oscillator(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let shared = ArcGc::new(OscShared::default());
     let obj = ctx_create_node(
@@ -3441,7 +3513,8 @@ unsafe extern "sysv64" fn ctx_create_oscillator(g: *mut c_void, cf: *mut c_void)
 /// see webapi/pcm.rs for the contract.
 ///
 /// `options`: `{ sampleRate?, channelCount?, latencySeconds?, capacitySeconds? }`.
-unsafe extern "sysv64" fn ctx_create_red_stream_source(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_red_stream_source(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let opts = cf_arg(cf, 0);
     let num = |name: &str, dflt: f64| -> f64 {
@@ -3485,7 +3558,8 @@ unsafe fn engine_of(g: *mut c_void, v: u64) -> Option<u64> {
 /// rate, at most stereo, fed by the track (`mediastream::pipe`). The pcm
 /// channel resamples to this graph's rate, so a 44.1 kHz microphone plays into
 /// a 48 kHz context as a browser's does.
-pub(crate) unsafe extern "sysv64" fn ms_source_node(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(crate) unsafe fn ms_source_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(engine) = engine_of(g, cf_arg(cf, 0)) else {
         return throw_type_error(g, "MediaStreamAudioSourceNode: parameter 1 is not of type 'AudioContext'.");
     };
@@ -3542,7 +3616,8 @@ pub(crate) fn reaches_destination(start: u64) -> bool {
 
 /// mediastream.js: `destNode(context, proto, channelCount)` → `[node,
 /// trackHandle]`: a `MediaStreamAudioDestinationNode` and the track it feeds.
-pub(crate) unsafe extern "sysv64" fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub(crate) unsafe fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(engine) = engine_of(g, cf_arg(cf, 0)) else {
         return throw_type_error(g, "MediaStreamAudioDestinationNode: parameter 1 is not of type 'AudioContext'.");
     };
@@ -3566,7 +3641,8 @@ pub(crate) unsafe extern "sysv64" fn ms_dest_node(g: *mut c_void, cf: *mut c_voi
     out
 }
 
-unsafe extern "sysv64" fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let obj = ctx_create_node(
         g,
@@ -3583,7 +3659,8 @@ unsafe extern "sysv64" fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_vo
     obj
 }
 
-unsafe extern "sysv64" fn ctx_create_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let channels = (dec_f64(cf_arg(cf, 0)).unwrap_or(1.0) as usize).clamp(1, 32);
     let length = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0).max(0.0) as usize;
     let rate = dec_f64(cf_arg(cf, 2)).unwrap_or(48_000.0).max(1.0) as u32;
@@ -3699,14 +3776,16 @@ unsafe fn enum_value(g: *mut c_void, v: u64, allowed: &[&str]) -> Result<Option<
     Ok(allowed.contains(&s.as_str()).then_some(s))
 }
 
-unsafe extern "sysv64" fn pinned_get_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pinned_get_count(g: *mut c_void, cf: *mut c_void) -> u64 {
     match pinned_of(g, cf) {
         Some((_, p)) => enc_i32(p.count() as i32),
         None => throw_type_error(g, "AudioNode.channelCount on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn pinned_set_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pinned_set_count(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((_, p)) = pinned_of(g, cf) else {
         return throw_type_error(g, "AudioNode.channelCount on wrong this");
     };
@@ -3717,14 +3796,16 @@ unsafe extern "sysv64" fn pinned_set_count(g: *mut c_void, cf: *mut c_void) -> u
     }
 }
 
-unsafe extern "sysv64" fn pinned_get_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pinned_get_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
     match pinned_of(g, cf) {
         Some(_) => js_string(g, "explicit"),
         None => throw_type_error(g, "AudioNode.channelCountMode on wrong this"),
     }
 }
 
-unsafe extern "sysv64" fn pinned_set_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pinned_set_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((_, p)) = pinned_of(g, cf) else {
         return throw_type_error(g, "AudioNode.channelCountMode on wrong this");
     };
@@ -3737,7 +3818,8 @@ unsafe extern "sysv64" fn pinned_set_mode(g: *mut c_void, cf: *mut c_void) -> u6
     }
 }
 
-unsafe extern "sysv64" fn pinned_get_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pinned_get_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
     match pinned_of(g, cf) {
         Some((_, Pinned::Merger { discrete: false })) => js_string(g, "speakers"),
         Some(_) => js_string(g, "discrete"),
@@ -3745,7 +3827,8 @@ unsafe extern "sysv64" fn pinned_get_interpretation(g: *mut c_void, cf: *mut c_v
     }
 }
 
-unsafe extern "sysv64" fn pinned_set_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pinned_set_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((h, p)) = pinned_of(g, cf) else {
         return throw_type_error(g, "AudioNode.channelInterpretation on wrong this");
     };
@@ -3764,7 +3847,8 @@ unsafe extern "sysv64" fn pinned_set_interpretation(g: *mut c_void, cf: *mut c_v
     UNDEF
 }
 
-unsafe extern "sysv64" fn ctx_create_channel_splitter(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_channel_splitter(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     if this_engine_handle(g, cf).is_none() {
         return throw_type_error(g, "AudioContext.createChannelSplitter on wrong this");
@@ -3780,7 +3864,8 @@ unsafe extern "sysv64" fn ctx_create_channel_splitter(g: *mut c_void, cf: *mut c
     ctx_create_node(g, cf, Params::Splitter(n), c.splitter.proto, &[])
 }
 
-unsafe extern "sysv64" fn ctx_create_channel_merger(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_create_channel_merger(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     if this_engine_handle(g, cf).is_none() {
         return throw_type_error(g, "AudioContext.createChannelMerger on wrong this");
@@ -3891,11 +3976,13 @@ unsafe fn construct_pinned(g: *mut c_void, cf: *mut c_void, splitter: bool) -> u
     create_node_on(g, engine, params, proto, &[])
 }
 
-unsafe extern "sysv64" fn splitter_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn splitter_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     construct_pinned(g, cf, true)
 }
 
-unsafe extern "sysv64" fn merger_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn merger_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     construct_pinned(g, cf, false)
 }
 
@@ -3950,7 +4037,8 @@ pub(crate) fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<P
     Ok(PlanarBuffer { data, sample_rate: decoded.sample_rate().get() })
 }
 
-unsafe extern "sysv64" fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return rejected_promise(g, 1, "AudioContext.decodeAudioData on wrong this");
     };
@@ -4671,7 +4759,8 @@ mod jsc_tests {
              g.connect(dest);
              const t0 = a.currentTime;
              const ids = (await navigator.mediaDevices.enumerateDevices())
-               .map(d => d.deviceId).filter(id => id !== 'default');
+               .filter(d => d.kind === 'audiooutput')
+               .map(d => d.deviceId).filter(id => id !== '' && id !== 'default');
              for (const id of ids) {
                await a.setSinkId(id);
                if (a.sinkId !== id) return 'sinkId did not take: ' + a.sinkId;

@@ -186,11 +186,13 @@ fn is_cell(v: u64) -> bool {
     v != 0 && (v & (TAG_NUMBER | 0x2)) == 0
 }
 
-unsafe extern "sysv64" fn perf_now(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn perf_now(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     enc_double(now_ms())
 }
 
-unsafe extern "sysv64" fn raf_request(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn raf_request(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cb = cf_arg(cf, 0);
     if !is_cell(cb) {
         return enc_int32(0);
@@ -204,7 +206,8 @@ unsafe extern "sysv64" fn raf_request(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_int32(id as i32)
 }
 
-unsafe extern "sysv64" fn raf_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn raf_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(id) = dec_number(cf_arg(cf, 0)) {
         let removed = {
             let mut reg = registry().lock().unwrap();
@@ -251,23 +254,27 @@ unsafe fn timer_set_inner(g: *mut c_void, cf: *mut c_void, repeating: bool, dela
     enc_int32(id as i32)
 }
 
-unsafe extern "sysv64" fn timer_set_timeout(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn timer_set_timeout(g: *mut c_void, cf: *mut c_void) -> u64 {
     timer_set(g, cf, false)
 }
 
-unsafe extern "sysv64" fn timer_set_interval(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn timer_set_interval(g: *mut c_void, cf: *mut c_void) -> u64 {
     timer_set(g, cf, true)
 }
 
 /// `setImmediate(cb, ...args)` — a 0-delay macrotask (fires on the next pump,
 /// before that pump's rAF batch). Shares the timer registry, so
 /// `clearImmediate` is just `clearTimeout`.
-unsafe extern "sysv64" fn immediate_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn immediate_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     timer_set_inner(g, cf, false, Some(0.0), 1)
 }
 
 /// `queueMicrotask(cb)` — the VM's real microtask queue.
-unsafe extern "sysv64" fn queue_microtask(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn queue_microtask(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cb = cf_arg(cf, 0);
     if glue::rjs_queue_microtask(g, cb) != 0 {
         let m: Vec<u16> = "queueMicrotask: argument must be callable".encode_utf16().collect();
@@ -278,7 +285,8 @@ unsafe extern "sysv64" fn queue_microtask(g: *mut c_void, cf: *mut c_void) -> u6
     ENC_UNDEFINED
 }
 
-unsafe extern "sysv64" fn idle_request(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn idle_request(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cb = cf_arg(cf, 0);
     if !is_cell(cb) {
         return enc_int32(0);
@@ -292,7 +300,8 @@ unsafe extern "sysv64" fn idle_request(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_int32(id as i32)
 }
 
-unsafe extern "sysv64" fn idle_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn idle_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(id) = dec_number(cf_arg(cf, 0)) {
         let removed = {
             let mut reg = registry().lock().unwrap();
@@ -311,7 +320,8 @@ unsafe extern "sysv64" fn idle_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// IdleDeadline.timeRemaining(): a real decreasing budget so hydrate-style
 /// `while (deadline.timeRemaining() > 0)` loops make progress AND terminate.
-unsafe extern "sysv64" fn idle_time_remaining(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn idle_time_remaining(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = *((cf as usize + 40) as *const u64);
     let a = glue::rjs_atom8(g, "__t0".as_ptr(), 4);
     let mut t0 = ENC_UNDEFINED;
@@ -321,7 +331,8 @@ unsafe extern "sysv64" fn idle_time_remaining(g: *mut c_void, cf: *mut c_void) -
     enc_double((4.0 - (now_ms() - t0)).max(0.0))
 }
 
-unsafe extern "sysv64" fn timer_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn timer_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(id) = dec_number(cf_arg(cf, 0)) {
         let removed = {
             let mut reg = registry().lock().unwrap();
@@ -1157,7 +1168,8 @@ mod checkpoint_tests {
     }
 
     /// `__cp()` — a host function that asks for a checkpoint from inside JS.
-    unsafe extern "sysv64" fn cp_from_js(g: *mut c_void, _cf: *mut c_void) -> u64 {
+    #[crate::host_fn]
+    unsafe fn cp_from_js(g: *mut c_void, _cf: *mut c_void) -> u64 {
         let r = checkpoint(g);
         seen().lock().unwrap().entry(g as usize).or_default().push(r);
         ENC_UNDEFINED

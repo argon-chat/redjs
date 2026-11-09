@@ -112,7 +112,8 @@ unsafe fn file_data<'a>(g: *mut c_void, v: u64) -> Option<(&'a BlobData, &'a Fil
 // File
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn file_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn file_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(c) = classes(g) else { return throw_type_error(g, "File is not installed in this context") };
     let argc = cf_argc(cf);
     if argc < 2 {
@@ -143,7 +144,8 @@ unsafe extern "sysv64" fn file_construct(g: *mut c_void, cf: *mut c_void) -> u64
     host_create(g, c.file_cls, proto, BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: Some(file) })
 }
 
-unsafe extern "sysv64" fn get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     match file_data(g, cf_this(cf)) {
         Some((_, m)) => {
             let s = m.name.clone();
@@ -153,7 +155,8 @@ unsafe extern "sysv64" fn get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn get_last_modified(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_last_modified(g: *mut c_void, cf: *mut c_void) -> u64 {
     match file_data(g, cf_this(cf)) {
         Some((_, m)) => enc_f64(m.last_modified),
         None => throw_type_error(g, "File.prototype.lastModified called on a non-File"),
@@ -163,7 +166,8 @@ unsafe extern "sysv64" fn get_last_modified(g: *mut c_void, cf: *mut c_void) -> 
 /// `lastModifiedDate`: not in the File API any more, but Chromium and Safari
 /// still ship it, and older upload libraries read it. A new Date each time, as
 /// in Chromium (`file.lastModifiedDate !== file.lastModifiedDate`).
-unsafe extern "sysv64" fn get_last_modified_date(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_last_modified_date(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((_, m)) = file_data(g, cf_this(cf)) else {
         return throw_type_error(g, "File.prototype.lastModifiedDate called on a non-File");
     };
@@ -181,7 +185,8 @@ unsafe extern "sysv64" fn get_last_modified_date(g: *mut c_void, cf: *mut c_void
     }
 }
 
-unsafe extern "sysv64" fn get_relative_path(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_relative_path(g: *mut c_void, cf: *mut c_void) -> u64 {
     match file_data(g, cf_this(cf)) {
         Some((_, m)) => {
             let s = m.relative_path.clone();
@@ -325,14 +330,16 @@ pub unsafe fn file_list_items(g: *mut c_void, v: u64) -> Option<Vec<u64>> {
     Some((0..n).map(|i| get_i(g, arr, i)).collect())
 }
 
-unsafe extern "sysv64" fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
     match classes(g).and_then(|c| list_data(g, c, cf_this(cf))) {
         Some(d) => enc_f64(d.len as f64),
         None => throw_type_error(g, "FileList.prototype.length called on a non-FileList"),
     }
 }
 
-unsafe extern "sysv64" fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(c) = classes(g) else { return UNDEF };
     let this = cf_this(cf);
     let Some(len) = list_data(g, c, this).map(|d| d.len) else {

@@ -62,7 +62,8 @@ unsafe fn ranges_slot(g: *mut c_void) -> *mut c_void {
         .unwrap()
         .s_ranges as *mut c_void
 }
-unsafe extern "sysv64" fn create(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -121,15 +122,18 @@ unsafe extern "sysv64" fn create(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(o.v)
     })
 }
-unsafe extern "sysv64" fn size(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn size(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || Ok(enc_f64(get_buffer(g, cf)?.1.size as f64)))
 }
-unsafe extern "sysv64" fn usage(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn usage(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         Ok(enc_f64(get_buffer(g, cf)?.1.usage.bits().0[0] as f64))
     })
 }
-unsafe extern "sysv64" fn map_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn map_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (_, b) = get_buffer(g, cf)?;
         let status = b.mapping.lock().unwrap().status;
@@ -143,7 +147,8 @@ unsafe extern "sysv64" fn map_state(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-unsafe extern "sysv64" fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, b) = get_buffer(g, cf)?;
         let mode = uint(g, cf_arg(cf, 0), 0)?;
@@ -266,7 +271,8 @@ unsafe extern "sysv64" fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-unsafe extern "sysv64" fn get_range(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_range(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, b) = get_buffer(g, cf)?;
         let offset = num(g, cf_arg(cf, 0), 0)?;
@@ -362,14 +368,16 @@ unsafe fn unmap_inner(g: *mut c_void, obj: u64, b: &Buffer, write: bool) {
     let edges = new_array(g);
     glue::rjs_define(g, obj, ranges_slot(g), edges, 2);
 }
-unsafe extern "sysv64" fn unmap(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn unmap(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (_, b) = get_buffer(g, cf)?;
         unmap_inner(g, cf_this(cf), &b, true);
         Ok(UNDEF)
     })
 }
-unsafe extern "sysv64" fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (_, b) = get_buffer(g, cf)?;
         unmap_inner(g, cf_this(cf), &b, false);
@@ -443,7 +451,8 @@ pub(super) unsafe fn copy_source(
         )
     }
 }
-unsafe extern "sysv64" fn write(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn write(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
         let c = client(g, &h)?;

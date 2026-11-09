@@ -4,7 +4,7 @@ use std::path::Path;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("info") => println!("{{\"target\":\"x86_64-windows\",\"frontend\":\"{}\",\"engine\":\"{}\",\"tableId\":\"{}\",\"compileOptions\":\"{}\"}}", redjs::aot::FRONTEND_REVISION,redjs::aot::ENGINE_VERSION,redjs::aot::BUILD_TABLE_ID,redjs::aot::COMPILE_OPTIONS),
+        Some("info") => println!("{{\"target\":\"{}-{}\",\"frontend\":\"{}\",\"engine\":\"{}\",\"tableId\":\"{}\",\"compileOptions\":\"{}\"}}", std::env::consts::ARCH,std::env::consts::OS,redjs::aot::FRONTEND_REVISION,redjs::aot::ENGINE_VERSION,redjs::aot::BUILD_TABLE_ID,redjs::aot::COMPILE_OPTIONS),
         Some("run-verified") => return run_verified(args.get(2).ok_or("image path required")?, selected_profile(args.get(3).map(String::as_str))?),
         Some("reject-handles") => return reject_handles(args.get(2).ok_or("corrupt image path required")?),
         Some("run-stress") => return run_stress(args.get(2).ok_or("image path required")?, selected_profile(args.get(3).map(String::as_str))?),
@@ -410,19 +410,29 @@ fn run_stress(
 }
 
 fn open_image(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
     use std::os::windows::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
         .access_mode(0xA0000000)
         .share_mode(1 | 4)
         .open(path)
+    }
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)
+    }
 }
 fn run_verified(
     path: &str,
     profile: redjs::aot::MemoryProfile,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Seek, SeekFrom};
+    #[cfg(windows)]
     use std::os::windows::fs::symlink_file;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_file;
     let original = std::fs::canonicalize(path)?;
     let fixture = original
         .parent()
@@ -468,23 +478,31 @@ fn reject_handles(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     unsafe extern "C" {
         fn rjs_aot_load_handle_with_profile(file: isize, identity: *const u8, profile: u32) -> u32;
     }
+    #[cfg(windows)]
     unsafe extern "system" {
         fn GetCurrentProcess() -> isize;
         fn GetProcessHandleCount(process: isize, count: *mut u32) -> i32;
     }
     use std::io::{Seek, SeekFrom};
+    #[cfg(windows)]
     use std::os::windows::io::AsRawHandle;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
     let mut file = open_image(Path::new(path))?;
     let expected = redjs::aot::digest_reader(&file)?;
     let identity: [u8; 16] = std::fs::read(format!("{path}.identity"))?
         .try_into()
         .map_err(|_| "invalid identity")?;
+    #[cfg(windows)]
     let handle = file.as_raw_handle() as isize;
+    #[cfg(unix)]
+    let handle = file.as_raw_fd() as isize;
     // Warm the engine before counting so one-time initialization is excluded.
     assert_eq!(
         unsafe { rjs_aot_load_handle_with_profile(handle, identity.as_ptr(), 0) },
         3
     );
+    #[cfg(windows)]
     let count = || {
         let mut value = 0;
         assert_ne!(
@@ -493,8 +511,13 @@ fn reject_handles(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
         value
     };
+    #[cfg(unix)]
+    let count = || std::fs::read_dir(if cfg!(target_os = "linux") { "/proc/self/fd" } else { "/dev/fd" }).unwrap().count();
     let before = count();
     for _ in 0..1000 {
+        // Descriptor zero is a valid Unix file; only Windows treats a null
+        // HANDLE as invalid before reading it.
+        #[cfg(windows)]
         assert_eq!(
             unsafe { rjs_aot_load_handle_with_profile(0, identity.as_ptr(), 0) },
             17

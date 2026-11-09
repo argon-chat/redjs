@@ -18,7 +18,7 @@ if (-not (Test-Path (Join-Path $root 'prebuilt/bun-webkit/lib/JavaScriptCore.lib
 
 Push-Location (Join-Path $root 'redjs')
 try {
-    cargo build --release
+    cargo rustc --release --crate-type 'rlib,cdylib,staticlib'
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
     if ($Test) {
         cargo test --release

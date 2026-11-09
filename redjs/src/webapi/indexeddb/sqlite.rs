@@ -508,7 +508,15 @@ fn take_lock(folder: &Path) -> Result<File, String> {
         use std::os::windows::fs::OpenOptionsExt;
         o.share_mode(1 /* FILE_SHARE_READ: others may read who we are, nobody may write */);
     }
-    match o.open(&path) {
+    let opened = o.open(&path).and_then(|file| {
+        #[cfg(unix)]
+        file.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => std::io::Error::from(std::io::ErrorKind::WouldBlock),
+            std::fs::TryLockError::Error(error) => error,
+        })?;
+        Ok(file)
+    });
+    match opened {
         Ok(mut f) => {
             let _ = f.set_len(0);
             let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
@@ -516,7 +524,8 @@ fn take_lock(folder: &Path) -> Result<File, String> {
             let _ = f.flush();
             Ok(f)
         }
-        Err(e) if matches!(e.raw_os_error(), Some(32) | Some(33)) => {
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+            || (cfg!(windows) && matches!(e.raw_os_error(), Some(32) | Some(33))) => {
             let mut holder = String::new();
             let mut r = OpenOptions::new();
             r.read(true);

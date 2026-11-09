@@ -3,16 +3,19 @@ name = "redjs"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
-description = "Full-control Rust embedding layer over Bun's JavaScriptCore prebuilt (Windows). C ABI designed for zero-alloc C# (NativeAOT) codegen bindings."
+description = "Full-control Rust embedding layer over Bun's JavaScriptCore prebuilt. C ABI designed for zero-alloc C# (NativeAOT) codegen bindings."
 
 # Standalone crate on purpose (own lockfile, no repo workspace): the webkit link
 # requirements must not leak into other Rust crates in the monorepo.
 [workspace]
 
 [lib]
-crate-type = ["rlib", "cdylib", "staticlib"]
+# Keep Rust/static consumers independent of whether the engine archive supports
+# shared linking. build.ps1 / build.sh request cdylib explicitly when available.
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
+redjs-macros = { path = "macros" }
 # Image decoding for the web shim (HTMLImageElement / createImageBitmap).
 # Pure-Rust decoders only; matches the formats games actually ship.
 url = "2"

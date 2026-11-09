@@ -1,11 +1,11 @@
 //! redjs — full-control Rust embedding layer over Bun's JavaScriptCore
-//! (Windows prebuilt), designed as the ClearScript replacement seam for the
+//! prebuilt, designed as the ClearScript replacement seam for the
 //! RedPew player.
 //!
 //! Layers:
 //! - [`glue`]: raw externs into our C++ glue (`cpp/glue.cpp`, JSC internal API).
 //! - [`capi`]: raw externs into JSC's stable C API (the subset we use).
-//! - [`trampoline`]: the SysV→MS host-function trampoline pool (C# entry).
+//! - [`trampoline`]: the platform host-function trampoline pool (C# entry).
 //! - [`errors`]: the one funnel for exceptions no JS code will ever see —
 //!   pumped-callback throws, listener throws and unhandled promise rejections.
 //! - [`context`]: a monotonic, never-reused id per context, and the one list
@@ -24,6 +24,9 @@
 //! is protected by JSC's conservative stack scan. Anything stored on the heap
 //! (C# fields, Rust collections) must be pinned with `redjs_protect` /
 //! [`api::Context::protect`] and released with `redjs_unprotect`.
+
+/// Declare a JSC host callback using the ABI of the compilation target.
+pub use redjs_macros::host_fn;
 
 pub mod api;
 pub mod capi;

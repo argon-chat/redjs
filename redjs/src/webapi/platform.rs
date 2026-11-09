@@ -52,7 +52,8 @@ unsafe fn slots_of(g: *mut c_void, obj: u64) -> u64 {
 
 // ---- atob / btoa -------------------------------------------------------------
 
-unsafe extern "sysv64" fn js_atob(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn js_atob(g: *mut c_void, cf: *mut c_void) -> u64 {
     let input = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let cleaned: String = input.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     match fsutil::b64_decode(&cleaned) {
@@ -68,7 +69,8 @@ unsafe extern "sysv64" fn js_atob(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn js_btoa(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn js_btoa(g: *mut c_void, cf: *mut c_void) -> u64 {
     let input = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let mut bytes = Vec::with_capacity(input.len());
     for ch in input.chars() {
@@ -87,7 +89,8 @@ unsafe extern "sysv64" fn js_btoa(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 // ---- ImageData ----------------------------------------------------------------
 
-unsafe extern "sysv64" fn imagedata_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn imagedata_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let a0 = cf_arg(cf, 0);
     let (data, w, h);
@@ -133,7 +136,8 @@ unsafe extern "sysv64" fn imagedata_construct(g: *mut c_void, cf: *mut c_void) -
 
 macro_rules! imagedata_getter {
     ($fn_name:ident, $slot:literal) => {
-        unsafe extern "sysv64" fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
             let slots = slots_of(g, cf_this(cf));
             if !is_cell(slots) {
                 return throw_type_error(g, "ImageData getter on wrong this");
@@ -147,7 +151,8 @@ imagedata_getter!(imagedata_get_data, "data");
 imagedata_getter!(imagedata_get_width, "width");
 imagedata_getter!(imagedata_get_height, "height");
 
-unsafe extern "sysv64" fn imagedata_get_colorspace(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn imagedata_get_colorspace(g: *mut c_void, _cf: *mut c_void) -> u64 {
     js_string(g, "srgb")
 }
 
@@ -186,7 +191,8 @@ pub(crate) unsafe fn create_image_data(g: *mut c_void, data: u64, w: u32, h: u32
 
 // ---- BroadcastChannel ----------------------------------------------------------
 
-unsafe extern "sysv64" fn bc_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bc_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let name = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let obj = ordinary_create(g, cf_new_target(cf), c.bc.proto);
@@ -200,7 +206,8 @@ unsafe extern "sysv64" fn bc_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     obj
 }
 
-unsafe extern "sysv64" fn bc_get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bc_get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     let slots = slots_of(g, cf_this(cf));
     if !is_cell(slots) {
         return throw_type_error(g, "BroadcastChannel.name on wrong this");
@@ -208,7 +215,8 @@ unsafe extern "sysv64" fn bc_get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     get(g, slots, "name")
 }
 
-unsafe extern "sysv64" fn bc_post_message(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bc_post_message(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let slots = slots_of(g, this);
     if !is_cell(slots) {
@@ -270,7 +278,8 @@ unsafe fn source_origin(g: *mut c_void) -> String {
     if glue::rjs_kind(g, o) == 5 { read_string(g, o).unwrap_or_default() } else { String::new() }
 }
 
-unsafe extern "sysv64" fn bc_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bc_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let slots = slots_of(g, this);
     if !is_cell(slots) {

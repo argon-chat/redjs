@@ -592,8 +592,9 @@ pub unsafe extern "C" fn redjs_function_create_with_data(
     glue::rjs_function_create(ctx, name, name_len, arity, entry, out)
 }
 
-/// Registers a raw SysV host function (Rust `extern "sysv64"`, Zig
-/// `callconv(.SysV)`) — the zero-overhead path, no trampoline slot.
+/// Registers a raw JSC host function — the zero-overhead path, no trampoline
+/// slot. Use SysV on Windows x64 and the platform C ABI on Unix. The exported
+/// symbol's historical name is retained for existing embedders.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_function_create_sysv(
     ctx: *mut c_void,

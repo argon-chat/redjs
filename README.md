@@ -1,6 +1,6 @@
 # redjs
 
-![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%20x64-0078D4)
+![Platforms: Windows, Linux, macOS](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4)
 ![Engine: JavaScriptCore](https://img.shields.io/badge/engine-JavaScriptCore-F7DF1E)
 ![Bindings: Rust and C#](https://img.shields.io/badge/bindings-Rust%20%2F%20C%23-555555)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
@@ -34,12 +34,13 @@ fn main() -> Result<()> {
 - **Optional extras.** Web Audio, Canvas 2D, IndexedDB, WebGPU, and game-oriented
   helpers for physics, meshes, CSS, and layout.
 
-The current build targets **Windows x64**. It uses JSC's internal headers, so
-the engine version is pinned and upgrades need testing.
+Build targets are **Windows x64**, **Linux x64 (glibc)**, and **macOS x64 / Apple
+Silicon**. Each uses a verified prebuilt from the same JavaScriptCore revision.
+The engine's internal headers are version-sensitive, so upgrades need testing.
 
 ## Build and try it
 
-You'll need stable Rust with the MSVC target, LLVM's `clang-cl` on `PATH`,
+On Windows, you'll need Rust 1.97.1 with the MSVC target, LLVM's `clang-cl` on `PATH`,
 Visual Studio C++ Build Tools (MSVC 14.44 or newer, plus the Windows SDK),
 and PowerShell.
 
@@ -68,12 +69,76 @@ For the full default build, you'll also need Yoga's C++ sources in
 the library, run the Rust suite, and stage the DLL and static library under
 `runtimes/` and `lib/`.
 
+### Linux and macOS
+
+Use Rust 1.97.1 and Bun 1.4.4. On Linux, install Clang 20, curl, unzip, pkg-config and
+OpenSSL headers; Web Audio additionally needs ALSA development headers:
+
+```sh
+sudo apt-get update
+sudo apt-get install clang-20 lld curl unzip pkg-config libssl-dev libasound2-dev
+export CC=clang-20 CXX=clang++-20
+```
+
+On macOS, install Xcode command-line tools (`xcode-select --install`); the
+macOS 26 SDK / Xcode 26 toolchain supplies the C++23 compiler and standard
+library. The pinned engine requires macOS 13+ at runtime. Both Intel and Apple
+Silicon use their native architecture. For direct Cargo commands, set
+`MACOSX_DEPLOYMENT_TARGET=13.0` (the build script and CI already do this).
+
+The sibling `redcss` manifest described above is still required. When testing
+outside PEWPEW, a manifest-only stub is enough with `css-host` disabled (the CI
+workflow creates one and makes accidental compilation fail explicitly).
+
+```sh
+bash ./setup.sh
+bash ./build.sh --test
+# Additional web APIs, including persistent IndexedDB and HTTP/2:
+bash ./build.sh --test --features audio,audio-codecs-extra,svg-images,canvas,indexeddb-sqlite,storages,clipboard,battery,net-h2
+```
+
+`setup.sh` verifies archive SHA-256 and extracted source-tree pins. Unix
+JavaScriptCore libraries live in `prebuilt/bun-webkit-linux-amd64`,
+`prebuilt/bun-webkit-macos-amd64`, or `prebuilt/bun-webkit-macos-arm64`.
+The upstream Unix archives omit the portable frontend AOT table sources;
+setup obtains those from the verified Windows archive at the same engine
+pin and checks that the generated ABI headers match before using them.
+It copies sources only. Unix engine bindings already present in the native
+archive are not compiled twice.
+
+`build.sh` stages `libredjs.a` under `lib/{linux-x64,osx-x64,osx-arm64}`.
+On macOS it also stages `libredjs.dylib` under `runtimes/{rid}/native` for
+the C# library resolver. The upstream Linux archive uses executable-only TLS
+relocations, so this port supports Rust, static C linking, and C# NativeAOT
+on Linux. Building a Linux `.so` requires a separately built PIC engine;
+`build.sh --shared` can use one supplied through `BUN_WEBKIT_DIR`.
+`cargo build` emits Rust/static libraries; the build scripts explicitly request
+shared libraries on Windows and macOS. After building the native library:
+
+```sh
+# macOS (shared library):
+dotnet run --project csharp/RedJs.Smoke --configuration Release
+# Select linux-x64, osx-x64, or osx-arm64 for a .NET NativeAOT smoke build:
+dotnet publish csharp/RedJs.Smoke -c Release -r linux-x64 -p:PublishAot=true
+```
+
+GitHub Actions runs core and web-feature Rust suites on standard Linux and
+macOS runners, plus C# NativeAOT smoke tests (and shared-library smoke tests on
+macOS). WebGPU's real-device tests require a GPU;
+`css-host` and `yoga-host` require their separate host sources. These features
+are not enabled by the hosted test matrix.
+
 ## Use it in your app
 
 **Rust:** start with [`Context` and `Value`](redjs/src/api.rs). Disable default
 features if you only need the engine and core web APIs. Your host's Cargo
 configuration must also use the static CRT settings in
-[redjs/.cargo/config.toml](redjs/.cargo/config.toml).
+[redjs/.cargo/config.toml](redjs/.cargo/config.toml) on Windows.
+
+Declare raw JSC host callbacks with `#[redjs::host_fn] unsafe fn ...`; the
+attribute selects SysV on Windows x64 and the native C ABI on Unix, including
+Apple Silicon. Existing `function_sysv` / `redjs_function_create_sysv` names
+retain their ABI and accept this platform-correct callback.
 
 **C#:** reference [csharp/RedJs](csharp/RedJs/RedJs.csproj) and build the native
 library first. The basic API looks like this:

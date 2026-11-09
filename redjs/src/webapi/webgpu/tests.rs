@@ -166,7 +166,8 @@ fn run_gpu(c: &Context, body: &str) -> String {
     run(c, &format!("{SETUP}\n{body}"))
 }
 
-unsafe extern "sysv64" fn force_gc(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn force_gc(g: *mut c_void, _cf: *mut c_void) -> u64 {
     crate::ffi::redjs_gc(g, 0);
     super::UNDEF
 }

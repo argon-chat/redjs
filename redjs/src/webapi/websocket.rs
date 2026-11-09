@@ -1006,7 +1006,8 @@ unsafe fn slot_get(g: *mut c_void, cf: *mut c_void, key: &str, label: &str) -> u
 macro_rules! slot_getters {
     ($($fn_name:ident, $key:literal, $label:literal;)*) => {
         $(
-            unsafe extern "sysv64" fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+            #[crate::host_fn]
+            unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
                 slot_get(g, cf, $key, $label)
             }
         )*
@@ -1023,7 +1024,8 @@ slot_getters! {
     ce_was_clean, "wasClean", "CloseEvent.wasClean";
 }
 
-unsafe extern "sysv64" fn me_ports(g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn me_ports(g: *mut c_void, _cf: *mut c_void) -> u64 {
     // There is no MessagePort in this runtime; the spec's own default for a
     // MessageEvent that carries none is an empty list.
     new_array(g)
@@ -1047,7 +1049,8 @@ unsafe fn init_message_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     define(g, s, "source", from("source", NULL), 0);
 }
 
-unsafe extern "sysv64" fn message_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn message_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "MessageEvent constructor requires a type argument");
     }
@@ -1056,7 +1059,8 @@ unsafe extern "sysv64" fn message_event_construct(g: *mut c_void, cf: *mut c_voi
     obj
 }
 
-unsafe extern "sysv64" fn close_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn close_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "CloseEvent constructor requires a type argument");
     }
@@ -1128,7 +1132,8 @@ unsafe fn handler_bag(g: *mut c_void, this: u64, create: bool) -> u64 {
 
 macro_rules! handler_accessor {
     ($get_fn:ident, $set_fn:ident, $name:literal) => {
-        unsafe extern "sysv64" fn $get_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             let bag = handler_bag(g, cf_this(cf), false);
             if !is_cell(bag) {
                 return NULL;
@@ -1140,7 +1145,8 @@ macro_rules! handler_accessor {
                 NULL
             }
         }
-        unsafe extern "sysv64" fn $set_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             let this = cf_this(cf);
             let bag = handler_bag(g, this, true);
             if is_cell(bag) {
@@ -1198,7 +1204,8 @@ unsafe fn read_protocols(g: *mut c_void, v: u64) -> Vec<String> {
     vec![read_string(g, v).unwrap_or_default()]
 }
 
-unsafe extern "sysv64" fn ws_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ws_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "WebSocket constructor requires a url argument");
     }
@@ -1268,7 +1275,8 @@ unsafe extern "sysv64" fn ws_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 macro_rules! ws_getter {
     ($fn_name:ident, |$d:ident, $sh:ident, $g:ident| $body:expr) => {
-        unsafe extern "sysv64" fn $fn_name($g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $fn_name($g: *mut c_void, cf: *mut c_void) -> u64 {
             let Some($d) = this_ws($g, cf) else {
                 return throw_type_error($g, "WebSocket getter called on a non-WebSocket");
             };
@@ -1308,7 +1316,8 @@ ws_getter!(ws_extensions, |_d, sh, g| {
     js_string(g, &e)
 });
 
-unsafe extern "sysv64" fn ws_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ws_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_ws(g, cf) {
         Some(d) => {
             let u = d.url.clone();
@@ -1318,14 +1327,16 @@ unsafe extern "sysv64" fn ws_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn ws_binary_type_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ws_binary_type_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_ws(g, cf) {
         Some(d) => js_string(g, if d.binary_type == BinaryType::Blob { "blob" } else { "arraybuffer" }),
         None => throw_type_error(g, "WebSocket.prototype.binaryType called on a non-WebSocket"),
     }
 }
 
-unsafe extern "sysv64" fn ws_binary_type_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ws_binary_type_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     let want = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let Some(d) = this_ws(g, cf) else {
         return throw_type_error(g, "WebSocket.prototype.binaryType called on a non-WebSocket");
@@ -1339,7 +1350,8 @@ unsafe extern "sysv64" fn ws_binary_type_set(g: *mut c_void, cf: *mut c_void) ->
     UNDEF
 }
 
-unsafe extern "sysv64" fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     let arg = cf_arg(cf, 0);
     // The payload must be read out of JS memory BEFORE anything can allocate.
     let st = state(g);
@@ -1387,7 +1399,8 @@ unsafe extern "sysv64" fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn ws_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ws_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     let code_arg = cf_arg(cf, 0);
     let reason_arg = cf_arg(cf, 1);
     let code = if code_arg == UNDEF { 1000u16 } else { clamp_close_code(read_number(g, code_arg)) };

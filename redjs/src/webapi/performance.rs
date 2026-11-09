@@ -12,7 +12,8 @@ unsafe fn data(g: *mut c_void, receiver: u64) -> Option<u64> {
     (is_cell(bag) && get(g, bag, "receiver") == receiver).then_some(bag)
 }
 
-unsafe extern "sysv64" fn now(g: *mut c_void, frame: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn now(g: *mut c_void, frame: *mut c_void) -> u64 {
     if data(g, cf_this(frame)).is_none() {
         return throw_type_error(g, "Illegal invocation");
     }
@@ -20,14 +21,16 @@ unsafe extern "sysv64" fn now(g: *mut c_void, frame: *mut c_void) -> u64 {
     enc_f64(crate::web::now_ms())
 }
 
-unsafe extern "sysv64" fn time_origin(g: *mut c_void, frame: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn time_origin(g: *mut c_void, frame: *mut c_void) -> u64 {
     let Some(bag) = data(g, cf_this(frame)) else {
         return throw_type_error(g, "Illegal invocation");
     };
     get(g, bag, "timeOrigin")
 }
 
-unsafe extern "sysv64" fn to_json(g: *mut c_void, frame: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn to_json(g: *mut c_void, frame: *mut c_void) -> u64 {
     let Some(bag) = data(g, cf_this(frame)) else {
         return throw_type_error(g, "Illegal invocation");
     };

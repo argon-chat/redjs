@@ -325,7 +325,8 @@ unsafe fn entry_to_js(g: *mut c_void, this: u64, v: &EntryValue) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let form = cf_arg(cf, 0);
     if form != UNDEF && form != NULL {
@@ -366,15 +367,18 @@ unsafe fn append_or_set(g: *mut c_void, cf: *mut c_void, replace: bool) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn fd_append(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_append(g: *mut c_void, cf: *mut c_void) -> u64 {
     append_or_set(g, cf, false)
 }
 
-unsafe extern "sysv64" fn fd_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     append_or_set(g, cf, true)
 }
 
-unsafe extern "sysv64" fn fd_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let name = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let Some(d) = this_fd(g, cf) else {
@@ -386,7 +390,8 @@ unsafe extern "sysv64" fn fd_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn fd_get_all(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_get_all(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let name = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let Some(d) = this_fd(g, cf) else {
@@ -401,7 +406,8 @@ unsafe extern "sysv64" fn fd_get_all(g: *mut c_void, cf: *mut c_void) -> u64 {
     arr
 }
 
-unsafe extern "sysv64" fn fd_has(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     let name = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     match this_fd(g, cf) {
         Some(d) => enc_bool(d.has(&name)),
@@ -409,7 +415,8 @@ unsafe extern "sysv64" fn fd_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn fd_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     let name = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     match this_fd(g, cf) {
         Some(d) => {
@@ -420,7 +427,8 @@ unsafe extern "sysv64" fn fd_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn fd_for_each(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_for_each(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let cb = cf_arg(cf, 0);
     let this_arg = cf_arg(cf, 1);
@@ -451,21 +459,26 @@ unsafe fn make_iter(g: *mut c_void, cf: *mut c_void, kind: u8) -> u64 {
     it
 }
 
-unsafe extern "sysv64" fn fd_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_iter(g, cf, 0)
 }
-unsafe extern "sysv64" fn fd_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_iter(g, cf, 1)
 }
-unsafe extern "sysv64" fn fd_values(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn fd_values(g: *mut c_void, cf: *mut c_void) -> u64 {
     make_iter(g, cf, 2)
 }
 
-unsafe extern "sysv64" fn iter_self(_g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn iter_self(_g: *mut c_void, cf: *mut c_void) -> u64 {
     cf_this(cf)
 }
 
-unsafe extern "sysv64" fn iter_next(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn iter_next(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let this_v = cf_this(cf);
     let Some(it) = host_data::<FdIter>(g, c.iter_cls, this_v) else {

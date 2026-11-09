@@ -423,7 +423,8 @@ unsafe fn status_cap(g: *mut c_void, obj: u64) -> Option<Capability> {
     read_string(g, get(g, slots, "name")).as_deref().and_then(Capability::from_web_name)
 }
 
-unsafe extern "sysv64" fn status_get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn status_get_name(g: *mut c_void, cf: *mut c_void) -> u64 {
     match status_cap(g, cf_this(cf)) {
         Some(cap) => js_string(g, cap.web_name()),
         None => throw_type_error(g, "PermissionStatus.name on wrong this"),
@@ -433,7 +434,8 @@ unsafe extern "sysv64" fn status_get_name(g: *mut c_void, cf: *mut c_void) -> u6
 /// Read live rather than from a cached slot: a state changed behind the app's
 /// back (the user flipped a privacy toggle) is visible on the very next read,
 /// with or without a working change subscription.
-unsafe extern "sysv64" fn status_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn status_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     match status_cap(g, cf_this(cf)) {
         Some(cap) => js_string(g, status_of(cap).web_state()),
         None => throw_type_error(g, "PermissionStatus.state on wrong this"),
@@ -464,7 +466,8 @@ unsafe fn status_for(g: *mut c_void, cap: Capability) -> u64 {
 /// Browser behaviour, kept exactly: a non-object descriptor or a missing/unknown
 /// `name` **rejects with a `TypeError`** rather than resolving to `"denied"`, so
 /// a typo surfaces as a typo instead of as a permission problem.
-unsafe extern "sysv64" fn perms_query(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn perms_query(g: *mut c_void, cf: *mut c_void) -> u64 {
     const KIND_OBJECT: u32 = 8;
     let desc = cf_arg(cf, 0);
     if !is_cell(desc) || glue::rjs_kind(g, desc) != KIND_OBJECT {

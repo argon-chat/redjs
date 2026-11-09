@@ -99,7 +99,8 @@ unsafe fn end(g: *mut c_void, object: u64) -> bool {
 unsafe fn loading(g: *mut c_void, object: u64) -> bool {
     reader(g, object).is_some_and(|data| data.state == LOADING)
 }
-unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let class = classes(g);
     let Ok(proto) = try_get(g, cf_new_target(cf), "prototype") else {
         return UNDEF;
@@ -124,7 +125,8 @@ unsafe extern "sysv64" fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     crate::ffi::redjs_unprotect(g, object);
     object
 }
-unsafe extern "sysv64" fn ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     match reader(g, cf_this(cf)) {
         Some(data) => enc_i32(data.state as i32),
         None => throw_type_error(g, "FileReader.readyState called on a non-FileReader"),
@@ -132,7 +134,8 @@ unsafe extern "sysv64" fn ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 macro_rules! getter {
     ($name:ident, $key:literal) => {
-        unsafe extern "sysv64" fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             let object = cf_this(cf);
             if !checked(g, object, $key) {
                 return UNDEF;
@@ -145,7 +148,8 @@ getter!(result, "result");
 getter!(error, "error");
 macro_rules! handler {
     ($get:ident, $set:ident, $key:literal) => {
-        unsafe extern "sysv64" fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
             let object = cf_this(cf);
             if !checked(g, object, $key) {
                 return UNDEF;
@@ -157,7 +161,8 @@ macro_rules! handler {
                 NULL
             }
         }
-        unsafe extern "sysv64" fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
             let object = cf_this(cf);
             if !checked(g, object, $key) {
                 return UNDEF;
@@ -362,19 +367,24 @@ unsafe fn read(g: *mut c_void, cf: *mut c_void, mode: Mode, name: &str) -> u64 {
     );
     UNDEF
 }
-unsafe extern "sysv64" fn read_array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn read_array_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     read(g, cf, Mode::ArrayBuffer, "readAsArrayBuffer")
 }
-unsafe extern "sysv64" fn read_binary_string(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn read_binary_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     read(g, cf, Mode::BinaryString, "readAsBinaryString")
 }
-unsafe extern "sysv64" fn read_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn read_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     read(g, cf, Mode::Text, "readAsText")
 }
-unsafe extern "sysv64" fn read_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn read_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     read(g, cf, Mode::DataUrl, "readAsDataURL")
 }
-unsafe extern "sysv64" fn abort(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     let object = cf_this(cf);
     if !checked(g, object, "abort") {
         return UNDEF;

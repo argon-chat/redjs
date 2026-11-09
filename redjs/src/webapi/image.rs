@@ -64,21 +64,24 @@ pub unsafe fn create_bitmap(g: *mut c_void, data: BitmapData) -> u64 {
     host_create(g, st.bitmap_class, st.bitmap.proto, data)
 }
 
-unsafe extern "sysv64" fn bitmap_get_width(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bitmap_get_width(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_bitmap(g, cf) {
         Some(b) => enc_i32(b.width as i32),
         None => throw_type_error(g, "ImageBitmap.width called on a non-ImageBitmap"),
     }
 }
 
-unsafe extern "sysv64" fn bitmap_get_height(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bitmap_get_height(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_bitmap(g, cf) {
         Some(b) => enc_i32(b.height as i32),
         None => throw_type_error(g, "ImageBitmap.height called on a non-ImageBitmap"),
     }
 }
 
-unsafe extern "sysv64" fn bitmap_close(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn bitmap_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(b) = this_bitmap(g, cf) {
         b.rgba = Vec::new();
         b.width = 0;
@@ -148,7 +151,8 @@ pub unsafe fn source_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u32, u32
 }
 
 /// `__rjs_sourcePixels(src)` → Uint8Array copy (bootstrap's OffscreenCanvas).
-pub unsafe extern "sysv64" fn source_pixels_js(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+pub unsafe fn source_pixels_js(g: *mut c_void, cf: *mut c_void) -> u64 {
     match source_pixels(g, cf_arg(cf, 0)) {
         Some((px, _, _)) => make_u8(g, &px),
         None => NULL,
@@ -159,7 +163,8 @@ pub unsafe extern "sysv64" fn source_pixels_js(g: *mut c_void, cf: *mut c_void) 
 // HTMLImageElement / Image
 // ---------------------------------------------------------------------------
 
-unsafe extern "sysv64" fn image_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn image_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let obj = ordinary_create(g, cf_new_target(cf), st.image.proto);
     // Legacy Image(w, h) factory semantics: presentational width/height.
@@ -179,11 +184,13 @@ unsafe extern "sysv64" fn image_construct(g: *mut c_void, cf: *mut c_void) -> u6
     obj
 }
 
-unsafe extern "sysv64" fn image_get_src(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn image_get_src(g: *mut c_void, cf: *mut c_void) -> u64 {
     get(g, cf_this(cf), "__rjs_src")
 }
 
-unsafe extern "sysv64" fn image_set_src(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn image_set_src(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(value) = to_js_string(g, cf_arg(cf, 0)) else {
         return UNDEF;
     };
@@ -265,7 +272,8 @@ unsafe fn set_image_source(g: *mut c_void, this: u64, src: String) -> u64 {
 
 /// Native Image objects are offscreen image sources, not retained DOM nodes.
 /// Their source attributes still follow the DOM disposal contract.
-unsafe extern "sysv64" fn image_remove_attribute(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn image_remove_attribute(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let proto = state(g).image.proto;
     if !proto_chain_has(g, this, proto) {
@@ -376,7 +384,8 @@ unsafe fn blob_bytes(g: *mut c_void, url: &str, done: BlobBytes) {
     );
 }
 
-unsafe extern "sysv64" fn image_decode_method(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn image_decode_method(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if truthy_flag(get(g, this, "complete")) {
         return resolved_promise(g, UNDEF);
@@ -575,7 +584,8 @@ fn crop(src: &BitmapData, sx: i64, sy: i64, sw: u32, sh: u32) -> BitmapData {
     BitmapData { width: sw, height: sh, rgba: out, origin_clean: src.origin_clean }
 }
 
-unsafe extern "sysv64" fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -> u64 {
     let source = cf_arg(cf, 0);
 
     // Region overload: (source, sx, sy, sw, sh, options?)
@@ -832,6 +842,7 @@ mod jsc_tests {
     /// `data:image/svg+xml;charset=utf-8,` + `encodeURIComponent(svg)` — the
     /// Argon client's taskbar icons (client sweep 1, #26) — and the other
     /// spellings of an SVG image: base64, a Blob without a type.
+    #[cfg(feature = "svg-images")]
     #[test]
     fn an_svg_image_loads_at_its_intrinsic_size_and_draws() {
         let c = file_ctx();
@@ -873,6 +884,13 @@ mod jsc_tests {
             run(&c, &format!("{LOAD} return await load('data:image/svg+xml,' + encodeURIComponent('<svg'));")),
             "error"
         );
+    }
+
+    #[cfg(not(feature = "svg-images"))]
+    #[test]
+    fn an_svg_image_reports_error_when_the_decoder_is_disabled() {
+        let c = file_ctx();
+        assert_eq!(run(&c, &format!("{LOAD} return await load('data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\"/>');")), "error");
     }
 
     #[test]

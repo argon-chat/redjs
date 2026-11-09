@@ -163,7 +163,8 @@ pub(super) fn bound_open(b: &Bound) -> bool {
 /// checked with `$check` (WebIDL EventHandler: a non-object stores null).
 macro_rules! handler {
     ($get:ident, $set:ident, $name:literal, $check:expr) => {
-        pub(super) unsafe extern "sysv64" fn $get(g: *mut core::ffi::c_void, cf: *mut core::ffi::c_void) -> u64 {
+        #[crate::host_fn]
+        pub(super) unsafe fn $get(g: *mut core::ffi::c_void, cf: *mut core::ffi::c_void) -> u64 {
             let this = crate::webapi::util::cf_this(cf);
             if !$check(g, this) {
                 return super::common::illegal(g);
@@ -171,7 +172,8 @@ macro_rules! handler {
             let v = super::client::bget(g, this, $name);
             if v == crate::webapi::util::UNDEF { crate::webapi::util::NULL } else { v }
         }
-        pub(super) unsafe extern "sysv64" fn $set(g: *mut core::ffi::c_void, cf: *mut core::ffi::c_void) -> u64 {
+        #[crate::host_fn]
+        pub(super) unsafe fn $set(g: *mut core::ffi::c_void, cf: *mut core::ffi::c_void) -> u64 {
             let this = crate::webapi::util::cf_this(cf);
             if !$check(g, this) {
                 return super::common::illegal(g);

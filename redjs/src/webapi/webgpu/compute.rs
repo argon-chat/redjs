@@ -175,7 +175,8 @@ pub(super) unsafe fn stage_constants(g: *mut c_void, stage: u64) -> Result<Vec<(
     Ok(out)
 }
 
-unsafe extern "sysv64" fn create_shader(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_shader(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -260,7 +261,8 @@ unsafe fn compilation_info(g: *mut c_void, info: wgpu::CompilationInfo, source: 
     object.v
 }
 
-unsafe extern "sysv64" fn get_compilation_info(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn get_compilation_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Shader)?;
         let Resource::Shader(shader) = h.resource else {
@@ -381,7 +383,8 @@ unsafe fn binding_type(g: *mut c_void, entry: u64) -> Result<wgpu::BindingType, 
     })
 }
 
-unsafe extern "sysv64" fn create_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -425,7 +428,8 @@ unsafe extern "sysv64" fn create_bind_group_layout(g: *mut c_void, cf: *mut c_vo
     })
 }
 
-unsafe extern "sysv64" fn create_pipeline_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_pipeline_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -534,7 +538,8 @@ unsafe fn binding(g: *mut c_void, value: u64, c: &Arc<Client>) -> Result<Binding
     Ok(Binding::Buffer(buffer, offset, size))
 }
 
-unsafe extern "sysv64" fn create_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -585,7 +590,8 @@ unsafe extern "sysv64" fn create_bind_group(g: *mut c_void, cf: *mut c_void) -> 
     })
 }
 
-unsafe extern "sysv64" fn create_compute_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_compute_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -630,7 +636,8 @@ unsafe extern "sysv64" fn create_compute_pipeline(g: *mut c_void, cf: *mut c_voi
     })
 }
 
-unsafe extern "sysv64" fn compute_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn compute_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePipeline)?;
         let c = client(g, &h)?;
@@ -648,7 +655,8 @@ unsafe extern "sysv64" fn compute_bind_group_layout(g: *mut c_void, cf: *mut c_v
     })
 }
 
-unsafe extern "sysv64" fn create_encoder(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn create_encoder(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
@@ -674,7 +682,8 @@ unsafe extern "sysv64" fn create_encoder(g: *mut c_void, cf: *mut c_void) -> u64
     })
 }
 
-unsafe extern "sysv64" fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -714,7 +723,8 @@ unsafe extern "sysv64" fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) ->
     })
 }
 
-unsafe extern "sysv64" fn copy_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn copy_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -752,7 +762,8 @@ unsafe extern "sysv64" fn copy_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-unsafe extern "sysv64" fn clear_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn clear_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -777,7 +788,8 @@ unsafe extern "sysv64" fn clear_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-unsafe extern "sysv64" fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
         let c = client(g, &h)?;
@@ -813,7 +825,8 @@ unsafe extern "sysv64" fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-unsafe extern "sysv64" fn pass_set_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_set_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
         let c = client(g, &h)?;
@@ -829,7 +842,8 @@ unsafe extern "sysv64" fn pass_set_pipeline(g: *mut c_void, cf: *mut c_void) -> 
     })
 }
 
-unsafe extern "sysv64" fn pass_set_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn pass_set_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
         let c = client(g, &h)?;
@@ -858,7 +872,8 @@ unsafe extern "sysv64" fn pass_set_bind_group(g: *mut c_void, cf: *mut c_void) -
     })
 }
 
-unsafe extern "sysv64" fn dispatch(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dispatch(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
         let c = client(g, &h)?;
@@ -883,7 +898,8 @@ unsafe extern "sysv64" fn dispatch(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-unsafe extern "sysv64" fn dispatch_indirect(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn dispatch_indirect(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
         let c = client(g, &h)?;
@@ -904,7 +920,8 @@ unsafe extern "sysv64" fn dispatch_indirect(g: *mut c_void, cf: *mut c_void) -> 
     })
 }
 
-unsafe extern "sysv64" fn end(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn end(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
         let c = client(g, &h)?;
@@ -926,7 +943,8 @@ unsafe extern "sysv64" fn end(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-unsafe extern "sysv64" fn submit(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn submit(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
         let c = client(g, &h)?;
@@ -981,7 +999,8 @@ unsafe extern "sysv64" fn submit(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-unsafe extern "sysv64" fn on_submitted_work_done(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn on_submitted_work_done(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
         let c = client(g, &h)?;

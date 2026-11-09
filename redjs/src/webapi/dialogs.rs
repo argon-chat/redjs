@@ -110,7 +110,8 @@ unsafe fn ask(g: *mut c_void, kind: i32, message: &str, default_value: &str) -> 
     Some((rc, out))
 }
 
-unsafe extern "sysv64" fn js_alert(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn js_alert(g: *mut c_void, cf: *mut c_void) -> u64 {
     let msg = if cf_argc(cf) == 0 { String::new() } else { read_string(g, cf_arg(cf, 0)).unwrap_or_default() };
     match ask(g, KIND_ALERT, &msg, "") {
         Some(_) => UNDEF,
@@ -118,7 +119,8 @@ unsafe extern "sysv64" fn js_alert(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn js_confirm(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn js_confirm(g: *mut c_void, cf: *mut c_void) -> u64 {
     let msg = if cf_argc(cf) == 0 { String::new() } else { read_string(g, cf_arg(cf, 0)).unwrap_or_default() };
     match ask(g, KIND_CONFIRM, &msg, "") {
         Some((rc, _)) => enc_bool(rc != 0),
@@ -126,7 +128,8 @@ unsafe extern "sysv64" fn js_confirm(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-unsafe extern "sysv64" fn js_prompt(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn js_prompt(g: *mut c_void, cf: *mut c_void) -> u64 {
     let msg = if cf_argc(cf) == 0 { String::new() } else { read_string(g, cf_arg(cf, 0)).unwrap_or_default() };
     // Spec: the second argument defaults to the empty string, and that default
     // is what a cancelled dialog does NOT return — cancel is null.

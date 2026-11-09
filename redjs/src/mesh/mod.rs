@@ -61,7 +61,8 @@ unsafe fn writable(g: *mut c_void, v: u64) -> Option<(*mut u8, usize)> {
 }
 
 /// `decodeVertexBuffer(target, count, stride, source, filter?)`
-unsafe extern "sysv64" fn decode_vertex_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn decode_vertex_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (Some(count), Some(stride)) = (read_len(cf_arg(cf, 1)), read_len(cf_arg(cf, 2))) else {
         return throw_type_error(
             g,
@@ -141,7 +142,8 @@ unsafe extern "sysv64" fn decode_vertex_buffer(g: *mut c_void, cf: *mut c_void) 
 }
 
 /// `decodeIndexBuffer(target, count, indexSize, source)`
-unsafe extern "sysv64" fn decode_index_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn decode_index_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (Some(count), Some(index_size)) = (read_len(cf_arg(cf, 1)), read_len(cf_arg(cf, 2))) else {
         return throw_type_error(
             g,

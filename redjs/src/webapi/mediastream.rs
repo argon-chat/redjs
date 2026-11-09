@@ -1679,7 +1679,8 @@ unsafe fn pair(g: *mut c_void, name: &str, msg: &str) -> u64 {
 /// `open(token, deviceId, exact, ec, ns, agc)` → `undefined` (the result comes
 /// through `settle`, after the host's prompt when it asks one), or
 /// `[name, message]` when the gate refuses.
-unsafe extern "sysv64" fn n_open(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn n_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     let token = read_number(g, cf_arg(cf, 0)) as u32;
     let gate = gate_for(g as usize);
     if let Some((name, msg)) = refusal(gate) {
@@ -1703,21 +1704,24 @@ unsafe extern "sysv64" fn n_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     UNDEF
 }
 
-unsafe extern "sysv64" fn n_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn n_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
     match handle_id(g, cf_arg(cf, 0)).and_then(clone_track) {
         Some(id) => new_handle(g, id),
         None => NULL,
     }
 }
 
-unsafe extern "sysv64" fn n_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn n_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(id) = handle_id(g, cf_arg(cf, 0)) {
         stop(id);
     }
     UNDEF
 }
 
-unsafe extern "sysv64" fn n_set_enabled(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn n_set_enabled(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(id) = handle_id(g, cf_arg(cf, 0)) {
         set_enabled(id, arg_bool(cf, 1));
     }
@@ -1727,7 +1731,8 @@ unsafe extern "sysv64" fn n_set_enabled(g: *mut c_void, cf: *mut c_void) -> u64 
 /// `info(handle)` → `{ id, kind, label, deviceId, channelCount, sampleRate,
 /// echoCancellation, noiseSuppression, autoGainControl, canProcess, ended }`,
 /// or `null`. The three switches are what runs, not what was asked.
-unsafe extern "sysv64" fn n_info(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn n_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(t) = handle_id(g, cf_arg(cf, 0)).and_then(track) else { return NULL };
     let o = new_object(g, UNDEF);
     define(g, o, "id", enc_f64(t.id as f64), 0);
@@ -1759,7 +1764,8 @@ fn advise_once(text: &str) {
 }
 
 /// `advise(text)`: [`advise_once`].
-unsafe extern "sysv64" fn n_advise(g: *mut c_void, cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn n_advise(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(text) = read_string(g, cf_arg(cf, 0)) {
         advise_once(&text);
     }
@@ -1776,7 +1782,8 @@ fn can_process() -> bool {
 }
 
 /// `canProcess()`: [`can_process`].
-unsafe extern "sysv64" fn n_can_process(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+#[crate::host_fn]
+unsafe fn n_can_process(_g: *mut c_void, _cf: *mut c_void) -> u64 {
     enc_bool(can_process())
 }
 
