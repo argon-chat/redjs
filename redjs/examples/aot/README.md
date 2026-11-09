@@ -28,3 +28,35 @@ It never evaluates a source copy of the application as a fallback.
 A native image is trusted executable code. The embedder must validate engine,
 frontend, builtin-table digest, compile options and its host/bundle contract;
 passing the image's own identity alone is not sufficient ABI validation.
+
+## Hosted realm startup and builtin protection
+
+The embedding host is registered before creating a VM. Web APIs (including
+native Performance/Crypto interfaces) are installed before `hostDidCreateRealm`
+finishes builtin locking and watchpoint setup. Engine native helper bindings
+are retained in the registered host set. The host registration does not permit
+compiled application code to replace protected builtins.
+
+`host-startup.js` checks that distinction with the same source in separate
+native and JIT processes. It retains the web/callback/GC checks above and writes
+`Math.abs` dynamically through the opaque host input. The native run must reject
+the executed write and preserve the original; JIT must accept and restore it.
+An unrelated indirect-eval refusal cannot satisfy this test.
+
+```powershell
+& $frontend compile examples/aot/host-startup.js --no-builtin-modules "--aot-out=$out/host.ir" --aot-threads=1 --aot-testing=NoExecutable --outfile "$out/unused.exe"
+cargo run --example aot-image --no-default-features --features native-aot -- compile "$out/host.ir" "$out/host.image"
+cargo run --example aot-image --no-default-features --features native-aot -- run-web-host-startup "$out/host.image" compact
+cargo run --example aot-image --no-default-features --features native-aot -- run-web-host-startup "$out/host.image" default
+cargo run --example aot-image --no-default-features --features native-aot -- run-web-host-startup-jit examples/aot/host-startup.js
+```
+
+Install the native scheduling clock with `redjs_web_install` before calling
+`redjs_webshim_install`. Out-of-order installation returns BadArg before
+publishing partial Web API state; it does not fabricate a replacement clock.
+
+Custom realms also apply `refuseEvaluationUnlessAdmitted` from the engine. The
+closed host-startup fixture refuses JavaScript eval/Function, while its trusted
+host Program probe returns 42. Images whose compiler-generated flags admit
+unknown JavaScript retain that policy; they must not be described as closed
+or fully trimmed solely because their entry runs as native code.

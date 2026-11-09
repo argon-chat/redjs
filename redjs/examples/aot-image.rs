@@ -8,7 +8,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("run-verified") => return run_verified(args.get(2).ok_or("image path required")?, selected_profile(args.get(3).map(String::as_str))?),
         Some("reject-handles") => return reject_handles(args.get(2).ok_or("corrupt image path required")?),
         Some("run-stress") => return run_stress(args.get(2).ok_or("image path required")?, selected_profile(args.get(3).map(String::as_str))?),
-        Some("run-web") => return run_web(args.get(2).ok_or("image path required")?, selected_profile(args.get(3).map(String::as_str))?, args.get(4).is_some_and(|x| x=="switch")),
+        Some("run-web") => return run_web(args.get(2).ok_or("image path required")?, selected_profile(args.get(3).map(String::as_str))?, args.get(4).is_some_and(|x| x=="switch"), false),
+        Some("run-web-host-startup") => return run_web(args.get(2).ok_or("image path required")?, selected_profile(args.get(3).map(String::as_str))?, false, true),
+        Some("run-web-host-startup-jit") => return run_web_host_startup_jit(args.get(2).ok_or("source path required")?),
         Some("reject-image") => {
             let path=args.get(2).ok_or("image path required")?;
             let identity: [u8;16]=std::fs::read(format!("{path}.identity"))?.try_into().map_err(|_|"invalid identity")?;
@@ -82,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         _ => {
-            return Err("usage: aot-image compile INPUT.ir OUTPUT.image | run OUTPUT.image [default|compact] | run-web OUTPUT.image [default|compact] [switch] | run-stress IMAGE [default|compact] | run-verified IMAGE [default|compact] | reject-handles CORRUPT_IMAGE | reject-image IMAGE [default|compact] | reject-late-profile IMAGE".into())
+            return Err("usage: aot-image compile INPUT.ir OUTPUT.image | run OUTPUT.image [default|compact] | run-web OUTPUT.image [default|compact] [switch] | run-web-host-startup IMAGE [default|compact] | run-web-host-startup-jit SOURCE.js | run-stress IMAGE [default|compact] | run-verified IMAGE [default|compact] | reject-handles CORRUPT_IMAGE | reject-image IMAGE [default|compact] | reject-late-profile IMAGE".into())
         }
     }
     Ok(())
@@ -139,14 +141,15 @@ fn run_web(
     path: &str,
     profile: redjs::aot::MemoryProfile,
     check_switch: bool,
+    verify_host_startup: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let identity: [u8; 16] = std::fs::read(format!("{path}.identity"))?
         .try_into()
         .map_err(|_| "invalid identity")?;
     load_selected(path, identity, profile, check_switch)?;
-    run_web_loaded(path)
+    run_web_loaded(path, verify_host_startup)
 }
-fn run_web_loaded(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -166,6 +169,7 @@ fn run_web_loaded(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             0
         );
     }
+    println!("web_bootstrap_before_native_entry=ok");
     context.global_set("__VN_AOT_HOST__", context.global())?;
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
@@ -189,6 +193,25 @@ fn run_web_loaded(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         other => other.to_string(),
     })?;
     println!("initial={evaluation:?}");
+    if verify_host_startup {
+        assert_eq!(
+            context.to_rust_string(context.global_get("__vn_aot_math_guard")?)?,
+            "native-locked",
+            "compiled Math.abs write was accepted or did not preserve the original"
+        );
+        let refusal = context.to_rust_string(context.global_get("__vn_aot_math_refusal")?)?;
+        assert!(
+            refusal.contains("Math.abs"),
+            "unexpected mutation refusal: {refusal}"
+        );
+        println!("compiled_math_abs_after_host_startup=native-locked;{refusal}");
+        let result = context.eval_named("20 + 22", "host-eval-probe.js")?;
+        assert_eq!(context.to_number(result)?, 42.0);
+        let policy = context.eval_named("JSON.stringify([(() => {try {(0,eval)('42');return 'allowed';}catch(e){return e.name;}})(), (() => {try {new Function('return 42');return 'allowed';}catch(e){return e.name;}})()])", "image-policy-probe.js")?;
+        assert_eq!(context.to_rust_string(policy)?, "[\"EvalError\",\"EvalError\"]", "closed fixture must retain its image's evaluation policy");
+        println!("closed_image_js_eval_and_function=refused;trusted_host_program=42");
+
+    }
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
         unsafe { redjs::ffi::redjs_pump(context.raw(), 7, std::ptr::null_mut()) };
@@ -262,6 +285,46 @@ fn run_web_loaded(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_web_host_startup_jit(source_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(
+        !redjs::aot::is_active(),
+        "JIT contrast requires a fresh process without an image"
+    );
+    let context = Context::new();
+    unsafe {
+        assert_eq!(redjs::ffi::redjs_web_install(context.raw()), 0);
+        assert_eq!(
+            redjs::ffi::redjs_webshim_install(
+                context.raw(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0
+            ),
+            0
+        );
+    }
+    context.global_set("__VN_AOT_HOST__", context.global())?;
+    let callback = context.function("__vn_aot_probe", 1, |_global, frame| {
+        let arguments = unsafe { HostArgs::new(frame) };
+        Value::number(arguments.arg(0).as_number().unwrap_or(0.0) * 7.0).0
+    })?;
+    context.global_set("__vn_aot_probe", callback)?;
+    let source = std::fs::read_to_string(source_path)?;
+    // Direct embedding API, not the JS indirect eval disabled by native images.
+    context.eval_named(&source, "aot-host-startup-jit.js")?;
+    assert_eq!(
+        context.to_rust_string(context.global_get("__vn_aot_math_guard")?)?,
+        "jit-writable",
+        "JIT contrast did not restore its accepted write"
+    );
+    assert_eq!(
+        context.to_rust_string(context.global_get("__vn_aot_math_refusal")?)?,
+        ""
+    );
+    println!("same_source_math_abs=jit-writable;original_restored=true");
+    Ok(())
+}
 fn run_stress(
     path: &str,
     profile: redjs::aot::MemoryProfile,
@@ -399,7 +462,7 @@ fn run_verified(
     drop(file); // Engine must keep its own duplicate, including executable mappings.
     println!("memory={settings:?}");
     println!("retargeted=true;verified_file_sha={verified_sha};reopened_path_differs=true;caller_file_dropped=true;fixture={}",fixture.display());
-    run_web_loaded(path)
+    run_web_loaded(path, false)
 }
 fn reject_handles(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     unsafe extern "C" {

@@ -555,6 +555,9 @@ pub struct WebState {
     pub global_proxy: u64,
 
     // Private-name internal slots.
+    pub s_performance: *mut c_void,
+    pub s_crypto: *mut c_void,
+    pub s_subtle_crypto: *mut c_void,
     pub s_listeners: *mut c_void, // EventTarget [[listeners]] → JS Array
     pub s_event: *mut c_void,     // Event [[state]] → plain JS object
     pub s_image: *mut c_void,     // HTMLImageElement [[bitmap]] → ImageBitmap host obj

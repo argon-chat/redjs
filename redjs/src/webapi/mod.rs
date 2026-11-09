@@ -91,6 +91,7 @@ pub mod navigator;
 #[cfg(feature = "audio")]
 pub mod osc;
 pub mod path2d;
+pub mod performance;
 pub mod permissions;
 #[cfg(feature = "audio")]
 pub mod pcm;
@@ -128,7 +129,8 @@ pub mod testing {
     pub fn ctx() -> Context {
         let c = Context::new();
         unsafe {
-            crate::ffi::redjs_webshim_install(c.raw(), core::ptr::null(), 0, core::ptr::null(), 0);
+            assert_eq!(crate::ffi::redjs_web_install(c.raw()), 0);
+            assert_eq!(crate::ffi::redjs_webshim_install(c.raw(), core::ptr::null(), 0, core::ptr::null(), 0), 0);
         }
         c
     }
@@ -230,6 +232,11 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     if has_state(g) {
         return 0; // idempotent
     }
+    // Refuse an out-of-order/invalid clock before publishing partial WebState.
+    // Native Performance reuses the scheduling singleton rather than fabricating one.
+    if !crate::web::has_scheduler(g) || !performance::clock_installed(g) {
+        return 2;
+    }
     fsutil::set_roots(g, scripts_root, assets_root);
 
     // Native console fallback for the bootstrap.
@@ -241,6 +248,9 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     }
 
     // Private-name internal slots + hot atoms.
+    let s_performance = atom_priv(g, "redjs#performance");
+    let s_crypto = atom_priv(g, "redjs#crypto");
+    let s_subtle_crypto = atom_priv(g, "redjs#subtleCrypto");
     let s_listeners = atom_priv(g, "redjs#listeners");
     let s_event = atom_priv(g, "redjs#event");
     let s_image = atom_priv(g, "redjs#imageBitmap");
@@ -270,6 +280,9 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let st = put_state(g, WebState {
         g,
         global_proxy,
+        s_performance,
+        s_crypto,
+        s_subtle_crypto,
         s_listeners,
         s_event,
         s_image,
@@ -308,6 +321,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     (*st_mut).custom_event = custom_event;
     let et_proto = event_target.proto;
     (*st_mut).event_target = event_target;
+    performance::install(g, et_proto);
 
     // Before any class whose methods throw "an X DOMException": they resolve
     // the prototype at throw time, but nothing here may throw a plain Error

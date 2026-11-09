@@ -104,7 +104,8 @@ mod tests {
     fn parse_sheet_round_trips_through_jsc() {
         let ctx = Context::new();
         unsafe {
-            crate::ffi::redjs_webshim_install(ctx.raw(), core::ptr::null(), 0, core::ptr::null(), 0);
+            assert_eq!(crate::ffi::redjs_web_install(ctx.raw()), 0);
+            assert_eq!(crate::ffi::redjs_webshim_install(ctx.raw(), core::ptr::null(), 0, core::ptr::null(), 0), 0);
         }
         let v = ctx
             .eval("RedCss.parseSheet('.card .title:hover { color: red !important }')")
@@ -129,7 +130,8 @@ mod tests {
     fn media_rule_bodies_are_condition_tagged() {
         let ctx = Context::new();
         unsafe {
-            crate::ffi::redjs_webshim_install(ctx.raw(), core::ptr::null(), 0, core::ptr::null(), 0);
+            assert_eq!(crate::ffi::redjs_web_install(ctx.raw()), 0);
+            assert_eq!(crate::ffi::redjs_webshim_install(ctx.raw(), core::ptr::null(), 0, core::ptr::null(), 0), 0);
         }
         let v = ctx
             .eval("RedCss.parseSheet('@media screen { .a { color: red } } .b { color: blue }')")

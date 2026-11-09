@@ -57,6 +57,18 @@ thread_local const void* initialImageView { nullptr };
 thread_local std::unordered_set<JSGlobalObject*> startedRealms;
 const AOT::ModuleHost moduleHost { };
 
+void registerEmbeddingHost()
+{
+    // Engine-only mode locks built-ins during realm creation. A hosted realm
+    // lets the embedder install Web APIs before hostDidCreateRealm() locks it.
+    AOT::BuiltinBindings::bindNativeHelpersOfEngine();
+    // registerHost() retains this process-lifetime set. Keep the engine helpers:
+    // an empty host set would hide direct helpers used by compiled code.
+    static const AOT::BuiltinBindingSet bindings {
+        .directFunctions = AOT::BuiltinBindings::directFunctions(),
+    };
+    AOT::BuiltinBindings::registerHost(bindings);
+}
 void reportUncaught(JSGlobalObject*, Exception*)
 {
     std::fprintf(stderr, "[redjs AOT] uncaught exception at event loop\n");
@@ -219,8 +231,8 @@ uint32_t loadOwnedFile(HANDLE owned, const uint8_t* identity, uint32_t rawProfil
             || Options::structureHeapSizeInKB() != 262144 || Options::markedBlockCageSizeInMB() != 1024))) {
         return static_cast<uint32_t>(ImageVerdict::OptionsConflict);
     }
-    // The engine helper registry is one-time even when an image is rejected.
-    std::call_once(nativeHelpersInitialized, [] { AOT::BuiltinBindings::bindNativeHelpersOfEngine(); });
+    // Register the embedding host before any VM/realm exists, once even if an image is rejected.
+    std::call_once(nativeHelpersInitialized, registerEmbeddingHost);
     std::array<uint8_t, 16> expected;
     std::memcpy(expected.data(), identity, 16);
     std::span<const uint8_t> imageBytes { static_cast<const uint8_t*>(view.value), static_cast<size_t>(size.QuadPart) };
@@ -304,6 +316,10 @@ extern "C" void* rjs_aot_create_context()
     JSLockHolder lock(vm.ptr());
     auto* global = JSGlobalObject::createWithCustomMethodTable(vm.get(),
         JSGlobalObject::createStructure(vm.get(), jsNull()), &methodTable);
+    // Custom embedding realms must apply the image's own evaluation policy,
+    // just as the engine's normal host does. This is a no-op for images that
+    // explicitly admit unknown JavaScript; closed images keep JS eval disabled.
+    AOT::refuseEvaluationUnlessAdmitted(global);
     startedRealms.erase(global);
     return const_cast<OpaqueJSContext*>(JSGlobalContextRetain(toGlobalRef(global)));
 }

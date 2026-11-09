@@ -131,7 +131,6 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     drop(w);
 }
 
-#[cfg(test)]
 pub(crate) fn has_scheduler(g: *mut c_void) -> bool {
     registry().lock().unwrap().contains_key(&(g as usize))
 }
