@@ -1301,6 +1301,36 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     }
 }
 
+/// Whether the page in `g` has audio work that advances on pump ticks: a
+/// running context with a param timeline, a scheduled start or stop, or a
+/// source still playing. Scheduling lands on the first tick at or after the
+/// requested time, so an embedder that slows its pump while idle keeps the
+/// display rate while this holds.
+pub fn busy(g: *mut c_void) -> bool {
+    let gl = glob().lock().unwrap();
+    let running: Vec<u64> = gl
+        .engines
+        .iter()
+        .filter(|(_, e)| e.g == g as usize && e.state != ST_CLOSED && e.running)
+        .map(|(&h, _)| h)
+        .collect();
+    if running.is_empty() {
+        return false;
+    }
+    let owned = |node: u64, kind: u8| {
+        if kind >= P_L_POS_X {
+            running.contains(&node)
+        } else {
+            gl.nodes.get(&node).is_some_and(|r| running.contains(&r.engine))
+        }
+    };
+    gl.timelines.keys().any(|&(node, kind)| owned(node, kind))
+        || gl.nodes.values().any(|r| {
+            running.contains(&r.engine)
+                && (r.pending_start.is_some() || r.pending_stop.is_some() || (r.started && !r.ended))
+        })
+}
+
 /// Close every `AudioContext` the page in `g` has open, as unloading a
 /// document does: for an embedder that replaces the page without replacing
 /// the context (`location.reload()` in one realm). Each one's output stream
