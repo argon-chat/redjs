@@ -414,7 +414,17 @@ mod platform {
 
     pub(super) struct Subscription {
         handles: Vec<usize>,
+        // Windows receives this stable address for both registrations. Keep it
+        // alive until Drop has unregistered every handle; do not assume the
+        // notification API copies its input structure.
+        recipient: Box<SubscribeParameters>,
     }
+
+    // Handles may be unregistered on another native thread. The boxed
+    // parameters remain at a stable address and are immutable after creation;
+    // their only data pointer is an opaque ContextId, never dereferenced.
+    // No JS value or VM pointer crosses threads through this subscription.
+    unsafe impl Send for Subscription {}
 
     #[cfg(test)]
     impl Subscription {
@@ -439,13 +449,15 @@ mod platform {
             Guid { data1: 0x5d3e9a59, data2: 0xe9d5, data3: 0x4b00, data4: [0xa6, 0xbd, 0xff, 0x34, 0xff, 0x51, 0x65, 0x48] },
             Guid { data1: 0xa7ad8041, data2: 0xb45a, data3: 0x4cae, data4: [0x87, 0xa3, 0xee, 0xcb, 0xb4, 0x68, 0xa9, 0xe1] },
         ];
-        let mut subscription = Subscription { handles: Vec::new() };
-        let mut recipient = SubscribeParameters { callback: changed, context: id.0 as usize as *const c_void };
+        let mut subscription = Subscription {
+            handles: Vec::new(),
+            recipient: Box::new(SubscribeParameters { callback: changed, context: id.0 as usize as *const c_void }),
+        };
+        let recipient = subscription.recipient.as_ref() as *const SubscribeParameters as *mut c_void;
         for guid in &SETTINGS {
             let mut handle = core::ptr::null_mut();
-            // DEVICE_NOTIFY_CALLBACK = 2. Windows copies the parameters.
-            let error =
-                unsafe { PowerSettingRegisterNotification(guid, 2, &mut recipient as *mut _ as *mut c_void, &mut handle) };
+            // DEVICE_NOTIFY_CALLBACK = 2. Recipient is an input-only pointer.
+            let error = unsafe { PowerSettingRegisterNotification(guid, 2, recipient, &mut handle) };
             if error == 0 {
                 subscription.handles.push(handle as usize);
             } else {
