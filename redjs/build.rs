@@ -50,6 +50,19 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Hooks Bun defines for its WebKit and redjs leaves undefined: weak
+/// references in the prebuilt that must stay null (see the macOS link below).
+const BUN_HOOKS: [&str; 8] = [
+    "Bun__reportUnhandledError",
+    "Bun__thisThreadHasVM",
+    "WTFTimer__cancel",
+    "WTFTimer__create",
+    "WTFTimer__deinit",
+    "WTFTimer__isActive",
+    "WTFTimer__secondsUntilTimer",
+    "WTFTimer__update",
+];
+
 /// Number of pre-compiled host-function trampolines. Each registered C# host
 /// function consumes one slot for the lifetime of the process.
 const TRAMPOLINE_COUNT: usize = 2048;
@@ -418,6 +431,19 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=icucore");
         for framework in ["CoreFoundation", "Foundation", "Security"] {
             println!("cargo:rustc-link-lib=framework={framework}");
+        }
+        // Bun's hooks (its timer and error reporting) are weak references in
+        // the prebuilt, and JSC tests them for null: unset, RunLoop takes its
+        // generic path, the one redjs drives (glue.cpp, `rjs_run_loop_cycle`).
+        // ELF leaves an unresolved weak reference null by itself; ld64 still
+        // demands a definition unless told the symbol may be missing, and then
+        // dyld binds the weak import to null. Images this package links only
+        // (see /OPT:NOICF below): an embedder's executable passes the same
+        // list, `BUN_HOOKS` here.
+        if target_os == "macos" {
+            for symbol in BUN_HOOKS {
+                println!("cargo:rustc-link-arg=-Wl,-U,_{symbol}");
+            }
         }
     }
 
