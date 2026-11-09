@@ -996,8 +996,8 @@ pub unsafe extern "C" fn redjs_webshim_install(
 
 /// Sets what `navigator.userAgent` reports (UTF-16), for every context in the
 /// process, from the next read on — before or after install. `appVersion` and
-/// `platform` follow it. A null `ua` restores the default,
-/// `Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0`.
+/// `platform` follow it. A null `ua` restores the OS-specific
+/// [`crate::webapi::navigator::DEFAULT_USER_AGENT`].
 #[no_mangle]
 pub unsafe extern "C" fn redjs_navigator_set_user_agent(ua: *const u16, len: usize) {
     if ua.is_null() {

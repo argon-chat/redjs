@@ -52,7 +52,17 @@ use super::util::*;
 use crate::glue;
 
 /// What `navigator.userAgent` says until the embedder sets something else.
+/// Use the host OS so navigator.platform, keyboard shortcuts and HTTP requests
+/// do not claim Windows on every supported desktop. The Mac tokens follow the
+/// browser compatibility convention, including on Apple Silicon.
+#[cfg(target_os = "windows")]
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0";
+#[cfg(target_os = "macos")]
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) RedVue/1.0";
+#[cfg(target_os = "linux")]
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux) RedVue/1.0";
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 RedVue/1.0";
 
 static USER_AGENT: RwLock<Option<String>> = RwLock::new(None);
 
@@ -394,8 +404,12 @@ mod tests {
     #[test]
     fn user_agent_default_and_override() {
         let c = ctx();
-        assert_eq!(s(&c, "navigator.userAgent"), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0");
-        assert_eq!(s(&c, "navigator.appVersion"), "5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0");
+        assert_eq!(s(&c, "navigator.userAgent"), super::DEFAULT_USER_AGENT);
+        assert_eq!(s(&c, "navigator.appVersion"), super::app_version(super::DEFAULT_USER_AGENT));
+        assert_eq!(s(&c, "navigator.platform"), super::platform(super::DEFAULT_USER_AGENT));
+        #[cfg(target_os = "macos")]
+        assert_eq!(s(&c, "navigator.platform"), "MacIntel");
+        #[cfg(target_os = "windows")]
         assert_eq!(s(&c, "navigator.platform"), "Win32");
 
         let ua: Vec<u16> = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2".encode_utf16().collect();

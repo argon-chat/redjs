@@ -183,6 +183,13 @@ pub trait PermissionHost: Send + Sync {
     /// changed behind the app's back is never reported stale.
     fn status(&self, cap: Capability) -> PermissionState;
 
+    /// Whether the OS itself provides per-app consent for this capability.
+    /// Embedders can use this to avoid layering a second app-owned prompt over
+    /// native consent (for example, macOS TCC microphone access).
+    fn has_native_prompt(&self, _cap: Capability) -> bool {
+        false
+    }
+
     /// Start a request. Never blocks. Not called by `navigator.permissions` —
     /// see the module header.
     ///
@@ -314,6 +321,11 @@ impl Settlements {
         }
         out
     }
+
+    fn take_embedder(&mut self, limit: usize) -> Vec<(u32, PermissionState)> {
+        let count = limit.min(self.for_embedder.len());
+        self.for_embedder.drain(..count).collect()
+    }
 }
 
 fn drain_host(s: &mut Settlements) {
@@ -348,9 +360,18 @@ pub(crate) fn take_runtime_settled() -> Vec<(u32, PermissionState)> {
 /// delivers the result drains through this, never through the host's
 /// `drain_settled`, which would also take `getUserMedia`'s.
 pub fn take_settled() -> Vec<(u32, PermissionState)> {
+    take_settled_up_to(usize::MAX)
+}
+
+/// Take at most `limit` embedder settlements, preserving the remaining tokens
+/// in the existing router for the next delivery wave. A single native prompt
+/// may resolve many waiting requests; a caller's per-frame budget must not
+/// discard those that do not fit. This queue stores no JS references, and the
+/// runtime's getUserMedia settlements remain separate.
+pub fn take_settled_up_to(limit: usize) -> Vec<(u32, PermissionState)> {
     let mut s = settlements().lock().unwrap();
     drain_host(&mut s);
-    core::mem::take(&mut s.for_embedder)
+    s.take_embedder(limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +747,33 @@ mod tests {
         // Nothing is delivered twice.
         s.drain(&h);
         assert!(s.for_runtime.is_empty() && s.for_embedder.is_empty());
+    }
+
+    #[test]
+    fn capped_embedder_delivery_preserves_every_waiter_across_waves() {
+        let h = QueueHost { next: Mutex::new(0), settled: Mutex::new(Vec::new()) };
+        let mut s = Settlements::default();
+        let mut expected = Vec::new();
+        for i in 0..19 {
+            let RequestOutcome::Pending(token) = h.request(Capability::Microphone) else { panic!("pending"); };
+            expected.push((token, PermissionState::Granted));
+            if i == 8 {
+                assert_eq!(s.request(&h, Capability::Microphone), RequestOutcome::Pending(10));
+            }
+        }
+        s.drain(&h);
+        let mut delivered = s.take_embedder(16);
+        assert_eq!(delivered, expected[..16]);
+        assert_eq!(s.for_embedder, expected[16..]);
+        assert!(s.take_embedder(0).is_empty(), "a zero budget leaves the backlog alone");
+        // A later answer must queue behind the old tail, not replace it.
+        assert_eq!(h.request(Capability::Microphone), RequestOutcome::Pending(21));
+        expected.push((21, PermissionState::Granted));
+        s.drain(&h);
+        delivered.extend(s.take_embedder(16));
+        assert_eq!(delivered, expected);
+        assert!(s.take_embedder(16).is_empty(), "each token is delivered exactly once");
+        assert_eq!(s.for_runtime, vec![(10, PermissionState::Granted)], "the runtime's request never enters the embedder wave");
     }
 
     #[test]
