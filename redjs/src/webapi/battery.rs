@@ -1,12 +1,14 @@
 //! Optional Battery Status API (https://www.w3.org/TR/battery-status/).
 //!
 //! `navigator.getBattery()` caches one Promise and one EventTarget per context.
-//! Windows samples GetSystemPowerStatus and subscribes lazily to native power
-//! source / capacity notifications. Their callbacks touch no JS: they coalesce
-//! the latest snapshot into this context's inbox and wake its existing pump.
+//! Windows uses power-setting notifications; Linux uses UPower's system D-Bus
+//! display device; macOS uses IOPowerSources run-loop notifications. Their
+//! callbacks touch no JS: they coalesce the latest snapshot into this context's inbox and wake its existing pump.
 //! Delivery updates each changed attribute and fires its trusted event as one
 //! task, with a microtask checkpoint after it. There is no polling thread.
 //!
+//! Acquisition on Linux / macOS runs off the JS thread. The first Promise is
+//! fulfilled by the pump only after the initial native snapshot is available.
 //! Unknown status, no battery, and platforms without a provider use the spec's
 //! fully charged / plugged-in defaults. Windows has no charging ETA in this
 //! API, so chargingTime is Infinity until full; unknown discharge ETA is also
@@ -22,6 +24,15 @@ use std::sync::{Mutex, OnceLock};
 use super::events;
 use super::util::*;
 use crate::{context::ContextId, glue};
+
+#[cfg(any(target_os = "linux", test))]
+mod linux;
+#[cfg(any(target_os = "macos", test))]
+mod macos;
+#[cfg(target_os = "linux")]
+use linux::native as platform;
+#[cfg(target_os = "macos")]
+use macos::native as platform;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BatteryState {
@@ -79,12 +90,16 @@ struct BatteryContext {
     s_handlers: usize,
     manager: u64,
     promise: u64,
+    // Protected until an asynchronous provider's first snapshot is pumped.
+    resolve: u64,
     current: BatteryState,
     pending: Option<BatteryState>,
     delivering: bool,
     subscription: Option<platform::Subscription>,
     #[cfg(test)]
     initial: Option<BatteryState>,
+    #[cfg(test)]
+    defer_initial: bool,
 }
 
 fn registry() -> &'static Mutex<HashMap<u64, BatteryContext>> {
@@ -94,6 +109,7 @@ fn registry() -> &'static Mutex<HashMap<u64, BatteryContext>> {
 
 // An idle pump with no update anywhere costs just this load.
 static PENDING: AtomicUsize = AtomicUsize::new(0);
+static ACQUIRING: AtomicUsize = AtomicUsize::new(0);
 
 /// Removes the id before unregistering native callbacks. A callback already in
 /// flight can only address this dead id, never a context reusing its address.
@@ -105,6 +121,9 @@ pub(crate) fn forget(gone: crate::context::Gone) {
         if old.as_ref().is_some_and(|c| c.pending.is_some()) {
             PENDING.fetch_sub(1, Ordering::AcqRel);
         }
+        if old.as_ref().is_some_and(|c| is_cell(c.resolve)) {
+            ACQUIRING.fetch_sub(1, Ordering::AcqRel);
+        }
         old
     };
     // Unregistration can wait for a callback; never hold the registry lock.
@@ -113,7 +132,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 
 fn queue(c: &mut BatteryContext, state: BatteryState) {
     let was_pending = c.pending.is_some();
-    c.pending = (c.delivering || state != c.current).then_some(state);
+    c.pending = (is_cell(c.resolve) || c.delivering || state != c.current).then_some(state);
     match (was_pending, c.pending.is_some()) {
         (false, true) => {
             PENDING.fetch_add(1, Ordering::AcqRel);
@@ -122,6 +141,21 @@ fn queue(c: &mut BatteryContext, state: BatteryState) {
             PENDING.fetch_sub(1, Ordering::AcqRel);
         }
         _ => {}
+    }
+}
+
+/// Background providers publish Rust snapshots only. A removed context id is
+/// never recreated; late acquisition / notification callbacks are harmless.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn publish(id: ContextId, state: BatteryState) {
+    let changed = {
+        let mut reg = registry().lock().unwrap();
+        let Some(c) = reg.get_mut(&id.0) else { return };
+        queue(c, state);
+        c.pending.is_some()
+    };
+    if changed {
+        crate::web::wake(id);
     }
 }
 
@@ -233,32 +267,49 @@ pub(super) unsafe extern "sysv64" fn get_battery(g: *mut c_void, cf: *mut c_void
         return UNDEF;
     }
     crate::ffi::redjs_protect(g, promise);
+    crate::ffi::redjs_protect(g, resolve);
     #[cfg(test)]
     let initial = registry().lock().unwrap().get(&id.0).unwrap().initial;
     #[cfg(not(test))]
     let initial: Option<BatteryState> = None;
+    #[cfg(test)]
+    let defer_injected = registry().lock().unwrap().get(&id.0).unwrap().defer_initial;
+    #[cfg(not(test))]
+    let defer_injected = false;
+    let deferred = defer_injected || (initial.is_none() && platform::ASYNC_INITIAL);
     {
         let mut reg = registry().lock().unwrap();
         let c = reg.get_mut(&id.0).unwrap();
         c.manager = manager;
         c.promise = promise;
+        c.resolve = if deferred { resolve } else { UNDEF };
+        if deferred {
+            ACQUIRING.fetch_add(1, Ordering::AcqRel);
+        }
         c.current = initial.unwrap_or_else(platform::read);
     }
     // Windows can call back immediately: the entry must already be complete,
     // and registration must run without its lock. Tests inject context-local
     // state and skip the real subscription, avoiding machine-dependent races.
-    if initial.is_none() {
+    if initial.is_none() && !defer_injected {
         let subscription = platform::subscribe(id);
         registry().lock().unwrap().get_mut(&id.0).unwrap().subscription = Some(subscription);
     }
     // Native Promise machinery remains independent of a replaced global.
     // Even an already fulfilled Promise invokes .then callbacks asynchronously.
-    let _ = call(g, resolve, UNDEF, &[manager]);
+    if !deferred {
+        let _ = call(g, resolve, UNDEF, &[manager]);
+        crate::ffi::redjs_unprotect(g, resolve);
+    }
     promise
 }
 
-unsafe fn inflight(_g: *mut c_void) -> bool {
-    false
+unsafe fn inflight(g: *mut c_void) -> bool {
+    if ACQUIRING.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    let Some(id) = crate::context::id_of(g) else { return false };
+    registry().lock().unwrap().get(&id.0).is_some_and(|c| is_cell(c.resolve))
 }
 
 unsafe fn ready(g: *mut c_void) -> bool {
@@ -274,15 +325,30 @@ unsafe fn drain(g: *mut c_void) -> usize {
         return 0;
     }
     let Some(id) = crate::context::id_of(g) else { return 0 };
-    let (manager, old, next) = {
+    let (manager, old, next, resolve) = {
         let mut reg = registry().lock().unwrap();
         let Some(c) = reg.get_mut(&id.0) else { return 0 };
         let Some(next) = c.pending.take() else { return 0 };
         PENDING.fetch_sub(1, Ordering::AcqRel);
-        c.delivering = true;
-        (c.manager, c.current, next)
+        let resolve = c.resolve;
+        c.resolve = UNDEF;
+        if is_cell(resolve) {
+            ACQUIRING.fetch_sub(1, Ordering::AcqRel);
+            // Initial acquisition is one atomic snapshot, visible in full to
+            // Promise handlers. Startup is not a battery change notification.
+            c.current = next;
+        } else {
+            c.delivering = true;
+        }
+        (c.manager, c.current, next, resolve)
     };
     crate::web::checkpoint(g);
+    if is_cell(resolve) {
+        let _ = call(g, resolve, UNDEF, &[manager]);
+        crate::ffi::redjs_unprotect(g, resolve);
+        crate::web::checkpoint(g);
+        return 1;
+    }
     let mut count = 0;
     macro_rules! update {
         ($field:ident, $event:literal) => {
@@ -353,12 +419,15 @@ pub(super) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
             s_handlers,
             manager: UNDEF,
             promise: UNDEF,
+            resolve: UNDEF,
             current: BatteryState::default(),
             pending: None,
             delivering: false,
             subscription: None,
             #[cfg(test)]
             initial: None,
+            #[cfg(test)]
+            defer_initial: false,
         },
     );
     crate::web::register_pump_source(crate::web::PumpSource { inflight, ready, drain });
@@ -367,6 +436,7 @@ pub(super) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    pub(super) const ASYNC_INITIAL: bool = false;
 
     #[repr(C)]
     struct Guid {
@@ -468,10 +538,11 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod platform {
     use super::*;
     pub(super) struct Subscription;
+    pub(super) const ASYNC_INITIAL: bool = false;
     pub(super) fn read() -> BatteryState {
         BatteryState::default()
     }
@@ -492,8 +563,7 @@ mod tests {
 
     fn publish(c: &crate::api::Context, state: BatteryState) {
         let id = crate::context::id_of(c.raw()).unwrap();
-        queue(registry().lock().unwrap().get_mut(&id.0).unwrap(), state);
-        crate::web::wake(id);
+        super::publish(id, state);
     }
 
     fn pump(c: &crate::api::Context) {
@@ -597,6 +667,54 @@ mod tests {
         publish(&a, BatteryState { level: 0.4, ..dc });
         pump(&a);
         ok(&a, "onceCount === 1 && battery.level === 0.4");
+    }
+
+    #[test]
+    fn asynchronous_initial_snapshot_is_coalesced_rooted_and_fulfilled_atomically() {
+        let c = ctx();
+        let id = crate::context::id_of(c.raw()).unwrap();
+        registry().lock().unwrap().get_mut(&id.0).unwrap().defer_initial = true;
+        s(&c, "globalThis.initialLog = []; globalThis.first = navigator.getBattery(); first.then(b => { initialLog.push([b.charging, b.chargingTime, b.dischargingTime, b.level]); }); 0");
+        ok(&c, "initialLog.length === 0 && first === navigator.getBattery()");
+        let manager = registry().lock().unwrap().get(&id.0).unwrap().manager;
+        unsafe {
+            define(c.raw(), glue::rjs_global(c.raw()), "pendingBattery", manager, 0);
+            glue::rjs_gc(c.raw(), 0);
+        }
+        s(&c, "globalThis.initialEvents = 0; for (const type of ['chargingchange','chargingtimechange','dischargingtimechange','levelchange']) pendingBattery.addEventListener(type, () => initialEvents++); Object.defineProperty(BatteryManager.prototype, 'then', { configurable: true, get() { globalThis.reentered = navigator.getBattery(); return undefined; } }); 0");
+        super::publish(id, BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 3600.0, level: 0.2 });
+        super::publish(id, BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 7200.0, level: 0.5 });
+        pump(&c);
+        ok(&c, "initialEvents === 0 && initialLog.length === 1 && initialLog[0][0] === false && initialLog[0][1] === Infinity && initialLog[0][2] === 7200 && initialLog[0][3] === 0.5 && reentered === first");
+        s(&c, "delete BatteryManager.prototype.then; 0");
+        super::publish(id, BatteryState::default());
+        pump(&c);
+        ok(&c, "initialEvents === 4 && pendingBattery.level === 1");
+    }
+
+    #[test]
+    fn asynchronous_default_snapshot_still_completes_initial_promise() {
+        let c = ctx();
+        let id = crate::context::id_of(c.raw()).unwrap();
+        registry().lock().unwrap().get_mut(&id.0).unwrap().defer_initial = true;
+        s(&c, "globalThis.initialDone = false; navigator.getBattery().then(b => { initialDone = b.charging && b.level === 1 && b.chargingTime === 0 && b.dischargingTime === Infinity; }); 0");
+        super::publish(id, BatteryState { level: 0.2, ..BatteryState::default() });
+        // Returning to construction defaults must retain initial completion.
+        super::publish(id, BatteryState::default());
+        pump(&c);
+        ok(&c, "initialDone");
+    }
+
+    #[test]
+    fn closing_during_acquisition_discards_late_completion() {
+        let c = ctx();
+        let id = crate::context::id_of(c.raw()).unwrap();
+        registry().lock().unwrap().get_mut(&id.0).unwrap().defer_initial = true;
+        s(&c, "navigator.getBattery(); 0");
+        assert!(is_cell(registry().lock().unwrap().get(&id.0).unwrap().resolve));
+        crate::context::forget(c.raw());
+        super::publish(id, BatteryState { level: 0.1, ..BatteryState::default() });
+        assert!(!registry().lock().unwrap().contains_key(&id.0));
     }
 
     #[cfg(windows)]

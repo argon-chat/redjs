@@ -106,6 +106,13 @@ pollster = { version = "0.4", optional = true }
 # Exact IEEE f16 encoding for external-image texture uploads.
 half = { version = "2", default-features = false, optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Optional UPower system D-Bus provider. Async acquisition / signals run on a
+# cancellable native worker, independently of the app's network runtime.
+zbus = { version = "5.19.0", default-features = false, features = ["async-io"], optional = true }
+futures-lite = { version = "2.6", optional = true }
+async-channel = { version = "2.5", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 # poll(2) for the blocking transport's readiness waits (webapi/http/sock.rs).
 libc = "0.2"
@@ -123,8 +130,9 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 # Experimental native images; never enabled by default. Requires the matching frontend table.
 native-aot = []
 # Battery Status API / navigator.getBattery. Opt-in for generic embedders.
-# Native Windows notifications; spec defaults on other platforms. No new crates.
-battery = []
+# Native Windows, UPower (Linux), and IOPowerSources (macOS) notifications.
+# D-Bus dependencies compile only on Linux.
+battery = ["dep:zbus", "dep:futures-lite", "dep:async-channel"]
 # Native WebGPU is part of the default web API surface; GPU acquisition is lazy.
 webgpu = ["dep:wgpu", "dep:pollster", "dep:half"]
 default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas", "webgpu"]
