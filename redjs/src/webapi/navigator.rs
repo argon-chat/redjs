@@ -305,7 +305,10 @@ pub unsafe fn install(g: *mut c_void) {
         arity: 0,
         construct: None, // "Illegal constructor", as in a browser
         parent_proto: 0,
-        methods: &[],
+        methods: &[
+            #[cfg(feature = "battery")]
+            ("getBattery", 0, super::battery::get_battery),
+        ],
         getters: &[
             ("appCodeName", get_app_code_name),
             ("appName", get_app_name),
@@ -357,6 +360,13 @@ pub unsafe fn install(g: *mut c_void) {
 #[cfg(test)]
 mod tests {
     use crate::webapi::testing::{ctx, ok, s};
+
+    #[cfg(not(feature = "battery"))]
+    #[test]
+    fn battery_feature_off_has_no_surface() {
+        let c = ctx();
+        ok(&c, "!('getBattery' in navigator) && typeof BatteryManager === 'undefined'");
+    }
 
     #[test]
     fn navigator_is_a_real_navigator() {

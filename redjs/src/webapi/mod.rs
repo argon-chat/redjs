@@ -56,6 +56,8 @@ pub mod abort;
 pub mod audio;
 #[cfg(feature = "audio")]
 mod audio_worklet;
+#[cfg(feature = "battery")]
+pub mod battery;
 pub mod blob;
 #[cfg(feature = "canvas")]
 pub mod canvas2d;
@@ -186,6 +188,8 @@ unsafe extern "sysv64" fn print(g: *mut c_void, cf: *mut c_void) -> u64 {
 pub(crate) fn forget(gone: crate::context::Gone) {
     util::forget_state(gone);
     abort::forget(gone);
+    #[cfg(feature = "battery")]
+    battery::forget(gone);
     blob::forget(gone);
     #[cfg(feature = "canvas")]
     canvas2d::forget(gone);
@@ -383,6 +387,8 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // Before mediadevices / permissions / clipboard: each of them attaches to
     // whatever `navigator` exists, and it should be the real Navigator.
     navigator::install(g);
+    #[cfg(feature = "battery")]
+    battery::install(g, et_proto);
     #[cfg(feature = "webgpu")]
     webgpu::install(g);
     #[cfg(feature = "audio")]

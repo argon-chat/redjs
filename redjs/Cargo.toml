@@ -122,6 +122,9 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 [features]
 # Experimental native images; never enabled by default. Requires the matching frontend table.
 native-aot = []
+# Battery Status API / navigator.getBattery. Opt-in for generic embedders.
+# Native Windows notifications; spec defaults on other platforms. No new crates.
+battery = []
 # Native WebGPU is part of the default web API surface; GPU acquisition is lazy.
 webgpu = ["dep:wgpu", "dep:pollster", "dep:half"]
 default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas", "webgpu"]

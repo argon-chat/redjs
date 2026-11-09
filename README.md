@@ -121,9 +121,24 @@ Some additions are opt-in:
 | --- | --- |
 | `storages` | `localStorage` and `sessionStorage`, with host hooks for persistence |
 | `clipboard` | `navigator.clipboard`, backed by the host's clipboard |
+| `battery` | `navigator.getBattery()` and `BatteryManager`, with native Windows power notifications |
 | `indexeddb-sqlite` | Persistent IndexedDB when the host supplies its storage configuration |
 | `net-h2` | Pooled HTTP/1.1 and HTTP/2 for fetch |
 | `audio-codecs-extra` | More audio formats, including AAC-LC and ALAC |
+
+The optional [Battery Status API](redjs/src/webapi/battery.rs) caches one
+Promise and one `BatteryManager` per context. Its read-only `charging`,
+`chargingTime`, `dischargingTime`, and `level` attributes support the four
+standard change events through `addEventListener` and `on…change` handlers.
+Windows subscriptions start on the first `getBattery()` call; the existing
+pump delivers changes without a polling thread. Windows does not provide a
+charging-time estimate, so it is `Infinity` until full. No battery, unavailable
+status, and other platforms use the specification's defaults (`true`, `0`,
+`Infinity`, `1`). The native web installer provides a Window-like application
+context; there is no Worker installer or Document permissions-policy model.
+The feature is off by default in redjs and the generic SDK host; Argon enables
+it by default. SDK consumers opt in with `vn-app/battery` (forwarded through
+`vn-runtime/battery`); building Argon with `--no-default-features` omits it.
 
 These APIs cover parts of the web platform. DOM, rendering, permissions, and
 OS integration depend on what the host provides. The
