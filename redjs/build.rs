@@ -122,7 +122,12 @@ fn main() {
             .flag("cmakeconfig.h")
             .flag("-fno-exceptions")
             .flag("-fno-rtti")
-            .flag("-w");
+            .flag("-w")
+            // The prebuilt is WebKit's JSCOnly port. Without its define the
+            // headers pick PLATFORM(MAC) on macOS, turning on Cocoa features
+            // the archive was not built with (and does not ship headers for).
+            // On Linux no platform is picked either way.
+            .define("BUILDING_JSCONLY__", None);
     }
 
     // An AOT-enabled prebuilt leaves its generated builtin table to the
