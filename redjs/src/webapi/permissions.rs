@@ -396,11 +396,24 @@ fn classes(g: *mut c_void) -> &'static PermClasses {
     classes_reg().lock().unwrap().get(&(g as usize)).copied().expect("webapi::permissions not installed")
 }
 
+/// One live `PermissionStatus`, and the state it last reported.
+#[derive(Clone, Copy)]
+struct Live {
+    obj: u64,
+    /// The state as of its creation or its last `change`. A queued change
+    /// that leaves the state where this says is not dispatched: hosts queue
+    /// on anything that *might* have moved it (a stored answer that equals
+    /// the old one, a registry write that changed nothing effective), and
+    /// the spec's `change` means the state changed. Compared in all four
+    /// states, so an embedder's four-state re-broadcast sees every move.
+    seen: PermissionState,
+}
+
 /// The live `PermissionStatus` per capability, per context — protected, because
 /// `pump` dispatches `change` onto them from native code. See the divergence
 /// note in the module header for why there is exactly one of each.
-fn live() -> &'static Mutex<HashMap<usize, HashMap<Capability, u64>>> {
-    static L: OnceLock<Mutex<HashMap<usize, HashMap<Capability, u64>>>> = OnceLock::new();
+fn live() -> &'static Mutex<HashMap<usize, HashMap<Capability, Live>>> {
+    static L: OnceLock<Mutex<HashMap<usize, HashMap<Capability, Live>>>> = OnceLock::new();
     L.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -464,9 +477,10 @@ unsafe fn status_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn status_for(g: *mut c_void, cap: Capability) -> u64 {
-    if let Some(obj) = live().lock().unwrap().get(&(g as usize)).and_then(|m| m.get(&cap)).copied() {
-        return obj;
+    if let Some(l) = live().lock().unwrap().get(&(g as usize)).and_then(|m| m.get(&cap)).copied() {
+        return l.obj;
     }
+    let seen = status_of(cap);
     let c = classes(g);
     let obj = new_object(g, c.status.proto);
     let slots = new_object(g, UNDEF);
@@ -474,7 +488,7 @@ unsafe fn status_for(g: *mut c_void, cap: Capability) -> u64 {
     glue::rjs_define(g, obj, c.s_perm, slots, 0);
     // Held for the life of the context so `pump` can dispatch onto it.
     crate::ffi::redjs_protect(g, obj);
-    live().lock().unwrap().entry(g as usize).or_default().insert(cap, obj);
+    live().lock().unwrap().entry(g as usize).or_default().insert(cap, Live { obj, seen });
     obj
 }
 
@@ -571,10 +585,18 @@ pub unsafe fn pump(g: *mut c_void) {
     for cap in mine {
         // Only capabilities somebody has queried have a status object; a change
         // nobody subscribed to is not an event.
-        let obj = live().lock().unwrap().get(&(g as usize)).and_then(|m| m.get(&cap)).copied();
-        let Some(obj) = obj else { continue };
+        let l = live().lock().unwrap().get(&(g as usize)).and_then(|m| m.get(&cap)).copied();
+        let Some(l) = l else { continue };
+        // Nor is one that left the state where this object last saw it.
+        let now = status_of(cap);
+        if now == l.seen {
+            continue;
+        }
+        if let Some(entry) = live().lock().unwrap().get_mut(&(g as usize)).and_then(|m| m.get_mut(&cap)) {
+            entry.seen = now;
+        }
         let ev = events::new_trusted_event(g, "change");
-        events::dispatch(g, obj, ev);
+        events::dispatch(g, l.obj, ev);
     }
 }
 
@@ -828,6 +850,9 @@ mod jsc_tests {
                 Capability::Microphone => PermissionState::Granted,
                 Capability::Camera => PermissionState::Denied,
                 Capability::DisplayCapture => PermissionState::Prompt,
+                // Movable, for the `change` tests (and only read by them).
+                Capability::Notifications => *NOTIFICATIONS.lock().unwrap(),
+                Capability::ClipboardRead => *CLIPBOARD_READ.lock().unwrap(),
                 _ => PermissionState::Unsupported,
             }
         }
@@ -839,6 +864,8 @@ mod jsc_tests {
     }
 
     static CHANGES: Mutex<Vec<Capability>> = Mutex::new(Vec::new());
+    static NOTIFICATIONS: Mutex<PermissionState> = Mutex::new(PermissionState::Prompt);
+    static CLIPBOARD_READ: Mutex<PermissionState> = Mutex::new(PermissionState::Prompt);
 
     unsafe fn pump_all(c: &Context) {
         // Permission delivery rides the TIMERS phase of the pump.
@@ -856,13 +883,14 @@ mod jsc_tests {
         for c in [&a, &b] {
             run(
                 c,
-                "const st = await navigator.permissions.query({ name: 'camera' });
+                "const st = await navigator.permissions.query({ name: 'notifications' });
                  globalThis.__n = 0;
                  st.addEventListener('change', () => { globalThis.__n++; });
                  return 'ok';",
             );
         }
-        CHANGES.lock().unwrap().push(Capability::Camera);
+        *NOTIFICATIONS.lock().unwrap() = PermissionState::Granted;
+        CHANGES.lock().unwrap().push(Capability::Notifications);
         unsafe {
             pump_all(&a);
             pump_all(&b);
@@ -876,6 +904,39 @@ mod jsc_tests {
         }
         ok(&a, "globalThis.__n === 1");
         ok(&b, "globalThis.__n === 1");
+    }
+
+    #[test]
+    fn change_fires_only_when_the_state_really_changed() {
+        // Hosts queue a change on anything that might have moved a state: a
+        // stored answer equal to the old one, a registry write that changed
+        // nothing effective. Only a real move is the spec's `change`.
+        install_scripted_host();
+        let c = ctx();
+        run(
+            &c,
+            "const st = await navigator.permissions.query({ name: 'clipboard-read' });
+             globalThis.__seen = [];
+             st.addEventListener('change', () => { globalThis.__seen.push(st.state); });
+             return 'ok';",
+        );
+        // Queued, but still `prompt`: silence.
+        CHANGES.lock().unwrap().push(Capability::ClipboardRead);
+        unsafe { pump_all(&c) };
+        ok(&c, "globalThis.__seen.length === 0");
+        // A real move fires once, and a second queue entry for the same
+        // state does not fire it again.
+        *CLIPBOARD_READ.lock().unwrap() = PermissionState::Granted;
+        CHANGES.lock().unwrap().push(Capability::ClipboardRead);
+        unsafe { pump_all(&c) };
+        CHANGES.lock().unwrap().push(Capability::ClipboardRead);
+        unsafe { pump_all(&c) };
+        ok(&c, "globalThis.__seen.join() === 'granted'");
+        // And back.
+        *CLIPBOARD_READ.lock().unwrap() = PermissionState::Prompt;
+        CHANGES.lock().unwrap().push(Capability::ClipboardRead);
+        unsafe { pump_all(&c) };
+        ok(&c, "globalThis.__seen.join() === 'granted,prompt'");
     }
 
     #[test]
