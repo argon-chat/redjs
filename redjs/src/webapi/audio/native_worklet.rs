@@ -474,18 +474,39 @@ mod tests {
         // No connection to destination: this probe never plays a tone to speakers.
         let running = super::super::jsc_tests::pump_for(&c, 150);
         if running {
+            // Each wait is in the context's time, not wall time. The gate's
+            // 150 ms hold counts samples, and a CI VM's virtual output renders
+            // in bursts and can fall behind real time: a fixed 260 ms window
+            // once ended with the gate still open on a CI Mac. Each change is
+            // timed by the clock read AFTER it, so no frame from then on can
+            // have been rendered with the old value.
+            use super::super::jsc_tests::{analyser_rms, pump_until_rendered};
+            let rendered = |t: f64| {
+                assert!(
+                    pump_until_rendered(&c, t, 3000),
+                    "the audio clock did not reach {t} s in 3 s (at {} s)",
+                    s(&c, "__ctx.currentTime")
+                )
+            };
+            let now = || s(&c, "__ctx.currentTime").parse::<f64>().unwrap();
+            // The meter's envelope settles within ~30 ms of signal, and the
+            // osc was already started when this clock was read.
+            rendered(now() + 0.2);
             ok(&c, "__messages.length>0 && __messages.at(-1)[0]>0.2 && __messages.at(-1)[0]<0.3 && __states.includes(true)");
             s(
                 &c,
                 "__gate.parameters.get('threshold').setValueAtTime(0,__ctx.currentTime);'ok'",
             );
-            super::super::jsc_tests::pump_for(&c, 260);
+            // The 150 ms hold, the quantum that closes it, the analyser's
+            // 1024-frame window (~23 ms) of silence after it, and some slack.
+            rendered(now() + 0.3);
             ok(&c, "__states.at(-1)===false");
-            let rms = super::super::jsc_tests::analyser_rms(&c, "__an");
+            let rms = analyser_rms(&c, "__an");
             assert!(rms < 1e-5, "closed gate leaked PCM: {rms}");
             s(&c, "__gate.parameters.get('enabled').value=0;'ok'");
-            super::super::jsc_tests::pump_for(&c, 80);
-            assert!(super::super::jsc_tests::analyser_rms(&c, "__an") > 0.1);
+            // The analyser's window of passed-through signal, and some slack.
+            rendered(now() + 0.15);
+            assert!(analyser_rms(&c, "__an") > 0.1);
             eprintln!("[native-worklet-probe] device-backed gate/mono/meter/automation passed");
         } else {
             eprintln!("[native-worklet-probe] no hardware clock; pure DSP tests cover PCM");

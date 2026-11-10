@@ -618,7 +618,18 @@ fn h2_slow_responses_arrive_byte_exact() {
     }
 }
 
+// The client side of ALPN works on Apple platforms (SecureTransport offers and
+// reads it), but this test's server cannot answer it there: native-tls's
+// Security-framework TlsAcceptor ignores `accept_alpn` (only its OpenSSL and
+// SChannel acceptors implement it), so the handshake selects no protocol, the
+// client rightly falls back to HTTP/1.1, and the h2 server below hangs up on
+// a request that is not the h2 preface. The client's no-ALPN path is what
+// `https_without_h2_falls_back_to_keep_alive_http11` covers.
 #[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "native-tls's Security-framework TlsAcceptor has no server-side ALPN"
+)]
 fn https_negotiates_h2_through_alpn() {
     let (port, st) = h2_server(Some(&["h2", "http/1.1"][..]), H2Mode::Normal);
     let urls: Vec<String> = (0..8).map(|k| format!("https://localhost:{port}/n/{k}")).collect();

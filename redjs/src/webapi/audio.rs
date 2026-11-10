@@ -4997,6 +4997,43 @@ mod jsc_tests {
         before != after && after != "0"
     }
 
+    /// Pump until the audio thread has rendered everything up to `t` seconds
+    /// of `__ctx`'s time, and what it posted on the way has been dispatched.
+    /// Gives up after `cap_ms` of wall time, returning false.
+    ///
+    /// For assertions about DSP timing, which counts samples: a CI VM's
+    /// virtual output renders in bursts and can fall behind real time, so a
+    /// wall-clock window says nothing about how much audio was processed.
+    /// Firewheel publishes its clock at the START of a callback, as the end of
+    /// the frames that callback is about to render, so a clock past `t` does
+    /// not yet mean those frames are done; the clock moving once more does
+    /// (callbacks run one after another).
+    pub(super) fn pump_until_rendered(c: &Context, t: f64, cap_ms: u64) -> bool {
+        let now = || s(c, "globalThis.__ctx.currentTime").parse::<f64>().unwrap_or(0.0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(cap_ms);
+        let mut reached = None;
+        loop {
+            unsafe { super::pump(c.raw()) };
+            c.drain_microtasks();
+            let clock = now();
+            match reached {
+                None if clock >= t => reached = Some(clock),
+                Some(r) if clock > r => {
+                    // The clock may have moved after that pump drained the
+                    // mailboxes; one more delivers what those frames posted.
+                    unsafe { super::pump(c.raw()) };
+                    c.drain_microtasks();
+                    return true;
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// RMS of an analyser's time-domain window, as JS sees it.
     pub(super) fn analyser_rms(c: &Context, which: &str) -> f64 {
         s(

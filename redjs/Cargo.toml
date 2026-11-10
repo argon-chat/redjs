@@ -103,7 +103,8 @@ async-channel = { version = "2.5", optional = true }
 libc = "0.2"
 
 [dev-dependencies]
-# Loopback TLS test servers that answer ALPN (webapi/http/pool/tests.rs).
+# Loopback TLS test servers that answer ALPN (webapi/http/pool/tests.rs). The
+# Security-framework backend (Apple) ignores it on the server side.
 native-tls = { version = "0.2", features = ["alpn-accept"] }
 
 [features]
