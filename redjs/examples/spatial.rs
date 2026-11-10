@@ -1,4 +1,4 @@
-//! PannerNode spatial parity probe (W-MIX MIX-14).
+//! PannerNode spatial parity probe.
 //!
 //! Drives a looping sine through source → panner → analyser → destination and
 //! validates the Web Audio spatial math natively:
@@ -154,7 +154,7 @@ fn main() {
         println!("[spatial] linear beyond max: rms={beyond}");
         assert!(beyond < 0.02, "linear model past maxDistance should be silent, rms={beyond}");
 
-        // 5. HRTF (MIX-20): switching the panning model live keeps sound flowing
+        // 5. HRTF: switching the panning model live keeps sound flowing
         // and audibly changes the render (kernel coloration shifts the mono RMS).
         eval(g, r#"
             pan.distanceModel = 'inverse';

@@ -54,13 +54,13 @@
 //!
 //! # `credentials`
 //!
-//! Fetch's three modes, against this runtime's page origin, `app://redpew`
+//! Fetch's three modes, against this runtime's page origin, `app://redjs`
 //! (`bootstrap.js`'s `location`):
 //!
 //! | mode | cookies sent and stored |
 //! |---|---|
 //! | `omit` | never |
-//! | `same-origin` (the default) | only for a URL same-origin with the page — and `app://redpew` is an opaque origin to the URL Standard, so for no network URL at all |
+//! | `same-origin` (the default) | only for a URL same-origin with the page — and `app://redjs` is an opaque origin to the URL Standard, so for no network URL at all |
 //! | `include` | always |
 //!
 //! So an API call that wants cookies says `include`, exactly as a page served
@@ -69,7 +69,7 @@
 //! # Divergences, named
 //!
 //! - **C-1, `SameSite` does not restrict.** In a browser, a request from a page
-//!   at `app://redpew` to `https://api.example.com` is cross-site, so only
+//!   at `app://redjs` to `https://api.example.com` is cross-site, so only
 //!   `SameSite=None` cookies would ride along. Here the app is the first party
 //!   of every request it makes — it is an installed application, there is no
 //!   other site in the process whose requests could carry the user's cookies
@@ -85,7 +85,7 @@
 //!   [`PUBLIC_SUFFIXES`] table, not Mozilla's ~10 000-entry list. A `Domain` on
 //!   an unlisted multi-label suffix is accepted where a browser would refuse it.
 //! - **C-4, `document.cookie` is `""` and ignores writes.** The page's URL is
-//!   `app://redpew/`, a scheme with no cookies — which is also what a browser
+//!   `app://redjs/`, a scheme with no cookies — which is also what a browser
 //!   says for a document whose origin is opaque. Said once, on first use.
 //! - **C-5, a script-set `Cookie` request header still goes out.** redjs has no
 //!   forbidden-request-header filter (a browser silently drops `Cookie` from a
@@ -212,7 +212,7 @@ impl Credentials {
         match self {
             Credentials::Omit => false,
             Credentials::Include => true,
-            // The page's origin is `app://redpew`, which the URL Standard makes
+            // The page's origin is `app://redjs`, which the URL Standard makes
             // opaque — no request URL is ever same-origin with it. Written as a
             // comparison rather than `false` so the rule reads as the rule.
             Credentials::SameOrigin => same_origin_as_page(u),
@@ -221,7 +221,7 @@ impl Credentials {
 }
 
 /// The page origin this runtime publishes (`bootstrap.js`'s `location`).
-pub const PAGE_ORIGIN: &str = "app://redpew";
+pub const PAGE_ORIGIN: &str = "app://redjs";
 
 fn same_origin_as_page(u: &url::Url) -> bool {
     match url::Url::parse(PAGE_ORIGIN) {
@@ -1269,9 +1269,9 @@ mod tests {
     fn credentials_modes_decide_per_url() {
         assert!(!Credentials::Omit.applies(&u("https://example.com/")));
         assert!(Credentials::Include.applies(&u("https://example.com/")));
-        // app://redpew is opaque: same-origin is never true for a network URL.
+        // app://redjs is opaque: same-origin is never true for a network URL.
         assert!(!Credentials::SameOrigin.applies(&u("https://example.com/")));
-        assert!(!Credentials::SameOrigin.applies(&u("http://redpew/")));
+        assert!(!Credentials::SameOrigin.applies(&u("http://redjs/")));
         assert_eq!(Credentials::parse("include"), Some(Credentials::Include));
         assert_eq!(Credentials::parse("bogus"), None);
     }

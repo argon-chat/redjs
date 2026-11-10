@@ -156,7 +156,7 @@ pub fn make_boundary() -> String {
         let t = crate::web::now_ms().to_bits();
         bytes.copy_from_slice(&t.to_le_bytes());
     }
-    let mut s = String::from("----RedPewFormBoundary");
+    let mut s = String::from("----RedJsFormBoundary");
     for b in bytes {
         s.push_str(&format!("{b:02x}"));
     }

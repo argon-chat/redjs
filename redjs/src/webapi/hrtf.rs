@@ -1,4 +1,4 @@
-//! Native HRTF panning (W-MIX MIX-20, polish MIX-22).
+//! Native HRTF panning.
 //!
 //! `WebPannerNode` is the Firewheel node behind the JS `PannerNode`: one node,
 //! two panning modes switchable live (no graph rewiring):

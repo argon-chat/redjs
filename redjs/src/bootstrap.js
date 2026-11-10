@@ -114,7 +114,7 @@
 
   // ── location ──
   if (typeof g.location === 'undefined') {
-    g.location = { href: 'app://redpew/', origin: 'app://redpew', protocol: 'app:', host: 'redpew', pathname: '/', search: '', hash: '', reload: function () {} };
+    g.location = { href: 'app://redjs/', origin: 'app://redjs', protocol: 'app:', host: 'redjs', pathname: '/', search: '', hash: '', reload: function () {} };
   }
 
   // ── OffscreenCanvas + 2D context (drawImage/getImageData over native pixels) ──

@@ -76,7 +76,7 @@
 //!   (RFC 6455 §4.1) rather than being ignored, because ignoring it would mean
 //!   decoding its frames wrong.
 //! - **No `Origin` header.** There is no document origin in this runtime;
-//!   `bootstrap.js` publishes a synthetic `app://redpew` `location`, and sending
+//!   `bootstrap.js` publishes a synthetic `app://redjs` `location`, and sending
 //!   that as an `Origin` would claim a web origin that does not exist. A server
 //!   with an origin allowlist therefore has to allowlist "no origin", which is
 //!   the honest description of this client.
@@ -419,7 +419,7 @@ pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String], cook
     if let Some(c) = cookie.filter(|c| !c.is_empty() && !c.contains(['\r', '\n'])) {
         s.push_str(&format!("Cookie: {c}\r\n"));
     }
-    s.push_str("User-Agent: RedPew\r\n");
+    s.push_str("User-Agent: RedJs\r\n");
     s.push_str("\r\n");
     s
 }

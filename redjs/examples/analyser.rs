@@ -1,4 +1,4 @@
-//! AnalyserNode end-to-end probe (W-MIX MIX-13).
+//! AnalyserNode end-to-end probe.
 //!
 //! Plays a 660 Hz sine through gain → analyser → destination via the JS
 //! surface, pumps like a host does, then validates that the analyser

@@ -477,8 +477,8 @@ fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
     let want = pin(pins, "webkit.version");
     let cfg = webkit.join("include").join("cmakeconfig.h");
     let fix =
-        "Run vendor/redjs/setup.ps1: it fetches the pinned prebuilt and REPLACES one at any \
-               other version. Or point BUN_WEBKIT_DIR at an extraction of the pinned tarball.";
+        "Run setup.ps1 (or setup.sh) at the redjs repository root: it fetches the pinned \
+               prebuilt and REPLACES one at any other version. Or point BUN_WEBKIT_DIR at an extraction of the pinned tarball.";
     let Ok(text) = fs::read_to_string(&cfg) else {
         panic!(
             "\n\nno bun-webkit prebuilt at {} (missing include/cmakeconfig.h).\n{fix}\n\
@@ -537,7 +537,7 @@ fn check_mimalloc(dir: &Path, pins: &[(String, String)]) {
         panic!(
             "\n\nmimalloc sources at {} are {}, but redjs pins oven-sh/mimalloc@{want} (pins.txt).\n\
              This JSC build allocates through the embedder's mimalloc, so redjs compiles it.\n\
-             Run vendor/redjs/setup.ps1 to fetch it.\n",
+             Run setup.ps1 (or setup.sh) at the redjs repository root to fetch it.\n",
             dir.display(),
             have.as_deref().unwrap_or("missing"),
         );
@@ -560,7 +560,7 @@ fn check_sqlite3mc(dir: &Path, pins: &[(String, String)]) {
         panic!(
             "\n\nthe SQLite3 Multiple Ciphers amalgamation at {} is {}, but redjs pins `{want}` (pins.txt).\n\
              The `indexeddb-sqlite` feature compiles it into IndexedDB's persistent backend.\n\
-             Run vendor/redjs/setup.ps1 to fetch and verify it.\n",
+             Run setup.ps1 (or setup.sh) at the redjs repository root to fetch and verify it.\n",
             dir.display(),
             have.as_deref().unwrap_or("missing"),
         );

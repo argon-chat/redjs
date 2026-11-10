@@ -586,7 +586,7 @@ namespace RedJs.Native
 
         /// <summary>
         ///  Registers (or clears, with null) the host CONTENT PROVIDER for fetch/Image
-        ///  local reads (W-HIVE). `read_fn` is
+        ///  local reads. `read_fn` is
         ///  `int32_t (const uint8_t* path_utf8, size_t path_len, void (*sink)(void* ctx, const uint8_t* ptr, size_t len), void* sink_ctx)`
         ///  — on a hit it returns 0 after calling `sink` exactly once with the full
         ///  decoded bytes; non-zero = miss, resolution then falls back to the on-disk

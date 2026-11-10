@@ -1,4 +1,4 @@
-//! AUDIBLE spatial validation tour (W-MIX MIX-16 helper) — headphones on!
+//! AUDIBLE spatial validation tour — headphones on!
 //!
 //! A pulsing beep orbits the listener with `panningModel: 'HRTF'`:
 //!

@@ -34,7 +34,7 @@
 //! - `createView`-style object identity rules aside, `suspend()` mutes the
 //!   master bus instead of pausing the stream, so `currentTime` keeps
 //!   advancing while suspended.
-//! - `AnalyserNode` is REAL (W-MIX MIX-13): a bypass monitor node captures the
+//! - `AnalyserNode` is REAL: a bypass monitor node captures the
 //!   last `MONITOR_WINDOW` mono-mixed samples into a lock-free ring; the
 //!   getters serve true time-domain data and a Blackman-windowed radix-2 FFT
 //!   with spec smoothing. Deviations: `fftSize` caps at 4096 (spec: 32768) and
@@ -407,7 +407,7 @@ impl Timeline {
 }
 
 // ---------------------------------------------------------------------------
-// AnalyserNode backing (W-MIX MIX-13): a bypass monitor node captures the last
+// AnalyserNode backing: a bypass monitor node captures the last
 // MONITOR_WINDOW mono-mixed samples into a lock-free ring shared with the main
 // thread; the analysis getters (time-domain + FFT) read it on demand.
 // ---------------------------------------------------------------------------
@@ -2815,7 +2815,7 @@ unsafe fn biquad_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// PannerNode attributes (W-MIX MIX-14/20): distance model + cone + panning model
+// PannerNode attributes: distance model + cone + panning model
 // ---------------------------------------------------------------------------
 
 /// Read a PannerNode value under the glob lock (0.0 for non-panner `this`).
@@ -2890,7 +2890,7 @@ unsafe fn panner_set_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     panner_write(g, cf, |rec| rec.dist_model = model)
 }
 
-/// Real HRTF (W-MIX MIX-20): switches the node's panning mode live.
+/// Real HRTF: switches the node's panning mode live.
 #[crate::host_fn]
 unsafe fn panner_get_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {

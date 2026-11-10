@@ -18,8 +18,7 @@
 # The prebuilt identifies itself (`BUN_WEBKIT_VERSION` in
 # include/cmakeconfig.h); that, not the directory name, is what is compared.
 #
-# Proxy: pass -Proxy or set ZIG_PROXY in the repo .env (same var the Zig
-# toolchain setup uses; HTTP proxy, not SOCKS).
+# Proxy: pass -Proxy or set REDJS_PROXY (an HTTP proxy, not SOCKS).
 #
 # Works on Windows PowerShell 5.1 and PowerShell 7.
 param(
@@ -54,13 +53,7 @@ function Read-Pins([string] $path) {
 
 $pins = Read-Pins (Join-Path $root 'pins.txt')
 
-if (-not $Proxy) {
-    $envFile = Join-Path $root '../../.env'
-    if (Test-Path $envFile) {
-        $m = Select-String -Path $envFile -Pattern '^ZIG_PROXY=(.+)$' | Select-Object -First 1
-        if ($m) { $Proxy = $m.Matches[0].Groups[1].Value }
-    }
-}
+if (-not $Proxy -and $env:REDJS_PROXY) { $Proxy = $env:REDJS_PROXY }
 
 function Get-Url([string] $url, [string] $outFile) {
     Write-Host "[redjs] downloading $url"

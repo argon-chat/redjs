@@ -226,7 +226,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     def_fn(document, "createElement", 1, create_element);
 
     // `document.cookie` (cookies.rs C-4): the document's URL is
-    // `app://redpew/`, a scheme with no cookies, so — as for a browser
+    // `app://redjs/`, a scheme with no cookies, so — as for a browser
     // document with an opaque origin — it reads "" and a write is dropped.
     // The jar itself is never reachable from script (HttpOnly or not).
     {

@@ -887,7 +887,7 @@ mod jsc_tests {
     fn object_urls_have_the_file_api_shape_and_revoke() {
         let c = file_ctx();
         ok(&c, "(() => { const u = URL.createObjectURL(new Blob(['x'])); \
-                 return /^blob:app:\\/\\/redpew\\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u) \
+                 return /^blob:app:\\/\\/redjs\\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u) \
                    && u !== URL.createObjectURL(new Blob(['x'])); })()");
         assert_eq!(throws(&c, "URL.createObjectURL({})"), "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
         assert_eq!(throws(&c, "URL.createObjectURL()"), "Failed to execute 'createObjectURL' on 'URL': 1 argument required, but only 0 present.");
@@ -973,7 +973,7 @@ mod jsc_tests {
             }
             other => panic!("{other:?}"),
         }
-        assert!(resolve_blob_url(g, "blob:app://redpew/00000000-0000-4000-8000-000000000000").is_none());
+        assert!(resolve_blob_url(g, "blob:app://redjs/00000000-0000-4000-8000-000000000000").is_none());
         assert!(resolve_blob_url(g, &whole).unwrap().snapshot_holds());
         assert_eq!(run(&c, "return await (await fetch(part)).text();"), "PNG");
         std::fs::write(&t.0, b"changed").unwrap();

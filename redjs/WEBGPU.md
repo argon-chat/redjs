@@ -7,11 +7,11 @@ platforms; only Windows has been qualified in this change.
 
 ## Run
 
-From the embedding workspace (to inherit its JSC prebuilt and CRT settings):
+From `redjs/` (after `setup.ps1`):
 
 ```powershell
-cargo run --manifest-path vendor/redjs/redjs/Cargo.toml --no-default-features --features webgpu --example webgpu
-cargo test --manifest-path vendor/redjs/redjs/Cargo.toml --no-default-features --features webgpu --lib webgpu -- --test-threads=1
+cargo run --no-default-features --features webgpu --example webgpu
+cargo test --no-default-features --features webgpu --lib webgpu -- --test-threads=1
 ```
 
 Initialize the ordinary redjs scheduler and Web API layer and keep pumping
