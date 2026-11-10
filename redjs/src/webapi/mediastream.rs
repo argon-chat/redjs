@@ -2506,11 +2506,17 @@ mod jsc_tests {
             "ok"
         );
         if pump_for(&c, 400) {
-            ok(
-                &c,
-                "(() => { const b = new Float32Array(__an.fftSize); __an.getFloatTimeDomainData(b);
-                   let e = 0; for (const v of b) e += v * v; return Math.sqrt(e / b.length) > 0.05; })()",
-            );
+            // A slow machine (a CI VM's virtual output) can need longer than
+            // the first 400 ms to carry the track through; give it up to 3 s.
+            let heard = "(() => { const b = new Float32Array(__an.fftSize); __an.getFloatTimeDomainData(b);
+                   let e = 0; for (const v of b) e += v * v; return Math.sqrt(e / b.length) > 0.05; })()";
+            for _ in 0..26 {
+                if s(&c, heard) == "true" {
+                    break;
+                }
+                pump_for(&c, 100);
+            }
+            ok(&c, heard);
         } else {
             eprintln!("no output stream on this machine: the signal check is skipped");
         }

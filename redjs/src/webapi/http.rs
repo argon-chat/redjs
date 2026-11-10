@@ -169,9 +169,9 @@ pub static CONNECTS: AtomicU64 = AtomicU64::new(0);
 /// Test-only override of [`POLL`] (the lost-bytes experiment amplifies waits).
 #[cfg(test)]
 pub(crate) static TEST_POLL_MS: AtomicU64 = AtomicU64::new(0);
-/// Test builds trust the loopback test identity in `http/testdata` (a
-/// self-signed `localhost` certificate; its key lives only in the .p12 the
-/// test servers load).
+/// Test builds trust the loopback test root in `http/testdata`. It issued the
+/// `localhost` certificate the test servers load from the .p12 (with its key);
+/// `gen-cert.sh` there re-issues both.
 #[cfg(test)]
 pub(crate) const TEST_ROOT_PEM: &[u8] = include_bytes!("http/testdata/cert.pem");
 #[cfg(test)]

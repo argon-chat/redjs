@@ -718,12 +718,18 @@ pub(crate) fn layout(context: ContextId, value: &str, options: Options<'_>) -> A
                         y: -f64::from(position.y_offset) * scale,
                         scale,
                     };
-                    let drawn = face
-                        .outline_glyph(GlyphId(info.glyph_id as u16), &mut outline)
-                        .is_some();
                     let character = text[start..end]
                         .get(info.cluster as usize..)
                         .and_then(|s| s.chars().next());
+                    // Default-ignorable characters never paint, even from a font
+                    // that has a visible glyph for them (macOS's LastResort
+                    // covers every code point, and the fallback search finds it),
+                    // and take no width, as in a browser.
+                    let invisible = character.is_some_and(is_invisible);
+                    let drawn = invisible
+                        || face
+                            .outline_glyph(GlyphId(info.glyph_id as u16), &mut outline)
+                            .is_some();
                     if !drawn
                         && position.x_advance != 0
                         && character.is_some_and(|c| !c.is_whitespace() && !is_invisible(c))
@@ -749,7 +755,9 @@ pub(crate) fn layout(context: ContextId, value: &str, options: Options<'_>) -> A
                             outline.path.close_path();
                         }
                     }
-                    result.width += f64::from(position.x_advance) * scale;
+                    if !invisible {
+                        result.width += f64::from(position.x_advance) * scale;
+                    }
                     let cluster = info.cluster as usize;
                     if text[start..end]
                         .get(cluster..)

@@ -5205,16 +5205,24 @@ mod jsc_tests {
              'wired'",
         );
 
-        // Prime the channel, then keep it fed across the pump ticks.
+        // Prime the channel, then keep it fed across the pump ticks. A slow
+        // machine (a CI VM's virtual output) can take longer than the first
+        // 400 ms to carry the signal through, so a live context gets up to 3 s.
         let mut accepted_total = 0f64;
-        for _ in 0..40 {
+        let mut rms = 0.0;
+        for tick in 0..300 {
             accepted_total += s(&c, "__fill()").parse::<f64>().unwrap_or(0.0);
             unsafe { super::pump(c.raw()) };
             c.drain_microtasks();
             std::thread::sleep(std::time::Duration::from_millis(10));
+            if tick >= 40 {
+                rms = analyser_rms(&c, "__an");
+                if rms > 0.1 || s(&c, "__ctx.currentTime") == "0" {
+                    break;
+                }
+            }
         }
         let live = s(&c, "__ctx.currentTime") != "0";
-        let rms = analyser_rms(&c, "__an");
 
         if !live {
             // Headless: the processor never runs, so the channel never starts
@@ -5306,8 +5314,20 @@ mod jsc_tests {
         // 24000/32768 = 0.732, and a square wave's RMS equals its peak — which
         // a decoder that returned zeros, or halved the amplitude, would fail.
         assert!(got.contains(r#""ch":1"#), "{got}");
-        assert!(got.contains(r#""peak":0.732"#), "decoded amplitude is wrong: {got}");
-        assert!(got.contains(r#""rms":0.732"#), "a decoded square must have RMS == peak: {got}");
+        if got.contains(r#""rate":48000"#) {
+            assert!(got.contains(r#""peak":0.732"#), "decoded amplitude is wrong: {got}");
+            assert!(got.contains(r#""rms":0.732"#), "a decoded square must have RMS == peak: {got}");
+        } else {
+            // The buffer comes at the context's rate (the output device's, e.g.
+            // 44.1 kHz on a CI Mac), and band-limited resampling of a square
+            // overshoots at the edges (Gibbs), so only the energy is exact.
+            let field = |k: &str| -> f64 {
+                let at = got.find(&format!("\"{k}\":")).unwrap() + k.len() + 3;
+                got[at..].split([',', '}']).next().unwrap().parse().unwrap()
+            };
+            assert!((field("rms") - 0.732).abs() < 0.01, "decoded energy is wrong: {got}");
+            assert!(field("peak") >= 0.72, "decoded amplitude is wrong: {got}");
+        }
     }
 
     #[test]
