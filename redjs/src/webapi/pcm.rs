@@ -1,5 +1,5 @@
 //! Streaming PCM input — the seam a native producer (a WebRTC/LiveKit remote
-//! track, a game's own voice mixer, a capture bridge) pushes decoded frames
+//! track, an app's own voice mixer, a capture bridge) pushes decoded frames
 //! into so they come out of the Web Audio graph like any other source.
 //!
 //! # Why this is not `createMediaElementSource` or `MediaStreamAudioSourceNode`

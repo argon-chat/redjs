@@ -154,7 +154,7 @@ pub mod cache;
 /// Response heads larger than this are a malformed or hostile peer.
 pub(crate) const MAX_HEAD: usize = 64 * 1024;
 /// Body ceiling. A cap that rejects loudly beats an allocation that takes the
-/// process down; the player streams big assets off disk, not off the network.
+/// process down; big local assets are read off disk, not off the network.
 pub const MAX_BODY: usize = 256 * 1024 * 1024;
 const MAX_REDIRECTS: u32 = 20;
 const MAX_CHUNK: u64 = MAX_BODY as u64;

@@ -10,7 +10,7 @@
 //! code: these are implementations of *current* web platform specifications for
 //! a runtime (JavaScriptCore) that ships the language and none of the browser.
 //! They are forward-looking, they are the reason application code can run on
-//! the native player at all, and deleting one because the folder looks like a
+//! a native host at all, and deleting one because the folder looks like a
 //! polyfill directory would remove a working API, not a crutch.
 //!
 //! Native here: DOMException / QuotaExceededError (every "throw an `X`
@@ -120,7 +120,7 @@ use util::*;
 const BOOTSTRAP_JS: &str = include_str!("../bootstrap.js");
 
 /// Shared harness for the web-API tests: a real JSC context with the whole
-/// native layer installed — the same thing the player runs. Every assertion in
+/// native layer installed — the same thing an embedder runs. Every assertion in
 /// the modules below goes through actual JS, because the half these modules can
 /// get wrong is the JSC wiring (prototype chains, `instanceof`, accessor
 /// `this`), and pure-Rust unit tests cannot see any of it.

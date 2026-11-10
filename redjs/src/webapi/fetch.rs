@@ -66,7 +66,7 @@ use crate::glue;
 
 /// Simultaneous in-flight network requests. Without `net-h2` each one is a
 /// thread; past this a request is refused loudly rather than exhausting the
-/// thread pool of the process a game is running in. With `net-h2` a request is
+/// thread pool of the process an app is running in. With `net-h2` a request is
 /// a task (it queues for a connection like a browser's does), so the ceiling
 /// is only a backstop against a runaway loop.
 #[cfg(not(feature = "net-h2"))]

@@ -63,7 +63,7 @@ if (-not $Proxy) {
 }
 
 function Get-Url([string] $url, [string] $outFile) {
-    Write-Host "[jscore] downloading $url"
+    Write-Host "[redjs] downloading $url"
     $iwr = @{ Uri = $url; OutFile = $outFile; UseBasicParsing = $true }
     if ($Proxy) { $iwr.Proxy = $Proxy }
     # Windows PowerShell 5.1's progress bar slows Invoke-WebRequest ~10x.
@@ -135,11 +135,11 @@ $have = Get-WebKitVersion $dest
 $complete = Test-Path -LiteralPath (Join-Path $dest 'lib/JavaScriptCore.lib')
 
 if (-not $Force -and $have -eq $want -and (Get-WebKitAot $dest) -eq $pins['webkit.aot'] -and $complete) {
-    Write-Host "[jscore] prebuilt present at the pin ($want): $dest"
+    Write-Host "[redjs] prebuilt present at the pin ($want): $dest"
 }
 else {
     if ($have -and $have -ne $want) {
-        Write-Host "[jscore] prebuilt on disk is $have, pins.txt says $want — replacing it"
+        Write-Host "[redjs] prebuilt on disk is $have, pins.txt says $want — replacing it"
     }
     $tar = $Tarball
     $downloaded = $false
@@ -159,7 +159,7 @@ else {
     $staging = Join-Path $prebuilt ".staging-$PID"
     Remove-Tree $staging
     New-Item -ItemType Directory -Force $staging | Out-Null
-    Write-Host "[jscore] extracting $tar"
+    Write-Host "[redjs] extracting $tar"
     # bin/ (jsc.exe, the LLInt extractors and ~0.7 GB of their PDBs) is not
     # used by anything that builds or links redjs; skip it.
     tar -xzf $tar -C $staging --exclude 'bun-webkit/bin'
@@ -175,7 +175,7 @@ else {
     Move-Item -LiteralPath $fresh -Destination $dest
     Remove-Tree $staging
     if ($downloaded) { Remove-Item -LiteralPath $tar -Force }
-    Write-Host "[jscore] prebuilt $want -> $dest"
+    Write-Host "[redjs] prebuilt $want -> $dest"
 }
 
 # The prebuilt archive is missing wtf/PlatformEnableWin.h (referenced by
@@ -193,11 +193,11 @@ $miHave = $null
 if (Test-Path -LiteralPath $stamp) { $miHave = (Get-Content -LiteralPath $stamp -Raw).Trim() }
 
 if (-not $Force -and $miHave -eq $commit -and (Test-Path -LiteralPath (Join-Path $mi 'src/static.c'))) {
-    Write-Host "[jscore] mimalloc present at the pin ($commit): $mi"
+    Write-Host "[redjs] mimalloc present at the pin ($commit): $mi"
 }
 else {
     if ($miHave -and $miHave -ne $commit) {
-        Write-Host "[jscore] mimalloc on disk is $miHave, pins.txt says $commit — replacing it"
+        Write-Host "[redjs] mimalloc on disk is $miHave, pins.txt says $commit — replacing it"
     }
     $miTar = Join-Path $env:TEMP "redjs-mimalloc-$commit.tar.gz"
     Get-Url "https://github.com/oven-sh/mimalloc/archive/$commit.tar.gz" $miTar
@@ -216,7 +216,7 @@ else {
     # Written LAST, after the hash: build.rs trusts the stamp.
     Set-Content -LiteralPath $stamp -Value $commit -NoNewline -Encoding ascii
     Remove-Item -LiteralPath $miTar -Force
-    Write-Host "[jscore] mimalloc $commit -> $mi"
+    Write-Host "[redjs] mimalloc $commit -> $mi"
 }
 
 # --- 3. SQLite3 Multiple Ciphers (IndexedDB's persistent backend) ----------------
@@ -228,11 +228,11 @@ $mcHave = $null
 if (Test-Path -LiteralPath $mcStamp) { $mcHave = (Get-Content -LiteralPath $mcStamp -Raw).Trim() }
 
 if (-not $Force -and $mcHave -eq $mcWant -and (Test-Path -LiteralPath (Join-Path $mc 'sqlite3mc_amalgamation.c'))) {
-    Write-Host "[jscore] sqlite3mc present at the pin ($($pins['sqlite3mc.version'])): $mc"
+    Write-Host "[redjs] sqlite3mc present at the pin ($($pins['sqlite3mc.version'])): $mc"
 }
 else {
     if ($mcHave -and $mcHave -ne $mcWant) {
-        Write-Host "[jscore] sqlite3mc on disk is '$mcHave', pins.txt says '$mcWant' — replacing it"
+        Write-Host "[redjs] sqlite3mc on disk is '$mcHave', pins.txt says '$mcWant' — replacing it"
     }
     $ver = $pins['sqlite3mc.version']
     $mcZip = Join-Path $env:TEMP ("redjs-" + $pins['sqlite3mc.asset'])
@@ -253,7 +253,7 @@ else {
     # Written LAST, after both hashes: build.rs trusts the stamp.
     Set-Content -LiteralPath $mcStamp -Value $mcWant -NoNewline -Encoding ascii
     Remove-Item -LiteralPath $mcZip -Force
-    Write-Host "[jscore] sqlite3mc $ver -> $mc"
+    Write-Host "[redjs] sqlite3mc $ver -> $mc"
 }
 
-Write-Host "[jscore] setup complete. Next: ./build.ps1"
+Write-Host "[redjs] setup complete. Next: ./build.ps1"

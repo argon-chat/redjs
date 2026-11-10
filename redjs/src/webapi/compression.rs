@@ -8,7 +8,7 @@
 //! dependency, expose a host hook, or refuse. This takes the fourth, which is
 //! the right one here — a Rust compressor crate, `flate2` on its `rust_backend`
 //! (miniz_oxide): pure Rust, no C toolchain, no zlib to link, and it compiles
-//! into the player like everything else in this tree.
+//! into the runtime like everything else in this tree.
 //!
 //! What is explicitly NOT here is a stub that returns its input. A passthrough
 //! `CompressionStream` produces bytes that every gzip reader in the world

@@ -70,7 +70,7 @@
 // `RtlAddGrowableFunctionTable` (oven-sh/WebKit #315/#442), which lives in
 // ntdll.lib. build.rs puts ntdll on the list for every cargo link; this
 // directive puts it in the objects, so a consumer that links the THIN
-// redjs.lib by hand (the player's NativeAOT csproj) gets it without having to
+// redjs.lib by hand (a C# host's NativeAOT csproj) gets it without having to
 // learn that it changed.
 #if defined(_WIN32)
 #pragma comment(lib, "ntdll")

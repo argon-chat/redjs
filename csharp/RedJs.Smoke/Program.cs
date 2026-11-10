@@ -1,5 +1,5 @@
 // C# conformance smoke for the RedJs layer — mirrors redjs/tests/smoke.rs
-// through the real bindings, exactly the way the player will use them.
+// through the real bindings, exactly the way an embedder will use them.
 // Run JIT:  dotnet run
 // Run AOT:  dotnet publish -r win-x64 -c Release -p:PublishAot=true && run the exe
 
@@ -325,7 +325,7 @@ internal static unsafe class Program
         var after = JsContext.Now;
         Check(jsNow >= before && jsNow <= after, "performance.now == host clock");
 
-        // The game loop shape: rAF chain driven by Pump, timestamps from the pump.
+        // The frame loop shape: rAF chain driven by Pump, timestamps from the pump.
         _ctx.Eval("globalThis.frames = []; function tick(ts) { frames.push(ts); if (frames.length < 3) requestAnimationFrame(tick); } requestAnimationFrame(tick);");
         var s1 = _ctx.Pump();
         Check(s1.RafFired == 1 && s1.RafPending == 1, "rAF fired, re-registration next frame");

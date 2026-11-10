@@ -116,7 +116,7 @@ pub trait IndexedDbHost: Send + Sync {
 static HOST: RwLock<Option<&'static dyn IndexedDbHost>> = RwLock::new(None);
 
 /// The host `redjs_idb_configure` installs: a folder, an optional raw key the
-/// embedder protects itself (PEWPEW: .NET `ProtectedData`), a quota.
+/// embedder protects itself (e.g. .NET `ProtectedData`), a quota.
 struct ConfiguredHost {
     folder: std::path::PathBuf,
     key: Option<[u8; 32]>,

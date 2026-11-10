@@ -8,14 +8,14 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>RedJs</AssemblyName>
     <RootNamespace>RedJs</RootNamespace>
-    <Description>Zero-alloc JavaScriptCore (bun-webkit) bindings for the RedPew player. Generated NativeMethods (csbindgen) + hand-written JsValue/JsContext/JsCallFrame layer.</Description>
+    <Description>Zero-alloc JavaScriptCore (bun-webkit) bindings over the redjs C ABI. Generated NativeMethods (csbindgen) + hand-written JsValue/JsContext/JsCallFrame layer.</Description>
   </PropertyGroup>
 
   <!-- Native packaging — native-lib packaging contract:
        (1) no RedJsRid: ship the whole runtimes/ tree (local builds, packing);
        (2) RedJsRid + JIT publish: only that RID's dll, flattened next to the exe;
        (3) RedJsRid + PublishAot: nothing — the AOT root static-links
-           lib/win-x64/redjs.lib + the WebKit libs (see packages/jscore/README.md). -->
+           lib/win-x64/redjs.lib + the WebKit libs. -->
   <ItemGroup Condition="'$(RedJsRid)' == ''">
     <None Include="$(MSBuildThisFileDirectory)..\..\runtimes\**\*.*"
           Pack="true" PackagePath="runtimes\"

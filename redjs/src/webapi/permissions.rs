@@ -5,7 +5,7 @@
 //!
 //! Nothing about a permission is portable. macOS answers from TCC, Windows from
 //! a per-user consent store, Linux from a portal or from nothing at all, and an
-//! embedder with no OS-level notion of consent (a game shipping its own
+//! embedder with no OS-level notion of consent (an app shipping its own
 //! settings screen) answers from its own preferences. What *is* portable is the
 //! shape: four states, a fixed capability set, a status read, a request, and a
 //! change signal. That shape is [`PermissionHost`]; the platform is somebody

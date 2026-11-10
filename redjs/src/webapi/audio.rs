@@ -1,4 +1,4 @@
-//! Native Web Audio API (the game-engine subset) over the Firewheel
+//! Native Web Audio API (a subset) over the Firewheel
 //! audio-graph engine.
 //!
 //! Web Audio is itself a DAG of processing nodes, so the mapping onto
@@ -412,7 +412,7 @@ impl Timeline {
 // thread; the analysis getters (time-domain + FFT) read it on demand.
 // ---------------------------------------------------------------------------
 
-/// Native max `fftSize` (power of two). The spec allows up to 32768; games use
+/// Native max `fftSize` (power of two). The spec allows up to 32768; typical use is
 /// 256–2048 — 4096 keeps the per-analyser footprint at 16 KB.
 const MONITOR_WINDOW: usize = 4096;
 
@@ -4098,7 +4098,7 @@ unsafe fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 
     // Spec: decoding is async. The decode itself runs on the pump tick
-    // (native task), which for game-sized SFX is a couple of milliseconds.
+    // (native task), which for short sound effects is a couple of milliseconds.
     crate::web::schedule_native(g, 0.0, Box::new(move |g| {
         match decode_bytes(bytes, target_rate) {
             Ok(buf) => {

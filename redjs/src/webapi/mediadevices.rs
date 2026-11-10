@@ -253,7 +253,7 @@ fn classes(g: *mut c_void) -> &'static MdClasses {
 }
 
 /// The `devicechange` poll's state. `armed` is false while nobody is listening,
-/// so a game that never touches `mediaDevices` pays nothing: the gate check is
+/// so an app that never touches `mediaDevices` pays nothing: the gate check is
 /// two property reads and the enumeration never runs.
 struct PollState {
     /// The protected `navigator.mediaDevices` singleton.

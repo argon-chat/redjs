@@ -2,7 +2,7 @@
 //! host hooks (resize / visibility / DOMContentLoaded / element registry)
 //! exported through the C ABI — no `__rp` JS seam.
 //!
-//! `window` IS the global object (games read window.innerWidth and assign
+//! `window` IS the global object (apps read window.innerWidth and assign
 //! globals through it): we define the window surface directly on globalThis;
 //! its EventTarget slots live on the global object like any other target.
 
@@ -99,11 +99,11 @@ unsafe fn dom_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
 
 // ---------------------------------------------------------------------------
 // Element hierarchy + matchMedia + IntersectionObserver
-// (the engine bundle instanceof-checks these — absence throws ReferenceError)
+// (app code instanceof-checks these — absence throws ReferenceError)
 // ---------------------------------------------------------------------------
 
 /// `matchMedia(query)` → a MediaQueryList-shaped EventTarget that never
-/// matches (no media features on a game host).
+/// matches (this runtime evaluates no media features).
 #[crate::host_fn]
 unsafe fn match_media(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
@@ -123,7 +123,7 @@ unsafe fn match_media(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn io_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     // IntersectionObserver(callback, options?) — inert: nothing intersects in
-    // a game host; observe/unobserve/disconnect are no-ops, records are empty.
+    // this runtime; observe/unobserve/disconnect are no-ops, records are empty.
     let proto = {
         let nt = cf_new_target(cf);
         let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };

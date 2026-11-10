@@ -49,7 +49,7 @@ fn eval(g: *mut core::ffi::c_void, src: &str) -> String {
 const RADIUS: f32 = 2.0;
 const TICK_MS: u64 = 16;
 
-/// Drive one full-circle phase. `pos(theta) -> (x, y, z)` in game/Web-Audio
+/// Drive one full-circle phase. `pos(theta) -> (x, y, z)` in Web Audio
 /// space; `labels` are printed at each quarter (0°, 90°, 180°, 270°).
 fn run_phase(
     g: *mut core::ffi::c_void,

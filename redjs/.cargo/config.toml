@@ -1,7 +1,7 @@
 # One CRT for the whole image. rustc's MSVC target defaults to the DYNAMIC
 # CRT (/DEFAULTLIB:msvcrt), while the bun-webkit prebuilt and our C++ glue are
 # /MT (libcmt) — mixing them is two heaps in one process and LNK4098 noise at
-# every consumer link (redjs.dll and the player's NativeAOT link).
+# every consumer link (redjs.dll and a C# host's NativeAOT link).
 # crt-static makes rust objects (and cc-built C deps, which follow the target
 # feature) use the static CRT, matching webkit.
 [target.x86_64-pc-windows-msvc]

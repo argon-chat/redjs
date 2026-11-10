@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <!-- NativeAOT smoke: `dotnet publish -r win-x64 -p:PublishAot=true` static-links
-       the thin redjs.lib + the WebKit archives (see packages/jscore/README.md). -->
+       the thin redjs.lib + the WebKit archives. -->
   <PropertyGroup Condition="'$(PublishAot)' == 'true'">
     <OptimizationPreference>Speed</OptimizationPreference>
     <RedJsUnixPlatform Condition="'$(RuntimeIdentifier)' == 'linux-x64'">linux-amd64</RedJsUnixPlatform>

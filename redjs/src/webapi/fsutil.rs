@@ -1,5 +1,5 @@
-//! URL→file resolution for fetch/Image (port of the player's
-//! FetchApi.ResolveLocalPath) + content-type guessing + data: URI decoding.
+//! URL→file resolution for fetch/Image + content-type guessing + data: URI
+//! decoding.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -28,9 +28,9 @@ pub fn get_roots(g: *mut c_void) -> Roots {
     roots().lock().unwrap().get(&(g as usize)).cloned().unwrap_or_default()
 }
 
-// --- host content provider (W-HIVE) ----------------------------------------
-// The player routes every content-relative local read through its single
-// C#-side IContentProvider (DeHive `game.hb` bank or loose files), registered
+// --- host content provider -------------------------------------------------
+// An embedder can route every content-relative local read through a single
+// host-side content provider (an asset bank or loose files), registered
 // per context via `redjs_content_provider_set`. Standard C ABI — these are
 // called BY Rust, not by JSC, so no SysV trampoline is involved.
 
@@ -160,8 +160,8 @@ pub fn fetch_url(g: *mut c_void, url: &str) -> Fetched {
     if url.starts_with("http://") || url.starts_with("https://") {
         return Fetched { ok: false, status: 0, status_text: "", mime: "text/plain".into(), bytes: Vec::new() };
     }
-    // Host content provider (W-HIVE): content-relative reads are served by the player's single
-    // IContentProvider (bank or loose). A miss falls through to the on-disk resolution below
+    // Host content provider: content-relative reads are served by the embedder's registered
+    // provider (bank or loose files). A miss falls through to the on-disk resolution below
     // (absolute paths, dev layouts without a provider).
     if let Some(read) = get_content_provider(g) {
         if let Some(key) = clean_relative(url) {

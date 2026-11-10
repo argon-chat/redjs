@@ -1,7 +1,7 @@
 //! AnalyserNode end-to-end probe (W-MIX MIX-13).
 //!
 //! Plays a 660 Hz sine through gain → analyser → destination via the JS
-//! surface, pumps like the player does, then validates that the analyser
+//! surface, pumps like a host does, then validates that the analyser
 //! serves REAL data:
 //!   - getFloatTimeDomainData: RMS ≈ amplitude/√2, peak ≈ amplitude
 //!   - getByteFrequencyData: the dominant FFT bin sits at ≈ 660 Hz

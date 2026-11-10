@@ -5,8 +5,8 @@
 //!
 //! Until this module, `fetch` refused `credentials: "include"` by name, because
 //! there was no jar and accepting the option would have sent the request
-//! WITHOUT the cookies the caller believed it attached. That refusal was right
-//! for a game player and fatal for an app runtime: an API client that sets
+//! WITHOUT the cookies the caller believed it attached. That refusal was
+//! honest, and fatal for an app runtime: an API client that sets
 //! `include` on every call (the Argon client's Ion transport does) turns the
 //! rejection into a silent "network error" on every request. So the refusal is
 //! gone and this is what replaced it: a real store, with the browser's rules.

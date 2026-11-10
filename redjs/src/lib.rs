@@ -1,6 +1,5 @@
 //! redjs — full-control Rust embedding layer over Bun's JavaScriptCore
-//! prebuilt, designed as the ClearScript replacement seam for the
-//! RedPew player.
+//! prebuilt, for Rust hosts and — through a C ABI — any other embedder.
 //!
 //! Layers:
 //! - [`glue`]: raw externs into our C++ glue (`cpp/glue.cpp`, JSC internal API).

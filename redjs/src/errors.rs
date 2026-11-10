@@ -7,10 +7,9 @@
 //! `void f(ctx, exception)` (MS ABI, C#-friendly), called with the VM lock held.
 //! Every call site passes an [`ErrKind`] saying *why* the exception has nobody
 //! left to catch it. The kind is not on the ABI yet — the host handler still
-//! takes two arguments — but every reporter already carries one, so the
-//! `redjs_set_error_handler(ctx, exc, kind)` collapse sketched in
-//! `.refactor/DESKTOP-DEVTOOLS-DESIGN.md` §6.5 is a signature change here, not
-//! a redesign. Listener throws are routed in (`webapi::events`).
+//! takes two arguments — but every reporter already carries one, so a
+//! `redjs_set_error_handler(ctx, exc, kind)` collapse is a signature change
+//! here, not a redesign. Listener throws are routed in (`webapi::events`).
 //!
 //! **Unhandled promise rejections.** JSC has always had the hook — this build
 //! exports `JSGlobalContextSetUnhandledRejectionCallback` (public C API,

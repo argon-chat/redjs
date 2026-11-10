@@ -3,15 +3,13 @@
 //! per frame with a single FFI call.
 //!
 //! Why native: these are the hottest engine globals (`performance.now()` is
-//! called constantly by game/profiling code, rAF once per frame per system).
+//! called constantly by app/profiling code, rAF once per frame per system).
 //! As `extern "sysv64"` Rust host functions they cost ~2 ns from JS — no
 //! trampoline slot, no reverse-P/Invoke. And everything shares ONE monotonic
 //! clock: rAF timestamps, timer deadlines, `performance.now()` and the value
-//! the host reads via `redjs_now` are the same time base (the current player
-//! has three different clocks for these).
+//! the host reads via `redjs_now` are the same time base.
 //!
-//! Semantics mirror the player's TimerScheduler/AnimationFrameScheduler
-//! (which mirror the browser where it matters):
+//! Semantics mirror the browser where it matters:
 //! - a pump snapshots due timers first; callbacks registered during the drain
 //!   fire on the NEXT pump (no same-tick reschedule loops);
 //! - intervals reschedule from `now + interval` (min 1 ms), one-shots die;

@@ -34,6 +34,6 @@ New-Item -ItemType Directory -Force (Join-Path $root 'lib/win-x64') | Out-Null
 Copy-Item (Join-Path $root 'redjs/target/release/redjs.dll') (Join-Path $root 'runtimes/win-x64/native/redjs.dll') -Force
 Copy-Item (Join-Path $root 'redjs/target/release/redjs.lib') (Join-Path $root 'lib/win-x64/redjs.lib') -Force
 
-Write-Host "[jscore] artifacts:"
+Write-Host "[redjs] artifacts:"
 Get-ChildItem (Join-Path $root 'runtimes/win-x64/native/redjs.dll'), (Join-Path $root 'lib/win-x64/redjs.lib') |
     ForEach-Object { Write-Host ("  {0}  {1:n1} MB" -f $_.FullName, ($_.Length / 1MB)) }

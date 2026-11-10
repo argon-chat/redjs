@@ -11,7 +11,7 @@
 //!    on a worker thread, result handed back through the pump". A second
 //!    concurrency model — a multi-thread reactor, its own thread pool, its own
 //!    shutdown semantics — would be the only one of its kind in the crate, and
-//!    a shipped game player would link it for one API.
+//!    every shipped embedder would link it for one API.
 //! 2. **TLS would become a second trust store, or a landmine.**
 //!    `tokio-tungstenite` pulls either `native-tls` (fine, but then the runtime
 //!    is the only thing gained) or `rustls`. rustls 0.23 has no default crypto

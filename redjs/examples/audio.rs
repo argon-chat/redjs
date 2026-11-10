@@ -5,7 +5,7 @@
 //! usage (graph, events, stream) with no JS involved.
 //!
 //! Stage 2 — the JS surface: AudioContext + createBuffer + copyToChannel +
-//! source.start() through redjs, pumped like the player does. Validates
+//! source.start() through redjs, pumped like a host does. Validates
 //! webapi/audio.rs end to end.
 //!
 //! Run: `cargo run --release --example audio` — you should hear two beeps.

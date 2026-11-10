@@ -1,7 +1,7 @@
 //! `alert` / `confirm` / `prompt` (HTML §"Simple dialogs").
 //!
 //! These are the one item on the list with **no implementation to write**. A
-//! modal dialog is a window-system thing; the player's host owns the window, so
+//! modal dialog is a window-system thing; the embedding host owns the window, so
 //! all this module does is route the three calls to a host hook and carry the
 //! answer back. There is no Rust behaviour here beyond the plumbing, and that
 //! is the correct amount.
@@ -85,7 +85,7 @@ unsafe extern "C" fn collect(ctx: *mut c_void, ptr: *const u16, len: usize) {
 fn refusal(name: &str) -> String {
     format!(
         "{name}() needs a host dialog handler and none is registered for this context. A modal \
-         dialog belongs to the window system, which the player host owns; register one with \
+         dialog belongs to the window system, which the embedding host owns; register one with \
          redjs_dialog_handler_set(). Refusing rather than answering for the user: a {name}() that \
          silently returns the default takes the same branch forever with nothing in the log."
     )

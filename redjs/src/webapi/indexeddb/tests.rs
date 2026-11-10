@@ -54,7 +54,7 @@ fn run(c: &Context, body: &str) -> String {
     wait(c)
 }
 
-/// A context with timers too (`setTimeout`), as the player has.
+/// A context with timers too (`setTimeout`), as a real host has.
 fn wctx() -> Context {
     let c = Context::new();
     unsafe {

@@ -53,7 +53,7 @@ public static class JsAbi
             throw new InvalidOperationException(
                 $"redjs ABI drift: native layout (abi v{l.abi_version}, argc@{l.cf_argc_offset}, " +
                 $"args@{l.cf_args_offset}) does not match the compiled JsAbi constants (v{AbiVersion}). " +
-                "Rebuild RedJs against the current packages/jscore prebuilt.");
+                "Rebuild RedJs against the current native redjs build.");
         }
     }
 }

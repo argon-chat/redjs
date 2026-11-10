@@ -79,7 +79,7 @@ public readonly struct JsValue : IEquatable<JsValue>
         get => Raw == JsAbi.Null;
     }
 
-    /// <summary>undefined or null — the "missing" checks the player does everywhere.</summary>
+    /// <summary>undefined or null — the "missing" checks host code does everywhere.</summary>
     public bool IsNullish
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

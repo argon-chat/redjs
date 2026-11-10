@@ -36,7 +36,7 @@ namespace RedJs.Native
         /// <summary>
         ///  Creates a VM + global object and returns the context handle
         ///  (`JSGlobalObject*`). Contexts are expected to live for the process
-        ///  lifetime in the player.
+        ///  lifetime.
         ///
         ///  Also arms JSC's unhandled-promise-rejection hook (`crate::errors`) — here
         ///  rather than behind an opt-in call, because the hook existing and nobody
@@ -569,7 +569,7 @@ namespace RedJs.Native
         internal static extern int redjs_idb_shutdown(uint timeout_ms);
 
         /// <summary>
-        ///  Puts IndexedDB ON DISK for an embedder with no Rust host (PEWPEW's C#):
+        ///  Puts IndexedDB ON DISK for an embedder with no Rust host (e.g. C#):
         ///  `folder_utf8[..len]` holds one SQLite file per database, encrypted at rest
         ///  under `key32` (32 raw bytes the embedder keeps safe, e.g. with .NET
         ///  `ProtectedData`) or plaintext when it is null; `quota_bytes` 0 = 1 GiB.
@@ -642,10 +642,10 @@ namespace RedJs.Native
         internal static extern int redjs_define_accessor(void* ctx, ulong obj, void* atom, ulong getter, ulong setter, uint attrs);
 
         /// <summary>
-        ///  Aggressive memory release for level transitions / minimized window:
+        ///  Aggressive memory release for screen transitions / minimized window:
         ///  two full sync GCs (second pass sweeps finalizer-freed externals) followed
         ///  by returning free heap pages to the OS. Expect a frame-time spike — call
-        ///  on loading screens, not mid-gameplay.
+        ///  on loading screens, not mid-interaction.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_release_memory", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_release_memory(void* ctx);

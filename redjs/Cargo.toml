@@ -17,7 +17,7 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 redjs-macros = { path = "macros" }
 # Image decoding for the web shim (HTMLImageElement / createImageBitmap).
-# Pure-Rust decoders only; matches the formats games actually ship.
+# Pure-Rust decoders only; matches the formats apps actually ship.
 url = "2"
 getrandom = "0.3"
 # TextDecoder: the reference WHATWG Encoding implementation (Firefox's);
@@ -47,7 +47,7 @@ rustybuzz = { version = "0.20.1", optional = true }
 unicode-bidi = { version = "0.3.18", optional = true }
 # Audio: the native Web Audio implementation (webapi/audio.rs) maps the
 # WebAudio node graph onto Firewheel's; symphonium (the same decoder firewheel
-# uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the game formats.
+# uses) backs decodeAudioData. wav/flac/mp3/ogg-vorbis = the base formats.
 # `stream_nodes` = StreamWriterNode, the producer end of `RedStreamSourceNode`
 # (webapi/pcm.rs) — how a native decoder pushes PCM into a running graph.
 firewheel = { version = "0.10", features = [
@@ -118,9 +118,9 @@ webgpu = ["dep:wgpu", "dep:pollster", "dep:half"]
 default = ["audio", "indexeddb", "svg-images", "canvas", "webgpu"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
-# decodeAudioData beyond the game formats: AAC-LC + the MP4/M4A, CAF, MKV and
+# decodeAudioData beyond the base formats: AAC-LC + the MP4/M4A, CAF, MKV and
 # AIFF containers, ALAC and ADPCM. OFF by default because it is ~10 extra
-# symphonia crates that a game shipping its own .ogg/.wav assets never touches;
+# symphonia crates that an app shipping its own .ogg/.wav assets never touches;
 # ON for an app runtime, where "whatever the user's file is" is the actual
 # input. Purely additive — with this off, `decodeAudioData` behaves exactly as
 # it did before the flag existed, and it names the formats it does have when it
@@ -151,7 +151,7 @@ canvas = ["dep:vello_cpu", "dep:kurbo", "dep:peniko", "dep:fontdb", "dep:rustybu
 # Both are OFF by default, and that is not a judgement about how useful they
 # are — it is the only setting that keeps this crate's default build byte-for-
 # byte what it was before they existed. Turning a global ON by default changes
-# what `typeof localStorage` answers in every consumer, including a game that
+# what `typeof localStorage` answers in every consumer, including an app that
 # ships its own storage layer and feature-detects around ours. An embedder that
 # wants them says so; vue-native does, in crates/vn-runtime/Cargo.toml.
 #

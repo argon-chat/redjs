@@ -1,4 +1,4 @@
-//! Conformance suite for the redjs ABI — every feature the player needs from
+//! Conformance suite for the redjs ABI — every feature an embedder needs from
 //! the JS engine, exercised the way the generated C# bindings will use it.
 //!
 //! One #[test] entry point (JSC contexts are process-lifetime; cargo test
