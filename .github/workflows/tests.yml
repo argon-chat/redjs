@@ -34,10 +34,9 @@ jobs:
         suite:
           - name: core
             features: ''
-          # GPU tests need hardware; css-host belongs to PEWPEW, and yoga-host
-          # requires separately fetched Yoga sources. All other stable APIs run.
+          # GPU tests need hardware. All other stable APIs run.
           - name: web
-            features: audio,audio-codecs-extra,physics,mesh,svg-images,canvas,indexeddb-sqlite,storages,clipboard,battery,net-h2
+            features: audio,audio-codecs-extra,svg-images,canvas,indexeddb-sqlite,storages,clipboard,battery,net-h2
     defaults:
       run:
         shell: bash
@@ -66,17 +65,6 @@ jobs:
         run: |
           rustup toolchain install 1.97.1 --profile minimal --target "${{ matrix.platform.target }}"
           rustup default 1.97.1
-      - name: Provide the disabled optional redcss manifest
-        run: |
-          # Cargo resolves optional path manifests even with css-host disabled.
-          mkdir -p redcss/src
-          cat > redcss/Cargo.toml <<'TOML'
-          [package]
-          name = "redcss"
-          version = "0.1.0"
-          edition = "2021"
-          TOML
-          echo 'compile_error!("CI does not support the css-host feature");' > redcss/src/lib.rs
       - name: Cache pinned native dependencies
         uses: actions/cache@v4
         with:

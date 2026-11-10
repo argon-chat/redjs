@@ -56,20 +56,6 @@ firewheel = { version = "0.10", features = [
     "stream_nodes",
 ], optional = true }
 symphonium = { version = "0.7", default-features = false, features = ["resampler", "wav", "pcm", "flac", "mp3", "ogg", "vorbis"], optional = true }
-# 2D physics: native Rapier for the player (webapi-adjacent host class RedPhysics2D;
-# see .refactor/PHYSICS-NATIVE-DESIGN.md). simd-stable only — no rayon `parallel`
-# (pays off only on huge scenes), no wasm.
-rapier2d = { version = "0.34", features = ["simd-stable", "debug-render"], optional = true }
-# 3D physics: Rapier3D alongside 2D (W-3D 3D-3, see .refactor/3D-TOOLKIT-DESIGN.md §4/§16). Same
-# crate family + version as rapier2d, same host-class pattern (RedPhysics3D with zero-copy Isometry3
-# pose views). simd-stable only, no rayon/wasm. The host class + engine.physics3d wiring land in
-# epic 3D-3; the dep is pinned here now as part of the W-3D toolkit foundation.
-rapier3d = { version = "0.34", features = ["simd-stable", "debug-render"], optional = true }
-# meshopt vertex/index decode for the `.rmesh` runtime format (`RedMesh` global,
-# see .refactor/RMESH-FORMAT-DESIGN.md §5) — the native counterpart of the npm
-# MeshoptDecoder the editor/web player use. cc-compiles the vendored C++; the
-# static-CRT match comes from .cargo/config.toml (+crt-static).
-meshopt = { version = "0.6", optional = true }
 # gzip / zlib / raw-deflate for CompressionStream and DecompressionStream
 # (webapi/compression.rs). `rust_backend` = miniz_oxide: pure Rust, no C toolchain,
 # no zlib link, and it is the dependency that lets those two classes be a REAL
@@ -98,10 +84,6 @@ bytes = { version = "1", optional = true }
 # Only to read hyper's HTTP/2 errors (GOAWAY / REFUSED_STREAM decide retries).
 h2 = { version = "0.4", optional = true }
 tokio-native-tls = { version = "0.3", optional = true }
-# CSS front end (W-UI UI-29) — the `RedCss` host class. Path-dep, not a registry crate: the SAME
-# source compiles to wasm for the editor and the web player, so a stylesheet cannot parse one way
-# in the browser and another in the shipped game (`packages/redcss`, `.refactor/UI-CSS-ENGINE-DESIGN.md`).
-redcss = { path = "../../redcss", optional = true }
 
 # Same revision as gpui_wgpu; a host can inject its existing Device/Queue without a second GPU backend.
 wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "3b3506ea31154edc04de64debda0e780cba2639c", default-features = false, features = ["std", "wgsl", "dx12", "metal", "vulkan"], optional = true }
@@ -124,11 +106,6 @@ libc = "0.2"
 # Loopback TLS test servers that answer ALPN (webapi/http/pool/tests.rs).
 native-tls = { version = "0.2", features = ["alpn-accept"] }
 
-# Game-engine host classes are default-on (the PEWPEW player wants all of them) and
-# individually opt-out for other embedders (vue-native runs with none of these).
-# NOTE for non-PEWPEW consumers: cargo resolves the MANIFEST of every optional path
-# dep regardless of features, so `../../redcss` must exist on disk even with
-# `css-host` off — a stub crate at that path satisfies it.
 [features]
 # Experimental native images; never enabled by default. Requires the matching frontend table.
 native-aot = []
@@ -138,7 +115,7 @@ native-aot = []
 battery = ["dep:zbus", "dep:futures-lite", "dep:async-channel"]
 # Native WebGPU is part of the default web API surface; GPU acquisition is lazy.
 webgpu = ["dep:wgpu", "dep:pollster", "dep:half"]
-default = ["audio", "physics", "mesh", "css-host", "yoga-host", "indexeddb", "svg-images", "canvas", "webgpu"]
+default = ["audio", "indexeddb", "svg-images", "canvas", "webgpu"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
 # decodeAudioData beyond the game formats: AAC-LC + the MP4/M4A, CAF, MKV and
@@ -162,15 +139,6 @@ audio-codecs-extra = [
     "symphonium?/caf",
     "symphonium?/mkv",
 ]
-# RedPhysics2D / RedPhysics3D host classes (Rapier).
-physics = ["dep:rapier2d", "dep:rapier3d"]
-# RedMesh (.rmesh meshopt decode).
-mesh = ["dep:meshopt"]
-# RedCss host class over the in-house redcss parser.
-css-host = ["dep:redcss"]
-# RedYoga host class over the vendored Yoga C++ (build.rs skips the yoga
-# compile — and the vendored-sources requirement — when this is off).
-yoga-host = []
 # SVG decoding for Image / createImageBitmap (webapi/image.rs).
 svg-images = ["dep:resvg"]
 # CanvasRenderingContext2D + a real OffscreenCanvas (webapi/canvas2d). Off,
@@ -264,10 +232,6 @@ name = "idb_crash"
 required-features = ["indexeddb-sqlite"]
 
 # Examples that cannot compile without their host-class feature.
-[[example]]
-name = "yoga_conformance"
-required-features = ["yoga-host"]
-
 [[example]]
 name = "audio"
 required-features = ["audio"]

@@ -36,14 +36,8 @@ pub mod errors;
 pub mod profiling;
 pub mod ffi;
 pub mod glue;
-pub mod hostbuf;
 pub mod icu;
-#[cfg(feature = "mesh")]
-pub mod mesh;
-#[cfg(feature = "physics")]
-pub mod physics;
 pub mod trampoline;
-pub mod ui;
 pub mod web;
 pub mod webapi;
 

@@ -31,8 +31,7 @@ fn main() -> Result<()> {
   and zero-copy buffers over host memory.
 - **Useful web APIs.** Timers, events, URLs, fetch, WebSocket, streams, crypto,
   and more. The host drives the event loop.
-- **Optional extras.** Web Audio, Canvas 2D, IndexedDB, WebGPU, and game-oriented
-  helpers for physics, meshes, CSS, and layout.
+- **Optional extras.** Web Audio, Canvas 2D, IndexedDB, and WebGPU.
 
 Build targets are **Windows x64**, **Linux x64 (glibc)**, and **macOS x64 / Apple
 Silicon**. Each uses a verified prebuilt from the same JavaScriptCore revision.
@@ -43,10 +42,6 @@ The engine's internal headers are version-sensitive, so upgrades need testing.
 On Windows, you'll need Rust 1.97.1 with the MSVC target, LLVM's `clang-cl` on `PATH`,
 Visual Studio C++ Build Tools (MSVC 14.44 or newer, plus the Windows SDK),
 and PowerShell.
-
-This repository currently expects a sibling `redcss` crate at `../redcss`.
-Cargo needs that crate's manifest even when its feature is disabled. In the
-vue-native workspace, both repositories already live under `vendor/`.
 
 From this repository's root:
 
@@ -64,8 +59,7 @@ Versions and hashes live in [pins.txt](pins.txt). Run `setup.ps1` again after
 a pin change. To use a prebuilt stored elsewhere, set `BUN_WEBKIT_DIR`; the
 build checks it against the same pin.
 
-For the full default build, you'll also need Yoga's C++ sources in
-`redjs/cpp/yoga/`. Back in the repository root, run `./build.ps1 -Test` to build
+Back in the repository root, run `./build.ps1 -Test` to build
 the library, run the Rust suite, and stage the DLL and static library under
 `runtimes/` and `lib/`.
 
@@ -85,10 +79,6 @@ macOS 26 SDK / Xcode 26 toolchain supplies the C++23 compiler and standard
 library. The pinned engine requires macOS 13+ at runtime. Both Intel and Apple
 Silicon use their native architecture. For direct Cargo commands, set
 `MACOSX_DEPLOYMENT_TARGET=13.0` (the build script and CI already do this).
-
-The sibling `redcss` manifest described above is still required. When testing
-outside PEWPEW, a manifest-only stub is enough with `css-host` disabled (the CI
-workflow creates one and makes accidental compilation fail explicitly).
 
 ```sh
 bash ./setup.sh
@@ -124,9 +114,8 @@ dotnet publish csharp/RedJs.Smoke -c Release -r linux-x64 -p:PublishAot=true
 
 GitHub Actions runs core and web-feature Rust suites on standard Linux and
 macOS runners, plus C# NativeAOT smoke tests (and shared-library smoke tests on
-macOS). WebGPU's real-device tests require a GPU;
-`css-host` and `yoga-host` require their separate host sources. These features
-are not enabled by the hosted test matrix.
+macOS). WebGPU's real-device tests require a GPU, so the hosted test matrix
+does not enable them.
 
 ## Use it in your app
 
@@ -175,8 +164,8 @@ In C#, these are `InstallWebGlobals()`,
 `InstallWebShims(scriptsRoot, assetsRoot)`, and `Pump()`.
 A render loop can pump once per frame.
 
-The default Cargo features include `audio`, `physics`, `mesh`, `css-host`,
-`yoga-host`, `indexeddb`, `svg-images`, `canvas`, and `webgpu`. Native GPU
+The default Cargo features include `audio`, `indexeddb`, `svg-images`, `canvas`,
+and `webgpu`. Native GPU
 acquisition is lazy; see the [WebGPU support notes](redjs/WEBGPU.md). Use
 `--no-default-features` for a smaller starting point, then enable what you need.
 

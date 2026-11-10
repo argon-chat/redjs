@@ -1,14 +1,8 @@
 # Bun WebKit prebuilt (fetched by setup.ps1, ~1.1 GB)
 prebuilt/
 
-# yoga C++ sources for the native layout backend (fetched by `bun run fetch:yoga`, pinned by commit).
-# Upstream code we never patch — vendoring it into history would make every version bump read as a
-# 5000-line diff. The MIT notice is committed separately as cpp/yoga-LICENSE.txt, since the compiled
-# result ships inside the player.
-redjs/cpp/yoga/
-
 # oven-sh/mimalloc sources (fetched by setup.ps1 at the commit pinned in pins.txt, tree-hash
-# verified). Same reasoning as yoga; the MIT notice ships inside the fetched tree (LICENSE).
+# verified). Upstream code we never patch, so it stays out of history; the MIT notice ships inside the fetched tree (LICENSE).
 redjs/cpp/mimalloc/
 
 # Built artifacts (produced by build.ps1; consumers link these)

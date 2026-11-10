@@ -175,9 +175,6 @@ fn purge(gone: Gone) {
     crate::errors::forget(gone);
     crate::web::forget(gone);
     crate::webapi::forget(gone);
-    #[cfg(feature = "physics")]
-    crate::physics::forget(gone);
-    crate::ui::forget(gone);
 }
 
 #[cfg(test)]

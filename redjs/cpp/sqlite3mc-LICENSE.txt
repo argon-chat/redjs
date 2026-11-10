@@ -1,7 +1,7 @@
 Notices for the code cpp/idb_sqlite.c compiles (feature `indexeddb-sqlite`):
 the SQLite3 Multiple Ciphers amalgamation pinned in ../../pins.txt and fetched
 by ../../setup.ps1 into prebuilt/sqlite3mc. Upstream source is never committed
-here (same reasoning as cpp/yoga); these notices are, because the compiled
+here (upstream code we never patch); these notices are, because the compiled
 result ships inside every binary built with the feature.
 
 -------------------------------------------------------------------------------

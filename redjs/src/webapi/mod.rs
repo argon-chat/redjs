@@ -444,11 +444,6 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // in when there is none.
     #[cfg(feature = "canvas")]
     canvas2d::install(g, et_proto);
-    #[cfg(feature = "physics")]
-    crate::physics::install(g);
-    crate::ui::install(g);
-    #[cfg(feature = "mesh")]
-    crate::mesh::install(g);
 
     // The dumb-stub remainder.
     let mut out = 0u64;

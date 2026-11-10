@@ -12,25 +12,20 @@
 //!    the exact flags of the prebuilt (clang-cl, /MT, NDEBUG, C++23,
 //!    force-included cmakeconfig.h).
 //!
-//! 3. Compiles the vendored Yoga flexbox engine (`cpp/yoga`, facebook/yoga
-//!    v3.2.1 — the exact commit the `yoga-layout` npm pin ships) into its own
-//!    static lib for the `RedYoga` host class. Plain portable C++20: it must
-//!    NOT see the WebKit cmakeconfig force-include.
-//!
-//! 4. Compiles oven-sh/mimalloc (`cpp/mimalloc`, fetched by setup.ps1). This
+//! 3. Compiles oven-sh/mimalloc (`cpp/mimalloc`, fetched by setup.ps1). This
 //!    JSC build (`USE_MIMALLOC 1`, `USE_EXTERNAL_MIMALLOC 1`) allocates
 //!    through `mi_*` and leaves the allocator to the embedder, the way Bun
 //!    links its own. It is a normal (bundled) static lib, so it lands INSIDE
 //!    the thin redjs.lib and a NativeAOT consumer gets it without listing it.
 //!
-//! 5. With `indexeddb-sqlite` only: compiles `cpp/idb_sqlite.c` — SQLite3
+//! 4. With `indexeddb-sqlite` only: compiles `cpp/idb_sqlite.c` — SQLite3
 //!    Multiple Ciphers (`../prebuilt/sqlite3mc`, fetched by setup.ps1) as ONE
 //!    translation unit whose `sqlite3_*` API is `static`, trimmed to the
 //!    ChaCha20-Poly1305 cipher and size-optimised (-Os, /Gy /Gw so the final
 //!    link's /OPT:REF drops what IndexedDB never calls). Bundled into the
 //!    rlib like mimalloc.
 //!
-//! 6. Links the WebKit static libs. They are linked with the `-bundle`
+//! 5. Links the WebKit static libs. They are linked with the `-bundle`
 //!    modifier so the `staticlib` artifact (redjs.lib for NativeAOT) stays
 //!    thin — the consuming link (ILC) must also pass the WebKit libs. The
 //!    `cdylib` artifact (redjs.dll) is always fully self-contained.
@@ -241,48 +236,6 @@ fn main() {
         println!("cargo:rerun-if-changed=cpp/aot");
     }
     glue.compile("redjs_glue");
-
-    // --- vendored Yoga (flexbox layout for the RedYoga host class) ---------
-    // Ordinary self-contained C++20 — same compiler/CRT as the rest of the
-    // crate (clang-cl + /MT, so it links with `+crt-static`) but NONE of the
-    // WebKit configuration: no cmakeconfig force-include, no WebKit includes.
-    // `cpp/` on the include path is what makes yoga's own `#include
-    // <yoga/...>` resolve. This flag set is the one proven to reproduce the
-    // wasm layout goldens (scripts/yoga-parity.ts).
-    // Feature-gated: embedders without the RedYoga host class (vue-native uses
-    // gpui/taffy for layout) skip both the compile and the vendored-sources
-    // requirement.
-    if env::var_os("CARGO_FEATURE_YOGA_HOST").is_some() {
-        let yoga_dir = manifest.join("cpp").join("yoga");
-        let mut yoga = native_build(true, windows);
-        yoga.include(manifest.join("cpp")).define("NDEBUG", None);
-        if windows {
-            yoga.flag("/std:c++20")
-                .flag("/EHsc")
-                .flag("/W0")
-                .define("NOMINMAX", None)
-                .define("_CRT_SECURE_NO_WARNINGS", None);
-        } else {
-            yoga.flag("-std=c++20").flag("-w");
-        }
-        let mut yoga_sources = Vec::new();
-        collect_cpp(&yoga_dir, &mut yoga_sources);
-        yoga_sources.sort(); // deterministic object order
-        if yoga_sources.is_empty() {
-            panic!(
-                "no .cpp sources under {} — vendored yoga is missing",
-                yoga_dir.display()
-            );
-        }
-        yoga.files(&yoga_sources).compile("redjs_yoga");
-        // Directory form: cargo walks it recursively, so headers and any future
-        // .cpp under cpp/yoga/ are covered without listing them. ONLY with the
-        // feature on: a rerun-if-changed path that does not exist is "always
-        // stale" to cargo, and in a checkout without the vendored yoga
-        // (vue-native) that re-ran this script — and recompiled redjs and every
-        // crate above it — on every single build.
-        println!("cargo:rerun-if-changed=cpp/yoga");
-    }
 
     // --- mimalloc (JSC's allocator; the embedder provides it) --------------
     // Mirrors Bun's scripts/build/deps/mimalloc.ts (bun-v1.4.4) for Windows:
@@ -612,21 +565,6 @@ fn check_sqlite3mc(dir: &Path, pins: &[(String, String)]) {
             dir.display(),
             have.as_deref().unwrap_or("missing"),
         );
-    }
-}
-
-/// Collects every `.cpp` under `dir`, recursively.
-fn collect_cpp(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_cpp(&path, out);
-        } else if path.extension().is_some_and(|e| e == "cpp") {
-            out.push(path);
-        }
     }
 }
 

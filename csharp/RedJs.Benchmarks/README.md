@@ -26,8 +26,7 @@ adds 24 warmed JIT, bytecode, interpreter, and native-AOT measurements.
 ## Run
 
 First run [`../../setup.ps1`](../../setup.ps1) to fetch redjs's native inputs.
-The [repository README](../../README.md#build-and-try-it) lists the build tools
-and the sibling `redcss` requirement.
+The [repository README](../../README.md#build-and-try-it) lists the build tools.
 
 From this directory:
 

@@ -15,10 +15,10 @@
 //!
 //! `new DOMMatrix(string)` and `setMatrixValue(string)` parse a **CSS transform
 //! list** (spec §"create a DOMMatrix from a DOMString"). That is a CSS value
-//! grammar, and this repo has exactly one CSS front end — the `redcss` crate —
-//! which exposes no transform-list entry point. Rather than grow a second,
-//! divergent CSS parser here, both REFUSE with a named error. Nothing silently
-//! returns identity: a caller that passes a string finds out immediately.
+//! grammar, and this runtime has no CSS front end (the embedder owns CSS).
+//! Rather than grow a CSS parser here for one constructor, both REFUSE with a
+//! named error. Nothing silently returns identity: a caller that passes a
+//! string finds out immediately.
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -827,8 +827,7 @@ unsafe fn op_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 const CSS_REFUSAL: &str = "parses a CSS <transform-list>, which this runtime does not implement: \
-    the engine's only CSS front end is the redcss crate and it exposes no transform-list entry \
-    point. Build the matrix from components or a 6/16-number sequence instead.";
+    the runtime has no CSS front end (the embedder owns CSS). Build the matrix from components or a 6/16-number sequence instead.";
 
 #[crate::host_fn]
 unsafe fn op_set_matrix_value(g: *mut c_void, _cf: *mut c_void) -> u64 {
@@ -1229,7 +1228,7 @@ mod jsc_tests {
         let c = ctx();
         let msg = throws(&c, "new DOMMatrix('translate(10px, 20px)')");
         assert!(msg.contains("transform-list"), "{msg}");
-        assert!(msg.contains("redcss"), "{msg}");
+        assert!(msg.contains("no CSS front end"), "{msg}");
         let msg2 = throws(&c, "new DOMMatrix().setMatrixValue('scale(2)')");
         assert!(msg2.contains("transform-list"), "{msg2}");
     }
