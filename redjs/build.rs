@@ -337,13 +337,24 @@ fn main() {
             "sicuuc",
         ]
     } else if target_os == "linux" {
+        // Bun's ICU (79, with its zstd-compressed data) under names of our
+        // own: a distribution's libicu-dev puts libicuuc.a/.so of another ICU
+        // in /usr/lib, and a pkg-config crate's `-L /usr/lib/...` ahead of
+        // ours would make `-licuuc` link that one (undefined `u_*_79`).
+        for name in ["icui18n", "icuuc", "icudata"] {
+            let alias = out_dir.join(format!("libredjs_{name}.a"));
+            let _ = std::fs::remove_file(&alias);
+            link_alias(&lib.join(format!("lib{name}.a")), &alias)
+                .unwrap_or_else(|e| panic!("linking {} to Bun's lib{name}.a: {e}", alias.display()));
+        }
+        println!("cargo:rustc-link-search=native={}", out_dir.display());
         &[
             "JavaScriptCore",
             "WTF",
             "bmalloc",
-            "icui18n",
-            "icuuc",
-            "icudata",
+            "redjs_icui18n",
+            "redjs_icuuc",
+            "redjs_icudata",
         ]
     } else {
         &["JavaScriptCore", "WTF", "bmalloc"]
@@ -594,4 +605,13 @@ fn generate_trampolines(out_dir: &std::path::Path) {
     }
     let _ = writeln!(s, "];");
     fs::write(out_dir.join("trampolines.rs"), s).unwrap();
+}
+
+/// `alias` naming `target`: a symlink, or a copy on a host without them
+/// (a cross build from Windows).
+fn link_alias(target: &std::path::Path, alias: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(target, alias);
+    #[cfg(not(unix))]
+    return std::fs::copy(target, alias).map(|_| ());
 }
