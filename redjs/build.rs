@@ -58,6 +58,37 @@ const BUN_HOOKS: [&str; 8] = [
     "WTFTimer__update",
 ];
 
+/// The prebuilt's static libraries on Windows.
+const WINDOWS_WEBKIT_LIBS: &[&str] = &["JavaScriptCore", "WTF", "bmalloc", "sicudt", "sicuin", "sicuuc"];
+
+/// Windows system libs WebKit pulls in. `ntdll`: the JIT/LLInt unwind-info
+/// registration (`RtlAddGrowableFunctionTable`) — glue.cpp also carries it
+/// as a /DEFAULTLIB directive for hand-written consumer links.
+const WINDOWS_SYSTEM_LIBS: &[&str] = &[
+    "user32",
+    "ole32",
+    "oleaut32",
+    "advapi32",
+    "shell32",
+    "shlwapi",
+    "winmm",
+    "bcrypt",
+    "dbghelp",
+    "userenv",
+    "ws2_32",
+    "synchronization",
+    "usp10",
+    "rpcrt4",
+    "crypt32",
+    "ntdll",
+];
+
+/// The Rust files whose `extern "C"` blocks import from the C++ half — what
+/// an engine DLL exports, less what it does not define (a declaration behind
+/// a feature the C++ was built without). SQLite (`webapi/indexeddb`) stays
+/// in the Rust image and is not listed.
+const ENGINE_IMPORTERS: &[&str] = &["aot.rs", "capi.rs", "glue.rs", "icu.rs", "profiling.rs", "web.rs"];
+
 /// Number of pre-compiled host-function trampolines. Each registered C# host
 /// function consumes one slot for the lifetime of the process.
 const TRAMPOLINE_COUNT: usize = 2048;
@@ -77,6 +108,23 @@ fn main() {
     };
 
     generate_trampolines(&out_dir);
+
+    // `REDJS_ENGINE_DLL=redjs.dll` (Windows): the C++ half — glue, mimalloc,
+    // JavaScriptCore, WTF, bmalloc and ICU — is linked into that DLL rather
+    // than into the consuming image, which links its import library. An
+    // embedder that ships its parts as separate files keeps the engine, which
+    // changes only with the pinned prebuilt, out of the file that changes
+    // with every release. See `link_engine_dll`.
+    println!("cargo:rerun-if-env-changed=REDJS_ENGINE_DLL");
+    println!("cargo:rustc-check-cfg=cfg(redjs_engine_dll)");
+    let engine_dll = env::var("REDJS_ENGINE_DLL").ok().filter(|name| windows && !name.is_empty());
+    if let Some(name) = &engine_dll {
+        assert!(
+            name.ends_with(".dll") && !name.contains(['/', '\\', ':', '"']),
+            "REDJS_ENGINE_DLL must be a file name ending in .dll"
+        );
+        println!("cargo:rustc-cfg=redjs_engine_dll");
+    }
 
     let webkit = env::var("BUN_WEBKIT_DIR")
         .map(PathBuf::from)
@@ -235,6 +283,11 @@ fn main() {
         println!("cargo:rerun-if-changed=cpp/aot.cpp");
         println!("cargo:rerun-if-changed=cpp/aot");
     }
+    if engine_dll.is_some() {
+        // Into the DLL, not the Rust link.
+        glue.file("cpp/engine_dll.cpp").cargo_metadata(false);
+        println!("cargo:rerun-if-changed=cpp/engine_dll.cpp");
+    }
     glue.compile("redjs_glue");
 
     // --- mimalloc (JSC's allocator; the embedder provides it) --------------
@@ -273,6 +326,7 @@ fn main() {
         allocator.flag("-x").flag("c++");
     }
     allocator
+        .cargo_metadata(engine_dll.is_none())
         .file(mimalloc.join("src").join("static.c"))
         .include(mimalloc.join("include"))
         .flag("-w")
@@ -322,20 +376,19 @@ fn main() {
         println!("cargo:rerun-if-changed={}", mc.join(".redjs-pin").display());
     }
 
-    println!("cargo:rustc-link-search=native={}", lib.display());
+    if let Some(name) = &engine_dll {
+        link_engine_dll(&manifest, &out_dir, &lib, name);
+    } else {
+        println!("cargo:rustc-link-search=native={}", lib.display());
+    }
 
     // WebKit static libs. `-bundle`: not embedded into the staticlib artifact
     // (kept thin; NativeAOT link adds these libs itself), still linked into
-    // the cdylib/test binaries as usual.
-    let libraries: &[&str] = if windows {
-        &[
-            "JavaScriptCore",
-            "WTF",
-            "bmalloc",
-            "sicudt",
-            "sicuin",
-            "sicuuc",
-        ]
+    // the cdylib/test binaries as usual. In the engine DLL instead, with one.
+    let libraries: &[&str] = if engine_dll.is_some() {
+        &[]
+    } else if windows {
+        WINDOWS_WEBKIT_LIBS
     } else if target_os == "linux" {
         // Bun's ICU (79, with its zstd-compressed data) under names of our
         // own: a distribution's libicu-dev puts libicuuc.a/.so of another ICU
@@ -363,29 +416,13 @@ fn main() {
         println!("cargo:rustc-link-lib=static:-bundle={l}");
     }
 
-    // Windows system libs WebKit pulls in. `ntdll`: the JIT/LLInt unwind-info
-    // registration (`RtlAddGrowableFunctionTable`) — glue.cpp also carries it
-    // as a /DEFAULTLIB directive for hand-written consumer links.
+    // Windows system libs WebKit pulls in (with an engine DLL, its own link
+    // takes them).
     if windows {
-        for l in [
-            "user32",
-            "ole32",
-            "oleaut32",
-            "advapi32",
-            "shell32",
-            "shlwapi",
-            "winmm",
-            "bcrypt",
-            "dbghelp",
-            "userenv",
-            "ws2_32",
-            "synchronization",
-            "usp10",
-            "rpcrt4",
-            "crypt32",
-            "ntdll",
-        ] {
-            println!("cargo:rustc-link-lib=dylib={l}");
+        if engine_dll.is_none() {
+            for l in WINDOWS_SYSTEM_LIBS {
+                println!("cargo:rustc-link-lib=dylib={l}");
+            }
         }
     } else if target_os == "linux" {
         for library in ["dl", "pthread", "m", "rt", "atomic"] {
@@ -441,6 +478,146 @@ fn main() {
         inc.join("cmakeconfig.h").display()
     );
     println!("cargo:rerun-if-env-changed=BUN_WEBKIT_DIR");
+}
+
+/// Links the engine DLL (`REDJS_ENGINE_DLL`) from the glue and mimalloc this
+/// script compiled and the prebuilt's libraries, and points the Rust link at
+/// its import library.
+///
+/// - Its exports are the names the Rust side declares in `extern "C"` blocks
+///   (`ENGINE_IMPORTERS`) that one of those libraries defines, read from
+///   their archive symbol tables (`link /dump /linkermember:1`, which reads
+///   the table only, not 1.4 GB of JavaScriptCore.lib), and every public
+///   `mi_*` function of mimalloc.
+/// - `/OPT:NOICF`, as for every image JSC is in (see below), and `/Brepro`,
+///   so the same inputs give the same DLL.
+/// - It lands in OUT_DIR and is copied beside the images of this profile
+///   (`target/<triple>/<profile>/` and its `deps/`), where they load it from.
+fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &str) {
+    let target = env::var("TARGET").unwrap();
+    let tool = |name: &str| {
+        cc::windows_registry::find_tool(&target, "link.exe")
+            .unwrap_or_else(|| panic!("REDJS_ENGINE_DLL needs the MSVC linker ({name})"))
+            .to_command()
+    };
+    let mut libraries: Vec<PathBuf> = ["redjs_glue.lib", "redjs_mimalloc.lib"].iter().map(|l| out_dir.join(l)).collect();
+    libraries.extend(WINDOWS_WEBKIT_LIBS.iter().map(|l| webkit_lib.join(format!("{l}.lib"))));
+
+    let mut defined = std::collections::HashSet::new();
+    let mut mimalloc = Vec::new();
+    for library in &libraries {
+        let output = tool("link /dump")
+            .args(["/dump", "/nologo", "/linkermember:1"])
+            .arg(library)
+            .output()
+            .unwrap_or_else(|e| panic!("link /dump {}: {e}", library.display()));
+        assert!(output.status.success(), "link /dump {} failed", library.display());
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut words = line.split_whitespace();
+            if let (Some(offset), Some(symbol), None) = (words.next(), words.next(), words.next()) {
+                if u64::from_str_radix(offset, 16).is_ok() {
+                    if library.ends_with("redjs_mimalloc.lib") && symbol.starts_with("mi_") {
+                        mimalloc.push(symbol.to_owned());
+                    }
+                    defined.insert(symbol.to_owned());
+                }
+            }
+        }
+    }
+
+    let mut exports = std::collections::BTreeSet::new();
+    for file in ENGINE_IMPORTERS {
+        let path = manifest.join("src").join(file);
+        println!("cargo:rerun-if-changed={}", path.display());
+        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        exports.extend(extern_c_names(&text).into_iter().filter(|n| defined.contains(n)));
+    }
+    // mimalloc's public API too: embedders read its stats and options (the
+    // vue-native devtools memory report) from outside this crate.
+    exports.extend(mimalloc);
+    for required in ["rjs_init", "rjs_set_icu_decompress", "rjs_icu_zstd_dict", "JSGlobalContextCreate"] {
+        assert!(exports.contains(required), "the engine DLL would not export {required}");
+    }
+
+    let stem = name.trim_end_matches(".dll");
+    let def = out_dir.join(format!("{stem}.def"));
+    let mut text = format!("LIBRARY \"{name}\"\nEXPORTS\n");
+    for export in &exports {
+        writeln!(text, "    {export}").unwrap();
+    }
+    fs::write(&def, text).unwrap();
+
+    let dll = out_dir.join(name);
+    let implib = out_dir.join("redjs_engine.lib");
+    let output = tool("link")
+        .args(["/nologo", "/DLL", "/MACHINE:X64", "/INCREMENTAL:NO", "/OPT:REF", "/OPT:NOICF", "/Brepro"])
+        .arg(format!("/OUT:{}", dll.display()))
+        .arg(format!("/IMPLIB:{}", implib.display()))
+        .arg(format!("/DEF:{}", def.display()))
+        .args(&libraries)
+        .args(WINDOWS_SYSTEM_LIBS.iter().map(|l| format!("{l}.lib")))
+        .output()
+        .expect("cannot run the MSVC linker for the engine DLL");
+    assert!(
+        output.status.success(),
+        "linking {name} failed:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=dylib=redjs_engine");
+    // OUT_DIR is target/<triple>/<profile>/build/redjs-<hash>/out.
+    if let Some(profile) = out_dir.ancestors().nth(3) {
+        for directory in [profile.to_path_buf(), profile.join("deps")] {
+            if directory.is_dir() {
+                fs::copy(&dll, directory.join(name)).unwrap_or_else(|e| panic!("copying {name} to {}: {e}", directory.display()));
+            }
+        }
+    }
+}
+
+/// The function and static names declared in the `extern "C" { … }` blocks
+/// of a Rust source file.
+fn extern_c_names(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("extern \"C\" {") {
+        let body = &rest[at + "extern \"C\" {".len()..];
+        let mut depth = 1;
+        let mut end = body.len();
+        for (i, c) in body.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let block = &body[..end];
+        let words: Vec<&str> = block
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|w| !w.is_empty())
+            .collect();
+        for pair in words.windows(2) {
+            if pair[0] == "fn" || pair[0] == "static" {
+                let name = if pair[1] == "mut" { continue } else { pair[1] };
+                names.push(name.to_owned());
+            }
+        }
+        for triple in words.windows(3) {
+            if triple[0] == "static" && triple[1] == "mut" {
+                names.push(triple[2].to_owned());
+            }
+        }
+        rest = &body[end..];
+    }
+    names
 }
 
 fn native_build(cpp: bool, windows: bool) -> cc::Build {

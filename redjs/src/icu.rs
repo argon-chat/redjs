@@ -34,9 +34,31 @@ mod compressed {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
 
+    #[cfg(not(redjs_engine_dll))]
     extern "C" {
         static bun_icu_zstd_dict: u8;
         static bun_icu_zstd_dict_size: u32;
+    }
+    // The engine DLL (build.rs `REDJS_ENGINE_DLL`) hands the dictionary over
+    // through a function: data does not cross an import library.
+    #[cfg(redjs_engine_dll)]
+    extern "C" {
+        fn rjs_icu_zstd_dict(size: *mut u32) -> *const c_void;
+    }
+
+    /// The dictionary sicudt.lib carries, and its size.
+    unsafe fn dictionary() -> (*const c_void, usize) {
+        #[cfg(not(redjs_engine_dll))]
+        return (
+            core::ptr::addr_of!(bun_icu_zstd_dict) as *const c_void,
+            core::ptr::addr_of!(bun_icu_zstd_dict_size).read() as usize,
+        );
+        #[cfg(redjs_engine_dll)]
+        {
+            let mut size = 0;
+            let dictionary = rjs_icu_zstd_dict(&mut size);
+            (dictionary, size as usize)
+        }
     }
 
     const ZSTD_MAGIC: u32 = 0xFD2F_B528;
@@ -55,9 +77,9 @@ mod compressed {
         static S: OnceLock<Mutex<State>> = OnceLock::new();
         S.get_or_init(|| unsafe {
             let dctx = zstd_sys::ZSTD_createDCtx() as usize;
-            let dict_size = core::ptr::addr_of!(bun_icu_zstd_dict_size).read() as usize;
+            let (dict, dict_size) = dictionary();
             let ddict = if dict_size > 0 {
-                zstd_sys::ZSTD_createDDict(core::ptr::addr_of!(bun_icu_zstd_dict) as *const c_void, dict_size) as usize
+                zstd_sys::ZSTD_createDDict(dict, dict_size) as usize
             } else {
                 0
             };

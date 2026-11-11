@@ -178,7 +178,7 @@ impl Context {
     pub fn with_options(options: &str) -> Context {
         let c = std::ffi::CString::new(options).unwrap();
         unsafe {
-            glue::rjs_init(if options.is_empty() { core::ptr::null() } else { c.as_ptr() });
+            glue::init(if options.is_empty() { core::ptr::null() } else { c.as_ptr() });
             let g = ffi::redjs_context_create();
             assert!(!g.is_null(), "JSGlobalContextCreate failed");
             Context { g, _not_send: core::marker::PhantomData }

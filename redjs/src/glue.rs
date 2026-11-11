@@ -76,9 +76,21 @@ pub mod brand {
     pub const F_REDJS_SLOT: u32 = 8;
 }
 
+/// `rjs_init`. With the engine in its own DLL (`REDJS_ENGINE_DLL`, build.rs),
+/// the ICU inside it is first handed this crate's data hook, which a static
+/// link resolves by name instead (`crate::icu`).
+pub unsafe fn init(options: *const c_char) -> i32 {
+    #[cfg(redjs_engine_dll)]
+    rjs_set_icu_decompress(crate::icu::bun_icu_maybe_decompress);
+    rjs_init(options)
+}
+
 extern "C" {
     pub fn rjs_layout(out: *mut RjsLayout);
     pub fn rjs_init(options: *const c_char) -> i32;
+    /// Engine DLL only (cpp/engine_dll.cpp).
+    #[cfg(redjs_engine_dll)]
+    pub fn rjs_set_icu_decompress(hook: unsafe extern "C" fn(*const c_void, *mut i32) -> *const c_void);
     pub fn rjs_set_options(options: *const c_char) -> i32;
     pub fn rjs_global(g: *mut c_void) -> u64;
     pub fn rjs_lock(g: *mut c_void);

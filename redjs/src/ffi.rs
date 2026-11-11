@@ -157,7 +157,7 @@ pub unsafe extern "C" fn redjs_init(options: *const c_char) -> i32 {
     // the symbol here (redjs_init is DirectPInvoke'd, always in the image)
     // forces icu.o into the static-link closure.
     core::hint::black_box(crate::icu::bun_icu_maybe_decompress as *const ());
-    glue::rjs_init(options)
+    glue::init(options)
 }
 
 /// Adjusts JSC options after init. Options already consumed by compiled code
@@ -179,7 +179,7 @@ pub unsafe extern "C" fn redjs_set_options(options: *const c_char) -> i32 {
 /// stderr.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
-    glue::rjs_init(core::ptr::null());
+    glue::init(core::ptr::null());
     #[cfg(feature = "native-aot")]
     let aot_global = crate::aot::create_context_if_active();
     #[cfg(not(feature = "native-aot"))]
