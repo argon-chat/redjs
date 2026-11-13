@@ -236,3 +236,19 @@ for results and the conditions they were measured under.
 - [IndexedDB web-platform-tests](redjs/tests/wpt/README.md) — how to run the compatibility suite.
 - [Native image probes](redjs/examples/aot/README.md) and
   [AOT memory profiles](redjs/docs/native-aot-memory.md) — the experimental JavaScript AOT path.
+
+## License
+
+redjs is licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at
+your option.
+
+It links JavaScriptCore, WTF and bmalloc from Bun's WebKit build, statically by default. Parts of
+JavaScriptCore and WTF are licensed under the GNU LGPL 2; the rest of WebKit is BSD. To meet the
+LGPL, the patched WebKit source is public at [oven-sh/WebKit](https://github.com/oven-sh/WebKit):
+the exact commit is `webkit.version` in [pins.txt](pins.txt). To relink redjs, or a program built
+on it, against a modified JavaScriptCore: build that commit, point `BUN_WEBKIT_DIR` at the result
+and rebuild (`build.ps1` / `build.sh`). On Windows, `REDJS_ENGINE_DLL=redjs.dll` puts the engine in
+a DLL of its own that can be replaced without relinking the program.
+
+Also linked: ICU (Unicode License V3), mimalloc (MIT) and, with the `indexeddb-sqlite` feature,
+SQLite3MultipleCiphers (MIT; SQLite is public domain).

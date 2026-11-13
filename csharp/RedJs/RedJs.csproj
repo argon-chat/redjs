@@ -8,6 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>RedJs</AssemblyName>
     <RootNamespace>RedJs</RootNamespace>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
     <Description>Zero-alloc JavaScriptCore (bun-webkit) bindings over the redjs C ABI. Generated NativeMethods (csbindgen) + hand-written JsValue/JsContext/JsCallFrame layer.</Description>
   </PropertyGroup>
 

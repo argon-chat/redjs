@@ -2,6 +2,7 @@
 name = "redjs"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 build = "build.rs"
 description = "Full-control Rust embedding layer over Bun's JavaScriptCore prebuilt. C ABI designed for zero-alloc C# (NativeAOT) codegen bindings."
 
