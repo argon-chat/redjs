@@ -115,7 +115,7 @@ unsafe fn is_object(g: *mut c_void, v: u64) -> bool {
     is_cell(v) && glue::rjs_kind(g, v) >= KIND_OBJECT_MIN
 }
 
-pub(crate) unsafe fn is_callable(g: *mut c_void, v: u64) -> bool {
+pub unsafe fn is_callable(g: *mut c_void, v: u64) -> bool {
     is_cell(v) && glue::rjs_kind(g, v) == KIND_FUNCTION
 }
 
