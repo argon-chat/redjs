@@ -1087,6 +1087,10 @@ unsafe fn new_message_event(g: *mut c_void, data: u64, origin: &str) -> u64 {
 /// A trusted `MessageEvent` of any type (`message` / `messageerror`) — also
 /// what BroadcastChannel delivers.
 pub(crate) unsafe fn new_message_event_of(g: *mut c_void, ty: &str, data: u64, origin: &str) -> u64 {
+    new_message_event_with_id(g, ty, data, origin, "")
+}
+
+pub(crate) unsafe fn new_message_event_with_id(g: *mut c_void, ty: &str, data: u64, origin: &str, last_event_id: &str) -> u64 {
     let c = classes(g);
     let obj = new_object(g, c.message_event.proto);
     events::init_event(g, obj, js_string(g, ty), UNDEF, false);
@@ -1094,7 +1098,7 @@ pub(crate) unsafe fn new_message_event_of(g: *mut c_void, ty: &str, data: u64, o
         define(g, s, "isTrusted", TRUE, 0);
         define(g, s, "data", data, 0);
         define(g, s, "origin", js_string(g, origin), 0);
-        define(g, s, "lastEventId", js_string(g, ""), 0);
+        define(g, s, "lastEventId", js_string(g, last_event_id), 0);
         define(g, s, "source", NULL, 0);
     }
     obj

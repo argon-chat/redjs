@@ -1091,7 +1091,7 @@ unsafe fn xhr_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// The document's base URL: `location.href` when there is one.
-unsafe fn base_url(g: *mut c_void) -> Option<url::Url> {
+pub(super) unsafe fn base_url(g: *mut c_void) -> Option<url::Url> {
     let loc = get(g, glue::rjs_global(g), "location");
     if !is_cell(loc) {
         return None;

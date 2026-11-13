@@ -376,6 +376,11 @@ pub trait Observe: Send + Sync {
     fn body(&self, chunk: &[u8], received: u64, total: Option<u64>) {
         let _ = (chunk, received, total);
     }
+    /// The body goes only to [`body`](Observe::body), piece by piece on both transports, with no
+    /// size limit; the `Response` handed to [`Done`] has none.
+    fn streams(&self) -> bool {
+        false
+    }
 }
 
 /// What [`Observe::head`] sees.
@@ -647,6 +652,66 @@ pub fn read_chunked<R: Read>(r: &mut R, prefix: &[u8]) -> Result<Vec<u8>, HttpEr
         let crlf = src.read_line()?;
         if !crlf.is_empty() {
             return Err(HttpError::protocol("malformed chunked body: missing CRLF after chunk data"));
+        }
+    }
+}
+
+#[cfg_attr(feature = "net-h2", allow(dead_code))]
+fn stream_body<R: Read>(r: &mut R, framing: Framing, prefix: &[u8], sink: &mut dyn FnMut(&[u8])) -> Result<(), HttpError> {
+    let mut buf = [0u8; 16 * 1024];
+    let read = |r: &mut R, buf: &mut [u8]| r.read(buf).map_err(|e| HttpError::network(format!("body read failed: {e}")));
+    match framing {
+        Framing::None => Ok(()),
+        Framing::Length(n) => {
+            let first = &prefix[..prefix.len().min(n)];
+            if !first.is_empty() {
+                sink(first);
+            }
+            let mut left = n - first.len();
+            while left > 0 {
+                let want = left.min(buf.len());
+                let got = read(r, &mut buf[..want])?;
+                if got == 0 {
+                    return Err(HttpError::protocol(format!("connection closed after {} of {n} declared body bytes", n - left)));
+                }
+                sink(&buf[..got]);
+                left -= got;
+            }
+            Ok(())
+        }
+        Framing::UntilClose => {
+            if !prefix.is_empty() {
+                sink(prefix);
+            }
+            loop {
+                let got = read(r, &mut buf)?;
+                if got == 0 {
+                    return Ok(());
+                }
+                sink(&buf[..got]);
+            }
+        }
+        Framing::Chunked => {
+            let mut src = Prefixed::new(r, prefix);
+            loop {
+                let line = src.read_line()?;
+                let size_text = line.split(';').next().unwrap_or("").trim();
+                let mut size = u64::from_str_radix(size_text, 16)
+                    .map_err(|_| HttpError::protocol(format!("malformed chunk size: {size_text:?}")))?;
+                if size == 0 {
+                    while !src.read_line()?.is_empty() {}
+                    return Ok(());
+                }
+                while size > 0 {
+                    let take = size.min(buf.len() as u64) as usize;
+                    src.read_exact_into(&mut buf[..take])?;
+                    sink(&buf[..take]);
+                    size -= take as u64;
+                }
+                if !src.read_line()?.is_empty() {
+                    return Err(HttpError::protocol("malformed chunked body: missing CRLF after chunk data"));
+                }
+            }
         }
     }
 }
@@ -1292,6 +1357,15 @@ fn round_trip(
     }
 
     let framing = framing_of(method, head.status, &head.headers)?;
+    if let Some(o) = observed.filter(|o| o.0.streams()) {
+        let mut received = 0u64;
+        let mut sink = |piece: &[u8]| {
+            received += piece.len() as u64;
+            o.0.body(piece, received, None);
+        };
+        stream_body(&mut stream, framing, &rest, &mut sink).map_err(|e| reclassify(e, cancel))?;
+        return Ok((head, Vec::new(), remote));
+    }
     let raw = match framing {
         Framing::None => Vec::new(),
         Framing::Length(n) => read_exact_body(&mut stream, n, &rest).map_err(|e| reclassify(e, cancel))?,

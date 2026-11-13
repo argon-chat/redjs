@@ -1336,8 +1336,10 @@ async fn attempt(
     }
 
     // The body.
+    let streams = observer.is_some_and(|o| o.0.streams());
     let mut incoming = resp.into_body();
-    let mut body: Vec<u8> = Vec::with_capacity(declared.unwrap_or(0).min(1 << 20) as usize);
+    let mut received = 0u64;
+    let mut body: Vec<u8> = Vec::with_capacity(if streams { 0 } else { declared.unwrap_or(0).min(1 << 20) as usize });
     loop {
         let frame = tokio::select! {
             f = incoming.frame() => f,
@@ -1351,6 +1353,13 @@ async fn attempt(
             Some(Ok(f)) => {
                 progress.touch();
                 if let Ok(d) = f.into_data() {
+                    received += d.len() as u64;
+                    if streams {
+                        if let Some(o) = observer {
+                            o.0.body(&d, received, declared);
+                        }
+                        continue;
+                    }
                     if body.len() + d.len() > MAX_BODY {
                         return Err(Failure {
                             error: HttpError::refused(format!("response body exceeds the {MAX_BODY}-byte limit")),
@@ -1365,7 +1374,7 @@ async fn attempt(
                 }
             }
             Some(Err(e)) => {
-                return Err(Failure { error: body_error(&e, body.len(), declared), unsent: false, answered: true });
+                return Err(Failure { error: body_error(&e, received as usize, declared), unsent: false, answered: true });
             }
         }
     }

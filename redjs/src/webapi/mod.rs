@@ -70,6 +70,7 @@ pub mod dialogs;
 pub mod dom;
 pub mod domexception;
 pub mod events;
+pub mod eventsource;
 pub mod fetch;
 pub mod file;
 pub mod file_reader;
@@ -98,6 +99,7 @@ pub mod permissions;
 #[cfg(feature = "audio")]
 pub mod pcm;
 pub mod platform;
+pub mod report_error;
 pub mod request;
 pub mod serialize;
 #[cfg(feature = "storages")]
@@ -106,6 +108,7 @@ pub mod streams;
 pub mod textcodec;
 pub mod uievents;
 pub mod url;
+pub mod urlpattern;
 pub mod util;
 #[cfg(feature = "webgpu")]
 pub mod webgpu;
@@ -207,6 +210,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     }
     compression::forget(gone);
     dialogs::forget(gone);
+    eventsource::forget(gone);
     fetch::forget(gone);
     formdata::forget(gone);
     fsutil::forget(gone);
@@ -218,12 +222,14 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     path2d::forget(gone);
     permissions::forget(gone);
     platform::forget(gone);
+    report_error::forget(gone);
     serialize::forget(gone);
     #[cfg(feature = "storages")]
     storage::forget(gone);
     streams::forget(gone);
     uievents::forget(gone);
     url::forget(gone);
+    urlpattern::forget(gone);
     #[cfg(feature = "webgpu")]
     webgpu::forget(gone);
     websocket::forget(gone);
@@ -380,6 +386,8 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // `Blob.prototype.stream` builds on the ReadableStream that just appeared.
     blob::install_stream(g);
     uievents::install(g, ev_proto);
+    report_error::install(g, ev_proto);
+    urlpattern::install(g);
     // After streams (it captures their prototypes) and before any user
     // script: the Map/Set/Error/ArrayBuffer intrinsics it reads through are
     // captured here, so a later override of `Map.prototype.entries` cannot
@@ -416,6 +424,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     // transport `fetch` uses. Same needs as `WebSocket`: `Event.prototype`
     // (ProgressEvent) and `EventTarget.prototype`.
     xhr::install(g, ev_proto, et_proto);
+    eventsource::install(g, et_proto);
     file_reader::install(g, et_proto);
     // `navigator.clipboard` answers from whatever `ClipboardHost` the embedder
     // installed. AFTER `dom::install`, because it also lands `execCommand` on

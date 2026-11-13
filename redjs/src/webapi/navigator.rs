@@ -406,6 +406,8 @@ struct NavClasses {
     s_nav: *mut c_void,
     s_languages: *mut c_void,
     s_languages_epoch: *mut c_void,
+    s_ua_data: *mut c_void,
+    s_ua: *mut c_void,
 }
 
 unsafe impl Send for NavClasses {}
@@ -493,6 +495,260 @@ unsafe fn get_languages(g: *mut c_void, cf: *mut c_void) -> u64 {
     arr
 }
 
+const GREASE_BRAND: &str = "Not)A;Brand";
+
+/// `(brand, full version)` of the user agent's last product token: `RedVue/1.0` -> `("RedVue", "1.0")`.
+pub fn ua_product(ua: &str) -> (String, String) {
+    ua.split_whitespace()
+        .rev()
+        .find_map(|t| t.split_once('/').filter(|(n, v)| !n.is_empty() && !v.is_empty() && !n.starts_with('(')))
+        .map(|(n, v)| (n.to_string(), v.to_string()))
+        .unwrap_or_else(|| ("RedVue".into(), "1.0".into()))
+}
+
+fn ua_platform() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        ""
+    }
+}
+
+/// Chromium's Windows `platformVersion`: 13 and up is Windows 11, 1 to 10 Windows 10.
+pub fn windows_platform_version(build: u32) -> &'static str {
+    match build {
+        26100.. => "19.0.0",
+        22621.. => "15.0.0",
+        22000.. => "14.0.0",
+        19041.. => "10.0.0",
+        18362.. => "8.0.0",
+        17763.. => "7.0.0",
+        10240.. => "1.0.0",
+        _ => "0.0.0",
+    }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn three_part(v: &str) -> String {
+    let mut parts: Vec<&str> = v.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).take(3).collect();
+    while parts.len() < 3 {
+        parts.push("0");
+    }
+    parts.join(".")
+}
+
+#[cfg(target_os = "windows")]
+fn platform_version() -> String {
+    #[repr(C)]
+    struct OsVersionInfo {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
+    }
+    let mut info = OsVersionInfo {
+        size: core::mem::size_of::<OsVersionInfo>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform: 0,
+        csd: [0; 128],
+    };
+    // SAFETY: `info` is a correctly sized OSVERSIONINFOW.
+    let build = if unsafe { RtlGetVersion(&mut info) } == 0 { info.build } else { 0 };
+    windows_platform_version(build).to_string()
+}
+
+#[cfg(target_os = "macos")]
+fn platform_version() -> String {
+    let mut buf = [0u8; 64];
+    let mut len = buf.len();
+    // SAFETY: `buf` holds `len` bytes; sysctlbyname writes at most that.
+    let rc = unsafe {
+        libc::sysctlbyname(c"kern.osproductversion".as_ptr(), buf.as_mut_ptr().cast(), &mut len, core::ptr::null_mut(), 0)
+    };
+    if rc != 0 {
+        return String::new();
+    }
+    three_part(&String::from_utf8_lossy(&buf[..len.saturating_sub(1)]))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn platform_version() -> String {
+    // SAFETY: `uname` fills a zeroed utsname; `release` is NUL-terminated.
+    unsafe {
+        let mut u: libc::utsname = core::mem::zeroed();
+        if libc::uname(&mut u) != 0 {
+            return String::new();
+        }
+        three_part(&std::ffi::CStr::from_ptr(u.release.as_ptr()).to_string_lossy())
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
+fn platform_version() -> String {
+    String::new()
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn brands_json(full: bool) -> String {
+    let (name, version) = ua_product(&user_agent());
+    let (v, grease) = if full {
+        (version.clone(), "99.0.0.0")
+    } else {
+        (version.split('.').next().unwrap_or("").to_string(), "99")
+    };
+    format!(
+        "[{{\"brand\":{},\"version\":{}}},{{\"brand\":{},\"version\":{}}}]",
+        json_str(GREASE_BRAND),
+        json_str(grease),
+        json_str(&name),
+        json_str(&v)
+    )
+}
+
+/// The `getHighEntropyValues` answer for `hints`: the low-entropy three, plus what was asked for.
+pub fn high_entropy_json(hints: &[String]) -> String {
+    let mut fields = vec![
+        format!("\"brands\":{}", brands_json(false)),
+        "\"mobile\":false".to_string(),
+        format!("\"platform\":{}", json_str(ua_platform())),
+    ];
+    let arch = if cfg!(any(target_arch = "aarch64", target_arch = "arm")) { "arm" } else { "x86" };
+    let bitness = if cfg!(target_pointer_width = "64") { "64" } else { "32" };
+    for hint in hints {
+        let value = match hint.as_str() {
+            "architecture" => json_str(arch),
+            "bitness" => json_str(bitness),
+            "formFactors" => "[\"Desktop\"]".to_string(),
+            "fullVersionList" => brands_json(true),
+            "model" => json_str(""),
+            "platformVersion" => json_str(&platform_version()),
+            "uaFullVersion" => json_str(&ua_product(&user_agent()).1),
+            "wow64" => "false".to_string(),
+            _ => continue,
+        };
+        let field = format!("{}:{value}", json_str(hint));
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    format!("{{{}}}", fields.join(","))
+}
+
+unsafe fn parse_json(g: *mut c_void, json: &str) -> u64 {
+    call(g, state(g).json_parse, UNDEF, &[js_string(g, json)]).unwrap_or(UNDEF)
+}
+
+unsafe fn is_ua_data(g: *mut c_void, v: u64) -> bool {
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return false };
+    is_cell(v) && get_a(g, v, c.s_ua) == TRUE
+}
+
+macro_rules! ua_check {
+    ($g:expr, $cf:expr) => {
+        if !is_ua_data($g, cf_this($cf)) {
+            return throw_type_error($g, "Illegal invocation");
+        }
+    };
+}
+
+#[crate::host_fn]
+unsafe fn ua_brands(g: *mut c_void, cf: *mut c_void) -> u64 {
+    ua_check!(g, cf);
+    let arr = parse_json(g, &brands_json(false));
+    let object = get(g, glue::rjs_global(g), "Object");
+    let _ = call(g, get(g, object, "freeze"), object, &[arr]);
+    arr
+}
+
+#[crate::host_fn]
+unsafe fn ua_mobile(g: *mut c_void, cf: *mut c_void) -> u64 {
+    ua_check!(g, cf);
+    enc_bool(false)
+}
+
+#[crate::host_fn]
+unsafe fn ua_platform_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+    ua_check!(g, cf);
+    js_string(g, ua_platform())
+}
+
+#[crate::host_fn]
+unsafe fn ua_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+    ua_check!(g, cf);
+    parse_json(g, &high_entropy_json(&[]))
+}
+
+#[crate::host_fn]
+unsafe fn ua_high_entropy(g: *mut c_void, cf: *mut c_void) -> u64 {
+    ua_check!(g, cf);
+    let array = get(g, glue::rjs_global(g), "Array");
+    let list = match call(g, get(g, array, "from"), array, &[cf_arg(cf, 0)]) {
+        Ok(l) => l,
+        Err(e) => {
+            glue::rjs_throw(g, e);
+            return UNDEF;
+        }
+    };
+    let mut hints = Vec::new();
+    for i in 0..array_len(g, list) {
+        let Ok(s) = to_js_string(g, get_i(g, list, i)) else { return UNDEF };
+        hints.push(read_string(g, s).unwrap_or_default());
+    }
+    resolved_promise(g, parse_json(g, &high_entropy_json(&hints)))
+}
+
+#[crate::host_fn]
+unsafe fn get_user_agent_data(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let nav = cf_this(cf);
+    if !is_navigator(g, nav) {
+        return throw_type_error(g, "Illegal invocation");
+    }
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return UNDEF };
+    get_a(g, nav, c.s_ua_data)
+}
+
+unsafe fn install_ua_data(g: *mut c_void, nav: u64) {
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return };
+    let class = define_class(g, &ClassSpec {
+        name: "NavigatorUAData",
+        arity: 0,
+        construct: None,
+        parent_proto: 0,
+        methods: &[("getHighEntropyValues", 1, ua_high_entropy), ("toJSON", 0, ua_to_json)],
+        getters: &[("brands", ua_brands), ("mobile", ua_mobile), ("platform", ua_platform_get)],
+        accessors: &[],
+    });
+    let data = new_object(g, class.proto);
+    glue::rjs_define(g, data, c.s_ua, TRUE, 1 | 2 | 4);
+    glue::rjs_define(g, nav, c.s_ua_data, data, 1 | 2 | 4);
+}
+
 #[crate::host_fn]
 unsafe fn get_on_line(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_navigator(g, cf_this(cf)) {
@@ -511,6 +767,8 @@ pub unsafe fn install(g: *mut c_void) {
         s_nav,
         s_languages: atom_priv(g, "redjs#languages"),
         s_languages_epoch: atom_priv(g, "redjs#languagesEpoch"),
+        s_ua_data: atom_priv(g, "redjs#uaData"),
+        s_ua: atom_priv(g, "redjs#uaDataBrand"),
     })));
 
     let class = define_class(g, &ClassSpec {
@@ -534,6 +792,7 @@ pub unsafe fn install(g: *mut c_void) {
             ("vendorSub", get_vendor_sub),
             ("hardwareConcurrency", get_hardware_concurrency),
             ("language", get_language),
+            ("userAgentData", get_user_agent_data),
             ("languages", get_languages),
             ("onLine", get_on_line),
         ],
@@ -553,6 +812,7 @@ pub unsafe fn install(g: *mut c_void) {
         n
     };
     glue::rjs_define(g, nav, s_nav, TRUE, 1 | 2 | 4);
+    install_ua_data(g, nav);
 
     // NavigatorOnLine: this context hears every change from now on (an empty
     // queue: it starts at the current state), delivered by the pump source.
@@ -644,6 +904,23 @@ mod tests {
         assert_eq!(h(&["zh-Hans-CN"]), "zh-Hans-CN,zh;q=0.9");
         let many: Vec<String> = (0..12).map(|i| format!("x{}", (b'a' + i) as char)).collect();
         assert!(super::accept_language_for(&many).ends_with("xk;q=0.1,xl;q=0.1"), "the floor is 0.1");
+    }
+
+    #[test]
+    fn user_agent_data_follows_the_user_agent() {
+        let c = ctx();
+        assert_eq!(super::ua_product("Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0"), ("RedVue".into(), "1.0".into()));
+        assert_eq!(super::windows_platform_version(26100), "19.0.0");
+        assert_eq!(super::windows_platform_version(19045), "10.0.0");
+        ok(&c, "navigator.userAgentData instanceof NavigatorUAData && navigator.userAgentData === navigator.userAgentData");
+        ok(&c, "navigator.userAgentData.mobile === false && Object.isFrozen(navigator.userAgentData.brands)");
+        ok(&c, "navigator.userAgentData.brands.some(b => b.brand === 'RedVue' && b.version === '1')");
+        ok(&c, "JSON.stringify(navigator.userAgentData) === JSON.stringify({ brands: navigator.userAgentData.brands, mobile: false, platform: navigator.userAgentData.platform })");
+        #[cfg(target_os = "windows")]
+        ok(&c, "navigator.userAgentData.platform === 'Windows'");
+        s(&c, "navigator.userAgentData.getHighEntropyValues(['platformVersion', 'architecture', 'bogus']).then(v => { globalThis.__he = v; }); 0");
+        c.drain_microtasks();
+        ok(&c, "/^\\d+\\.\\d+\\.\\d+$/.test(__he.platformVersion) && __he.architecture.length > 0 && !('bogus' in __he) && __he.mobile === false");
     }
 
     #[test]

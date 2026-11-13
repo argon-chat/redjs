@@ -919,6 +919,27 @@ mod jsc_tests {
     }
 
     #[test]
+    fn from_takes_sync_and_async_iterables_and_cancel_returns_the_iterator() {
+        let c = ctx();
+        expect(&c, "const out = []; for await (const v of ReadableStream.from([1, Promise.resolve(2), 3])) out.push(v); return out.join();", "1,2,3");
+        expect(
+            &c,
+            "async function* gen() { yield 'a'; yield 'b'; } const r = ReadableStream.from(gen()).getReader(); \
+             const a = await r.read(); const b = await r.read(); const c = await r.read(); return [a.value, b.value, c.done].join();",
+            "a,b,true",
+        );
+        expect(
+            &c,
+            "let closed = ''; const it = { [Symbol.asyncIterator]() { return { next: async () => ({ value: 1, done: false }), \
+             return: async (r) => { closed = r; return { done: true }; } }; } }; \
+             const s = ReadableStream.from(it); await s.cancel('bye'); return closed;",
+            "bye",
+        );
+        ok(&c, "(() => { try { ReadableStream.from(5); return false; } catch (e) { return e instanceof TypeError; } })()");
+        ok(&c, "!Object.getOwnPropertyDescriptor(ReadableStream, 'from').enumerable");
+    }
+
+    #[test]
     fn a_reader_gets_the_enqueued_chunks_and_then_done() {
         let c = ctx();
         expect(

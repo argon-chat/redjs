@@ -451,6 +451,48 @@
   }
   ReadableStream.prototype[Symbol.asyncIterator] = ReadableStream.prototype.values;
 
+  Object.defineProperty(ReadableStream, 'from', {
+    writable: true,
+    configurable: true,
+    value: function from(asyncIterable) {
+      if (asyncIterable == null) throw new TypeError('ReadableStream.from: the argument is not iterable');
+      let method = asyncIterable[Symbol.asyncIterator];
+      let iterator;
+      if (method != null) {
+        if (typeof method !== 'function') throw new TypeError('ReadableStream.from: @@asyncIterator is not a function');
+        iterator = method.call(asyncIterable);
+      } else {
+        method = asyncIterable[Symbol.iterator];
+        if (typeof method !== 'function') throw new TypeError('ReadableStream.from: the argument is not iterable');
+        const sync = method.call(asyncIterable);
+        if (sync === null || typeof sync !== 'object') throw new TypeError('ReadableStream.from: the iterator is not an object');
+        iterator = {
+          next: (v) => Promise.resolve(sync.next(v)).then((r) =>
+            Promise.resolve(r.value).then((value) => ({ value, done: !!r.done }))),
+          return: typeof sync.return === 'function' ? (v) => Promise.resolve(sync.return(v)) : undefined,
+        };
+      }
+      if (iterator === null || typeof iterator !== 'object') throw new TypeError('ReadableStream.from: the iterator is not an object');
+      const next = iterator.next;
+      return new ReadableStream({
+        pull(controller) {
+          return Promise.resolve(next.call(iterator)).then((r) => {
+            if (r === null || typeof r !== 'object') throw new TypeError('ReadableStream.from: the iterator result is not an object');
+            if (r.done) controller.close();
+            else controller.enqueue(r.value);
+          });
+        },
+        cancel(reason) {
+          const ret = iterator.return;
+          if (ret == null) return undefined;
+          return Promise.resolve(ret.call(iterator, reason)).then((r) => {
+            if (r === null || typeof r !== 'object') throw new TypeError('ReadableStream.from: the return() result is not an object');
+          });
+        },
+      }, { highWaterMark: 0 });
+    },
+  });
+
   // ── WritableStream ────────────────────────────────────────────────────────
 
   class WritableStreamDefaultController {

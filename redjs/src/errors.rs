@@ -49,6 +49,8 @@ pub enum ErrKind {
     Listener = 2,
     /// A promise rejected with nothing attached to observe it.
     UnhandledRejection = 3,
+    /// Passed to `reportError` and not canceled.
+    Reported = 4,
 }
 
 impl ErrKind {
@@ -58,6 +60,7 @@ impl ErrKind {
             ErrKind::PumpCallback => "[js:uncaught]",
             ErrKind::Listener => "[js:listener]",
             ErrKind::UnhandledRejection => "[js:unhandled-rejection]",
+            ErrKind::Reported => "[js:uncaught]",
         }
     }
 }
