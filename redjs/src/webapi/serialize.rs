@@ -1095,17 +1095,7 @@ impl Enc {
             },
             brand::PLAIN => {
                 if let Some(m) = marked_interface(g, v) {
-                    let Some(codec) = m.codec else {
-                        return Err(dce(g, &format!("{} object could not be cloned.", m.interface)));
-                    };
-                    let bytes = (codec.encode)(g, v).map_err(|msg| dce(g, &msg))?;
-                    self.memo(v);
-                    self.put(tag::HOST_OBJECT);
-                    self.rust_string(&m.interface);
-                    self.varint(bytes.len() as u64);
-                    self.reserve(bytes.len() as u64)?;
-                    self.out.extend_from_slice(&bytes);
-                    return Ok(());
+                    return self.marked(v, m);
                 }
                 self.memo(v);
                 self.put(tag::OBJECT);
@@ -1313,6 +1303,21 @@ impl Enc {
         Ok(())
     }
 
+    unsafe fn marked(&mut self, v: u64, m: Marked) -> R {
+        let g = self.g;
+        let Some(codec) = m.codec else {
+            return Err(dce(g, &format!("{} object could not be cloned.", m.interface)));
+        };
+        let bytes = (codec.encode)(g, v).map_err(|msg| dce(g, &msg))?;
+        self.memo(v);
+        self.put(tag::HOST_OBJECT);
+        self.rust_string(&m.interface);
+        self.varint(bytes.len() as u64);
+        self.reserve(bytes.len() as u64)?;
+        self.out.extend_from_slice(&bytes);
+        Ok(())
+    }
+
     /// C-API host objects: the serializable platform classes, or refused.
     unsafe fn host_object(&mut self, v: u64, depth: u32) -> R {
         let g = self.g;
@@ -1392,6 +1397,9 @@ impl Enc {
                 }
             }
             return Ok(());
+        }
+        if let Some(m) = marked_interface(g, v) {
+            return self.marked(v, m);
         }
         Err(dce(g, "This platform object could not be cloned."))
     }
