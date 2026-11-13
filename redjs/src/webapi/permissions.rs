@@ -492,6 +492,12 @@ unsafe fn status_for(g: *mut c_void, cap: Capability) -> u64 {
     obj
 }
 
+/// The context's `PermissionStatus` for `cap`, the one `query` resolves with; `None` before [`install`].
+pub unsafe fn status_object(g: *mut c_void, cap: Capability) -> Option<u64> {
+    let installed = classes_reg().lock().unwrap().contains_key(&(g as usize));
+    installed.then(|| status_for(g, cap))
+}
+
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
