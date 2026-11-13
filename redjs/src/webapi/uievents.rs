@@ -47,13 +47,13 @@
 //!   `MouseEvent`'s, for the same reason: those are the only key states this
 //!   runtime tracks.
 //!
-//! ## One deviation from the file's "every number goes through `init_num`" rule
+//! ## One deviation from the file's "every number goes through `num`" rule
 //!
 //! `KeyboardEvent.location` and `WheelEvent.deltaMode` are WebIDL
 //! `unsigned long` *enumerations* — their whole use is `=== DOM_KEY_LOCATION_*`
 //! / `=== DOM_DELTA_*`. A fractional or negative value there would silently
-//! match no branch, so those two get a real ToUint32 (`init_u32`).
-//! `button` / `buttons` / `detail` stay on `init_num`: they are opaque numbers,
+//! match no branch, so those two get a real ToUint32 (`uint32`).
+//! `button` / `buttons` / `detail` stay on `num`: they are opaque numbers,
 //! never compared against a constant table.
 
 use core::ffi::c_void;
@@ -269,68 +269,37 @@ unsafe fn slots(g: *mut c_void, this: u64) -> Option<u64> {
     if is_cell(s) { Some(s) } else { None }
 }
 
-/// A field's value from the init dictionary, or its default.
-unsafe fn init_num(g: *mut c_void, init: u64, key: &str, default: f64) -> u64 {
-    if !is_cell(init) {
-        return enc_f64(default);
-    }
-    let v = get(g, init, key);
-    if v == UNDEF {
-        enc_f64(default)
-    } else {
-        enc_f64(read_number(g, v))
-    }
+/// A number member read from the init dictionary, or its default when absent.
+unsafe fn num(g: *mut c_void, v: u64, default: f64) -> u64 {
+    if v == UNDEF { enc_f64(default) } else { enc_f64(read_number(g, v)) }
 }
 
-unsafe fn init_bool(g: *mut c_void, init: u64, key: &str) -> u64 {
-    if !is_cell(init) {
-        return FALSE;
-    }
-    let v = get(g, init, key);
-    if v == UNDEF {
-        FALSE
-    } else {
-        enc_bool(glue::rjs_to_boolean(g, v) != 0)
-    }
+unsafe fn flag(g: *mut c_void, v: u64) -> u64 {
+    enc_bool(to_bool(g, v))
 }
 
-unsafe fn init_obj(g: *mut c_void, init: u64, key: &str) -> u64 {
-    if !is_cell(init) {
-        return NULL;
-    }
-    let v = get(g, init, key);
+fn obj_or_null(v: u64) -> u64 {
     if v == UNDEF { NULL } else { v }
 }
 
-unsafe fn init_str(g: *mut c_void, init: u64, key: &str, default: &str) -> u64 {
-    if !is_cell(init) {
-        return js_string(g, default);
-    }
-    let v = get(g, init, key);
+unsafe fn string_or(g: *mut c_void, v: u64, default: &str) -> u64 {
     if v == UNDEF {
         js_string(g, default)
+    } else if glue::rjs_kind(g, v) == 5 {
+        v
     } else {
-        let s = read_string(g, v).unwrap_or_default();
-        js_string(g, &s)
+        js_string(g, &read_string(g, v).unwrap_or_default())
     }
 }
 
 /// A `DOMString?` member whose default is null (`InputEvent.data`): an explicit
 /// `null` stays null rather than becoming the string `"null"`.
-unsafe fn init_nullable_str(g: *mut c_void, init: u64, key: &str) -> u64 {
-    if !is_cell(init) {
-        return NULL;
-    }
-    let v = get(g, init, key);
-    if v == UNDEF || v == NULL {
-        return NULL;
-    }
-    let s = read_string(g, v).unwrap_or_default();
-    js_string(g, &s)
+unsafe fn nullable_string(g: *mut c_void, v: u64) -> u64 {
+    if v == UNDEF || v == NULL { NULL } else { string_or(g, v, "") }
 }
 
 /// ECMA-262 ToUint32, for the enumerated `unsigned long` members — see the
-/// module header for why these two do not just use `init_num`.
+/// module header for why these two do not just use `num`.
 fn to_uint32(d: f64) -> u32 {
     if !d.is_finite() || d == 0.0 {
         return 0;
@@ -338,41 +307,14 @@ fn to_uint32(d: f64) -> u32 {
     d.trunc().rem_euclid(4_294_967_296.0) as u32
 }
 
-unsafe fn init_u32(g: *mut c_void, init: u64, key: &str, default: u32) -> u64 {
-    if !is_cell(init) {
-        return enc_f64(default as f64);
-    }
-    let v = get(g, init, key);
-    if v == UNDEF {
-        enc_f64(default as f64)
-    } else {
-        enc_f64(to_uint32(read_number(g, v)) as f64)
-    }
+unsafe fn uint32(g: *mut c_void, v: u64) -> u64 {
+    if v == UNDEF { enc_f64(0.0) } else { enc_f64(to_uint32(read_number(g, v)) as f64) }
 }
 
 // ---------------------------------------------------------------------------
-// Field tables — one row per attribute, so a getter cannot exist without the
-// constructor initialising the slot it reads.
+// Members. Each level reads its init members and defines its slots with one
+// engine call each; the names are the attributes the getters read.
 // ---------------------------------------------------------------------------
-
-/// `(attribute, init-dictionary member, default)`.
-const UI_NUMS: &[(&str, f64)] = &[("detail", 0.0)];
-
-const MOUSE_NUMS: &[(&str, f64)] = &[
-    ("screenX", 0.0), ("screenY", 0.0),
-    ("clientX", 0.0), ("clientY", 0.0),
-    ("offsetX", 0.0), ("offsetY", 0.0),
-    ("movementX", 0.0), ("movementY", 0.0),
-    ("button", 0.0), ("buttons", 0.0),
-];
-
-const MOUSE_FLAGS: &[&str] = &["ctrlKey", "shiftKey", "altKey", "metaKey"];
-
-/// UI Events §"KeyboardEvent": the four modifiers plus the two per-event flags.
-const KEY_FLAGS: &[&str] = &["ctrlKey", "shiftKey", "altKey", "metaKey", "repeat", "isComposing"];
-
-const WHEEL_NUMS: &[(&str, f64)] =
-    &[("deltaX", 0.0), ("deltaY", 0.0), ("deltaZ", 0.0)];
 
 /// WebIDL constants — on the interface object *and* the prototype.
 const KEY_LOCATIONS: &[(&str, i32)] = &[
@@ -385,93 +327,122 @@ const KEY_LOCATIONS: &[(&str, i32)] = &[
 const DELTA_MODES: &[(&str, i32)] =
     &[("DOM_DELTA_PIXEL", 0), ("DOM_DELTA_LINE", 1), ("DOM_DELTA_PAGE", 2)];
 
-const POINTER_NUMS: &[(&str, f64)] = &[
-    ("pointerId", 0.0), ("width", 1.0), ("height", 1.0),
-    ("pressure", 0.0), ("tangentialPressure", 0.0),
-    ("tiltX", 0.0), ("tiltY", 0.0), ("twist", 0.0),
-    // Spec defaults: altitude π/2 (perpendicular), azimuth 0.
-    ("altitudeAngle", std::f64::consts::FRAC_PI_2), ("azimuthAngle", 0.0),
-];
+const UI: &[&str] = &["view", "detail", "which"];
 
 pub(crate) unsafe fn init_ui_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
-    events::init_event(g, obj, ty, init, false);
-    let Some(s) = slots(g, obj) else { return };
-    define(g, s, "view", init_obj(g, init, "view"), 0);
-    for (name, default) in UI_NUMS {
-        define(g, s, name, init_num(g, init, name, *default), 0);
-    }
-    // Legacy `which`: 0 unless the init dict says otherwise (UI Events, legacy
-    // section). Mouse events override it below.
-    define(g, s, "which", init_num(g, init, "which", 0.0), 0);
+    ui_slots(g, obj, ty, init);
 }
 
-unsafe fn init_mouse_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
-    init_ui_event(g, obj, ty, init);
-    let Some(s) = slots(g, obj) else { return };
-    for (name, default) in MOUSE_NUMS {
-        define(g, s, name, init_num(g, init, name, *default), 0);
-    }
-    for name in MOUSE_FLAGS {
-        define(g, s, name, init_bool(g, init, name), 0);
-    }
-    define(g, s, "relatedTarget", init_obj(g, init, "relatedTarget"), 0);
-    // `which` for a mouse event is button + 1 (legacy).
-    let button = dec_f64(get(g, s, "button")).unwrap_or(0.0);
-    define(g, s, "which", enc_f64(button + 1.0), 0);
+unsafe fn ui_slots(g: *mut c_void, obj: u64, ty: u64, init: u64) -> u64 {
+    let s = events::init_event_slots(g, obj, ty, init, false);
+    let mut m = [UNDEF; 3];
+    get_many(g, init, UI, &mut m);
+    // Legacy `which`: 0 unless the init dict says otherwise (UI Events, legacy
+    // section). Mouse events override it.
+    define_many(g, s, UI, &[obj_or_null(m[0]), num(g, m[1], 0.0), num(g, m[2], 0.0)], 0);
+    s
 }
+
+const MOUSE: &[&str] = &[
+    "screenX", "screenY", "clientX", "clientY", "offsetX", "offsetY", "movementX", "movementY",
+    "button", "buttons", "ctrlKey", "shiftKey", "altKey", "metaKey", "relatedTarget", "which",
+];
+
+unsafe fn init_mouse_event(g: *mut c_void, obj: u64, ty: u64, init: u64) -> u64 {
+    let s = ui_slots(g, obj, ty, init);
+    let mut m = [UNDEF; 15];
+    get_many(g, init, &MOUSE[..15], &mut m);
+    let mut v = [UNDEF; 16];
+    for i in 0..10 {
+        v[i] = num(g, m[i], 0.0);
+    }
+    for i in 10..14 {
+        v[i] = flag(g, m[i]);
+    }
+    v[14] = obj_or_null(m[14]);
+    // `which` for a mouse event is button + 1 (legacy).
+    v[15] = enc_f64(dec_f64(v[8]).unwrap_or(0.0) + 1.0);
+    define_many(g, s, MOUSE, &v, 0);
+    s
+}
+
+unsafe fn init_mouse(g: *mut c_void, obj: u64, ty: u64, init: u64) {
+    init_mouse_event(g, obj, ty, init);
+}
+
+const KEYBOARD: &[&str] = &["key", "code", "location", "ctrlKey", "shiftKey", "altKey", "metaKey", "repeat", "isComposing"];
 
 unsafe fn init_keyboard_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
-    init_ui_event(g, obj, ty, init);
-    let Some(s) = slots(g, obj) else { return };
-    define(g, s, "key", init_str(g, init, "key", ""), 0);
-    define(g, s, "code", init_str(g, init, "code", ""), 0);
-    define(g, s, "location", init_u32(g, init, "location", 0), 0);
-    for name in KEY_FLAGS {
-        define(g, s, name, init_bool(g, init, name), 0);
+    let s = ui_slots(g, obj, ty, init);
+    let mut m = [UNDEF; 9];
+    get_many(g, init, KEYBOARD, &mut m);
+    let mut v = [UNDEF; 9];
+    v[0] = string_or(g, m[0], "");
+    v[1] = string_or(g, m[1], "");
+    v[2] = uint32(g, m[2]);
+    for i in 3..9 {
+        v[i] = flag(g, m[i]);
     }
+    define_many(g, s, KEYBOARD, &v, 0);
 }
+
+const WHEEL: &[&str] = &["deltaX", "deltaY", "deltaZ", "deltaMode"];
 
 unsafe fn init_wheel_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
-    init_mouse_event(g, obj, ty, init);
-    let Some(s) = slots(g, obj) else { return };
-    for (name, default) in WHEEL_NUMS {
-        define(g, s, name, init_num(g, init, name, *default), 0);
-    }
-    define(g, s, "deltaMode", init_u32(g, init, "deltaMode", 0), 0);
+    let s = init_mouse_event(g, obj, ty, init);
+    let mut m = [UNDEF; 4];
+    get_many(g, init, WHEEL, &mut m);
+    define_many(g, s, WHEEL, &[num(g, m[0], 0.0), num(g, m[1], 0.0), num(g, m[2], 0.0), uint32(g, m[3])], 0);
 }
+
+const FOCUS: &[&str] = &["relatedTarget"];
 
 unsafe fn init_focus_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
-    init_ui_event(g, obj, ty, init);
-    let Some(s) = slots(g, obj) else { return };
-    define(g, s, "relatedTarget", init_obj(g, init, "relatedTarget"), 0);
+    let s = ui_slots(g, obj, ty, init);
+    let mut m = [UNDEF; 1];
+    get_many(g, init, FOCUS, &mut m);
+    define_many(g, s, FOCUS, &[obj_or_null(m[0])], 0);
 }
+
+const INPUT: &[&str] = &["data", "inputType", "isComposing"];
 
 unsafe fn init_input_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
-    init_ui_event(g, obj, ty, init);
-    let Some(s) = slots(g, obj) else { return };
-    define(g, s, "data", init_nullable_str(g, init, "data"), 0);
-    define(g, s, "inputType", init_str(g, init, "inputType", ""), 0);
-    define(g, s, "isComposing", init_bool(g, init, "isComposing"), 0);
+    let s = ui_slots(g, obj, ty, init);
+    let mut m = [UNDEF; 3];
+    get_many(g, init, INPUT, &mut m);
+    define_many(g, s, INPUT, &[nullable_string(g, m[0]), string_or(g, m[1], ""), flag(g, m[2])], 0);
 }
 
+const POINTER: &[&str] = &[
+    "pointerId", "width", "height", "pressure", "tangentialPressure", "tiltX", "tiltY", "twist",
+    "altitudeAngle", "azimuthAngle", "pointerType", "isPrimary",
+];
+/// Spec defaults: altitude π/2 (perpendicular), azimuth 0.
+const POINTER_DEFAULTS: [f64; 10] = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2, 0.0];
+
 unsafe fn init_pointer_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
-    init_mouse_event(g, obj, ty, init);
-    let Some(s) = slots(g, obj) else { return };
-    for (name, default) in POINTER_NUMS {
-        define(g, s, name, init_num(g, init, name, *default), 0);
+    let s = init_mouse_event(g, obj, ty, init);
+    let mut m = [UNDEF; 12];
+    get_many(g, init, POINTER, &mut m);
+    let mut v = [UNDEF; 12];
+    for i in 0..10 {
+        v[i] = num(g, m[i], POINTER_DEFAULTS[i]);
     }
-    define(g, s, "pointerType", init_str(g, init, "pointerType", ""), 0);
-    define(g, s, "isPrimary", init_bool(g, init, "isPrimary"), 0);
+    v[10] = string_or(g, m[10], "");
+    v[11] = flag(g, m[11]);
+    define_many(g, s, POINTER, &v, 0);
 }
+
+const DRAG: &[&str] = &["dataTransfer"];
 
 // ---------------------------------------------------------------------------
 // Getters
 // ---------------------------------------------------------------------------
 
-unsafe fn slot_get(g: *mut c_void, cf: *mut c_void, key: &str, label: &str) -> u64 {
+unsafe fn slot_get(g: *mut c_void, cf: *mut c_void, key: &'static str, label: &str) -> u64 {
     match slots(g, cf_this(cf)) {
         Some(s) => {
-            let v = get(g, s, key);
+            let v = get_k(g, s, key);
             if v == UNDEF { NULL } else { v }
         }
         None => throw_type_error(g, &format!("{label} called on a non-Event")),
@@ -577,7 +548,7 @@ unsafe fn modifier_state(g: *mut c_void, cf: *mut c_void, label: &str) -> u64 {
         "Meta" => "metaKey",
         _ => return FALSE,
     };
-    enc_bool(truthy_flag(get(g, s, slot)))
+    enc_bool(truthy_flag(get_k(g, s, slot)))
 }
 
 #[crate::host_fn]
@@ -615,7 +586,7 @@ macro_rules! event_ctor {
 }
 
 event_ctor!(ui_construct, ui_event, init_ui_event, "UIEvent");
-event_ctor!(mouse_construct, mouse, init_mouse_event, "MouseEvent");
+event_ctor!(mouse_construct, mouse, init_mouse, "MouseEvent");
 event_ctor!(keyboard_construct, keyboard, init_keyboard_event, "KeyboardEvent");
 event_ctor!(wheel_construct, wheel, init_wheel_event, "WheelEvent");
 event_ctor!(focus_construct, focus, init_focus_event, "FocusEvent");
@@ -629,10 +600,10 @@ unsafe fn drag_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let c = classes(g);
     let obj = ordinary_create(g, cf_new_target(cf), c.drag.proto);
-    init_mouse_event(g, obj, cf_arg(cf, 0), cf_arg(cf, 1));
-    if let Some(s) = slots(g, obj) {
-        define(g, s, "dataTransfer", init_obj(g, cf_arg(cf, 1), "dataTransfer"), 0);
-    }
+    let s = init_mouse_event(g, obj, cf_arg(cf, 0), cf_arg(cf, 1));
+    let mut m = [UNDEF; 1];
+    get_many(g, cf_arg(cf, 1), DRAG, &mut m);
+    define_many(g, s, DRAG, &[obj_or_null(m[0])], 0);
     obj
 }
 
@@ -658,11 +629,11 @@ unsafe fn make_dt(g: *mut c_void, proto: u64, data: DataTransferData) -> u64 {
     let c = classes(g);
     let dt = host_create(g, c.dt_cls, proto, data);
     let b = new_object(g, NULL);
-    define(g, b, "files", new_object(g, NULL), 0);
-    define(g, b, "objs", new_object(g, NULL), 0);
+    define_k(g, b, "files", new_object(g, NULL), 0);
+    define_k(g, b, "objs", new_object(g, NULL), 0);
     let list = host_create(g, c.list_cls, c.list.proto, DtListData { shown: 0 });
     glue::rjs_define(g, list, c.s_owner, dt, 1 | 2 | 4);
-    define(g, b, "list", list, 0);
+    define_k(g, b, "list", list, 0);
     glue::rjs_define(g, dt, c.s_dt, b, 1 | 2 | 4);
     dt
 }
@@ -675,14 +646,14 @@ unsafe fn dt_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn ordinary_create_proto(g: *mut c_void, new_target: u64, fallback: u64) -> u64 {
-    let p = if is_cell(new_target) { get(g, new_target, "prototype") } else { UNDEF };
+    let p = if is_cell(new_target) { get_k(g, new_target, "prototype") } else { UNDEF };
     if is_cell(p) { p } else { fallback }
 }
 
 /// The cached `DataTransferItem` for item `id` (the same object every time).
 unsafe fn item_obj(g: *mut c_void, dt: u64, id: u64) -> u64 {
     let c = classes(g);
-    let objs = get(g, bag(g, dt), "objs");
+    let objs = get_k(g, bag(g, dt), "objs");
     let key = id.to_string();
     let v = get(g, objs, &key);
     if is_cell(v) {
@@ -703,7 +674,7 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
     let ids: Vec<u64> = d.visible().iter().map(|i| i.id).collect();
     let all: Vec<u64> = d.items.iter().map(|i| i.id).collect();
     let b = bag(g, dt);
-    let list = get(g, b, "list");
+    let list = get_k(g, b, "list");
     let Some(ld) = host_data::<DtListData>(g, c.list_cls, list) else { return };
     let shown = ld.shown;
     ld.shown = ids.len() as u32;
@@ -718,13 +689,13 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
         // configurable (WebIDL) — configurable is also what lets the next
         // resync take it away.
         let desc = new_object(g, NULL);
-        define(g, desc, "value", o, 0);
-        define(g, desc, "enumerable", TRUE, 0);
-        define(g, desc, "configurable", TRUE, 0);
+        define_k(g, desc, "value", o, 0);
+        define_k(g, desc, "enumerable", TRUE, 0);
+        define_k(g, desc, "configurable", TRUE, 0);
         let _ = call(g, c.define_property, UNDEF, &[list, enc_i32(i as i32), desc]);
     }
     for map in ["files", "objs"] {
-        let m = get(g, b, map);
+        let m = get_k(g, b, map);
         let mut keys = UNDEF;
         if glue::rjs_own_keys(g, m, &mut keys) != 0 {
             continue;
@@ -827,7 +798,7 @@ unsafe fn dt_files(g: *mut c_void, cf: *mut c_void) -> u64 {
     } else {
         Vec::new()
     };
-    let files_map = get(g, bag(g, this), "files");
+    let files_map = get_k(g, bag(g, this), "files");
     let files: Vec<u64> = ids.iter().map(|id| get(g, files_map, &id.to_string())).filter(|v| is_cell(*v)).collect();
     super::file::create_file_list(g, &files)
 }
@@ -837,7 +808,7 @@ unsafe fn dt_items(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.items called on a non-DataTransfer");
     }
-    get(g, bag(g, cf_this(cf)), "list")
+    get_k(g, bag(g, cf_this(cf)), "list")
 }
 
 #[crate::host_fn]
@@ -971,7 +942,7 @@ unsafe fn list_add(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let id = d.push(kind, mime);
     if is_cell(file) {
-        define(g, get(g, bag(g, dt), "files"), &id.to_string(), file, 0);
+        define(g, get_k(g, bag(g, dt), "files"), &id.to_string(), file, 0);
     }
     resync(g, dt);
     item_obj(g, dt, id)
@@ -1113,7 +1084,7 @@ unsafe fn item_get_as_string(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn item_get_as_file(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "getAsFile") {
         Ok(Some((dt, mode, i))) if mode.readable() && matches!(i.kind, ItemKind::File { .. }) => {
-            let f = get(g, get(g, bag(g, dt), "files"), &i.id.to_string());
+            let f = get(g, get_k(g, bag(g, dt), "files"), &i.id.to_string());
             if is_cell(f) { f } else { NULL }
         }
         Ok(_) => NULL,
@@ -1181,7 +1152,7 @@ pub unsafe fn create_drag_data(g: *mut c_void, entries: &[DropEntry], mode: Drag
     let c = classes(g);
     let data = DataTransferData { effect_allowed: "all".into(), drop_effect: "copy".into(), mode, ..DataTransferData::default() };
     let dt = make_dt(g, c.dt.proto, data);
-    let files_map = get(g, bag(g, dt), "files");
+    let files_map = get_k(g, bag(g, dt), "files");
     for e in entries {
         let name = e.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (size, mtime) = match (e.is_dir, e.stat) {
@@ -1255,10 +1226,10 @@ unsafe fn define_handle_method(g: *mut c_void, c: &UiClasses, present: bool) {
 /// WebIDL §"Constants": a constant is defined on both the interface object and
 /// the interface prototype object, read-only and non-configurable — but
 /// enumerable, unlike every method and accessor above.
-unsafe fn define_constants(g: *mut c_void, class: &Class, consts: &[(&str, i32)]) {
+unsafe fn define_constants(g: *mut c_void, class: &Class, consts: &[(&'static str, i32)]) {
     for (name, value) in consts {
-        define(g, class.ctor, name, enc_i32(*value), 1 | 4);
-        define(g, class.proto, name, enc_i32(*value), 1 | 4);
+        define_k(g, class.ctor, name, enc_i32(*value), 1 | 4);
+        define_k(g, class.proto, name, enc_i32(*value), 1 | 4);
     }
 }
 
@@ -1397,7 +1368,7 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     });
     // An indexed getter and `length`: it iterates as an array does (WebIDL).
     let global = glue::rjs_global(g);
-    let values = get(g, get(g, get(g, global, "Array"), "prototype"), "values");
+    let values = get_k(g, get_k(g, get_k(g, global, "Array"), "prototype"), "values");
     let it = glue::rjs_atom_iterator(g);
     glue::rjs_define(g, list.proto, it, values, 2);
     glue::rjs_atom_free(g, it);
@@ -1413,9 +1384,9 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
         accessors: &[],
     });
 
-    let object = get(g, global, "Object");
-    let define_property = get(g, object, "defineProperty");
-    let freeze = get(g, object, "freeze");
+    let object = get_k(g, global, "Object");
+    let define_property = get_k(g, object, "defineProperty");
+    let freeze = get_k(g, object, "freeze");
     crate::ffi::redjs_protect(g, define_property);
     crate::ffi::redjs_protect(g, freeze);
 
@@ -1522,6 +1493,19 @@ mod jsc_tests {
         ok(&c, "(e => e.x === 10 && e.pageX === 10)(new MouseEvent('click', { clientX: 10 }))");
         ok(&c, "(e => e.pointerType === 'pen' && e.pressure === 0.5 && e.isPrimary === true)\
                 (new PointerEvent('pointerdown', { pointerType: 'pen', pressure: 0.5, isPrimary: true }))");
+    }
+
+    #[test]
+    fn init_members_convert_by_their_webidl_types() {
+        let c = ctx();
+        ok(&c, "(e => e.ctrlKey === true && e.shiftKey === false && e.altKey === false && e.metaKey === true && e.which === 4)\
+                (new MouseEvent('x', { ctrlKey: 'y', shiftKey: 0, altKey: NaN, metaKey: {}, button: '3' }))");
+        ok(&c, "(e => e.pointerType === '5' && e.isPrimary === true && e.bubbles === true && e.type === '7')\
+                (new PointerEvent(7, { pointerType: 5, isPrimary: 1, bubbles: 'yes' }))");
+        ok(&c, "(e => e.location === 4294967295 && e.key === 'null')(new KeyboardEvent('k', { location: -1, key: null }))");
+        ok(&c, "(e => e.data === null && e.inputType === '')(new InputEvent('i', { data: null }))");
+        ok(&c, "(e => e.deltaY === 2 && e.deltaMode === 1 && e.clientX === 3)(new WheelEvent('w', { deltaY: 2, deltaMode: 1.7, clientX: 3 }))");
+        ok(&c, "new MouseEvent('x', { get clientX() { throw 1 } }).clientX === 0");
     }
 
     #[test]
@@ -2017,3 +2001,4 @@ mod jsc_tests {
         assert!(msg.contains("KeyboardEvent.getModifierState"), "{msg}");
     }
 }
+

@@ -56,6 +56,18 @@ pub fn truthy_flag(v: u64) -> bool {
     v == TRUE
 }
 
+/// ECMAScript ToBoolean, without an engine call for booleans, undefined, null and numbers.
+pub unsafe fn to_bool(g: *mut c_void, v: u64) -> bool {
+    match v {
+        TRUE => true,
+        FALSE | UNDEF | NULL => false,
+        _ => match dec_f64(v) {
+            Some(d) => d != 0.0 && !d.is_nan(),
+            None => glue::rjs_to_boolean(g, v) != 0,
+        },
+    }
+}
+
 // ---- CallFrame --------------------------------------------------------------
 
 #[inline]
@@ -269,6 +281,66 @@ pub unsafe fn atom(g: *mut c_void, name: &str) -> *mut c_void {
 
 pub unsafe fn atom_priv(g: *mut c_void, name: &str) -> *mut c_void {
     glue::rjs_atom_private(g, name.as_ptr(), name.len())
+}
+
+fn key_table() -> &'static Mutex<HashMap<(usize, usize, usize), usize>> {
+    static K: OnceLock<Mutex<HashMap<(usize, usize, usize), usize>>> = OnceLock::new();
+    K.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The atom for a static name, made once per context and kept for its lifetime: a by-name
+/// `atom` + `rjs_atom_free` costs several property accesses.
+pub unsafe fn key(g: *mut c_void, name: &'static str) -> *mut c_void {
+    let k = (g as usize, name.as_ptr() as usize, name.len());
+    if let Some(&a) = key_table().lock().unwrap().get(&k) {
+        return a as *mut c_void;
+    }
+    let a = atom(g, name);
+    key_table().lock().unwrap().insert(k, a as usize);
+    a
+}
+
+struct Keys(&'static [*mut c_void]);
+unsafe impl Send for Keys {}
+
+fn key_lists() -> &'static Mutex<HashMap<(usize, usize, usize), Keys>> {
+    static K: OnceLock<Mutex<HashMap<(usize, usize, usize), Keys>>> = OnceLock::new();
+    K.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// [`key`] for a whole list of names, with one lookup.
+pub unsafe fn keys(g: *mut c_void, names: &'static [&'static str]) -> &'static [*mut c_void] {
+    let k = (g as usize, names.as_ptr() as usize, names.len());
+    if let Some(list) = key_lists().lock().unwrap().get(&k) {
+        return list.0;
+    }
+    let list: &'static [*mut c_void] = Box::leak(names.iter().map(|n| key(g, n)).collect());
+    key_lists().lock().unwrap().insert(k, Keys(list));
+    list
+}
+
+/// `obj[names[i]]` into `out[i]`, under one engine lock. A non-object reads all undefined, and so
+/// does a read that throws.
+pub unsafe fn get_many(g: *mut c_void, obj: u64, names: &'static [&'static str], out: &mut [u64]) {
+    debug_assert_eq!(names.len(), out.len());
+    out.fill(UNDEF);
+    if is_cell(obj) {
+        glue::rjs_get_many(g, obj, keys(g, names).as_ptr(), names.len(), out.as_mut_ptr());
+    }
+}
+
+/// Own data properties `obj[names[i]] = vals[i]`, under one engine lock.
+pub unsafe fn define_many(g: *mut c_void, obj: u64, names: &'static [&'static str], vals: &[u64], attrs: u32) {
+    debug_assert_eq!(names.len(), vals.len());
+    glue::rjs_define_many(g, obj, keys(g, names).as_ptr(), vals.as_ptr(), names.len(), attrs);
+}
+
+pub unsafe fn define_k(g: *mut c_void, obj: u64, name: &'static str, v: u64, attrs: u32) {
+    glue::rjs_define(g, obj, key(g, name), v, attrs);
+}
+
+pub unsafe fn get_k(g: *mut c_void, obj: u64, name: &'static str) -> u64 {
+    get_a(g, obj, key(g, name))
 }
 
 /// One-shot define by name (cold paths: prototype building etc).
@@ -783,6 +855,9 @@ pub fn has_state(g: *mut c_void) -> bool {
 /// a new context at the same address installs from nothing.
 pub(crate) fn forget_state(gone: crate::context::Gone) {
     states().lock().unwrap().remove(&gone.key);
+    // The atoms are left alone: their VM may already be gone.
+    key_table().lock().unwrap().retain(|k, _| k.0 != gone.key);
+    key_lists().lock().unwrap().retain(|k, _| k.0 != gone.key);
 }
 
 #[cfg(test)]

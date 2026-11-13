@@ -142,7 +142,7 @@ macro_rules! event_getter {
         #[crate::host_fn]
         pub unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
             match event_state(g, cf_this(cf)) {
-                Some(s) => get(g, s, $field),
+                Some(s) => get_k(g, s, $field),
                 None => throw_type_error(g, concat!("Event.prototype.", $field, " called on a non-Event")),
             }
         }
@@ -164,8 +164,8 @@ event_getter!(get_event_phase, "phase");
 /// DOM "set the canceled flag": only for a cancelable event, never from
 /// inside a passive listener.
 unsafe fn set_canceled(g: *mut c_void, s: u64) {
-    if truthy_flag(get(g, s, "cancelable")) && !truthy_flag(get(g, s, "inPassive")) {
-        define(g, s, "defaultPrevented", TRUE, 0);
+    if truthy_flag(get_k(g, s, "cancelable")) && !truthy_flag(get_k(g, s, "inPassive")) {
+        define_k(g, s, "defaultPrevented", TRUE, 0);
     }
 }
 
@@ -184,7 +184,7 @@ unsafe fn prevent_default(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn stop_propagation(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
         Some(s) => {
-            define(g, s, "stopProp", TRUE, 0);
+            define_k(g, s, "stopProp", TRUE, 0);
             UNDEF
         }
         None => throw_type_error(g, "Event.prototype.stopPropagation called on a non-Event"),
@@ -195,8 +195,8 @@ unsafe fn stop_propagation(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn stop_immediate(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
         Some(s) => {
-            define(g, s, "stopProp", TRUE, 0);
-            define(g, s, "stopImmediate", TRUE, 0);
+            define_k(g, s, "stopProp", TRUE, 0);
+            define_k(g, s, "stopImmediate", TRUE, 0);
             UNDEF
         }
         None => throw_type_error(g, "Event.prototype.stopImmediatePropagation called on a non-Event"),
@@ -211,7 +211,7 @@ unsafe fn composed_path(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "Event.prototype.composedPath called on a non-Event");
     };
     let out = new_array(g);
-    let path = get(g, s, "path");
+    let path = get_k(g, s, "path");
     if is_cell(path) {
         let n = array_len(g, path);
         for i in 0..n {
@@ -225,7 +225,7 @@ unsafe fn composed_path(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn get_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
-        Some(s) => get(g, s, "stopProp"),
+        Some(s) => get_k(g, s, "stopProp"),
         None => throw_type_error(g, "Event.prototype.cancelBubble called on a non-Event"),
     }
 }
@@ -234,7 +234,7 @@ unsafe fn get_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn set_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(s) = event_state(g, cf_this(cf)) {
         if glue::rjs_to_boolean(g, cf_arg(cf, 0)) != 0 {
-            define(g, s, "stopProp", TRUE, 0);
+            define_k(g, s, "stopProp", TRUE, 0);
         }
     }
     UNDEF
@@ -244,7 +244,7 @@ unsafe fn set_cancel_bubble(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn get_return_value(g: *mut c_void, cf: *mut c_void) -> u64 {
     match event_state(g, cf_this(cf)) {
-        Some(s) => enc_bool(!truthy_flag(get(g, s, "defaultPrevented"))),
+        Some(s) => enc_bool(!truthy_flag(get_k(g, s, "defaultPrevented"))),
         None => throw_type_error(g, "Event.prototype.returnValue called on a non-Event"),
     }
 }
@@ -269,18 +269,18 @@ unsafe fn init_event_legacy(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "Failed to execute 'initEvent' on 'Event': 1 argument required, but only 0 present.");
     }
     let Ok(ty) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
-    if truthy_flag(get(g, s, "dispatching")) {
+    if truthy_flag(get_k(g, s, "dispatching")) {
         return UNDEF;
     }
-    define(g, s, "initialized", TRUE, 0);
-    define(g, s, "stopProp", FALSE, 0);
-    define(g, s, "stopImmediate", FALSE, 0);
-    define(g, s, "defaultPrevented", FALSE, 0);
-    define(g, s, "isTrusted", FALSE, 0);
-    define(g, s, "target", NULL, 0);
-    define(g, s, "type", ty, 0);
-    define(g, s, "bubbles", enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 1)) != 0), 0);
-    define(g, s, "cancelable", enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 2)) != 0), 0);
+    define_k(g, s, "initialized", TRUE, 0);
+    define_k(g, s, "stopProp", FALSE, 0);
+    define_k(g, s, "stopImmediate", FALSE, 0);
+    define_k(g, s, "defaultPrevented", FALSE, 0);
+    define_k(g, s, "isTrusted", FALSE, 0);
+    define_k(g, s, "target", NULL, 0);
+    define_k(g, s, "type", ty, 0);
+    define_k(g, s, "bubbles", enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 1)) != 0), 0);
+    define_k(g, s, "cancelable", enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 2)) != 0), 0);
     UNDEF
 }
 
@@ -315,51 +315,53 @@ impl Drop for EventInitRoots {
 /// Shared init for Event/CustomEvent constructors. `this_obj` is the fresh
 /// ordinary object; fills the [[s_event]] slot from (type, initDict).
 pub unsafe fn init_event(g: *mut c_void, this_obj: u64, ty: u64, init: u64, detail_from_init: bool) {
+    init_event_slots(g, this_obj, ty, init, detail_from_init);
+}
+
+/// [`init_event`], answering the slot bag it attached.
+pub(crate) unsafe fn init_event_slots(g: *mut c_void, this_obj: u64, ty: u64, init: u64, detail_from_init: bool) -> u64 {
     let mut roots = EventInitRoots::new(g, this_obj, ty, init);
     let st = state(g);
     let s = new_object(g, UNDEF);
     roots.state(s);
-    let type_str = read_string(g, ty).unwrap_or_default();
-    define(g, s, "type", js_string(g, &type_str), 0);
+    let ty = if glue::rjs_kind(g, ty) == 5 { ty } else { js_string(g, &read_string(g, ty).unwrap_or_default()) };
 
-    let flag = |name: &str| {
-        if is_cell(init) {
-            let v = get(g, init, name);
-            let mut b = FALSE;
-            if v != UNDEF {
-                b = enc_bool(glue::rjs_to_boolean(g, v) != 0);
-            }
-            b
-        } else {
-            FALSE
-        }
-    };
-    let bubbles = flag("bubbles");
-    let cancelable = flag("cancelable");
-    let composed = flag("composed");
-    define(g, s, "bubbles", bubbles, 0);
-    define(g, s, "cancelable", cancelable, 0);
-    define(g, s, "composed", composed, 0);
-    define(g, s, "defaultPrevented", FALSE, 0);
-    define(g, s, "stopProp", FALSE, 0);
-    define(g, s, "stopImmediate", FALSE, 0);
-    define(g, s, "dispatching", FALSE, 0);
-    define(g, s, "inPassive", FALSE, 0);
-    define(g, s, "initialized", TRUE, 0);
-    define(g, s, "phase", enc_i32(NONE), 0);
-    define(g, s, "path", UNDEF, 0);
-    define(g, s, "target", NULL, 0);
-    define(g, s, "currentTarget", NULL, 0);
-    define(g, s, "isTrusted", FALSE, 0);
-    define(g, s, "timeStamp", enc_f64(crate::web::now_ms()), 0);
+    const FLAGS: &[&str] = &["bubbles", "cancelable", "composed"];
+    const WITH_DETAIL: &[&str] = &["bubbles", "cancelable", "composed", "detail"];
+    let mut m = [UNDEF; 4];
     if detail_from_init {
-        let detail = if is_cell(init) { get(g, init, "detail") } else { UNDEF };
-        define(g, s, "detail", if detail == UNDEF { NULL } else { detail }, 0);
+        get_many(g, init, WITH_DETAIL, &mut m);
     } else {
-        define(g, s, "detail", NULL, 0);
+        get_many(g, init, FLAGS, &mut m[..3]);
     }
+    const FIELDS: &[&str] = &[
+        "type", "bubbles", "cancelable", "composed", "defaultPrevented", "stopProp", "stopImmediate",
+        "dispatching", "inPassive", "initialized", "phase", "path", "target", "currentTarget",
+        "isTrusted", "timeStamp", "detail",
+    ];
+    let vals = [
+        ty,
+        enc_bool(to_bool(g, m[0])),
+        enc_bool(to_bool(g, m[1])),
+        enc_bool(to_bool(g, m[2])),
+        FALSE,
+        FALSE,
+        FALSE,
+        FALSE,
+        FALSE,
+        TRUE,
+        enc_i32(NONE),
+        UNDEF,
+        NULL,
+        NULL,
+        FALSE,
+        enc_f64(crate::web::now_ms()),
+        if m[3] == UNDEF { NULL } else { m[3] },
+    ];
+    define_many(g, s, FIELDS, &vals, 0);
 
     glue::rjs_define(g, this_obj, st.s_event, s, 0);
+    s
 }
 
 #[crate::host_fn]
@@ -397,9 +399,9 @@ pub unsafe fn new_trusted_event_with(g: *mut c_void, ty: &str, bubbles: bool, ca
     let obj = new_object(g, st.event.proto);
     init_event(g, obj, js_string(g, ty), UNDEF, false);
     let s = get_a(g, obj, st.s_event);
-    define(g, s, "isTrusted", TRUE, 0);
-    define(g, s, "bubbles", enc_bool(bubbles), 0);
-    define(g, s, "cancelable", enc_bool(cancelable), 0);
+    define_k(g, s, "isTrusted", TRUE, 0);
+    define_k(g, s, "bubbles", enc_bool(bubbles), 0);
+    define_k(g, s, "cancelable", enc_bool(cancelable), 0);
     obj
 }
 
@@ -660,7 +662,7 @@ unsafe fn path_for(g: *mut c_void, target: u64, ty: u64) -> Vec<u64> {
 /// the path [`path_for`] builds. Returns `!canceled`, as `dispatchEvent` does.
 pub unsafe fn dispatch(g: *mut c_void, target: u64, event: u64) -> bool {
     let Some(s) = event_state(g, event) else { return true };
-    let path = path_for(g, target, get(g, s, "type"));
+    let path = path_for(g, target, get_k(g, s, "type"));
     !dispatch_path(g, event, &path).canceled
 }
 
@@ -681,21 +683,21 @@ pub unsafe fn dispatch_path(g: *mut c_void, event: u64, path: &[u64]) -> Dispatc
     let Some(s) = event_state(g, event) else { return out };
     let Some(&target) = path.first() else { return out };
 
-    define(g, s, "dispatching", TRUE, 0);
-    define(g, s, "target", expose(g, target), 0);
+    define_k(g, s, "dispatching", TRUE, 0);
+    define_k(g, s, "target", expose(g, target), 0);
     let js_path = new_array(g);
     for (i, n) in path.iter().enumerate() {
         set_i(g, js_path, i as u32, expose(g, *n));
     }
-    define(g, s, "path", js_path, 0);
+    define_k(g, s, "path", js_path, 0);
 
-    let ty = get(g, s, "type");
+    let ty = get_k(g, s, "type");
     let type_str = read_string(g, ty).unwrap_or_default();
-    let bubbles = truthy_flag(get(g, s, "bubbles"));
+    let bubbles = truthy_flag(get_k(g, s, "bubbles"));
 
     for (i, node) in path.iter().enumerate().rev() {
         let phase = if i == 0 { AT_TARGET } else { CAPTURING_PHASE };
-        define(g, s, "phase", enc_i32(phase), 0);
+        define_k(g, s, "phase", enc_i32(phase), 0);
         invoke(g, s, event, *node, ty, &type_str, Pass::Capturing, &mut out);
     }
     for (i, node) in path.iter().enumerate() {
@@ -706,17 +708,17 @@ pub unsafe fn dispatch_path(g: *mut c_void, event: u64, path: &[u64]) -> Dispatc
         } else {
             continue;
         };
-        define(g, s, "phase", enc_i32(phase), 0);
+        define_k(g, s, "phase", enc_i32(phase), 0);
         invoke(g, s, event, *node, ty, &type_str, Pass::Bubbling, &mut out);
     }
 
-    define(g, s, "phase", enc_i32(NONE), 0);
-    define(g, s, "currentTarget", NULL, 0);
-    define(g, s, "path", UNDEF, 0);
-    define(g, s, "dispatching", FALSE, 0);
-    define(g, s, "stopProp", FALSE, 0);
-    define(g, s, "stopImmediate", FALSE, 0);
-    out.canceled = truthy_flag(get(g, s, "defaultPrevented"));
+    define_k(g, s, "phase", enc_i32(NONE), 0);
+    define_k(g, s, "currentTarget", NULL, 0);
+    define_k(g, s, "path", UNDEF, 0);
+    define_k(g, s, "dispatching", FALSE, 0);
+    define_k(g, s, "stopProp", FALSE, 0);
+    define_k(g, s, "stopImmediate", FALSE, 0);
+    out.canceled = truthy_flag(get_k(g, s, "defaultPrevented"));
     out
 }
 
@@ -732,12 +734,12 @@ unsafe fn invoke(
     pass: Pass,
     out: &mut DispatchOutcome,
 ) {
-    if truthy_flag(get(g, s, "stopProp")) {
+    if truthy_flag(get_k(g, s, "stopProp")) {
         return;
     }
     let st = state(g);
     let this = expose(g, node);
-    define(g, s, "currentTarget", this, 0);
+    define_k(g, s, "currentTarget", this, 0);
 
     // The clone DOM takes: the list as it is NOW, by length. Additions land
     // past `n` (or in a replacement array) and do not run; removals set
@@ -762,15 +764,15 @@ unsafe fn invoke(
                 remove_entry(g, node, e);
             }
             if flags & L_PASSIVE != 0 {
-                define(g, s, "inPassive", TRUE, 0);
+                define_k(g, s, "inPassive", TRUE, 0);
             }
             if let Err(exc) = call_listener(g, get_a(g, e, st.a_cb), this, event) {
                 crate::errors::report(g, exc, crate::errors::ErrKind::Listener);
                 out.listener_threw = true;
             }
-            define(g, s, "inPassive", FALSE, 0);
+            define_k(g, s, "inPassive", FALSE, 0);
             between_listeners(g);
-            if truthy_flag(get(g, s, "stopImmediate")) {
+            if truthy_flag(get_k(g, s, "stopImmediate")) {
                 break;
             }
         }
@@ -778,7 +780,7 @@ unsafe fn invoke(
     }
 
     // The event handler IDL attribute — a non-capture listener of its own.
-    if pass == Pass::Bubbling && !truthy_flag(get(g, s, "stopImmediate")) {
+    if pass == Pass::Bubbling && !truthy_flag(get_k(g, s, "stopImmediate")) {
         let handler = get(g, node, &format!("on{type_str}"));
         if is_callable(g, handler) {
             match call(g, handler, this, &[event]) {
@@ -834,15 +836,15 @@ pub unsafe fn dispatch_event(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(s) = event_state(g, event) else {
         return throw_type_error(g, "Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.");
     };
-    if truthy_flag(get(g, s, "dispatching")) || !truthy_flag(get(g, s, "initialized")) {
+    if truthy_flag(get_k(g, s, "dispatching")) || !truthy_flag(get_k(g, s, "initialized")) {
         return super::domexception::throw(
             g,
             "InvalidStateError",
             "Failed to execute 'dispatchEvent' on 'EventTarget': The event is already being dispatched.",
         );
     }
-    define(g, s, "isTrusted", FALSE, 0);
-    let path = path_for(g, target, get(g, s, "type"));
+    define_k(g, s, "isTrusted", FALSE, 0);
+    let path = path_for(g, target, get_k(g, s, "type"));
     enc_bool(!dispatch_path(g, event, &path).canceled)
 }
 
@@ -894,8 +896,8 @@ pub unsafe fn install(g: *mut c_void) -> (Class, Class, Class) {
     });
     for (name, v) in [("NONE", NONE), ("CAPTURING_PHASE", CAPTURING_PHASE), ("AT_TARGET", AT_TARGET), ("BUBBLING_PHASE", BUBBLING_PHASE)] {
         // WebIDL constants: { writable: false, enumerable: true, configurable: false }.
-        define(g, event.ctor, name, enc_i32(v), 1 | 4);
-        define(g, event.proto, name, enc_i32(v), 1 | 4);
+        define_k(g, event.ctor, name, enc_i32(v), 1 | 4);
+        define_k(g, event.proto, name, enc_i32(v), 1 | 4);
     }
 
     let custom_event = define_class(g, &ClassSpec {
@@ -993,8 +995,8 @@ mod tests {
         let g = c.raw();
         let out = unsafe {
             let global = glue::rjs_global(g);
-            let path = [get(g, global, "req"), get(g, global, "tx"), get(g, global, "db")];
-            dispatch_path(g, get(g, global, "ev"), &path)
+            let path = [get_k(g, global, "req"), get_k(g, global, "tx"), get_k(g, global, "db")];
+            dispatch_path(g, get_k(g, global, "ev"), &path)
         };
         assert_eq!(out, DispatchOutcome { canceled: false, listener_threw: false });
         assert_eq!(
@@ -1021,7 +1023,7 @@ mod tests {
         let g = c.raw();
         unsafe {
             let global = glue::rjs_global(g);
-            dispatch_path(g, get(g, global, "ev"), &[get(g, global, "a"), get(g, global, "b")]);
+            dispatch_path(g, get_k(g, global, "ev"), &[get_k(g, global, "a"), get_k(g, global, "b")]);
         }
         assert_eq!(s(&c, "log.join()"), "b-cap,a");
     }
@@ -1041,7 +1043,7 @@ mod tests {
         let g = c.raw();
         unsafe {
             let global = glue::rjs_global(g);
-            dispatch_path(g, get(g, global, "ev"), &[get(g, global, "a"), get(g, global, "b")]);
+            dispatch_path(g, get_k(g, global, "ev"), &[get_k(g, global, "a"), get_k(g, global, "b")]);
         }
         // stopPropagation lets the rest of THIS node run, nothing after it.
         assert_eq!(s(&c, "log.join()"), "b-cap,true,b-cap2");
@@ -1181,7 +1183,7 @@ mod tests {
         let g = c.raw();
         let out = unsafe {
             let global = glue::rjs_global(g);
-            dispatch_path(g, get(g, global, "ev"), &[get(g, global, "t")])
+            dispatch_path(g, get_k(g, global, "ev"), &[get_k(g, global, "t")])
         };
         assert!(out.listener_threw);
         assert_eq!(s(&c, "log.join()"), "after");
@@ -1204,7 +1206,7 @@ mod tests {
             glue::rjs_lock(g);
             let global = glue::rjs_global(g);
             let ev = new_trusted_event(g, "x");
-            dispatch(g, get(g, global, "t"), ev);
+            dispatch(g, get_k(g, global, "t"), ev);
             glue::rjs_unlock(g);
         }
         assert_eq!(s(&c, "log.join()"), "l1,micro,l2");

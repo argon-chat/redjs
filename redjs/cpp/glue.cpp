@@ -710,6 +710,37 @@ extern "C" int32_t rjs_get(void* g, uint64_t base, void* atom, uint64_t* out)
     return RJS_OK;
 }
 
+// A read that throws comes back as undefined, as rjs_get callers that ignore the status see it.
+extern "C" int32_t rjs_get_many(void* g, uint64_t base, void* const* atoms, size_t n, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue b = JSValue::decode(base);
+    if (!b.isObject())
+        return RJS_BAD_ARG;
+    for (size_t i = 0; i < n; ++i) {
+        JSValue r = b.get(go, *static_cast<Identifier*>(atoms[i]));
+        out[i] = takeException(vm, nullptr) ? JSValue::encode(jsUndefined()) : JSValue::encode(r);
+    }
+    return RJS_OK;
+}
+
+extern "C" int32_t rjs_define_many(void* g, uint64_t obj, void* const* atoms, const uint64_t* vals, size_t n, uint32_t attrs)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return RJS_BAD_ARG;
+    JSObject* o = asObject(base);
+    unsigned a = mapAttributes(attrs);
+    for (size_t i = 0; i < n; ++i)
+        o->putDirect(vm, *static_cast<Identifier*>(atoms[i]), JSValue::decode(vals[i]), a);
+    return RJS_OK;
+}
+
 extern "C" int32_t rjs_set(void* g, uint64_t obj, void* atom, uint64_t val)
 {
     JSGlobalObject* go = G(g);
