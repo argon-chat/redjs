@@ -14,9 +14,8 @@
 //! `product` "Gecko", `productSub` "20030107"); `vendor` / `vendorSub` are
 //! empty, as HTML allows for an engine that is not one of the three.
 //!
-//! `language` / `languages` (NavigatorLanguage) are the OS's display languages
-//! ([`system_languages`]) unless the embedder calls [`set_languages`] /
-//! `redjs_navigator_set_languages`.
+//! `language` / `languages` are the OS's display languages unless the embedder calls
+//! [`set_languages`].
 //!
 //! # `onLine`, and the `online` / `offline` events (HTML's NavigatorOnLine)
 //!
@@ -104,24 +103,16 @@ pub fn hardware_concurrency() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
 
-// ---------------------------------------------------------------------------
-// NavigatorLanguage
-// ---------------------------------------------------------------------------
-
 static LANGUAGES: RwLock<Option<Vec<String>>> = RwLock::new(None);
-/// Bumped by [`set_languages`]: a context whose cached `languages` array is older builds a new one.
 static LANGUAGES_EPOCH: AtomicUsize = AtomicUsize::new(0);
 
-/// Overrides `navigator.languages` (and `language`, its first entry) for every context, from the
-/// next read on. Entries that are not language tags are dropped; `None`, or nothing left, restores
-/// [`system_languages`]. No `languagechange` event fires.
+/// `None`, or no valid tag, restores [`system_languages`]. No `languagechange` event fires.
 pub fn set_languages(langs: Option<Vec<String>>) {
     let langs = langs.map(|l| dedup_tags(l.iter().map(String::as_str))).filter(|l| !l.is_empty());
     *LANGUAGES.write().unwrap() = langs;
     LANGUAGES_EPOCH.fetch_add(1, Ordering::AcqRel);
 }
 
-/// What `navigator.languages` reports right now: never empty, most preferred first.
 pub fn languages() -> Vec<String> {
     if let Some(l) = LANGUAGES.read().unwrap().as_ref() {
         return l.clone();
@@ -129,15 +120,11 @@ pub fn languages() -> Vec<String> {
     system_languages().to_vec()
 }
 
-/// The `Accept-Language` request header for [`languages`], as Chromium spells it.
 pub fn accept_language() -> String {
     accept_language_for(&languages())
 }
 
-/// Chromium's expansion and weights: a regional tag is followed by its base language unless the
-/// list names that base itself (after a run of the same language: `en-US,en-GB,en`), and the
-/// q-values step down by 0.1 from an implicit 1 to a floor of 0.1:
-/// `ru-RU,en-US` -> `ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7`.
+/// Chromium's: `ru-RU,en-US` -> `ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7`.
 pub fn accept_language_for(langs: &[String]) -> String {
     let base = |t: &str| t.split('-').next().unwrap_or(t).to_ascii_lowercase();
     let mut expanded: Vec<String> = Vec::new();
@@ -167,8 +154,6 @@ pub fn accept_language_for(langs: &[String]) -> String {
     out
 }
 
-/// The user's display languages as BCP 47 tags, most preferred first, read once per process;
-/// `["en-US"]` when the OS says nothing usable.
 pub fn system_languages() -> &'static [String] {
     static SYSTEM: OnceLock<Vec<String>> = OnceLock::new();
     SYSTEM.get_or_init(|| {
@@ -187,8 +172,7 @@ fn dedup_tags<'a>(raw: impl Iterator<Item = &'a str>) -> Vec<String> {
     out
 }
 
-/// A BCP 47 tag from an OS spelling (`pt_BR.UTF-8@euro`, `zh-hans-cn`), cased as browsers report
-/// it (`pt-BR`, `zh-Hans-CN`); `None` for `C`, `POSIX` and anything that is not a tag.
+/// `pt_BR.UTF-8@euro` -> `pt-BR`; `None` for `C`, `POSIX` and non-tags.
 pub fn canonical_tag(raw: &str) -> Option<String> {
     let raw = raw.trim();
     let raw = raw.split(['.', '@']).next().unwrap_or("");
@@ -254,7 +238,6 @@ fn os_languages() -> Vec<String> {
     posix_languages(|k| std::env::var(k).ok())
 }
 
-/// `defaults read`'s old-style plist array: `(\n    "en-US",\n    "ru-RU"\n)`.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn apple_languages(out: &str) -> Vec<String> {
     out.lines()
@@ -264,8 +247,7 @@ fn apple_languages(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// gettext's order: `LANGUAGE` (a colon list) unless the locale is `C`, then the first of `LC_ALL`,
-/// `LC_MESSAGES`, `LANG`.
+/// gettext's order: `LANGUAGE` unless the locale is `C`, then `LC_ALL`, `LC_MESSAGES`, `LANG`.
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 fn posix_languages(var: impl Fn(&str) -> Option<String>) -> Vec<String> {
     let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().find_map(|k| var(k).filter(|v| !v.is_empty()));
@@ -422,7 +404,6 @@ unsafe fn online_drain(g: *mut c_void) -> usize {
 struct NavClasses {
     /// Brand slot: only the real `navigator` answers the getters.
     s_nav: *mut c_void,
-    /// The cached `languages` array and the [`LANGUAGES_EPOCH`] it was built at.
     s_languages: *mut c_void,
     s_languages_epoch: *mut c_void,
 }
@@ -487,7 +468,7 @@ unsafe fn get_language(g: *mut c_void, cf: *mut c_void) -> u64 {
     js_string(g, languages().first().map_or("en-US", String::as_str))
 }
 
-/// HTML: the same frozen array until the value changes, so `navigator.languages === navigator.languages`.
+/// HTML: the same frozen array until the value changes.
 #[crate::host_fn]
 unsafe fn get_languages(g: *mut c_void, cf: *mut c_void) -> u64 {
     let nav = cf_this(cf);
@@ -679,7 +660,7 @@ mod tests {
         assert_eq!(super::apple_languages("(\n    \"en-US\",\n    \"ru-RU\"\n)\n"), ["en-US", "ru-RU"]);
     }
 
-    /// The system list, an override, its normalisation and the reset in ONE test: process-wide state.
+    /// One test: the state is process-wide.
     #[test]
     fn language_is_the_first_of_a_stable_frozen_languages() {
         let c = ctx();

@@ -1008,9 +1008,7 @@ pub unsafe extern "C" fn redjs_navigator_set_user_agent(ua: *const u16, len: usi
     crate::webapi::navigator::set_user_agent(Some(&s));
 }
 
-/// Sets what `navigator.languages` reports (UTF-16, comma-separated BCP 47 tags,
-/// most preferred first), for every context in the process. A null `list`
-/// restores the OS's display languages.
+/// `navigator.languages` as comma-separated UTF-16 tags; null restores the OS's.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_navigator_set_languages(list: *const u16, len: usize) {
     if list.is_null() {

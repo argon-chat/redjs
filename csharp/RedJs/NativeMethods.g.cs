@@ -541,9 +541,7 @@ namespace RedJs.Native
         internal static extern void redjs_navigator_set_user_agent(ushort* ua, nuint len);
 
         /// <summary>
-        ///  Sets what `navigator.languages` reports (UTF-16, comma-separated BCP 47 tags,
-        ///  most preferred first), for every context in the process. A null `list`
-        ///  restores the OS's display languages.
+        ///  `navigator.languages` as comma-separated UTF-16 tags; null restores the OS's.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_navigator_set_languages", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_navigator_set_languages(ushort* list, nuint len);
