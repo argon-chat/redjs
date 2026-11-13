@@ -182,11 +182,43 @@ unsafe fn install_element_classes(g: *mut c_void, event_target_proto: u64) -> u6
     html_element.proto
 }
 
+const NODE_FILTER: &[(&str, u32)] = &[
+    ("FILTER_ACCEPT", 1),
+    ("FILTER_REJECT", 2),
+    ("FILTER_SKIP", 3),
+    ("SHOW_ALL", 0xffff_ffff),
+    ("SHOW_ELEMENT", 0x1),
+    ("SHOW_ATTRIBUTE", 0x2),
+    ("SHOW_TEXT", 0x4),
+    ("SHOW_CDATA_SECTION", 0x8),
+    ("SHOW_ENTITY_REFERENCE", 0x10),
+    ("SHOW_ENTITY", 0x20),
+    ("SHOW_PROCESSING_INSTRUCTION", 0x40),
+    ("SHOW_COMMENT", 0x80),
+    ("SHOW_DOCUMENT", 0x100),
+    ("SHOW_DOCUMENT_TYPE", 0x200),
+    ("SHOW_DOCUMENT_FRAGMENT", 0x400),
+    ("SHOW_NOTATION", 0x800),
+];
+
 pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     let global = glue::rjs_global(g);
 
     let html_proto = install_element_classes(g, event_target_proto);
     let _ = html_proto;
+
+    let node_filter = define_class(g, &ClassSpec {
+        name: "NodeFilter",
+        arity: 0,
+        construct: None,
+        parent_proto: 0,
+        methods: &[],
+        getters: &[],
+        accessors: &[],
+    });
+    for (name, v) in NODE_FILTER {
+        define(g, node_filter.ctor, name, enc_f64(*v as f64), 1 | 4);
+    }
 
     // IntersectionObserver (inert) + matchMedia.
     define_class(g, &ClassSpec {

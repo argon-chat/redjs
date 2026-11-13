@@ -1382,6 +1382,15 @@ impl Enc {
             }
             return Ok(());
         }
+        if let Some((r, read_only)) = super::geometry::rect_parts(g, v) {
+            self.memo(v);
+            self.put(tag::DOMRECT);
+            self.put(read_only as u8);
+            for c in r {
+                self.f64(c);
+            }
+            return Ok(());
+        }
         if let Some((m, read_only)) = super::geometry::matrix_parts(g, v) {
             self.memo(v);
             self.put(tag::DOMMATRIX);
@@ -1848,6 +1857,20 @@ impl<'a> Dec<'a> {
                     *c = self.f64()?;
                 }
                 let Some(v) = super::geometry::create_point(g, p, read_only) else { return self.bad() };
+                self.memo(v);
+                Ok(v)
+            }
+            tag::DOMRECT => {
+                let read_only = match self.byte()? {
+                    0 => false,
+                    1 => true,
+                    _ => return self.bad(),
+                };
+                let mut r = [0.0; 4];
+                for c in &mut r {
+                    *c = self.f64()?;
+                }
+                let Some(v) = super::geometry::create_rect(g, r, read_only) else { return self.bad() };
                 self.memo(v);
                 Ok(v)
             }

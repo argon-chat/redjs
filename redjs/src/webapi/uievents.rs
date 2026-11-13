@@ -393,7 +393,7 @@ const POINTER_NUMS: &[(&str, f64)] = &[
     ("altitudeAngle", std::f64::consts::FRAC_PI_2), ("azimuthAngle", 0.0),
 ];
 
-unsafe fn init_ui_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
+pub(crate) unsafe fn init_ui_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     events::init_event(g, obj, ty, init, false);
     let Some(s) = slots(g, obj) else { return };
     define(g, s, "view", init_obj(g, init, "view"), 0);

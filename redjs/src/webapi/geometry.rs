@@ -1,5 +1,5 @@
-//! Native `DOMPointReadOnly` / `DOMPoint` / `DOMMatrixReadOnly` / `DOMMatrix`
-//! (Geometry Interfaces Module Level 1).
+//! Native `DOMPointReadOnly` / `DOMPoint` / `DOMRectReadOnly` / `DOMRect` / `DOMMatrixReadOnly` /
+//! `DOMMatrix` (Geometry Interfaces Module Level 1).
 //!
 //! All the arithmetic is Rust ([`Mat`], unit-tested without a JS context); the
 //! JS half is only the prototype chain, the accessors and `instanceof`.
@@ -274,6 +274,10 @@ pub struct PointData {
     pub p: [f64; 4],
 }
 
+pub struct RectData {
+    pub r: [f64; 4],
+}
+
 // ---------------------------------------------------------------------------
 // Per-context classes
 // ---------------------------------------------------------------------------
@@ -285,6 +289,9 @@ struct GeomClasses {
     point_class: capi::JSClassRef,
     point_ro: Class,
     point_rw: Class,
+    rect_class: capi::JSClassRef,
+    rect_ro: Class,
+    rect_rw: Class,
 }
 
 unsafe impl Send for GeomClasses {}
@@ -472,6 +479,128 @@ unsafe fn point_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
         define(g, o, k, enc_f64(v[i]), 0);
     }
     o
+}
+
+// ---------------------------------------------------------------------------
+// DOMRect
+// ---------------------------------------------------------------------------
+
+unsafe fn this_rect<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut RectData> {
+    host_data::<RectData>(g, classes(g).rect_class, cf_this(cf))
+}
+
+/// A `DOMRect` (the mutable flavour).
+pub unsafe fn new_rect(g: *mut c_void, x: f64, y: f64, width: f64, height: f64) -> u64 {
+    let c = classes(g);
+    host_create(g, c.rect_class, c.rect_rw.proto, RectData { r: [x, y, width, height] })
+}
+
+pub(crate) unsafe fn rect_parts(g: *mut c_void, v: u64) -> Option<([f64; 4], bool)> {
+    let c = classes_opt(g)?;
+    let d = host_data::<RectData>(g, c.rect_class, v)?;
+    Some((d.r, !has_in_chain(g, v, c.rect_rw.proto)))
+}
+
+pub(crate) unsafe fn create_rect(g: *mut c_void, r: [f64; 4], read_only: bool) -> Option<u64> {
+    let c = classes_opt(g)?;
+    let proto = if read_only { c.rect_ro.proto } else { c.rect_rw.proto };
+    Some(host_create(g, c.rect_class, proto, RectData { r }))
+}
+
+/// `top`, `right`, `bottom`, `left`: a negative width or height flips its edges (spec §DOMRectReadOnly).
+fn edges(r: [f64; 4]) -> [f64; 4] {
+    let [x, y, w, h] = r;
+    [y.min(y + h), x.max(x + w), y.max(y + h), x.min(x + w)]
+}
+
+macro_rules! rect_accessors {
+    ($get:ident, $set:ident, $idx:expr) => {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+            match this_rect(g, cf) {
+                Some(r) => enc_f64(r.r[$idx]),
+                None => throw_type_error(g, "Illegal invocation"),
+            }
+        }
+        #[crate::host_fn]
+        unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
+            let v = arg_num(g, cf, 0, f64::NAN);
+            match this_rect(g, cf) {
+                Some(r) => {
+                    r.r[$idx] = v;
+                    UNDEF
+                }
+                None => throw_type_error(g, "Illegal invocation"),
+            }
+        }
+    };
+}
+rect_accessors!(rc_get_x, rc_set_x, 0);
+rect_accessors!(rc_get_y, rc_set_y, 1);
+rect_accessors!(rc_get_width, rc_set_width, 2);
+rect_accessors!(rc_get_height, rc_set_height, 3);
+
+macro_rules! rect_edge {
+    ($get:ident, $idx:expr) => {
+        #[crate::host_fn]
+        unsafe fn $get(g: *mut c_void, cf: *mut c_void) -> u64 {
+            match this_rect(g, cf) {
+                Some(r) => enc_f64(edges(r.r)[$idx]),
+                None => throw_type_error(g, "Illegal invocation"),
+            }
+        }
+    };
+}
+rect_edge!(rc_top, 0);
+rect_edge!(rc_right, 1);
+rect_edge!(rc_bottom, 2);
+rect_edge!(rc_left, 3);
+
+#[crate::host_fn]
+unsafe fn rect_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let c = classes(g);
+    let r = [arg_num(g, cf, 0, 0.0), arg_num(g, cf, 1, 0.0), arg_num(g, cf, 2, 0.0), arg_num(g, cf, 3, 0.0)];
+    let proto = ordinary_proto(g, cf_new_target(cf), c.rect_rw.proto);
+    host_create(g, c.rect_class, proto, RectData { r })
+}
+
+#[crate::host_fn]
+unsafe fn rect_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(rc) = this_rect(g, cf) else {
+        return throw_type_error(g, "Illegal invocation");
+    };
+    let [x, y, w, h] = rc.r;
+    let [top, right, bottom, left] = edges(rc.r);
+    let o = new_object(g, UNDEF);
+    for (k, v) in [("x", x), ("y", y), ("width", w), ("height", h), ("top", top), ("right", right), ("bottom", bottom), ("left", left)] {
+        define(g, o, k, enc_f64(v), 0);
+    }
+    o
+}
+
+unsafe fn rect_from(g: *mut c_void, cf: *mut c_void, read_only: bool) -> u64 {
+    let d = cf_arg(cf, 0);
+    let mut r = [0.0; 4];
+    if is_cell(d) {
+        for (i, k) in ["x", "y", "width", "height"].into_iter().enumerate() {
+            let Ok(v) = try_get(g, d, k) else { return UNDEF };
+            if v != UNDEF {
+                let Ok(n) = to_number(g, v) else { return UNDEF };
+                r[i] = n;
+            }
+        }
+    }
+    create_rect(g, r, read_only).unwrap_or(UNDEF)
+}
+
+#[crate::host_fn]
+unsafe fn rect_from_ro(g: *mut c_void, cf: *mut c_void) -> u64 {
+    rect_from(g, cf, true)
+}
+
+#[crate::host_fn]
+unsafe fn rect_from_rw(g: *mut c_void, cf: *mut c_void) -> u64 {
+    rect_from(g, cf, false)
 }
 
 // ---------------------------------------------------------------------------
@@ -975,6 +1104,42 @@ pub unsafe fn install(g: *mut c_void) {
         ],
     });
 
+    let rect_class = make_host_class::<RectData>("DOMRect");
+    let rect_ro = define_class(g, &ClassSpec {
+        name: "DOMRectReadOnly",
+        arity: 0,
+        construct: Some(rect_construct),
+        parent_proto: 0,
+        methods: &[("toJSON", 0, rect_to_json)],
+        getters: &[
+            ("x", rc_get_x),
+            ("y", rc_get_y),
+            ("width", rc_get_width),
+            ("height", rc_get_height),
+            ("top", rc_top),
+            ("right", rc_right),
+            ("bottom", rc_bottom),
+            ("left", rc_left),
+        ],
+        accessors: &[],
+    });
+    let rect_rw = define_class(g, &ClassSpec {
+        name: "DOMRect",
+        arity: 0,
+        construct: Some(rect_construct),
+        parent_proto: rect_ro.proto,
+        methods: &[],
+        getters: &[],
+        accessors: &[
+            ("x", rc_get_x, rc_set_x),
+            ("y", rc_get_y, rc_set_y),
+            ("width", rc_get_width, rc_set_width),
+            ("height", rc_get_height, rc_set_height),
+        ],
+    });
+    define(g, rect_ro.ctor, "fromRect", make_fn(g, "fromRect", 0, rect_from_ro), 2);
+    define(g, rect_rw.ctor, "fromRect", make_fn(g, "fromRect", 0, rect_from_rw), 2);
+
     let matrix_class = make_host_class::<MatrixData>("DOMMatrix");
     let ro = define_class(g, &ClassSpec {
         name: "DOMMatrixReadOnly",
@@ -1026,7 +1191,7 @@ pub unsafe fn install(g: *mut c_void) {
     }
 
     let boxed: &'static GeomClasses =
-        Box::leak(Box::new(GeomClasses { matrix_class, ro, rw, point_class, point_ro, point_rw }));
+        Box::leak(Box::new(GeomClasses { matrix_class, ro, rw, point_class, point_ro, point_rw, rect_class, rect_ro, rect_rw }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 
@@ -1253,5 +1418,21 @@ mod jsc_tests {
         let c = ctx();
         ok(&c, "Number.isNaN(new DOMMatrix().scaleSelf(0).inverse().m11)");
         ok(&c, "new DOMMatrix().scaleSelf(0).inverse().is2D === false");
+    }
+
+    #[test]
+    fn rects_have_flipped_edges_mutable_sides_and_clone() {
+        let c = ctx();
+        assert_eq!(
+            s(&c, "(() => { const r = new DOMRect(10, 20, -4, 6); return [r.left, r.right, r.top, r.bottom].join(); })()"),
+            "6,10,20,26"
+        );
+        ok(&c, "(() => { const r = new DOMRect(); r.width = 5; return r.right === 5 && r instanceof DOMRectReadOnly; })()");
+        ok(&c, "(() => { const r = new DOMRectReadOnly(1, 2, 3, 4); r.x = 9; return r.x === 1 && !(r instanceof DOMRect); })()");
+        assert_eq!(s(&c, "JSON.stringify(DOMRect.fromRect({ x: 1, width: 2 }))"), r#"{"x":1,"y":0,"width":2,"height":0,"top":0,"right":3,"bottom":0,"left":1}"#);
+        ok(&c, "DOMRectReadOnly.fromRect() instanceof DOMRectReadOnly && !(DOMRectReadOnly.fromRect() instanceof DOMRect)");
+        ok(&c, "(() => { const r = structuredClone(new DOMRect(1, 2, 3, 4)); return r instanceof DOMRect && r.bottom === 6; })()");
+        ok(&c, "!(structuredClone(new DOMRectReadOnly()) instanceof DOMRect)");
+        ok(&c, "NodeFilter.SHOW_ELEMENT === 1 && NodeFilter.FILTER_SKIP === 3 && NodeFilter.SHOW_ALL === 4294967295");
     }
 }

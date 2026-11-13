@@ -69,6 +69,7 @@ pub mod crypto;
 pub mod dialogs;
 pub mod dom;
 pub mod domexception;
+pub mod event_interfaces;
 pub mod events;
 pub mod eventsource;
 pub mod fetch;
@@ -210,6 +211,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     }
     compression::forget(gone);
     dialogs::forget(gone);
+    event_interfaces::forget(gone);
     eventsource::forget(gone);
     fetch::forget(gone);
     formdata::forget(gone);
@@ -387,6 +389,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     blob::install_stream(g);
     uievents::install(g, ev_proto);
     report_error::install(g, ev_proto);
+    event_interfaces::install(g, ev_proto);
     urlpattern::install(g);
     // After streams (it captures their prototypes) and before any user
     // script: the Map/Set/Error/ArrayBuffer intrinsics it reads through are
