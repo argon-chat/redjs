@@ -324,8 +324,9 @@ namespace RedJs.Native
         internal static extern int redjs_function_create_with_data(void* ctx, ushort* name, nuint name_len, uint arity, void* ms_fn, void* data, ulong* @out);
 
         /// <summary>
-        ///  Registers a raw SysV host function (Rust `extern "sysv64"`, Zig
-        ///  `callconv(.SysV)`) — the zero-overhead path, no trampoline slot.
+        ///  Registers a raw JSC host function — the zero-overhead path, no trampoline
+        ///  slot. Use SysV on Windows x64 and the platform C ABI on Unix. The exported
+        ///  symbol's historical name is retained for existing embedders.
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_function_create_sysv", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern int redjs_function_create_sysv(void* ctx, ushort* name, nuint name_len, uint arity, void* sysv_fn, ulong* @out);
@@ -533,11 +534,19 @@ namespace RedJs.Native
         /// <summary>
         ///  Sets what `navigator.userAgent` reports (UTF-16), for every context in the
         ///  process, from the next read on — before or after install. `appVersion` and
-        ///  `platform` follow it. A null `ua` restores the default,
-        ///  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0`.
+        ///  `platform` follow it. A null `ua` restores the OS-specific
+        ///  [`crate::webapi::navigator::DEFAULT_USER_AGENT`].
         /// </summary>
         [DllImport(__DllName, EntryPoint = "redjs_navigator_set_user_agent", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void redjs_navigator_set_user_agent(ushort* ua, nuint len);
+
+        /// <summary>
+        ///  Sets what `navigator.languages` reports (UTF-16, comma-separated BCP 47 tags,
+        ///  most preferred first), for every context in the process. A null `list`
+        ///  restores the OS's display languages.
+        /// </summary>
+        [DllImport(__DllName, EntryPoint = "redjs_navigator_set_languages", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        internal static extern void redjs_navigator_set_languages(ushort* list, nuint len);
 
         /// <summary>
         ///  Sets what `navigator.onLine` reports, for every context in the process,

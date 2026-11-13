@@ -14,6 +14,10 @@
 //! `product` "Gecko", `productSub` "20030107"); `vendor` / `vendorSub` are
 //! empty, as HTML allows for an engine that is not one of the three.
 //!
+//! `language` / `languages` (NavigatorLanguage) are the OS's display languages
+//! ([`system_languages`]) unless the embedder calls [`set_languages`] /
+//! `redjs_navigator_set_languages`.
+//!
 //! # `onLine`, and the `online` / `offline` events (HTML's NavigatorOnLine)
 //!
 //! The value is "the OS believes there is a network", not reachability —
@@ -98,6 +102,143 @@ pub fn platform(ua: &str) -> &'static str {
 
 pub fn hardware_concurrency() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+// ---------------------------------------------------------------------------
+// NavigatorLanguage
+// ---------------------------------------------------------------------------
+
+static LANGUAGES: RwLock<Option<Vec<String>>> = RwLock::new(None);
+/// Bumped by [`set_languages`]: a context whose cached `languages` array is older builds a new one.
+static LANGUAGES_EPOCH: AtomicUsize = AtomicUsize::new(0);
+
+/// Overrides `navigator.languages` (and `language`, its first entry) for every context, from the
+/// next read on. Entries that are not language tags are dropped; `None`, or nothing left, restores
+/// [`system_languages`]. No `languagechange` event fires.
+pub fn set_languages(langs: Option<Vec<String>>) {
+    let langs = langs.map(|l| dedup_tags(l.iter().map(String::as_str))).filter(|l| !l.is_empty());
+    *LANGUAGES.write().unwrap() = langs;
+    LANGUAGES_EPOCH.fetch_add(1, Ordering::AcqRel);
+}
+
+/// What `navigator.languages` reports right now: never empty, most preferred first.
+pub fn languages() -> Vec<String> {
+    if let Some(l) = LANGUAGES.read().unwrap().as_ref() {
+        return l.clone();
+    }
+    system_languages().to_vec()
+}
+
+/// The user's display languages as BCP 47 tags, most preferred first, read once per process;
+/// `["en-US"]` when the OS says nothing usable.
+pub fn system_languages() -> &'static [String] {
+    static SYSTEM: OnceLock<Vec<String>> = OnceLock::new();
+    SYSTEM.get_or_init(|| {
+        let tags = dedup_tags(os_languages().iter().map(String::as_str));
+        if tags.is_empty() { vec!["en-US".to_owned()] } else { tags }
+    })
+}
+
+fn dedup_tags<'a>(raw: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in raw.filter_map(canonical_tag) {
+        if !out.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+            out.push(tag);
+        }
+    }
+    out
+}
+
+/// A BCP 47 tag from an OS spelling (`pt_BR.UTF-8@euro`, `zh-hans-cn`), cased as browsers report
+/// it (`pt-BR`, `zh-Hans-CN`); `None` for `C`, `POSIX` and anything that is not a tag.
+pub fn canonical_tag(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let raw = raw.split(['.', '@']).next().unwrap_or("");
+    if raw.is_empty() || raw.eq_ignore_ascii_case("c") || raw.eq_ignore_ascii_case("posix") {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for (i, sub) in raw.split(['-', '_']).enumerate() {
+        if sub.is_empty() || sub.len() > 8 || !sub.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let part = if i == 0 {
+            if !(2..=3).contains(&sub.len()) || !sub.bytes().all(|b| b.is_ascii_alphabetic()) {
+                return None;
+            }
+            sub.to_ascii_lowercase()
+        } else if sub.len() == 4 && sub.bytes().all(|b| b.is_ascii_alphabetic()) {
+            let lower = sub.to_ascii_lowercase();
+            lower[..1].to_ascii_uppercase() + &lower[1..]
+        } else if sub.len() == 2 && sub.bytes().all(|b| b.is_ascii_alphabetic()) {
+            sub.to_ascii_uppercase()
+        } else {
+            sub.to_ascii_lowercase()
+        };
+        parts.push(part);
+    }
+    Some(parts.join("-"))
+}
+
+#[cfg(target_os = "windows")]
+fn os_languages() -> Vec<String> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetUserPreferredUILanguages(flags: u32, num: *mut u32, buffer: *mut u16, len: *mut u32) -> i32;
+    }
+    const MUI_LANGUAGE_NAME: u32 = 0x8;
+    let (mut num, mut len) = (0u32, 0u32);
+    // SAFETY: the first call only reports the length; the second writes at most `len` units.
+    unsafe {
+        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut num, core::ptr::null_mut(), &mut len) == 0 || len == 0 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u16; len as usize];
+        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut num, buf.as_mut_ptr(), &mut len) == 0 {
+            return Vec::new();
+        }
+        buf.split(|&u| u == 0).filter(|s| !s.is_empty()).map(String::from_utf16_lossy).collect()
+    }
+}
+
+/// An app started from Finder has no `LANG`: the list is the user's `AppleLanguages` default.
+#[cfg(target_os = "macos")]
+fn os_languages() -> Vec<String> {
+    let out = std::process::Command::new("/usr/bin/defaults").args(["read", "-g", "AppleLanguages"]).output();
+    match out {
+        Ok(o) if o.status.success() => apple_languages(&String::from_utf8_lossy(&o.stdout)),
+        _ => posix_languages(|k| std::env::var(k).ok()),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn os_languages() -> Vec<String> {
+    posix_languages(|k| std::env::var(k).ok())
+}
+
+/// `defaults read`'s old-style plist array: `(\n    "en-US",\n    "ru-RU"\n)`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn apple_languages(out: &str) -> Vec<String> {
+    out.lines()
+        .map(|l| l.trim().trim_end_matches(',').trim_matches('"'))
+        .filter(|l| !l.is_empty() && *l != "(" && *l != ")")
+        .map(str::to_owned)
+        .collect()
+}
+
+/// gettext's order: `LANGUAGE` (a colon list) unless the locale is `C`, then the first of `LC_ALL`,
+/// `LC_MESSAGES`, `LANG`.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn posix_languages(var: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().find_map(|k| var(k).filter(|v| !v.is_empty()));
+    let mut out = Vec::new();
+    if locale.as_deref().and_then(canonical_tag).is_some() {
+        if let Some(list) = var("LANGUAGE") {
+            out.extend(list.split(':').filter(|s| !s.is_empty()).map(str::to_owned));
+        }
+    }
+    out.extend(locale);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +384,9 @@ unsafe fn online_drain(g: *mut c_void) -> usize {
 struct NavClasses {
     /// Brand slot: only the real `navigator` answers the getters.
     s_nav: *mut c_void,
+    /// The cached `languages` array and the [`LANGUAGES_EPOCH`] it was built at.
+    s_languages: *mut c_void,
+    s_languages_epoch: *mut c_void,
 }
 
 unsafe impl Send for NavClasses {}
@@ -298,6 +442,39 @@ unsafe fn get_hardware_concurrency(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 #[crate::host_fn]
+unsafe fn get_language(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if !is_navigator(g, cf_this(cf)) {
+        return throw_type_error(g, "Illegal invocation");
+    }
+    js_string(g, languages().first().map_or("en-US", String::as_str))
+}
+
+/// HTML: the same frozen array until the value changes, so `navigator.languages === navigator.languages`.
+#[crate::host_fn]
+unsafe fn get_languages(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let nav = cf_this(cf);
+    if !is_navigator(g, nav) {
+        return throw_type_error(g, "Illegal invocation");
+    }
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return UNDEF };
+    let (s_array, s_epoch) = (c.s_languages, c.s_languages_epoch);
+    let epoch = enc_i32((LANGUAGES_EPOCH.load(Ordering::Acquire) & 0x7fff_ffff) as i32);
+    let cached = get_a(g, nav, s_array);
+    if is_cell(cached) && get_a(g, nav, s_epoch) == epoch {
+        return cached;
+    }
+    let arr = new_array(g);
+    for (i, tag) in languages().iter().enumerate() {
+        set_i(g, arr, i as u32, js_string(g, tag));
+    }
+    let object = get(g, glue::rjs_global(g), "Object");
+    let _ = call(g, get(g, object, "freeze"), object, &[arr]);
+    glue::rjs_define(g, nav, s_array, arr, 2);
+    glue::rjs_define(g, nav, s_epoch, epoch, 2);
+    arr
+}
+
+#[crate::host_fn]
 unsafe fn get_on_line(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_navigator(g, cf_this(cf)) {
         return throw_type_error(g, "Illegal invocation");
@@ -311,7 +488,11 @@ unsafe fn get_on_line(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let s_nav = atom_priv(g, "redjs#navigator");
-    registry().lock().unwrap().insert(g as usize, Box::leak(Box::new(NavClasses { s_nav })));
+    registry().lock().unwrap().insert(g as usize, Box::leak(Box::new(NavClasses {
+        s_nav,
+        s_languages: atom_priv(g, "redjs#languages"),
+        s_languages_epoch: atom_priv(g, "redjs#languagesEpoch"),
+    })));
 
     let class = define_class(g, &ClassSpec {
         name: "Navigator",
@@ -333,6 +514,8 @@ pub unsafe fn install(g: *mut c_void) {
             ("vendor", get_vendor),
             ("vendorSub", get_vendor_sub),
             ("hardwareConcurrency", get_hardware_concurrency),
+            ("language", get_language),
+            ("languages", get_languages),
             ("onLine", get_on_line),
         ],
         accessors: &[],
@@ -418,6 +601,55 @@ mod tests {
         unsafe { crate::ffi::redjs_navigator_set_user_agent(core::ptr::null(), 0) };
         assert_eq!(got, "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2|5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2|MacIntel");
         assert_eq!(s(&c, "navigator.userAgent"), super::DEFAULT_USER_AGENT);
+    }
+
+    #[test]
+    fn os_spellings_become_bcp47_tags() {
+        use super::canonical_tag as t;
+        assert_eq!(t("pt_BR.UTF-8@euro").as_deref(), Some("pt-BR"));
+        assert_eq!(t("zh-hans-cn").as_deref(), Some("zh-Hans-CN"));
+        assert_eq!(t("EN-us").as_deref(), Some("en-US"));
+        assert_eq!(t("es-419").as_deref(), Some("es-419"));
+        assert_eq!(t("sr_RS@latin").as_deref(), Some("sr-RS"));
+        for bad in ["C", "POSIX", "C.UTF-8", "", "e", "1x", "en--US", "english"] {
+            assert_eq!(t(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn posix_and_apple_lists_parse() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        };
+        assert_eq!(super::posix_languages(env(&[("LANG", "ru_RU.UTF-8")])), ["ru_RU.UTF-8"]);
+        assert_eq!(
+            super::posix_languages(env(&[("LANGUAGE", "uk:ru"), ("LC_ALL", "uk_UA.UTF-8"), ("LANG", "en_US")])),
+            ["uk", "ru", "uk_UA.UTF-8"]
+        );
+        assert!(super::posix_languages(env(&[("LANGUAGE", "de"), ("LANG", "C")])) == ["C"], "LANGUAGE is ignored under C");
+        assert_eq!(super::apple_languages("(\n    \"en-US\",\n    \"ru-RU\"\n)\n"), ["en-US", "ru-RU"]);
+    }
+
+    /// The system list, an override, its normalisation and the reset in ONE test: process-wide state.
+    #[test]
+    fn language_is_the_first_of_a_stable_frozen_languages() {
+        let c = ctx();
+        assert!(!super::system_languages().is_empty());
+        assert_eq!(s(&c, "navigator.languages.join()"), super::system_languages().join(","));
+        ok(&c, "navigator.language === navigator.languages[0]");
+        assert_eq!(s(&c, "[navigator.languages === navigator.languages, Object.isFrozen(navigator.languages), Array.isArray(navigator.languages)].join()"), "true,true,true");
+        ok(&c, "!Object.hasOwn(navigator, 'language') && !Object.hasOwn(navigator, 'languages')");
+        s(&c, "globalThis.__before = navigator.languages; 0");
+
+        let list: Vec<u16> = "de_DE.UTF-8,C,de-de,fr".encode_utf16().collect();
+        unsafe { crate::ffi::redjs_navigator_set_languages(list.as_ptr(), list.len()) };
+        let got = s(&c, "[navigator.language, navigator.languages.join(), navigator.languages !== __before].join('|')");
+        super::set_languages(Some(vec!["C".into()]));
+        let nothing_valid = s(&c, "navigator.languages.join()");
+        unsafe { crate::ffi::redjs_navigator_set_languages(core::ptr::null(), 0) };
+        assert_eq!(got, "de-DE|de-DE,fr|true");
+        assert_eq!(nothing_valid, super::system_languages().join(","), "no valid tag: the system's");
+        assert_eq!(s(&c, "navigator.languages.join()"), super::system_languages().join(","));
     }
 
     fn pump(c: &crate::api::Context) {

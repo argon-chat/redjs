@@ -1008,6 +1008,19 @@ pub unsafe extern "C" fn redjs_navigator_set_user_agent(ua: *const u16, len: usi
     crate::webapi::navigator::set_user_agent(Some(&s));
 }
 
+/// Sets what `navigator.languages` reports (UTF-16, comma-separated BCP 47 tags,
+/// most preferred first), for every context in the process. A null `list`
+/// restores the OS's display languages.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_navigator_set_languages(list: *const u16, len: usize) {
+    if list.is_null() {
+        crate::webapi::navigator::set_languages(None);
+        return;
+    }
+    let s = String::from_utf16_lossy(core::slice::from_raw_parts(list, len));
+    crate::webapi::navigator::set_languages(Some(s.split(',').map(str::to_owned).collect()));
+}
+
 /// Sets what `navigator.onLine` reports, for every context in the process,
 /// from any thread: `1` online, `0` offline, negative = no provider (reads
 /// `true`, Chromium's answer when it cannot tell). A change queues an
