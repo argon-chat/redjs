@@ -526,6 +526,159 @@ pub unsafe fn make_host_class<T>(name: &str) -> capi::JSClassRef {
     capi::JSClassCreate(&def)
 }
 
+/// Named properties answered from Rust, as WebIDL's named and indexed properties are (`style.color`,
+/// `style[0]`, `localStorage.key`). A hook that answers `None`/`false` leaves the name to the ordinary
+/// lookup (own properties, then the prototype), so prototype methods stay reachable. `Err` is the value to
+/// throw. Symbols never reach the hooks.
+pub trait NamedProps: 'static {
+    unsafe fn get(&mut self, g: *mut c_void, this: u64, name: &str) -> Result<Option<u64>, u64>;
+    unsafe fn set(&mut self, _g: *mut c_void, _this: u64, _name: &str, _value: u64) -> Result<bool, u64> {
+        Ok(false)
+    }
+    unsafe fn delete(&mut self, _g: *mut c_void, _this: u64, _name: &str) -> Result<bool, u64> {
+        Ok(false)
+    }
+    /// The names `Object.keys` and `for…in` list ahead of the own properties.
+    unsafe fn names(&mut self, _g: *mut c_void, _this: u64) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+thread_local! {
+    static IN_SLOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn in_slot<R>(f: impl FnOnce() -> R) -> R {
+    let was = IN_SLOT.replace(true);
+    let r = f();
+    IN_SLOT.set(was);
+    r
+}
+
+/// Reads a private-atom slot of a [`NamedProps`] instance. JSC asks the property callbacks about a
+/// private name too (by its description), so a plain [`get_a`] from inside a hook would recurse.
+pub unsafe fn named_slot_get(g: *mut c_void, obj: u64, atom: *mut c_void) -> u64 {
+    in_slot(|| get_a(g, obj, atom))
+}
+
+/// Defines a private-atom slot on a [`NamedProps`] instance; see [`named_slot_get`].
+pub unsafe fn named_slot_define(g: *mut c_void, obj: u64, atom: *mut c_void, v: u64) {
+    in_slot(|| {
+        glue::rjs_define(g, obj, atom, v, 0);
+    })
+}
+
+unsafe fn prop_name(name: capi::JSStringRef) -> String {
+    let len = capi::JSStringGetLength(name);
+    let ptr = capi::JSStringGetCharactersPtr(name);
+    if len == 0 || ptr.is_null() {
+        return String::new();
+    }
+    String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+}
+
+unsafe fn named_data<'a, T>(obj: capi::JSObjectRef) -> Option<&'a mut T> {
+    let p = capi::JSObjectGetPrivate(obj);
+    (!p.is_null()).then(|| &mut *(p as *mut T))
+}
+
+unsafe extern "C" fn named_get<T: NamedProps>(
+    ctx: capi::JSContextRef,
+    obj: capi::JSObjectRef,
+    name: capi::JSStringRef,
+    exception: *mut capi::JSValueRef,
+) -> capi::JSValueRef {
+    if IN_SLOT.get() {
+        return std::ptr::null();
+    }
+    let Some(data) = named_data::<T>(obj) else { return std::ptr::null() };
+    match data.get(ctx, obj as usize as u64, &prop_name(name)) {
+        Ok(Some(v)) => v as usize as capi::JSValueRef,
+        Ok(None) => std::ptr::null(),
+        Err(e) => {
+            if !exception.is_null() {
+                *exception = e as usize as capi::JSValueRef;
+            }
+            std::ptr::null()
+        }
+    }
+}
+
+unsafe extern "C" fn named_set<T: NamedProps>(
+    ctx: capi::JSContextRef,
+    obj: capi::JSObjectRef,
+    name: capi::JSStringRef,
+    value: capi::JSValueRef,
+    exception: *mut capi::JSValueRef,
+) -> bool {
+    if IN_SLOT.get() {
+        return false;
+    }
+    let Some(data) = named_data::<T>(obj) else { return false };
+    match data.set(ctx, obj as usize as u64, &prop_name(name), value as usize as u64) {
+        Ok(handled) => handled,
+        Err(e) => {
+            if !exception.is_null() {
+                *exception = e as usize as capi::JSValueRef;
+            }
+            true
+        }
+    }
+}
+
+unsafe extern "C" fn named_delete<T: NamedProps>(
+    ctx: capi::JSContextRef,
+    obj: capi::JSObjectRef,
+    name: capi::JSStringRef,
+    exception: *mut capi::JSValueRef,
+) -> bool {
+    let Some(data) = named_data::<T>(obj) else { return false };
+    match data.delete(ctx, obj as usize as u64, &prop_name(name)) {
+        Ok(handled) => handled,
+        Err(e) => {
+            if !exception.is_null() {
+                *exception = e as usize as capi::JSValueRef;
+            }
+            true
+        }
+    }
+}
+
+unsafe extern "C" fn named_names<T: NamedProps>(
+    ctx: capi::JSContextRef,
+    obj: capi::JSObjectRef,
+    acc: capi::JSPropertyNameAccumulatorRef,
+) {
+    let Some(data) = named_data::<T>(obj) else { return };
+    for n in data.names(ctx, obj as usize as u64) {
+        let units: Vec<u16> = n.encode_utf16().collect();
+        let s = capi::JSStringCreateWithCharacters(units.as_ptr(), units.len());
+        capi::JSPropertyNameAccumulatorAddName(acc, s);
+        capi::JSStringRelease(s);
+    }
+}
+
+/// [`make_host_class`] whose instances answer named properties through `T`'s [`NamedProps`].
+pub unsafe fn make_named_host_class<T: NamedProps>(name: &str) -> capi::JSClassRef {
+    let cname = std::ffi::CString::new(name).unwrap();
+    let mut def = capi::JSClassDefinition::empty();
+    def.class_name = cname.as_ptr();
+    def.finalize = Some(finalize_box::<T>);
+    def.get_property = named_get::<T> as *const c_void;
+    def.set_property = named_set::<T> as *const c_void;
+    def.delete_property = named_delete::<T> as *const c_void;
+    def.get_property_names = named_names::<T> as *const c_void;
+    capi::JSClassCreate(&def)
+}
+
+/// An Error of `kind` (as [`throw_error`]) for a [`NamedProps`] hook to return, not thrown.
+pub unsafe fn error_value(g: *mut c_void, kind: u32, msg: &str) -> u64 {
+    let m: Vec<u16> = msg.encode_utf16().collect();
+    let mut err = UNDEF;
+    glue::rjs_error_create(g, kind, m.as_ptr(), m.len(), &mut err);
+    err
+}
+
 /// Creates an instance of a host class with `data`, prototype from
 /// new.target (or the class default).
 pub unsafe fn host_create<T>(g: *mut c_void, cls: capi::JSClassRef, proto: u64, data: T) -> u64 {
@@ -630,4 +783,63 @@ pub fn has_state(g: *mut c_void) -> bool {
 /// a new context at the same address installs from nothing.
 pub(crate) fn forget_state(gone: crate::context::Gone) {
     states().lock().unwrap().remove(&gone.key);
+}
+
+#[cfg(test)]
+mod named_tests {
+    use super::*;
+    use crate::webapi::testing::{ctx, ok, s, throws};
+    use std::collections::BTreeMap;
+
+    /// Answers every `x…` name (unset ones read `""`) and index 0; refuses `xbad`.
+    struct Bag(BTreeMap<String, String>);
+
+    impl NamedProps for Bag {
+        unsafe fn get(&mut self, g: *mut c_void, _this: u64, name: &str) -> Result<Option<u64>, u64> {
+            Ok(match name {
+                "0" => Some(js_string(g, "zero")),
+                n if n.starts_with('x') => Some(js_string(g, self.0.get(n).map_or("", String::as_str))),
+                _ => None,
+            })
+        }
+        unsafe fn set(&mut self, g: *mut c_void, _this: u64, name: &str, value: u64) -> Result<bool, u64> {
+            if name == "xbad" {
+                return Err(error_value(g, 1, "xbad is read-only"));
+            }
+            if !name.starts_with('x') {
+                return Ok(false);
+            }
+            let v = to_js_string(g, value).ok().and_then(|v| read_string(g, v)).unwrap_or_default();
+            self.0.insert(name.to_string(), v);
+            Ok(true)
+        }
+        unsafe fn delete(&mut self, _g: *mut c_void, _this: u64, name: &str) -> Result<bool, u64> {
+            Ok(self.0.remove(name).is_some())
+        }
+        unsafe fn names(&mut self, _g: *mut c_void, _this: u64) -> Vec<String> {
+            self.0.keys().cloned().collect()
+        }
+    }
+
+    #[test]
+    fn named_properties_come_from_rust_and_the_rest_is_ordinary() {
+        let c = ctx();
+        unsafe {
+            let g = c.raw();
+            let cls = make_named_host_class::<Bag>("Bag");
+            let proto = get(g, get(g, glue::rjs_global(g), "Object"), "prototype");
+            let bag = host_create(g, cls, proto, Bag(BTreeMap::new()));
+            define(g, glue::rjs_global(g), "bag", bag, 0);
+            let slot = atom_priv(g, "x-slot");
+            named_slot_define(g, bag, slot, js_string(g, "kept"));
+            assert_eq!(read_string(g, named_slot_get(g, bag, slot)).as_deref(), Some("kept"));
+        }
+        ok(&c, "bag.xa === '' && bag[0] === 'zero' && bag.toString === Object.prototype.toString");
+        ok(&c, "(bag.xa = 7, bag.xa === '7') && 'xa' in bag && 'xz' in bag && !('nope' in bag)");
+        ok(&c, "(bag.other = 5, bag.other === 5 && Object.getOwnPropertyDescriptor(bag, 'other').value === 5)");
+        assert_eq!(s(&c, "Object.keys(bag).join()"), "xa,other");
+        ok(&c, "delete bag.xa && bag.xa === '' && Object.keys(bag).join() === 'other'");
+        assert_eq!(throws(&c, "bag.xbad = 1"), "xbad is read-only");
+        ok(&c, "(() => { try { bag.xbad = 1 } catch (e) { return e instanceof TypeError } })()");
+    }
 }

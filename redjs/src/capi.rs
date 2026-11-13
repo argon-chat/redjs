@@ -12,6 +12,7 @@ pub type JSValueRef = *const c_void;
 pub type JSObjectRef = *mut c_void;
 pub type JSClassRef = *mut c_void;
 pub type JSStringRef = *mut c_void;
+pub type JSPropertyNameAccumulatorRef = *mut c_void;
 
 /// `void (*)(void* bytes, void* deallocatorContext)` — plain C convention,
 /// safe for C# `[UnmanagedCallersOnly]` delegates.
@@ -52,8 +53,8 @@ pub fn ta_kind_to_capi(kind: u32) -> u32 {
     }
 }
 
-/// JSClassDefinition (JSObjectRef.h). We only populate `class_name` and
-/// `finalize`; layout must match the header exactly.
+/// JSClassDefinition (JSObjectRef.h). We populate `class_name`, `finalize` and, for named-property classes,
+/// the property callbacks; layout must match the header exactly.
 #[repr(C)]
 pub struct JSClassDefinition {
     pub version: i32,
@@ -167,4 +168,9 @@ extern "C" {
     pub fn JSObjectGetPrototype(ctx: JSContextRef, object: JSObjectRef) -> JSValueRef;
     /// Brand check: is `value` an object created from `js_class`?
     pub fn JSValueIsObjectOfClass(ctx: JSContextRef, value: JSValueRef, js_class: JSClassRef) -> bool;
+    pub fn JSStringCreateWithCharacters(chars: *const u16, len: usize) -> JSStringRef;
+    pub fn JSStringRelease(string: JSStringRef);
+    pub fn JSStringGetLength(string: JSStringRef) -> usize;
+    pub fn JSStringGetCharactersPtr(string: JSStringRef) -> *const u16;
+    pub fn JSPropertyNameAccumulatorAddName(accumulator: JSPropertyNameAccumulatorRef, name: JSStringRef);
 }
