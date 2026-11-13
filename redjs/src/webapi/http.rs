@@ -1174,6 +1174,9 @@ pub fn serialize_request(
     if !has("accept-encoding") {
         out.extend_from_slice(b"Accept-Encoding: gzip, deflate\r\n");
     }
+    if !has("accept-language") {
+        out.extend_from_slice(format!("Accept-Language: {}\r\n", super::navigator::accept_language()).as_bytes());
+    }
     // No pooling on this transport, but no `Connection: close` either: asking
     // the SERVER to close is what stalled (measured, research/reports/m26/
     // net-h2-pool.md §2 — on this project's VPN path the tail of a response

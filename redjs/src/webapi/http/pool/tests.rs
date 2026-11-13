@@ -144,6 +144,7 @@ fn the_request_says_keep_alive_and_carries_host_and_a_browser_user_agent() {
     assert!(head.contains(&format!("Host: 127.0.0.1:{}\r\n", s.port)), "{head}");
     assert!(head.contains("Connection: keep-alive\r\n"), "{head}");
     assert!(head.contains(&format!("User-Agent: {}\r\n", crate::webapi::navigator::user_agent())), "{head}");
+    assert!(head.contains("\r\nAccept-Language: "), "{head}");
     assert!(!head.to_ascii_lowercase().contains("connection: close"), "{head}");
 }
 

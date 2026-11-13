@@ -129,6 +129,44 @@ pub fn languages() -> Vec<String> {
     system_languages().to_vec()
 }
 
+/// The `Accept-Language` request header for [`languages`], as Chromium spells it.
+pub fn accept_language() -> String {
+    accept_language_for(&languages())
+}
+
+/// Chromium's expansion and weights: a regional tag is followed by its base language unless the
+/// list names that base itself (after a run of the same language: `en-US,en-GB,en`), and the
+/// q-values step down by 0.1 from an implicit 1 to a floor of 0.1:
+/// `ru-RU,en-US` -> `ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7`.
+pub fn accept_language_for(langs: &[String]) -> String {
+    let base = |t: &str| t.split('-').next().unwrap_or(t).to_ascii_lowercase();
+    let mut expanded: Vec<String> = Vec::new();
+    for (i, tag) in langs.iter().enumerate() {
+        if !expanded.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            expanded.push(tag.clone());
+        }
+        let b = base(tag);
+        let run_continues = langs.get(i + 1).is_some_and(|next| base(next) == b);
+        let named = langs.iter().chain(&expanded).any(|t| t.eq_ignore_ascii_case(&b));
+        if !run_continues && !named {
+            expanded.push(b);
+        }
+    }
+    let mut out = String::new();
+    let mut q10 = 10;
+    for tag in &expanded {
+        if !out.is_empty() {
+            out.push(',');
+        }
+        out.push_str(tag);
+        if q10 < 10 {
+            out.push_str(&format!(";q=0.{q10}"));
+        }
+        q10 = (q10 - 1).max(1);
+    }
+    out
+}
+
 /// The user's display languages as BCP 47 tags, most preferred first, read once per process;
 /// `["en-US"]` when the OS says nothing usable.
 pub fn system_languages() -> &'static [String] {
@@ -614,6 +652,17 @@ mod tests {
         for bad in ["C", "POSIX", "C.UTF-8", "", "e", "1x", "en--US", "english"] {
             assert_eq!(t(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn accept_language_is_chromiums() {
+        let h = |l: &[&str]| super::accept_language_for(&l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(h(&["ru-RU", "en-US"]), "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7");
+        assert_eq!(h(&["en-US", "en-GB"]), "en-US,en-GB;q=0.9,en;q=0.8");
+        assert_eq!(h(&["de", "en-US", "en"]), "de,en-US;q=0.9,en;q=0.8");
+        assert_eq!(h(&["zh-Hans-CN"]), "zh-Hans-CN,zh;q=0.9");
+        let many: Vec<String> = (0..12).map(|i| format!("x{}", (b'a' + i) as char)).collect();
+        assert!(super::accept_language_for(&many).ends_with("xk;q=0.1,xl;q=0.1"), "the floor is 0.1");
     }
 
     #[test]

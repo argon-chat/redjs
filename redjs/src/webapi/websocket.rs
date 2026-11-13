@@ -419,7 +419,8 @@ pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String], cook
     if let Some(c) = cookie.filter(|c| !c.is_empty() && !c.contains(['\r', '\n'])) {
         s.push_str(&format!("Cookie: {c}\r\n"));
     }
-    s.push_str("User-Agent: RedJs\r\n");
+    s.push_str(&format!("User-Agent: {}\r\n", super::navigator::user_agent()));
+    s.push_str(&format!("Accept-Language: {}\r\n", super::navigator::accept_language()));
     s.push_str("\r\n");
     s
 }

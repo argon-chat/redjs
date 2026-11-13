@@ -880,6 +880,11 @@ fn prepare(u: &url::Url, method: &str, headers: &[(String, String)], body: Optio
     if !has("accept-encoding") {
         out.push((http::header::ACCEPT_ENCODING, http::HeaderValue::from_static("gzip, deflate")));
     }
+    if !has("accept-language") {
+        if let Ok(v) = http::HeaderValue::from_str(&super::super::navigator::accept_language()) {
+            out.push((http::header::ACCEPT_LANGUAGE, v));
+        }
+    }
     Ok(Prepared {
         method: m,
         origin_form,
