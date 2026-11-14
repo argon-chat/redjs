@@ -57,6 +57,7 @@ std::atomic<bool> contextWasCreated { false };
 std::atomic<bool> compilerInitialized { false };
 std::once_flag nativeHelpersInitialized;
 thread_local bool imageActive { false };
+thread_local bool imageAdmitsHostFiles { false };
 // Profile values are part of the loader ABI, never of the image ABI.
 enum class MemoryProfile : uint32_t { Default = 0, Compact = 1 };
 constexpr uint32_t noMemoryProfile = UINT32_MAX;
@@ -115,6 +116,8 @@ extern "C" void* rjs_aot_compile(const uint8_t* program, size_t length, const ui
     options.target.referenceWidth = AOT::Wire::ReferenceWidth::Narrow;
     options.target.imageForm = AOT::Wire::ImageForm::PositionIndependent;
     options.threadCount = 1;
+    // The host runs its preludes and binds native globals before the entry: code the image has not seen.
+    options.admittedCode = static_cast<AOT::Wire::AdmittedCode>(static_cast<uint32_t>(options.admittedCode) | static_cast<uint32_t>(AOT::Wire::AdmittedCode::FilesRunByHost));
     std::memcpy(options.executableIdentity.data(), identity, 16);
     compilation->output = AOT::compileProgram({ program, length }, options);
     StringBuilder messages;
@@ -288,6 +291,7 @@ uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, const uint8_t* identi
     if (verdict != ImageVerdict::Accepted)
         return static_cast<uint32_t>(verdict);
     imageMemoryProfile = profile;
+    imageAdmitsHostFiles = static_cast<uint32_t>(header.options.admitted()) & static_cast<uint32_t>(AOT::Wire::AdmittedCode::FilesRunByHost);
     initialImageView = view.release();
     file.release();
     imageActive = true;
@@ -419,6 +423,11 @@ extern "C" int32_t rjs_aot_run(void* context, uint32_t module, uint64_t* result)
 extern "C" int32_t rjs_aot_is_active()
 {
     return imageActive ? 1 : 0;
+}
+
+extern "C" int32_t rjs_aot_admits_host_files()
+{
+    return imageActive && imageAdmitsHostFiles ? 1 : 0;
 }
 
 extern "C" void rjs_aot_forget_context(void* context)

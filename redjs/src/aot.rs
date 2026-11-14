@@ -13,7 +13,7 @@ pub const BUILD_TABLE_ID: &str = env!("REDJS_AOT_TABLE_ID");
 #[cfg(windows)]
 pub const COMPILE_OPTIONS: &str = concat!(
     env!("REDJS_AOT_TARGET_ARCH"),
-    ";references=narrow;image=pic;threads=1;default-options@",
+    ";references=narrow;image=pic;threads=1;admit=FilesRunByHost;default-options@",
     env!("REDJS_AOT_ENGINE_VERSION")
 );
 #[cfg(unix)]
@@ -21,7 +21,7 @@ pub const COMPILE_OPTIONS: &str = concat!(
     env!("REDJS_AOT_TARGET_ARCH"),
     ";os=",
     env!("REDJS_AOT_TARGET_OS"),
-    ";references=narrow;image=pic;threads=1;default-options@",
+    ";references=narrow;image=pic;threads=1;admit=FilesRunByHost;default-options@",
     env!("REDJS_AOT_ENGINE_VERSION")
 );
 pub fn digest_hex(bytes: &[u8]) -> String {
@@ -93,6 +93,7 @@ unsafe extern "C" {
     fn rjs_aot_create_context() -> *mut c_void;
     fn rjs_aot_run(context: *mut c_void, module: u32, result: *mut u64) -> i32;
     fn rjs_aot_is_active() -> i32;
+    fn rjs_aot_admits_host_files() -> i32;
     fn rjs_aot_forget_context(context: *mut c_void);
 }
 
@@ -279,6 +280,11 @@ pub fn is_active() -> bool {
     unsafe { rjs_aot_is_active() != 0 }
 }
 
+/// The selected image was compiled for a host that runs code of its own before the entry: preludes, native globals.
+pub fn admits_host_files() -> bool {
+    unsafe { rjs_aot_admits_host_files() != 0 }
+}
+
 pub(crate) unsafe fn forget_context(context: *mut c_void) {
     unsafe { rjs_aot_forget_context(context) }
 }
@@ -364,6 +370,7 @@ mod tests {
         assert_eq!(MemoryProfile::Default as u32, 0);
         assert_eq!(MemoryProfile::Compact as u32, 1);
         assert!(COMPILE_OPTIONS.contains("references=narrow"));
+        assert!(COMPILE_OPTIONS.contains(";admit=FilesRunByHost;"));
         assert!(!COMPILE_OPTIONS.contains("Compact"));
     }
     #[test]
