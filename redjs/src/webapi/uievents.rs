@@ -1999,6 +1999,3 @@ mod jsc_tests {
         assert!(msg.contains("KeyboardEvent.getModifierState"), "{msg}");
     }
 }
-
-
-

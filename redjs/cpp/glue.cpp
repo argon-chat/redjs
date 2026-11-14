@@ -86,6 +86,20 @@ constexpr int32_t RJS_BAD_ARG = 2;
 
 inline JSGlobalObject* G(void* g) { return static_cast<JSGlobalObject*>(g); }
 
+// JSLockHolder, skipped when this thread already holds the VM's lock — every call made from a host
+// function. A nested JSLockHolder only bumps the lock count, behind a VM ref and unref.
+class RjsLock final {
+public:
+    explicit RjsLock(VM& vm)
+    {
+        if (!vm.apiLock().currentThreadIsHoldingLock())
+            m_holder.emplace(vm);
+    }
+
+private:
+    std::optional<JSLockHolder> m_holder;
+};
+
 // Bun's WebKit fork removed CatchScope.h; VM::exception()/clearException()
 // are private. ExceptionScope (protected ctor, public exception() +
 // tryClearException()) gives us the sanctioned access path — this is the
@@ -267,7 +281,7 @@ extern "C" void rjs_unlock(void* g)
 extern "C" void rjs_drain_microtasks(void* g)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     // Async engine work (WebAssembly.instantiate compilation, Atomics.waitAsync
     // …) resolves its promises through the VM's DeferredWorkTimer, which is
     // normally serviced by a host run loop we don't run — pump it here so
@@ -283,14 +297,14 @@ extern "C" void rjs_drain_microtasks(void* g)
 extern "C" int32_t rjs_in_js(void* g)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     return vm.isEntered() ? 1 : 0;
 }
 
 extern "C" void rjs_gc(void* g, int32_t mode)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     switch (mode) {
     case 1: vm.heap.collectNow(Sync, CollectionScope::Eden); break;
     case 2: vm.heap.collectAsync(CollectionScope::Full); break;
@@ -310,7 +324,7 @@ struct RjsHeapStats {
 extern "C" void rjs_heap_stats(void* g, RjsHeapStats* out)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     out->heapSize = vm.heap.size();
     out->heapCapacity = vm.heap.capacity();
     out->extraMemory = vm.heap.extraMemorySize();
@@ -322,7 +336,7 @@ extern "C" void rjs_heap_stats(void* g, RjsHeapStats* out)
 extern "C" void rjs_report_extra_memory(void* g, uint64_t bytes)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     vm.heap.deprecatedReportExtraMemory(static_cast<size_t>(bytes));
 }
 
@@ -333,7 +347,7 @@ extern "C" void rjs_report_extra_memory(void* g, uint64_t bytes)
 static int32_t evalCommon(JSGlobalObject* g, const WTF::String& code, const WTF::String& file, uint64_t* out)
 {
     VM& vm = g->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto source = makeSource(code, SourceOrigin(), SourceTaintedOrigin::Untainted, file);
     NakedPtr<Exception> exc;
     JSValue result = evaluate(g, source, jsUndefined(), exc);
@@ -405,7 +419,7 @@ extern "C" uint32_t rjs_bytecode_cache_version()
 // engine revision will add to its bytecode format. The caller hashes the text.
 extern "C" size_t rjs_bytecode_cache_options(void* g, uint8_t* destination, size_t capacity)
 {
-    JSLockHolder lock(G(g)->vm());
+    RjsLock lock(G(g)->vm());
     WTF::StringBuilder builder;
     Options::dumpAllOptionsInALine(builder);
     auto options = builder.toString().utf8();
@@ -426,7 +440,7 @@ extern "C" int32_t rjs_bytecode_generate(void* global, const char* src, size_t l
     *byteLength = 0;
     auto* g = G(global);
     VM& vm = g->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto code = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(src), len });
     auto file = urlLen ? WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(url), urlLen }) : WTF::String();
     auto source = makeSource(code, SourceOrigin(), SourceTaintedOrigin::Untainted, file);
@@ -465,7 +479,7 @@ extern "C" int32_t rjs_eval8_cached(void* global, const char* src, size_t len, c
     *used = 0;
     auto* g = G(global);
     VM& vm = g->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto code = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(src), len });
     auto file = urlLen ? WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(url), urlLen }) : WTF::String();
     if (!byteLength)
@@ -521,7 +535,7 @@ enum RjsKind : uint32_t {
 extern "C" uint32_t rjs_kind(void* g, uint64_t v)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue val = JSValue::decode(v);
     if (val.isUndefined() || !v) return RJS_KIND_UNDEFINED;
     if (val.isNull()) return RJS_KIND_NULL;
@@ -544,7 +558,7 @@ extern "C" int32_t rjs_to_number(void* g, uint64_t v, double* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     double d = JSValue::decode(v).toNumber(go);
     uint64_t exc = 0;
     if (takeException(vm, &exc))
@@ -559,7 +573,7 @@ extern "C" int32_t rjs_to_number_x(void* g, uint64_t v, double* out, uint64_t* e
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     double d = JSValue::decode(v).toNumber(go);
     if (takeException(vm, exc))
         return RJS_EXCEPTION;
@@ -571,7 +585,7 @@ extern "C" int32_t rjs_to_string(void* g, uint64_t v, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSString* s = JSValue::decode(v).toString(go);
     if (takeException(vm, out))
         return RJS_EXCEPTION;
@@ -582,14 +596,14 @@ extern "C" int32_t rjs_to_string(void* g, uint64_t v, uint64_t* out)
 extern "C" int32_t rjs_to_boolean(void* g, uint64_t v)
 {
     JSGlobalObject* go = G(g);
-    JSLockHolder lock(go->vm());
+    RjsLock lock(go->vm());
     return JSValue::decode(v).toBoolean(go) ? 1 : 0;
 }
 
 extern "C" int32_t rjs_strict_equals(void* g, uint64_t a, uint64_t b)
 {
     JSGlobalObject* go = G(g);
-    JSLockHolder lock(go->vm());
+    RjsLock lock(go->vm());
     return JSValue::strictEqual(go, JSValue::decode(a), JSValue::decode(b)) ? 1 : 0;
 }
 
@@ -601,7 +615,7 @@ extern "C" int32_t rjs_string16(void* g, const char16_t* p, size_t len, uint64_t
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     if (!len) {
         *out = JSValue::encode(jsEmptyString(vm));
         return RJS_OK;
@@ -614,7 +628,7 @@ extern "C" int32_t rjs_string8(void* g, const char* p, size_t len, uint64_t* out
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     if (!len) {
         *out = JSValue::encode(jsEmptyString(vm));
         return RJS_OK;
@@ -636,7 +650,7 @@ extern "C" int32_t rjs_string_info(void* g, uint64_t v, RjsStr* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue val = JSValue::decode(v);
     if (!val.isString())
         return RJS_BAD_ARG;
@@ -669,14 +683,14 @@ extern "C" int32_t rjs_string_info(void* g, uint64_t v, RjsStr* out)
 extern "C" void* rjs_atom16(void* g, const char16_t* p, size_t len)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     return new Identifier(Identifier::fromString(vm, WTF::String(std::span<const char16_t> { p, len })));
 }
 
 extern "C" void* rjs_atom8(void* g, const char* p, size_t len)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto s = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(p), len });
     if (s.isNull())
         return nullptr;
@@ -690,7 +704,7 @@ extern "C" void rjs_atom_free(void* g, void* atom)
     // thread-local that JSLock swaps to the VM's on acquire. Freeing without
     // the lock hits the wrong table and fastfails in AtomStringImpl::remove.
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     delete static_cast<Identifier*>(atom);
 }
 
@@ -702,7 +716,7 @@ extern "C" int32_t rjs_get(void* g, uint64_t base, void* atom, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue r = JSValue::decode(base).get(go, *static_cast<Identifier*>(atom));
     if (takeException(vm, out))
         return RJS_EXCEPTION;
@@ -715,7 +729,7 @@ extern "C" int32_t rjs_get_many(void* g, uint64_t base, void* const* atoms, size
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue b = JSValue::decode(base);
     if (!b.isObject())
         return RJS_BAD_ARG;
@@ -731,7 +745,7 @@ extern "C" int32_t rjs_get_path(void* g, uint64_t base, void* const* atoms, size
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue v = JSValue::decode(base);
     for (size_t i = 0; i < n; ++i) {
         if (!v.isObject())
@@ -748,7 +762,7 @@ extern "C" int32_t rjs_define_many(void* g, uint64_t obj, void* const* atoms, co
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -763,7 +777,7 @@ extern "C" int32_t rjs_set(void* g, uint64_t obj, void* atom, uint64_t val)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -779,7 +793,7 @@ extern "C" int32_t rjs_define(void* g, uint64_t obj, void* atom, uint64_t val, u
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -791,7 +805,7 @@ extern "C" int32_t rjs_get_index(void* g, uint64_t base, uint32_t index, uint64_
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue r = JSValue::decode(base).get(go, index);
     if (takeException(vm, out))
         return RJS_EXCEPTION;
@@ -803,7 +817,7 @@ extern "C" int32_t rjs_set_index(void* g, uint64_t obj, uint32_t index, uint64_t
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -818,7 +832,7 @@ extern "C" int32_t rjs_has(void* g, uint64_t obj, void* atom)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return -2;
@@ -832,7 +846,7 @@ extern "C" int32_t rjs_delete(void* g, uint64_t obj, void* atom)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return -2;
@@ -850,7 +864,7 @@ extern "C" int32_t rjs_object_create(void* g, uint64_t proto, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue protoVal = JSValue::decode(proto);
     JSObject* o;
     if (protoVal.isObject())
@@ -870,7 +884,7 @@ extern "C" int32_t rjs_array_create(void* g, uint32_t len, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSArray* a = constructEmptyArray(go, nullptr, len);
     if (takeException(vm, out))
         return RJS_EXCEPTION;
@@ -882,7 +896,7 @@ extern "C" int32_t rjs_array_length(void* g, uint64_t v, uint32_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue val = JSValue::decode(v);
     if (isJSArray(val)) {
         *out = downcast<JSArray>(val)->length();
@@ -905,7 +919,7 @@ extern "C" int32_t rjs_function_create(void* g, const char16_t* name, size_t nam
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     using RawHostFn = EncodedJSValue(JSC_HOST_CALL_ATTRIBUTES*)(JSGlobalObject*, CallFrame*);
     WTF::String n = nameLen ? WTF::String(std::span<const char16_t> { name, nameLen }) : WTF::String();
     JSFunction* f = JSFunction::create(vm, go, arity, n, reinterpret_cast<RawHostFn>(sysvFn), ImplementationVisibility::Public);
@@ -929,7 +943,7 @@ extern "C" int32_t rjs_profile_function_info(void* g, uint64_t value, RjsProfile
         return 0;
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSFunction* function = dynamicDowncast<JSFunction>(JSValue::decode(value));
     if (!function)
         return 0;
@@ -960,7 +974,7 @@ extern "C" int32_t rjs_call(void* g, uint64_t fnVal, uint64_t thisVal, const uin
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue f = JSValue::decode(fnVal);
     auto callData = JSC::getCallData(f);
     if (callData.type == CallData::Type::None)
@@ -987,7 +1001,7 @@ extern "C" int32_t rjs_construct(void* g, uint64_t ctorVal, const uint64_t* args
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue c = JSValue::decode(ctorVal);
     auto constructData = JSC::getConstructData(c);
     if (constructData.type == CallData::Type::None)
@@ -1013,7 +1027,7 @@ extern "C" void rjs_throw(void* g, uint64_t err)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto scope = DECLARE_THROW_SCOPE(vm);
     throwException(go, scope, JSValue::decode(err));
 }
@@ -1022,7 +1036,7 @@ extern "C" int32_t rjs_error_create(void* g, uint32_t kind, const char16_t* msg,
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     WTF::String m = len ? WTF::String(std::span<const char16_t> { msg, len }) : WTF::String();
     JSObject* e;
     switch (kind) {
@@ -1039,7 +1053,7 @@ extern "C" int32_t rjs_error_info(void* g, uint64_t err, uint64_t* msgOut, uint6
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue e = JSValue::decode(err);
 
     JSValue msg = e.isObject() ? e.get(go, vm.propertyNames->message) : e;
@@ -1064,7 +1078,7 @@ extern "C" int32_t rjs_exception_pending(void* g, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     return takeException(vm, out) ? 1 : 0;
 }
 
@@ -1086,7 +1100,7 @@ extern "C" int32_t rjs_typedarray_info(void* g, uint64_t v, RjsTaInfo* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto* view = dynamicDowncast<JSArrayBufferView>(JSValue::decode(v));
     if (!view)
         return RJS_BAD_ARG;
@@ -1118,7 +1132,7 @@ extern "C" int32_t rjs_arraybuffer_info(void* g, uint64_t v, RjsAbInfo* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto* jsBuf = dynamicDowncast<JSArrayBuffer>(JSValue::decode(v));
     if (!jsBuf)
         return RJS_BAD_ARG;
@@ -1141,7 +1155,7 @@ extern "C" int32_t rjs_arraybuffer_detach(void* g, uint64_t v)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto* jsBuf = dynamicDowncast<JSArrayBuffer>(JSValue::decode(v));
     // A locked buffer (a WebAssembly.Memory's) is not detachable: ECMA-262
     // DetachArrayBuffer throws for it, and the caller says so.
@@ -1159,7 +1173,7 @@ extern "C" int32_t rjs_promise_info(void* g, uint64_t v, uint32_t* statusOut, ui
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto* p = dynamicDowncast<JSPromise>(JSValue::decode(v));
     if (!p)
         return RJS_BAD_ARG;
@@ -1182,7 +1196,7 @@ extern "C" int32_t rjs_function_create_full(void* g, const char16_t* name, size_
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     using RawHostFn = EncodedJSValue(JSC_HOST_CALL_ATTRIBUTES*)(JSGlobalObject*, CallFrame*);
     WTF::String n = nameLen ? WTF::String(std::span<const char16_t> { name, nameLen }) : WTF::String();
     JSFunction* f = JSFunction::create(vm, go, arity, n,
@@ -1198,7 +1212,7 @@ extern "C" int32_t rjs_define_accessor(void* g, uint64_t obj, void* atom, uint64
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -1212,7 +1226,7 @@ extern "C" int32_t rjs_define_accessor(void* g, uint64_t obj, void* atom, uint64
 extern "C" void* rjs_atom_private(void* g, const char* p, size_t len)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto s = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(p), len });
     PrivateName pn(PrivateName::PrivateSymbol, s);
     return new Identifier(Identifier::fromUid(pn));
@@ -1223,7 +1237,7 @@ extern "C" void* rjs_atom_private(void* g, const char* p, size_t len)
 extern "C" void* rjs_atom_iterator(void* g)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     return new Identifier(vm.propertyNames->iteratorSymbol);
 }
 
@@ -1235,7 +1249,7 @@ extern "C" int32_t rjs_queue_microtask(void* g, uint64_t fn)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue f = JSValue::decode(fn);
     if (!f.isCallable())
         return RJS_BAD_ARG;
@@ -1249,7 +1263,7 @@ extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -1293,7 +1307,7 @@ extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
 extern "C" void* rjs_atom_wellknown(void* g, uint32_t which)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     switch (which) {
     case 0: return new Identifier(vm.propertyNames->iteratorSymbol);
     case 1: return new Identifier(vm.propertyNames->toStringTagSymbol);
@@ -1376,7 +1390,7 @@ extern "C" uint32_t rjs_brand(void* g, uint64_t v, RjsBrandInfo* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     *out = RjsBrandInfo {};
     JSValue val = JSValue::decode(v);
     if (!v || !val.isObject())
@@ -1464,7 +1478,7 @@ extern "C" uint32_t rjs_brand(void* g, uint64_t v, RjsBrandInfo* out)
 extern "C" int32_t rjs_wrapper_value(void* g, uint64_t v, uint64_t* out)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue w = JSValue::decode(v);
     JSWrapperObject* wo = nullptr;
     if (auto* x = dynamicDowncast<BooleanObject>(w))
@@ -1487,7 +1501,7 @@ extern "C" int32_t rjs_wrapper_value(void* g, uint64_t v, uint64_t* out)
 extern "C" int32_t rjs_regexp_parts(void* g, uint64_t v, uint64_t* pattern, uint64_t* flags)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto* r = dynamicDowncast<RegExpObject>(JSValue::decode(v));
     if (!r)
         return RJS_BAD_ARG;
@@ -1503,7 +1517,7 @@ extern "C" int32_t rjs_get_v(void* g, uint64_t obj, uint64_t key, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     Identifier pk = JSValue::decode(key).toPropertyKey(go);
     if (takeException(vm, out))
         return RJS_EXCEPTION;
@@ -1519,7 +1533,7 @@ extern "C" int32_t rjs_has_own_v(void* g, uint64_t obj, uint64_t key, uint64_t* 
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return -2;
@@ -1537,7 +1551,7 @@ extern "C" int32_t rjs_define_v(void* g, uint64_t obj, uint64_t key, uint64_t va
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -1556,7 +1570,7 @@ extern "C" int32_t rjs_get_own_data(void* g, uint64_t obj, void* atom, uint64_t*
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return 0;
@@ -1579,7 +1593,7 @@ extern "C" int32_t rjs_get_own_data(void* g, uint64_t obj, void* atom, uint64_t*
 extern "C" int32_t rjs_string_latin1(void* g, const uint8_t* p, size_t len, uint64_t* out)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     if (!len) {
         *out = JSValue::encode(jsEmptyString(vm));
         return RJS_OK;
@@ -1594,7 +1608,7 @@ extern "C" int32_t rjs_view_buffer(void* g, uint64_t v, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     auto* view = dynamicDowncast<JSArrayBufferView>(JSValue::decode(v));
     if (!view)
         return RJS_BAD_ARG;
@@ -1614,7 +1628,7 @@ extern "C" int32_t rjs_array_dense(void* g, uint64_t v, uint32_t* lenOut)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue val = JSValue::decode(v);
     if (!isJSArray(val))
         return 0;
@@ -1645,7 +1659,7 @@ extern "C" int32_t rjs_own_get_v(void* g, uint64_t obj, uint64_t key, uint64_t* 
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return 0;
@@ -1672,7 +1686,7 @@ extern "C" int32_t rjs_own_get_index(void* g, uint64_t obj, uint32_t index, uint
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return 0;
@@ -1701,7 +1715,7 @@ extern "C" int32_t rjs_define_index(void* g, uint64_t obj, uint32_t index, uint6
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     JSValue base = JSValue::decode(obj);
     if (!base.isObject())
         return RJS_BAD_ARG;
@@ -1717,7 +1731,7 @@ extern "C" int32_t rjs_define_index(void* g, uint64_t obj, uint32_t index, uint6
 extern "C" uintptr_t rjs_stack_soft_limit(void* g)
 {
     VM& vm = G(g)->vm();
-    JSLockHolder lock(vm);
+    RjsLock lock(vm);
     return reinterpret_cast<uintptr_t>(vm.softStackLimit());
 }
 
@@ -1764,7 +1778,7 @@ extern "C" void rjs_release_memory_and_code(void* g)
 {
     VM& vm = G(g)->vm();
     {
-        JSLockHolder lock(vm);
+        RjsLock lock(vm);
         vm.deleteAllCode(DeleteAllCodeIfNotCollecting);
         vm.heap.collectNow(Sync, CollectionScope::Full);
         vm.heap.collectNow(Sync, CollectionScope::Full);
@@ -1776,7 +1790,7 @@ extern "C" void rjs_release_memory(void* g)
 {
     VM& vm = G(g)->vm();
     {
-        JSLockHolder lock(vm);
+        RjsLock lock(vm);
         vm.heap.collectNow(Sync, CollectionScope::Full);
         vm.heap.collectNow(Sync, CollectionScope::Full); // finalize weaks/finalizers freed by pass 1
     }
