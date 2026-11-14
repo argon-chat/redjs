@@ -726,6 +726,24 @@ extern "C" int32_t rjs_get_many(void* g, uint64_t base, void* const* atoms, size
     return RJS_OK;
 }
 
+// base[atoms[0]][atoms[1]]…; RJS_BAD_ARG when a step's base is not an object.
+extern "C" int32_t rjs_get_path(void* g, uint64_t base, void* const* atoms, size_t n, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    JSLockHolder lock(vm);
+    JSValue v = JSValue::decode(base);
+    for (size_t i = 0; i < n; ++i) {
+        if (!v.isObject())
+            return RJS_BAD_ARG;
+        v = v.get(go, *static_cast<Identifier*>(atoms[i]));
+        if (takeException(vm, out))
+            return RJS_EXCEPTION;
+    }
+    *out = JSValue::encode(v);
+    return RJS_OK;
+}
+
 extern "C" int32_t rjs_define_many(void* g, uint64_t obj, void* const* atoms, const uint64_t* vals, size_t n, uint32_t attrs)
 {
     JSGlobalObject* go = G(g);

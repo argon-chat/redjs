@@ -440,11 +440,9 @@ const DRAG: &[&str] = &["dataTransfer"];
 // ---------------------------------------------------------------------------
 
 unsafe fn slot_get(g: *mut c_void, cf: *mut c_void, key: &'static str, label: &str) -> u64 {
-    match slots(g, cf_this(cf)) {
-        Some(s) => {
-            let v = get(g, s, key);
-            if v == UNDEF { NULL } else { v }
-        }
+    match get_in(g, cf_this(cf), state(g).s_event, key) {
+        Some(v) if v == UNDEF => NULL,
+        Some(v) => v,
         None => throw_type_error(g, &format!("{label} called on a non-Event")),
     }
 }
@@ -2001,5 +1999,6 @@ mod jsc_tests {
         assert!(msg.contains("KeyboardEvent.getModifierState"), "{msg}");
     }
 }
+
 
 

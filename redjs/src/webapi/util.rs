@@ -444,6 +444,29 @@ pub unsafe fn get_many(g: *mut c_void, obj: u64, names: &'static [&'static str],
     }
 }
 
+/// [`get_many`] with the atoms in hand.
+pub unsafe fn get_many_atoms(g: *mut c_void, obj: u64, atoms: &[*mut c_void], out: &mut [u64]) {
+    debug_assert_eq!(atoms.len(), out.len());
+    out.fill(UNDEF);
+    if is_cell(obj) {
+        glue::rjs_get_many(g, obj, atoms.as_ptr(), atoms.len(), out.as_mut_ptr());
+    }
+}
+
+/// `obj[slot][name]` under one engine lock — a field of an internal-slot bag. `None` when `obj`
+/// or the bag is not an object.
+pub unsafe fn get_in(g: *mut c_void, obj: u64, slot: *mut c_void, name: &str) -> Option<u64> {
+    if !is_cell(obj) {
+        return None;
+    }
+    let atoms = [slot, key(g, name)];
+    let mut out = UNDEF;
+    match glue::rjs_get_path(g, obj, atoms.as_ptr(), 2, &mut out) {
+        0 => Some(out),
+        _ => None,
+    }
+}
+
 /// Own data properties `obj[names[i]] = vals[i]`, under one engine lock.
 pub unsafe fn define_many(g: *mut c_void, obj: u64, names: &'static [&'static str], vals: &[u64], attrs: u32) {
     debug_assert_eq!(names.len(), vals.len());

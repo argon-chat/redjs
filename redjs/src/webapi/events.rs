@@ -141,8 +141,8 @@ macro_rules! event_getter {
     ($fn_name:ident, $field:literal) => {
         #[crate::host_fn]
         pub unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
-            match event_state(g, cf_this(cf)) {
-                Some(s) => get(g, s, $field),
+            match get_in(g, cf_this(cf), state(g).s_event, $field) {
+                Some(v) => v,
                 None => throw_type_error(g, concat!("Event.prototype.", $field, " called on a non-Event")),
             }
         }
@@ -683,22 +683,21 @@ pub unsafe fn dispatch_path(g: *mut c_void, event: u64, path: &[u64]) -> Dispatc
     let Some(s) = event_state(g, event) else { return out };
     let Some(&target) = path.first() else { return out };
 
-    define(g, s, "dispatching", TRUE, 0);
-    define(g, s, "target", expose(g, target), 0);
     let js_path = new_array(g);
     for (i, n) in path.iter().enumerate() {
         set_i(g, js_path, i as u32, expose(g, *n));
     }
-    define(g, s, "path", js_path, 0);
+    define_many(g, s, &["dispatching", "target", "path"], &[TRUE, expose(g, target), js_path], 0);
 
-    let ty = get(g, s, "type");
+    let mut m = [UNDEF; 2];
+    get_many(g, s, &["type", "bubbles"], &mut m);
+    let [ty, bubbles] = m;
     let type_str = read_string(g, ty).unwrap_or_default();
-    let bubbles = truthy_flag(get(g, s, "bubbles"));
+    let bubbles = truthy_flag(bubbles);
 
     for (i, node) in path.iter().enumerate().rev() {
         let phase = if i == 0 { AT_TARGET } else { CAPTURING_PHASE };
-        define(g, s, "phase", enc_i32(phase), 0);
-        invoke(g, s, event, *node, ty, &type_str, Pass::Capturing, &mut out);
+        invoke(g, s, event, *node, phase, ty, &type_str, Pass::Capturing, &mut out);
     }
     for (i, node) in path.iter().enumerate() {
         let phase = if i == 0 {
@@ -708,16 +707,16 @@ pub unsafe fn dispatch_path(g: *mut c_void, event: u64, path: &[u64]) -> Dispatc
         } else {
             continue;
         };
-        define(g, s, "phase", enc_i32(phase), 0);
-        invoke(g, s, event, *node, ty, &type_str, Pass::Bubbling, &mut out);
+        invoke(g, s, event, *node, phase, ty, &type_str, Pass::Bubbling, &mut out);
     }
 
-    define(g, s, "phase", enc_i32(NONE), 0);
-    define(g, s, "currentTarget", NULL, 0);
-    define(g, s, "path", UNDEF, 0);
-    define(g, s, "dispatching", FALSE, 0);
-    define(g, s, "stopProp", FALSE, 0);
-    define(g, s, "stopImmediate", FALSE, 0);
+    define_many(
+        g,
+        s,
+        &["phase", "currentTarget", "path", "dispatching", "stopProp", "stopImmediate"],
+        &[enc_i32(NONE), NULL, UNDEF, FALSE, FALSE, FALSE],
+        0,
+    );
     out.canceled = truthy_flag(get(g, s, "defaultPrevented"));
     out
 }
@@ -729,17 +728,18 @@ unsafe fn invoke(
     s: u64,
     event: u64,
     node: u64,
+    phase: i32,
     ty: u64,
     type_str: &str,
     pass: Pass,
     out: &mut DispatchOutcome,
 ) {
+    let st = state(g);
+    let this = expose(g, node);
+    define_many(g, s, &["phase", "currentTarget"], &[enc_i32(phase), this], 0);
     if truthy_flag(get(g, s, "stopProp")) {
         return;
     }
-    let st = state(g);
-    let this = expose(g, node);
-    define(g, s, "currentTarget", this, 0);
 
     // The clone DOM takes: the list as it is NOW, by length. Additions land
     // past `n` (or in a replacement array) and do not run; removals set
@@ -752,8 +752,11 @@ unsafe fn invoke(
         crate::ffi::redjs_protect(g, list);
         for i in 0..n {
             let e = get_i(g, list, i);
-            let flags = entry_flags(g, e);
-            if flags & L_REMOVED != 0 || glue::rjs_strict_equals(g, get_a(g, e, st.a_type), ty) == 0 {
+            let mut f = [UNDEF; 3];
+            get_many_atoms(g, e, &[st.a_flags, st.a_type, st.a_cb], &mut f);
+            let [flags, entry_ty, cb] = f;
+            let flags = dec_f64(flags).unwrap_or(0.0) as i32;
+            if flags & L_REMOVED != 0 || (entry_ty != ty && glue::rjs_strict_equals(g, entry_ty, ty) == 0) {
                 continue;
             }
             let capture = flags & L_CAPTURE != 0;
@@ -763,14 +766,17 @@ unsafe fn invoke(
             if flags & L_ONCE != 0 {
                 remove_entry(g, node, e);
             }
-            if flags & L_PASSIVE != 0 {
+            let passive = flags & L_PASSIVE != 0;
+            if passive {
                 define(g, s, "inPassive", TRUE, 0);
             }
-            if let Err(exc) = call_listener(g, get_a(g, e, st.a_cb), this, event) {
+            if let Err(exc) = call_listener(g, cb, this, event) {
                 crate::errors::report(g, exc, crate::errors::ErrKind::Listener);
                 out.listener_threw = true;
             }
-            define(g, s, "inPassive", FALSE, 0);
+            if passive {
+                define(g, s, "inPassive", FALSE, 0);
+            }
             between_listeners(g);
             if truthy_flag(get(g, s, "stopImmediate")) {
                 break;

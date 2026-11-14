@@ -177,6 +177,7 @@ extern "C" {
     pub fn rjs_atom_free(g: *mut c_void, atom: *mut c_void);
 
     pub fn rjs_get(g: *mut c_void, base: u64, atom: *mut c_void, out: *mut u64) -> i32;
+    pub fn rjs_get_path(g: *mut c_void, base: u64, atoms: *const *mut c_void, n: usize, out: *mut u64) -> i32;
     pub fn rjs_get_many(g: *mut c_void, base: u64, atoms: *const *mut c_void, n: usize, out: *mut u64) -> i32;
     pub fn rjs_define_many(g: *mut c_void, obj: u64, atoms: *const *mut c_void, vals: *const u64, n: usize, attrs: u32) -> i32;
     pub fn rjs_set(g: *mut c_void, obj: u64, atom: *mut c_void, val: u64) -> i32;
