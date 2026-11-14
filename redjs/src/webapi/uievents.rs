@@ -442,7 +442,7 @@ const DRAG: &[&str] = &["dataTransfer"];
 unsafe fn slot_get(g: *mut c_void, cf: *mut c_void, key: &'static str, label: &str) -> u64 {
     match slots(g, cf_this(cf)) {
         Some(s) => {
-            let v = get_k(g, s, key);
+            let v = get(g, s, key);
             if v == UNDEF { NULL } else { v }
         }
         None => throw_type_error(g, &format!("{label} called on a non-Event")),
@@ -548,7 +548,7 @@ unsafe fn modifier_state(g: *mut c_void, cf: *mut c_void, label: &str) -> u64 {
         "Meta" => "metaKey",
         _ => return FALSE,
     };
-    enc_bool(truthy_flag(get_k(g, s, slot)))
+    enc_bool(truthy_flag(get(g, s, slot)))
 }
 
 #[crate::host_fn]
@@ -629,11 +629,11 @@ unsafe fn make_dt(g: *mut c_void, proto: u64, data: DataTransferData) -> u64 {
     let c = classes(g);
     let dt = host_create(g, c.dt_cls, proto, data);
     let b = new_object(g, NULL);
-    define_k(g, b, "files", new_object(g, NULL), 0);
-    define_k(g, b, "objs", new_object(g, NULL), 0);
+    define(g, b, "files", new_object(g, NULL), 0);
+    define(g, b, "objs", new_object(g, NULL), 0);
     let list = host_create(g, c.list_cls, c.list.proto, DtListData { shown: 0 });
     glue::rjs_define(g, list, c.s_owner, dt, 1 | 2 | 4);
-    define_k(g, b, "list", list, 0);
+    define(g, b, "list", list, 0);
     glue::rjs_define(g, dt, c.s_dt, b, 1 | 2 | 4);
     dt
 }
@@ -646,14 +646,14 @@ unsafe fn dt_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn ordinary_create_proto(g: *mut c_void, new_target: u64, fallback: u64) -> u64 {
-    let p = if is_cell(new_target) { get_k(g, new_target, "prototype") } else { UNDEF };
+    let p = if is_cell(new_target) { get(g, new_target, "prototype") } else { UNDEF };
     if is_cell(p) { p } else { fallback }
 }
 
 /// The cached `DataTransferItem` for item `id` (the same object every time).
 unsafe fn item_obj(g: *mut c_void, dt: u64, id: u64) -> u64 {
     let c = classes(g);
-    let objs = get_k(g, bag(g, dt), "objs");
+    let objs = get(g, bag(g, dt), "objs");
     let key = id.to_string();
     let v = get(g, objs, &key);
     if is_cell(v) {
@@ -674,7 +674,7 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
     let ids: Vec<u64> = d.visible().iter().map(|i| i.id).collect();
     let all: Vec<u64> = d.items.iter().map(|i| i.id).collect();
     let b = bag(g, dt);
-    let list = get_k(g, b, "list");
+    let list = get(g, b, "list");
     let Some(ld) = host_data::<DtListData>(g, c.list_cls, list) else { return };
     let shown = ld.shown;
     ld.shown = ids.len() as u32;
@@ -689,13 +689,13 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
         // configurable (WebIDL) — configurable is also what lets the next
         // resync take it away.
         let desc = new_object(g, NULL);
-        define_k(g, desc, "value", o, 0);
-        define_k(g, desc, "enumerable", TRUE, 0);
-        define_k(g, desc, "configurable", TRUE, 0);
+        define(g, desc, "value", o, 0);
+        define(g, desc, "enumerable", TRUE, 0);
+        define(g, desc, "configurable", TRUE, 0);
         let _ = call(g, c.define_property, UNDEF, &[list, enc_i32(i as i32), desc]);
     }
     for map in ["files", "objs"] {
-        let m = get_k(g, b, map);
+        let m = get(g, b, map);
         let mut keys = UNDEF;
         if glue::rjs_own_keys(g, m, &mut keys) != 0 {
             continue;
@@ -798,7 +798,7 @@ unsafe fn dt_files(g: *mut c_void, cf: *mut c_void) -> u64 {
     } else {
         Vec::new()
     };
-    let files_map = get_k(g, bag(g, this), "files");
+    let files_map = get(g, bag(g, this), "files");
     let files: Vec<u64> = ids.iter().map(|id| get(g, files_map, &id.to_string())).filter(|v| is_cell(*v)).collect();
     super::file::create_file_list(g, &files)
 }
@@ -808,7 +808,7 @@ unsafe fn dt_items(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.items called on a non-DataTransfer");
     }
-    get_k(g, bag(g, cf_this(cf)), "list")
+    get(g, bag(g, cf_this(cf)), "list")
 }
 
 #[crate::host_fn]
@@ -942,7 +942,7 @@ unsafe fn list_add(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let id = d.push(kind, mime);
     if is_cell(file) {
-        define(g, get_k(g, bag(g, dt), "files"), &id.to_string(), file, 0);
+        define(g, get(g, bag(g, dt), "files"), &id.to_string(), file, 0);
     }
     resync(g, dt);
     item_obj(g, dt, id)
@@ -1084,7 +1084,7 @@ unsafe fn item_get_as_string(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn item_get_as_file(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "getAsFile") {
         Ok(Some((dt, mode, i))) if mode.readable() && matches!(i.kind, ItemKind::File { .. }) => {
-            let f = get(g, get_k(g, bag(g, dt), "files"), &i.id.to_string());
+            let f = get(g, get(g, bag(g, dt), "files"), &i.id.to_string());
             if is_cell(f) { f } else { NULL }
         }
         Ok(_) => NULL,
@@ -1152,7 +1152,7 @@ pub unsafe fn create_drag_data(g: *mut c_void, entries: &[DropEntry], mode: Drag
     let c = classes(g);
     let data = DataTransferData { effect_allowed: "all".into(), drop_effect: "copy".into(), mode, ..DataTransferData::default() };
     let dt = make_dt(g, c.dt.proto, data);
-    let files_map = get_k(g, bag(g, dt), "files");
+    let files_map = get(g, bag(g, dt), "files");
     for e in entries {
         let name = e.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (size, mtime) = match (e.is_dir, e.stat) {
@@ -1228,8 +1228,8 @@ unsafe fn define_handle_method(g: *mut c_void, c: &UiClasses, present: bool) {
 /// enumerable, unlike every method and accessor above.
 unsafe fn define_constants(g: *mut c_void, class: &Class, consts: &[(&'static str, i32)]) {
     for (name, value) in consts {
-        define_k(g, class.ctor, name, enc_i32(*value), 1 | 4);
-        define_k(g, class.proto, name, enc_i32(*value), 1 | 4);
+        define(g, class.ctor, name, enc_i32(*value), 1 | 4);
+        define(g, class.proto, name, enc_i32(*value), 1 | 4);
     }
 }
 
@@ -1368,7 +1368,7 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     });
     // An indexed getter and `length`: it iterates as an array does (WebIDL).
     let global = glue::rjs_global(g);
-    let values = get_k(g, get_k(g, get_k(g, global, "Array"), "prototype"), "values");
+    let values = get(g, get(g, get(g, global, "Array"), "prototype"), "values");
     let it = glue::rjs_atom_iterator(g);
     glue::rjs_define(g, list.proto, it, values, 2);
     glue::rjs_atom_free(g, it);
@@ -1384,9 +1384,9 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
         accessors: &[],
     });
 
-    let object = get_k(g, global, "Object");
-    let define_property = get_k(g, object, "defineProperty");
-    let freeze = get_k(g, object, "freeze");
+    let object = get(g, global, "Object");
+    let define_property = get(g, object, "defineProperty");
+    let freeze = get(g, object, "freeze");
     crate::ffi::redjs_protect(g, define_property);
     crate::ffi::redjs_protect(g, freeze);
 
@@ -2001,4 +2001,5 @@ mod jsc_tests {
         assert!(msg.contains("KeyboardEvent.getModifierState"), "{msg}");
     }
 }
+
 

@@ -4,7 +4,10 @@
 //! internal slots and per-context state.
 
 use core::ffi::c_void;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::capi;
@@ -283,39 +286,151 @@ pub unsafe fn atom_priv(g: *mut c_void, name: &str) -> *mut c_void {
     glue::rjs_atom_private(g, name.as_ptr(), name.len())
 }
 
-fn key_table() -> &'static Mutex<HashMap<(usize, usize, usize), usize>> {
-    static K: OnceLock<Mutex<HashMap<(usize, usize, usize), usize>>> = OnceLock::new();
-    K.get_or_init(|| Mutex::new(HashMap::new()))
+/// Bumped whenever a context's state is installed or forgotten: a thread's caches of keys and
+/// states are only trusted for the generation they were filled in.
+static GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn bump_generation() {
+    GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
-/// The atom for a static name, made once per context and kept for its lifetime: a by-name
-/// `atom` + `rjs_atom_free` costs several property accesses.
-pub unsafe fn key(g: *mut c_void, name: &'static str) -> *mut c_void {
-    let k = (g as usize, name.as_ptr() as usize, name.len());
-    if let Some(&a) = key_table().lock().unwrap().get(&k) {
-        return a as *mut c_void;
+/// Property names are short; SipHash costs more than the lookup it guards.
+#[derive(Default)]
+struct FastHasher(u64);
+impl Hasher for FastHasher {
+    fn finish(&self) -> u64 {
+        self.0
     }
-    let a = atom(g, name);
-    key_table().lock().unwrap().insert(k, a as usize);
-    a
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.write_u64(u64::from_le_bytes(c.try_into().unwrap()));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut buf = [0u8; 8];
+            buf[..rest.len()].copy_from_slice(rest);
+            self.write_u64(u64::from_le_bytes(buf) ^ ((rest.len() as u64) << 56));
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+}
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
+/// A context's kept atoms, by name.
+type Names = FastMap<Box<str>, usize>;
+/// `(context, list address, list length)`.
+type ListKey = (usize, usize, usize);
+
+/// Names built at run time (ids, header names) are kept too, up to this many per context; past
+/// it a name gets a one-off atom.
+const MAX_NAMES: usize = 4096;
+
+struct SendList(&'static [*mut c_void]);
+unsafe impl Send for SendList {}
+
+#[derive(Default)]
+struct Shared {
+    names: FastMap<usize, Names>,
+    lists: FastMap<ListKey, SendList>,
 }
 
-struct Keys(&'static [*mut c_void]);
-unsafe impl Send for Keys {}
+fn shared() -> &'static Mutex<Shared> {
+    static K: OnceLock<Mutex<Shared>> = OnceLock::new();
+    K.get_or_init(Default::default)
+}
 
-fn key_lists() -> &'static Mutex<HashMap<(usize, usize, usize), Keys>> {
-    static K: OnceLock<Mutex<HashMap<(usize, usize, usize), Keys>>> = OnceLock::new();
-    K.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Default)]
+struct Local {
+    generation: u64,
+    names: FastMap<usize, Names>,
+    lists: FastMap<ListKey, &'static [*mut c_void]>,
+    state: Option<(usize, &'static WebState)>,
+}
+
+thread_local! {
+    static LOCAL: RefCell<Local> = RefCell::new(Local::default());
+}
+
+fn local<R>(f: impl FnOnce(&mut Local) -> R) -> R {
+    LOCAL.with(|l| {
+        let mut l = l.borrow_mut();
+        let generation = GENERATION.load(Ordering::Acquire);
+        if l.generation != generation {
+            l.names.clear();
+            l.lists.clear();
+            l.state = None;
+            l.generation = generation;
+        }
+        f(&mut l)
+    })
+}
+
+/// The context's kept atom for `name`, made on first use. `None` when the context already keeps
+/// [`MAX_NAMES`] and `always` is false.
+unsafe fn kept_atom(g: *mut c_void, name: &str, always: bool) -> Option<*mut c_void> {
+    let ctx = g as usize;
+    if let Some(a) = local(|l| l.names.get(&ctx).and_then(|m| m.get(name)).copied()) {
+        return Some(a as *mut c_void);
+    }
+    let found = {
+        let sh = shared().lock().unwrap();
+        let m = sh.names.get(&ctx);
+        match m.and_then(|m| m.get(name)) {
+            Some(&a) => Some(a),
+            None if !always && m.is_some_and(|m| m.len() >= MAX_NAMES) => return None,
+            None => None,
+        }
+    };
+    let a = match found {
+        Some(a) => a,
+        None => {
+            let made = atom(g, name) as usize;
+            let mut sh = shared().lock().unwrap();
+            let m = sh.names.entry(ctx).or_default();
+            match m.get(name) {
+                // Made concurrently by another thread of this context's VM.
+                Some(&a) => {
+                    glue::rjs_atom_free(g, made as *mut c_void);
+                    a
+                }
+                None => {
+                    m.insert(name.into(), made);
+                    made
+                }
+            }
+        }
+    };
+    local(|l| l.names.entry(ctx).or_default().insert(name.into(), a));
+    Some(a as *mut c_void)
+}
+
+/// The atom for `name`, made once per context and kept for its lifetime: a by-name `atom` +
+/// `rjs_atom_free` costs more than the property access it names.
+pub unsafe fn key(g: *mut c_void, name: &str) -> *mut c_void {
+    kept_atom(g, name, true).unwrap_or(core::ptr::null_mut())
 }
 
 /// [`key`] for a whole list of names, with one lookup.
 pub unsafe fn keys(g: *mut c_void, names: &'static [&'static str]) -> &'static [*mut c_void] {
     let k = (g as usize, names.as_ptr() as usize, names.len());
-    if let Some(list) = key_lists().lock().unwrap().get(&k) {
-        return list.0;
+    if let Some(list) = local(|l| l.lists.get(&k).copied()) {
+        return list;
     }
-    let list: &'static [*mut c_void] = Box::leak(names.iter().map(|n| key(g, n)).collect());
-    key_lists().lock().unwrap().insert(k, Keys(list));
+    let cached = shared().lock().unwrap().lists.get(&k).map(|l| l.0);
+    let list = match cached {
+        Some(list) => list,
+        None => {
+            let list: &'static [*mut c_void] = Box::leak(names.iter().map(|n| key(g, n)).collect());
+            shared().lock().unwrap().lists.insert(k, SendList(list));
+            list
+        }
+    };
+    local(|l| l.lists.insert(k, list));
     list
 }
 
@@ -335,16 +450,11 @@ pub unsafe fn define_many(g: *mut c_void, obj: u64, names: &'static [&'static st
     glue::rjs_define_many(g, obj, keys(g, names).as_ptr(), vals.as_ptr(), names.len(), attrs);
 }
 
-pub unsafe fn define_k(g: *mut c_void, obj: u64, name: &'static str, v: u64, attrs: u32) {
-    glue::rjs_define(g, obj, key(g, name), v, attrs);
-}
-
-pub unsafe fn get_k(g: *mut c_void, obj: u64, name: &'static str) -> u64 {
-    get_a(g, obj, key(g, name))
-}
-
-/// One-shot define by name (cold paths: prototype building etc).
 pub unsafe fn define(g: *mut c_void, obj: u64, name: &str, v: u64, attrs: u32) {
+    if let Some(a) = kept_atom(g, name, false) {
+        glue::rjs_define(g, obj, a, v, attrs);
+        return;
+    }
     let a = atom(g, name);
     glue::rjs_define(g, obj, a, v, attrs);
     glue::rjs_atom_free(g, a);
@@ -379,6 +489,9 @@ pub unsafe fn get_a(g: *mut c_void, obj: u64, a: *mut c_void) -> u64 {
 }
 
 pub unsafe fn get(g: *mut c_void, obj: u64, name: &str) -> u64 {
+    if let Some(a) = kept_atom(g, name, false) {
+        return get_a(g, obj, a);
+    }
     let a = atom(g, name);
     let v = get_a(g, obj, a);
     glue::rjs_atom_free(g, a);
@@ -836,14 +949,20 @@ fn states() -> &'static Mutex<HashMap<usize, SendPtr>> {
 pub fn put_state(g: *mut c_void, st: WebState) -> &'static WebState {
     let leaked: &'static WebState = Box::leak(Box::new(st));
     states().lock().unwrap().insert(g as usize, SendPtr(leaked as *const WebState as *mut WebState));
+    bump_generation();
     leaked
 }
 
 /// Panics if the web API was not installed for this context. Shared ref —
 /// WebState is immutable after install.
 pub fn state(g: *mut c_void) -> &'static WebState {
+    if let Some(st) = local(|l| l.state.and_then(|(k, st)| (k == g as usize).then_some(st))) {
+        return st;
+    }
     let p = states().lock().unwrap().get(&(g as usize)).map(|s| s.0).expect("redjs webapi not installed");
-    unsafe { &*p }
+    let st: &'static WebState = unsafe { &*p };
+    local(|l| l.state = Some((g as usize, st)));
+    st
 }
 
 pub fn has_state(g: *mut c_void) -> bool {
@@ -856,8 +975,49 @@ pub fn has_state(g: *mut c_void) -> bool {
 pub(crate) fn forget_state(gone: crate::context::Gone) {
     states().lock().unwrap().remove(&gone.key);
     // The atoms are left alone: their VM may already be gone.
-    key_table().lock().unwrap().retain(|k, _| k.0 != gone.key);
-    key_lists().lock().unwrap().retain(|k, _| k.0 != gone.key);
+    let mut sh = shared().lock().unwrap();
+    sh.names.remove(&gone.key);
+    sh.lists.retain(|k, _| k.0 != gone.key);
+    drop(sh);
+    bump_generation();
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use crate::webapi::testing::ctx;
+
+    #[test]
+    fn names_past_the_kept_limit_still_read_and_write() {
+        let c = ctx();
+        let g = c.raw();
+        unsafe {
+            let o = new_object(g, UNDEF);
+            crate::ffi::redjs_protect(g, o);
+            let n = MAX_NAMES + 50;
+            for i in 0..n {
+                define(g, o, &format!("k{i}"), enc_f64(i as f64), 0);
+            }
+            for i in 0..n {
+                assert_eq!(dec_f64(get(g, o, &format!("k{i}"))), Some(i as f64), "k{i}");
+            }
+            assert_eq!(get(g, o, "missing"), UNDEF);
+            crate::ffi::redjs_unprotect(g, o);
+        }
+    }
+
+    #[test]
+    fn a_new_context_does_not_reuse_another_contexts_atoms() {
+        for _ in 0..8 {
+            let c = ctx();
+            let g = c.raw();
+            unsafe {
+                let o = new_object(g, UNDEF);
+                define(g, o, "x", TRUE, 0);
+                assert_eq!(get(g, o, "x"), TRUE);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
