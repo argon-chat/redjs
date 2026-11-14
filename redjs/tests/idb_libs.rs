@@ -1,6 +1,6 @@
 //! The compatibility proof (m25 indexeddb-design §8.3): Dexie 4, idb 8,
 //! idb-keyval 6 and localForage 1.10, vendored UNMODIFIED in `tests/libs/`,
-//! loaded into a redjs context and driven the way vue-native drives a frame:
+//! loaded into a redjs context and driven the way skathi drives a frame:
 //! `redjs_pump(TIMERS | RAF | MICROTASKS)` under the API lock, once per
 //! simulated frame — NOT the browser-exact loop the WPT runner uses. Passing
 //! here is what "Dexie and idb work unmodified" means.
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use redjs::api::{Context, Error};
 use redjs::ffi;
 
-/// vue-native's frame: PUMP_TIMERS | PUMP_RAF | PUMP_MICROTASKS.
+/// skathi's frame: PUMP_TIMERS | PUMP_RAF | PUMP_MICROTASKS.
 const FRAME: u32 = 1 | 2 | 4;
 
 /// The backend this process runs on, chosen once, before the first use.
@@ -91,7 +91,7 @@ impl Run {
     }
 }
 
-/// Runs an async body as vue-native would: one pump per ~frame (a 1 ms sleep
+/// Runs an async body as skathi would: one pump per ~frame (a 1 ms sleep
 /// between pumps stands in for the rest of the frame), under the API lock.
 fn run(c: &Context, body: &str) -> Run {
     let src = format!(

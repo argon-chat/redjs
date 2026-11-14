@@ -30,7 +30,7 @@
 //! ([`PermissionState::web_state`]): the capability is not available, which is
 //! what `"denied"` means to every consumer that checks it. Embedders that want
 //! the distinction read it through their own extension API — that is what
-//! vue-native's `appPermissions` does — not by widening a web enum.
+//! skathi's `appPermissions` does — not by widening a web enum.
 //!
 //! # Divergence: one `PermissionStatus` per name, not one per query
 //!
@@ -863,7 +863,7 @@ mod jsc_tests {
             }
         }
         /// Subscribed: a process-wide queue, exactly the shape of the real
-        /// backends (vn-permissions' Windows watcher is one queue per process).
+        /// backends (sk-permissions' Windows watcher is one queue per process).
         fn drain_changes(&self) -> Option<Vec<Capability>> {
             Some(core::mem::take(&mut *CHANGES.lock().unwrap()))
         }

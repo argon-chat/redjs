@@ -1,8 +1,8 @@
 // A deliberately bounded native AOT structure/GC stress fixture. This is not
 // an Argon workload or a memory-limit benchmark: 100k distinct dynamic shapes
 // in four rounds, at most 25k active rows plus 128 retained samples.
-declare var __VN_AOT_HOST__: any;
-const g: any = __VN_AOT_HOST__;
+declare var __SK_AOT_HOST__: any;
+const g: any = __SK_AOT_HOST__;
 const ROUNDS: number = 4;
 const PER_ROUND: number = 25000;
 const RETAIN_PER_ROUND: number = 32;
@@ -49,7 +49,7 @@ function verifyRetained(): number {
 }
 // Rust forces GC and calls this compiled function while its own callback and
 // the enclosing compiled loop are on the stack. It never calls the host again.
-g.__vn_aot_stress_reenter = (token: number): number => {
+g.__sk_aot_stress_reenter = (token: number): number => {
   reentries++;
   verifyRetained();
   if (live.length) {
@@ -64,7 +64,7 @@ g.__vn_aot_stress_reenter = (token: number): number => {
 function collect(): void {
   const token: number = created + gcCalls;
   gcCalls++;
-  check(g.__vn_aot_stress_gc(token) === token + 1, "native GC callback result");
+  check(g.__sk_aot_stress_gc(token) === token + 1, "native GC callback result");
 }
 for (round = 0; round < ROUNDS; round++) {
   mutatedThrough = -1;
@@ -117,10 +117,10 @@ collect();
 check(created === 100000 && verified === created, "object counts");
 check(checksum === 15001050000, "final checksum");
 check(verifyRetained() === 128 && live.length === 0 && indexed.size === 0, "bounded final retention");
-g.__vn_aot_stress_verify = (): number => verifyRetained();
-g.__vn_aot_stress_stats = g.JSON.stringify({
+g.__sk_aot_stress_verify = (): number => verifyRetained();
+g.__sk_aot_stress_stats = g.JSON.stringify({
   rounds: ROUNDS, perRound: PER_ROUND, distinctObjects: created,
   verified, checksum, gcCalls, reentries, peakLiveRows: PER_ROUND,
   retainedRows: retained.length, activeRows: live.length, mapEntries: indexed.size,
 });
-g.__vn_aot_stress_result = "ok";
+g.__sk_aot_stress_result = "ok";

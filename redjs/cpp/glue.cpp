@@ -1754,7 +1754,7 @@ extern "C" uintptr_t rjs_stack_soft_limit(void* g)
 // was never swept in the background, and never shrank. The Argon client sat
 // at a 280 MB GC heap capacity for 85 MB of live objects after two idle
 // minutes; one full collection took it to 110 MB and 175 MB of RAM went back
-// (vue-native research/reports/m26/perf-mem-2.md).
+// (skathi research/reports/m26/perf-mem-2.md).
 //
 // One non-blocking turn (RunMode::Iterate: the due timers and the dispatched
 // functions, then return) from the pump, between waves, is how a host that

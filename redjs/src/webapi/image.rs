@@ -425,7 +425,7 @@ fn decode_typed(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
 /// are no image this build decodes.
 ///
 /// For an embedder that holds an image's bytes and needs its pixels now
-/// (vue-native's `drawImage` of an `<img>` the host loaded).
+/// (skathi's `drawImage` of an `<img>` the host loaded).
 pub fn decode(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
     use image::ImageDecoder;
     if is_svg(bytes, mime) {

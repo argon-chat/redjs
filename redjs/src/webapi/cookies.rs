@@ -419,7 +419,7 @@ pub const PUBLIC_SUFFIXES: &[&str] = &[
     "com.tr", "net.tr", "org.tr", "gov.tr", "com.ua", "net.ua", "org.ua", "com.ru", "net.ru",
     "org.ru", "pp.ru", "msk.ru", "spb.ru", "com.pl", "net.pl", "org.pl",
     "co.za", "org.za", "net.za", "gov.za", "co.il", "org.il", "net.il", "ac.il",
-    "com.eg", "com.sa", "com.my", "com.ph", "com.vn", "co.th", "in.th", "co.id", "or.id",
+    "com.eg", "com.sa", "com.my", "com.ph", "com.sk", "co.th", "in.th", "co.id", "or.id",
     // Private suffixes whose subdomains belong to different people.
     "github.io", "githubusercontent.com", "gitlab.io", "herokuapp.com", "appspot.com",
     "blogspot.com", "cloudfront.net", "azurewebsites.net", "netlify.app", "vercel.app",

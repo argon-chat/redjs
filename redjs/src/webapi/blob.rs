@@ -204,7 +204,7 @@ impl Range {
     /// Writes the bytes into `out` on THIS thread without holding them all
     /// in memory: a memory window in one write, a file range streamed in
     /// pieces under the same snapshot check [`Range::read`] makes. A host
-    /// that copies a picked file somewhere (vue-native's
+    /// that copies a picked file somewhere (skathi's
     /// `FileSystemWritableFileStream.write(file)`, `<a download>`) uses it
     /// on its own worker, so a large file is neither read on the UI thread
     /// nor loaded whole. On any error `out` may hold part of the bytes.

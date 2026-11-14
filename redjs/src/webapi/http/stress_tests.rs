@@ -277,7 +277,7 @@ fn slow_responses_arrive_byte_exact_tls_1ms_slices() {
 
 // -- live, harmless: the discovery endpoint the client resolves at boot -------
 
-const LIVE_URL: &str = "https://api.argon.gl/api/discovery/resolve?email=vn-probe%40example.invalid";
+const LIVE_URL: &str = "https://api.argon.gl/api/discovery/resolve?email=sk-probe%40example.invalid";
 
 fn live_req() -> Request {
     Request {

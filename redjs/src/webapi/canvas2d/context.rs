@@ -9,7 +9,7 @@
 //! which is what makes a stroke's width and a gradient follow the transform
 //! of the moment they are painted with.
 //!
-//! An embedder's `<canvas>` element (vue-native's `canvas.ts`) gets its
+//! An embedder's `<canvas>` element (skathi's `canvas.ts`) gets its
 //! context from `__rjs_canvas_context(canvas, w, h, options, key)` and drives
 //! it through the other hidden `__rjs_canvas_*` natives; `key` publishes the
 //! bitmap for presentation ([`super::present`]).
@@ -454,7 +454,7 @@ unsafe fn gpu_source(g: *mut c_void, v: u64) -> Result<Source, ()> {
 
 unsafe fn blank_mirror(g: *mut c_void, v: u64) -> Option<(u32, u32)> {
     if read_string(g, get(g, v, "tagName"))?.as_str() != "CANVAS"
-        || dec_f64(get(g, v, "__vnId")).is_none()
+        || dec_f64(get(g, v, "__skId")).is_none()
     {
         return None;
     }

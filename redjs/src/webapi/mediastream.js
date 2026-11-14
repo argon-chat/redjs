@@ -263,7 +263,7 @@
     t.dispatchEvent(new Ev("ended"));
   };
 
-  // The native track id, for an embedder that reads a page's track (vue-native
+  // The native track id, for an embedder that reads a page's track (skathi
   // publishes it to a LiveKit room). 0 for anything else.
   method(g, "__rjs_mediaTrackId", function (t) {
     var s = T.get(t);

@@ -9,7 +9,7 @@
 //! `URL.createObjectURL` / `revokeObjectURL` keep a real blob URL store per
 //! context. Everything in redjs that takes a URL resolves `blob:` through it:
 //! `fetch`, an `Image`'s `src` and a `createImageBitmap` string (image.rs).
-//! A host resolves them with [`resolve_blob_url`] (vue-native: `<img>`,
+//! A host resolves them with [`resolve_blob_url`] (skathi: `<img>`,
 //! `<video>`, `<lottie>`). The store is per context: once Workers exist, a
 //! URL made in a worker will not resolve in the window. A browser has one
 //! store per user agent, where it does — a note for the Workers design.
@@ -244,7 +244,7 @@ unsafe fn can_parse(g: *mut c_void, cf: *mut c_void) -> u64 {
 //
 // An entry holds the Blob's SOURCE — the `Arc` of its bytes or its path, and
 // its window — never the Blob object: no JS value is protected, so the store
-// cannot keep a heap alive, and a host consumer on another thread (vn-tree's
+// cannot keep a heap alive, and a host consumer on another thread (sk-tree's
 // `<img>`) can read it. The bytes stay alive until `revokeObjectURL`, or until
 // the context goes, as in a browser.
 
@@ -304,14 +304,14 @@ fn store_key(url: &str) -> Option<String> {
 /// environment's origin + `/` + a UUID. The origin is this context's
 /// `location.origin`, read once; where there is none, or it is opaque
 /// (`"null"`), the spec lets the value be implementation-defined, and it is
-/// `vn`.
+/// `sk`.
 unsafe fn origin_part(g: *mut c_void) -> String {
     if let Some(o) = blob_urls().lock().unwrap().get(&(g as usize)).and_then(|s| s.origin.clone()) {
         return o;
     }
     let loc = get(g, glue::rjs_global(g), "location");
     let o = if is_cell(loc) { read_string(g, get(g, loc, "origin")).unwrap_or_default() } else { String::new() };
-    let o = if o.is_empty() || o == "null" { "vn".to_string() } else { o };
+    let o = if o.is_empty() || o == "null" { "sk".to_string() } else { o };
     blob_urls().lock().unwrap().entry(g as usize).or_default().origin = Some(o.clone());
     o
 }
@@ -356,7 +356,7 @@ pub(crate) fn lookup(g: *mut c_void, url: &str) -> Option<BlobEntry> {
     blob_urls().lock().unwrap().get(&(g as usize))?.urls.get(&key).cloned()
 }
 
-/// A blob URL, resolved for a HOST consumer (vn-tree's `<img>` / `<video>`).
+/// A blob URL, resolved for a HOST consumer (sk-tree's `<img>` / `<video>`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum BlobTarget {
     /// A path-backed Blob or File: load it by path, without a copy. `range`

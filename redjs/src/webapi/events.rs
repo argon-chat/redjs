@@ -25,7 +25,7 @@
 //! the targets builds it. [`dispatch`] — what every native event source and
 //! `dispatchEvent` uses — builds the one parent this runtime has: `document`'s
 //! is the global (DOM "get the parent", except for `load`). Elements are not
-//! in a tree here, so an element's path is itself; vue-native's mirror tree
+//! in a tree here, so an element's path is itself; skathi's mirror tree
 //! does its own walk in `runtime.ts`.
 //!
 //! # Between listeners
@@ -1205,7 +1205,7 @@ mod tests {
              t.addEventListener('x', () => log.push('l2'));
              0",
         );
-        // The embedder's frame holds the lock, as vue-native's pump does — so
+        // The embedder's frame holds the lock, as skathi's pump does — so
         // the only drains are the dispatcher's own.
         let g = c.raw();
         unsafe {

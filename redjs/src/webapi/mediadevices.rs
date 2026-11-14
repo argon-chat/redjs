@@ -106,7 +106,7 @@ static DEFAULT_OUTPUT: AtomicU64 = AtomicU64::new(0);
 static DEFAULT_INPUT: AtomicU64 = AtomicU64::new(0);
 
 /// From now on the embedder reports device changes itself, from the OS's own
-/// notifications (vue-native: Windows' `IMMNotificationClient`, in vn-voice).
+/// notifications (skathi: Windows' `IMMNotificationClient`, in sk-voice).
 /// Nothing polls any more.
 pub fn set_host_notifications() {
     HOST_NOTIFIES.store(true, Ordering::Release);

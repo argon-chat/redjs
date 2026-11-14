@@ -457,7 +457,7 @@ fn main() {
     // /OPT:NOICF). The last /OPT wins in link.exe, and `-C link-arg` lands
     // after rustc's own. This does not reach a consumer's binary — cargo
     // scopes link args to the package that prints them — so an embedder that
-    // links its own executable (vue-native's vn-app) says the same thing in
+    // links its own executable (skathi's sk-app) says the same thing in
     // its own build script.
     if windows {
         println!("cargo:rustc-link-arg=/OPT:NOICF");
@@ -533,7 +533,7 @@ fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &st
         exports.extend(extern_c_names(&text).into_iter().filter(|n| defined.contains(n)));
     }
     // mimalloc's public API too: embedders read its stats and options (the
-    // vue-native devtools memory report) from outside this crate.
+    // skathi devtools memory report) from outside this crate.
     exports.extend(mimalloc);
     for required in ["rjs_init", "rjs_set_icu_decompress", "rjs_icu_zstd_dict", "JSGlobalContextCreate"] {
         assert!(exports.contains(required), "the engine DLL would not export {required}");

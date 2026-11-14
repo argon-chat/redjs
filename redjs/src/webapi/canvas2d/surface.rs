@@ -170,7 +170,7 @@ impl Surface {
     /// dropped, and the generation does not move: not one pixel changes, so a
     /// presenter has nothing to repaint and a snapshot stays valid. The case is
     /// the animation loop that clears and then draws nothing (a source with no
-    /// frame yet): vue-native redrew the whole window for it at the display rate.
+    /// frame yet): skathi redrew the whole window for it at the display rate.
     pub fn push(&mut self, cmd: Cmd) {
         if self.width == 0 || self.height == 0 {
             return;
@@ -258,7 +258,7 @@ impl Surface {
     /// canvas that drew a cross-origin image throws `SecurityError`.
     ///
     /// NOT enforced, and advised instead: an embedder whose pages live on a
-    /// private origin (vue-native's `app://`) sees every https image as
+    /// private origin (skathi's `app://`) sees every https image as
     /// cross-origin, so enforcing it would break any page that crops an
     /// avatar it fetched. Enforcing it is changing the `Ok` below.
     pub fn readable(&self) -> Result<(), &'static str> {
@@ -292,7 +292,7 @@ fn set_presented(surface: &Mutex<Surface>, on: bool) {
     PRESENTED_CHANGED.store(true, Ordering::Release);
 }
 
-/// Publishes `surface` under the embedder's `key` (vue-native: the host node
+/// Publishes `surface` under the embedder's `key` (skathi: the host node
 /// id of the `<canvas>`). A later registration under the same key wins.
 pub fn register_present(key: u64, surface: &SurfaceRef) {
     let old = presented().lock().unwrap().insert(key, Arc::downgrade(surface));
@@ -366,7 +366,7 @@ mod tests {
         Cmd::Put { x: 0, y: 0, image: Arc::new(Image::from_premul(1, 1, rgba.to_vec(), true)) }
     }
 
-    /// The presenter's protocol, as vue-native's host drives it: a frame that
+    /// The presenter's protocol, as skathi's host drives it: a frame that
     /// asks again without a change gets nothing, a draw on a presented surface
     /// raises the flag once, and an offscreen one never does.
     #[test]

@@ -8,7 +8,7 @@
 //! # On disk (format 1 — `FORMAT`)
 //!
 //! ```text
-//! <folder>\                    the host's folder (vue-native: <storage folder>\indexeddb)
+//! <folder>\                    the host's folder (skathi: <storage folder>\indexeddb)
 //!   lock                       held open, write-locked, for the life of the process
 //!   <h>.sqlite3                one database; <h>.sqlite3-wal while it is open
 //!   <h>.unreadable-<utc>.sqlite3   a file we could not open, moved aside — never deleted
@@ -43,7 +43,7 @@
 //! # Encryption (design §5.2, §5.5)
 //!
 //! Whole-page ChaCha20-Poly1305, WAL included, under a raw 256-bit key the host
-//! supplies (vue-native: random, DPAPI-sealed). Each file's own header decides
+//! supplies (skathi: random, DPAPI-sealed). Each file's own header decides
 //! what it is (`SQLite format 3\0` = plaintext), and the server's start brings
 //! every file to the requested format before the first open: plaintext files
 //! are encrypted (`Encrypted`), encrypted ones decrypted (`Decrypting`), and an
@@ -1761,36 +1761,36 @@ mod tests {
     fn encrypted_at_rest_and_the_key_matters() {
         let d = dir();
         let key = [0x5a; 32];
-        let secret = b"vn-secret-value-0123456789";
+        let secret = b"sk-secret-value-0123456789";
         {
             let mut b = backend(&d, IdbEncryption::Encrypted(key), 1 << 30);
             assert!(b.encrypted());
-            let mut db = b.open(&n("vn-secret-db")).unwrap();
+            let mut db = b.open(&n("sk-secret-db")).unwrap();
             db.begin_write(Durability::Default).unwrap();
             db.set_version(3).unwrap();
-            db.create_store(st(1, "vn-secret-store")).unwrap();
-            db.put(1, b"vn-secret-key-abcdef", Arc::new(secret.to_vec())).unwrap();
+            db.create_store(st(1, "sk-secret-store")).unwrap();
+            db.put(1, b"sk-secret-key-abcdef", Arc::new(secret.to_vec())).unwrap();
             db.commit_write().unwrap();
             // While open: the WAL holds the commit — it must be ciphertext too.
             let raw = bytes_of(&d);
-            assert!(!contains(&raw, secret) && !contains(&raw, b"vn-secret-key-abcdef"), "plaintext in the WAL");
+            assert!(!contains(&raw, secret) && !contains(&raw, b"sk-secret-key-abcdef"), "plaintext in the WAL");
             assert!(!contains(&raw, b"SQLite format 3"));
         }
         let raw = bytes_of(&d);
-        assert!(!contains(&raw, secret) && !contains(&raw, b"vn-secret-key") && !contains(&raw, &u16le(&n("vn-secret-store"))));
+        assert!(!contains(&raw, secret) && !contains(&raw, b"sk-secret-key") && !contains(&raw, &u16le(&n("sk-secret-store"))));
         assert!(!contains(&raw, b"SQLite format 3"), "not a plaintext SQLite file");
         // The same key reads it back.
         {
             let mut b = backend(&d, IdbEncryption::Encrypted(key), 1 << 30);
-            assert_eq!(b.databases().unwrap(), vec![(n("vn-secret-db"), 3)]);
-            let mut db = b.open(&n("vn-secret-db")).unwrap();
-            assert_eq!(db.get(1, b"vn-secret-key-abcdef").unwrap().as_deref(), Some(&secret.to_vec()));
+            assert_eq!(b.databases().unwrap(), vec![(n("sk-secret-db"), 3)]);
+            let mut db = b.open(&n("sk-secret-db")).unwrap();
+            assert_eq!(db.get(1, b"sk-secret-key-abcdef").unwrap().as_deref(), Some(&secret.to_vec()));
         }
         // Another key cannot, and the file is moved aside — never deleted.
         {
             let mut b = backend(&d, IdbEncryption::Encrypted([1; 32]), 1 << 30);
             assert!(b.databases().unwrap().is_empty());
-            let db = b.open(&n("vn-secret-db")).unwrap();
+            let db = b.open(&n("sk-secret-db")).unwrap();
             assert_eq!(db.meta().version, 0, "a fresh database in its place");
         }
         let names: Vec<String> = std::fs::read_dir(&d.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();

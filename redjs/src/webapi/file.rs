@@ -622,7 +622,7 @@ mod jsc_tests {
 
     /// An awaited chain of path-backed reads is delivered inside one pump's
     /// budget, the way IndexedDB's results are, instead of one hop per pump
-    /// (= per frame in vue-native). m25 review, finding 3.
+    /// (= per frame in skathi). m25 review, finding 3.
     #[test]
     fn awaited_path_backed_reads_do_not_cost_a_pump_each() {
         let c = file_ctx();

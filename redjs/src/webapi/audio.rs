@@ -3601,7 +3601,7 @@ pub(crate) unsafe fn ms_source_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     // A live device: a short queue keeps the monitor latency near a
     // browser's. A network track arrives in the network's bursts and needs
-    // the jitter room the room's own playout has (vue-native's livekit.ts).
+    // the jitter room the room's own playout has (skathi's livekit.ts).
     let remote = info.kind == super::mediastream::SourceKind::Remote;
     let cfg = PcmStreamConfig {
         sample_rate: info.sample_rate,

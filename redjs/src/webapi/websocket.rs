@@ -17,7 +17,7 @@
 //!    is the only thing gained) or `rustls`. rustls 0.23 has no default crypto
 //!    provider and *panics* when its features name two — and in the embedder
 //!    this crate ships into, `ring` and `aws-lc-rs` both arrive transitively.
-//!    That defect cost the host workspace a milestone (its `vn-voice/src/tls.rs`
+//!    That defect cost the host workspace a milestone (its `sk-voice/src/tls.rs`
 //!    exists solely to pin one provider). `wss:` here goes through the very same
 //!    `native_tls` connector `https:` already uses: platform TLS, no bundled
 //!    root store, no C toolchain, no provider ambiguity, and trust that follows
@@ -47,7 +47,7 @@
 //! transport does run a runtime, behind the `net-h2` feature; WebSocket stays on
 //! this path, so it does not depend on that feature.)
 //!
-//! The host workspace's voice stack (`vn-voice`) does run a tokio multi-thread
+//! The host workspace's voice stack (`sk-voice`) does run a tokio multi-thread
 //! runtime when voice is on. Borrowing it was considered and rejected: it would
 //! make `WebSocket` — a *core* web API, available before any media exists —
 //! conditional on an optional subsystem of one particular embedder, and would

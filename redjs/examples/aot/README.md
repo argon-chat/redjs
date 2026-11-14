@@ -3,7 +3,7 @@
 These use Bun frontend `7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074` and
 WebKit `4d45755fed4aeef19e95beb90d3d0c884a2812bd`. `native-aot` is opt-in.
 Generate the full matching builtin table with the embedder's pinned generator
-(vue-native: `scripts/aot/generate-table.ts`), then point
+(skathi: `scripts/aot/generate-table.ts`), then point
 `REDJS_AOT_BUILTIN_TABLE_DIR` at it. An engine-only table cannot consume the
 full frontend's builtin IDs.
 
@@ -21,7 +21,7 @@ From `redjs/`, with the pinned frontend on `$frontend` and an isolated `$out`:
 $env:CARGO_TARGET_DIR = "$out/target"
 $env:REDJS_AOT_BUILTIN_TABLE_DIR = "$out/table"
 $env:APPDATA = "$out/appdata"
-$env:VN_DATA_DIR = "$out/profile"
+$env:SK_DATA_DIR = "$out/profile"
 & $frontend compile examples/aot/web.ts --no-builtin-modules "--aot-out=$out/web.ir" --aot-threads=1 --aot-testing=NoExecutable --outfile "$out/unused.exe"
 cargo run --example aot-image --no-default-features --features native-aot -- compile "$out/web.ir" "$out/web.image"
 cargo run --example aot-image --no-default-features --features native-aot -- run-web "$out/web.image"

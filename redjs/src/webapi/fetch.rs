@@ -139,7 +139,7 @@ pub struct NetInfo {
 }
 
 /// The [`NetInfo`] of a `Response` object, if it came off the network. For an
-/// embedder's devtools (vue-native's Network panel): `response` is the JS
+/// embedder's devtools (skathi's Network panel): `response` is the JS
 /// `Response` the app received, read on the JS thread — e.g. from a host
 /// function the devtools tee calls with it. `None` for a response that never
 /// crossed a network (constructed, local file, `data:`).

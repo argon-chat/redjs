@@ -16,7 +16,7 @@
 //! pump (`web::schedule_native`, exactly like image decoding). What runs in
 //! between depends on the `net-h2` cargo feature.
 //!
-//! **With `net-h2` (vue-native turns it on): [`pool`], a browser-shaped network
+//! **With `net-h2` (skathi turns it on): [`pool`], a browser-shaped network
 //! stack.** One dedicated thread runs a single-threaded tokio runtime; every
 //! request is a task on it. Connections are pooled per origin
 //! (scheme, host, port):
@@ -92,7 +92,7 @@
 //!   the reuse/retry rules above) are a few hundred lines on top of
 //!   per-connection hyper, and they are the part an app can feel.
 //! - **"No tokio in a shipped player's link"** still holds for builds without
-//!   the feature. vue-native already links tokio, hyper and h2 (its LiveKit
+//!   the feature. skathi already links tokio, hyper and h2 (its LiveKit
 //!   stack) at the same versions, so the feature adds little there; the
 //!   runtime is our own (one thread, current-thread scheduler), never
 //!   borrowed from an embedder.
@@ -114,7 +114,7 @@
 //! `HTTP(S)_PROXY`/`ALL_PROXY`; every connection goes direct. (Earlier
 //! versions of this header said proxies were "refused by name at the `fetch`
 //! layer". No such check existed.) A page behind a mandatory proxy sees a
-//! connection error. vue-native's docs/DESKTOP.md §4.2 lists this as F-3.
+//! connection error. skathi's docs/DESKTOP.md §4.2 lists this as F-3.
 //!
 //! ## Cookies
 //!

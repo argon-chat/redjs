@@ -1,5 +1,5 @@
 //! JS-level tests on the memory backend: real contexts, real pumps (held
-//! under the API lock, as vue-native's frame does, so every drain is a
+//! under the API lock, as skathi's frame does, so every drain is a
 //! hook-running checkpoint). Database names are unique per test: the server
 //! is process-wide and tests run in parallel.
 
@@ -13,7 +13,7 @@ const SPEC: u32 = PUMP_TIMERS | PUMP_MICROTASKS | PUMP_CHECKPOINT_PER_TASK;
 const FRAME: u32 = PUMP_TIMERS | PUMP_MICROTASKS;
 
 /// Pumps (lock held) until `globalThis.__r` is set; returns it. `flags` picks
-/// the browser-exact loop or vue-native's frame loop.
+/// the browser-exact loop or skathi's frame loop.
 fn wait_flags(c: &Context, flags: u32, ms: u64) -> (String, u32) {
     let deadline = Instant::now() + Duration::from_millis(ms);
     let mut pumps = 0;
@@ -312,7 +312,7 @@ fn opaque_origin_is_a_security_error() {
 
 #[test]
 fn a_transaction_made_in_a_coalesced_timer_is_advised() {
-    // IDB-D1: vue-native's frame drains once per pump (no checkpoint per
+    // IDB-D1: skathi's frame drains once per pump (no checkpoint per
     // task); a transaction created in a timer callback there is named.
     let c = wctx();
     s(

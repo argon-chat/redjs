@@ -32,7 +32,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # SVG images (`new Image().src = "data:image/svg+xml,..."`, an SVG Blob):
 # rasterized with resvg at their intrinsic size. The version and features
 # are the ones gpui builds for its own SVG rendering, so an embedder that
-# has gpui (vue-native) compiles nothing new.
+# has gpui (skathi) compiles nothing new.
 resvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"], optional = true }
 # Canvas 2D (`webapi/canvas2d`): the context records a backend-neutral command
 # stream in kurbo/peniko terms, and vello_cpu rasterizes it when the embedder
@@ -156,7 +156,7 @@ canvas = ["dep:vello_cpu", "dep:kurbo", "dep:peniko", "dep:fontdb", "dep:rustybu
 # byte what it was before they existed. Turning a global ON by default changes
 # what `typeof localStorage` answers in every consumer, including an app that
 # ships its own storage layer and feature-detects around ours. An embedder that
-# wants them says so; vue-native does, in crates/vn-runtime/Cargo.toml.
+# wants them says so; skathi does, in crates/sk-runtime/Cargo.toml.
 #
 # Neither pulls a single new dependency: both are pure JSC wiring plus a trait
 # the embedder implements.
@@ -196,7 +196,7 @@ indexeddb-sqlite = ["indexeddb"]
 # dedicated runtime thread that redjs owns. Without it, `fetch` keeps the
 # blocking transport: a thread and a fresh HTTP/1.1 connection per request.
 # OFF by default because it brings an async runtime into the link (~35
-# crates); vue-native turns it on (its own link already has tokio/hyper/h2 at
+# crates); skathi turns it on (its own link already has tokio/hyper/h2 at
 # the same versions). The module header of webapi/http.rs has the reasoning.
 net-h2 = [
     "dep:tokio",

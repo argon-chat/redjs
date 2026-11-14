@@ -1021,7 +1021,7 @@ mod tests {
     fn executable_metadata_does_not_read_user_function_name_getters() {
         let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
         let context = crate::api::Context::new();
-        context.eval_named("globalThis.getterCalls=0; function profileTarget(){return 42}; Object.defineProperty(profileTarget,'name',{get(){getterCalls++;throw new Error('observable getter')}});", "vn://profile-location.js").expect("script");
+        context.eval_named("globalThis.getterCalls=0; function profileTarget(){return 42}; Object.defineProperty(profileTarget,'name',{get(){getterCalls++;throw new Error('observable getter')}});", "sk://profile-location.js").expect("script");
         let function = context.global_get("profileTarget").expect("function");
         start(Limits::default(), Some(context.raw() as usize));
         let value = context
@@ -1038,7 +1038,7 @@ mod tests {
             .find_map(|span| span.callsite.as_ref().filter(|site| site.kind == "js"))
             .expect("JS executable metadata");
         assert_eq!(site.function, "profileTarget");
-        assert_eq!(site.url, "vn://profile-location.js");
+        assert_eq!(site.url, "sk://profile-location.js");
         assert!(site.line > 0);
         assert_eq!(
             context.eval("getterCalls").expect("counter").as_number(),
@@ -1071,8 +1071,8 @@ mod tests {
         let context = crate::api::Context::new();
         assert_eq!(unsafe { crate::web::install(context.raw()) }, 0);
         install_original_callback_controls(&context);
-        context.eval_named("globalThis.ran=0; function profiledTimer(){ const until=performance.now()+12; while(performance.now()<until){}; ran++; }", "vn://devtools/app/main.ts").expect("user callback");
-        context.eval_named("((cb)=>{setTimeout(function(){const token=__profileBegin(cb);if(!token)return cb.apply(this,arguments);try{return cb.apply(this,arguments)}finally{__profileEnd(token)}},0)})(profiledTimer)", "vn://vendor.js").expect("register wrapped timer before recording");
+        context.eval_named("globalThis.ran=0; function profiledTimer(){ const until=performance.now()+12; while(performance.now()<until){}; ran++; }", "sk://devtools/app/main.ts").expect("user callback");
+        context.eval_named("((cb)=>{setTimeout(function(){const token=__profileBegin(cb);if(!token)return cb.apply(this,arguments);try{return cb.apply(this,arguments)}finally{__profileEnd(token)}},0)})(profiledTimer)", "sk://vendor.js").expect("register wrapped timer before recording");
         start(Limits::default(), Some(context.raw() as usize));
         unsafe {
             crate::glue::rjs_lock(context.raw());
@@ -1103,7 +1103,7 @@ mod tests {
         assert_eq!(original.name, "profiledTimer");
         assert_eq!(
             original.callsite.as_ref().expect("callsite").url,
-            "vn://devtools/app/main.ts"
+            "sk://devtools/app/main.ts"
         );
         assert!(
             frame
@@ -1129,7 +1129,7 @@ mod tests {
         context
             .global_set("__stopProfile", finish)
             .expect("stop global");
-        context.eval_named("function originalStop(){__stopProfile();return 42};globalThis.wrapper=function(){const token=__profileBegin(originalStop);try{return originalStop()}finally{__profileEnd(token)}}", "vn://stop-callback.js").expect("callback");
+        context.eval_named("function originalStop(){__stopProfile();return 42};globalThis.wrapper=function(){const token=__profileBegin(originalStop);try{return originalStop()}finally{__profileEnd(token)}}", "sk://stop-callback.js").expect("callback");
         let wrapper = context.global_get("wrapper").expect("wrapper");
         start(Limits::default(), Some(context.raw() as usize));
         assert_eq!(

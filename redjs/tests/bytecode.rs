@@ -9,7 +9,7 @@ fn bytecode_classic_script_roundtrip() {
     // Current JSC contexts live for the process lifetime; avoid the separately
     // tracked teardown issue when this test exits on either success or panic.
     let compiler = ManuallyDrop::new(Context::new());
-    let url = "vn://bytecode/π.js";
+    let url = "sk://bytecode/π.js";
     let source = r#"
         globalThis.__cacheRuns = (globalThis.__cacheRuns || 0) + 1;
         globalThis.__cacheFactory = function makeGreeter(prefix) {
@@ -56,14 +56,14 @@ fn bytecode_classic_script_roundtrip() {
         .unwrap());
 
     // Exact source and URL mismatches are rejected before reaching the decoder.
-    let cache = compiler.compile_bytecode("40 + 2", "vn://a.js").unwrap();
+    let cache = compiler.compile_bytecode("40 + 2", "sk://a.js").unwrap();
     let (value, used) = ctx
-        .eval_named_with_bytecode("40 + 3", "vn://a.js", Some(&cache))
+        .eval_named_with_bytecode("40 + 3", "sk://a.js", Some(&cache))
         .unwrap();
     assert!(!used);
     assert_eq!(ctx.to_number(value).unwrap(), 43.0);
     let (value, used) = ctx
-        .eval_named_with_bytecode("40 + 2", "vn://b.js", Some(&cache))
+        .eval_named_with_bytecode("40 + 2", "sk://b.js", Some(&cache))
         .unwrap();
     assert!(!used);
     assert_eq!(ctx.to_number(value).unwrap(), 42.0);
@@ -78,9 +78,9 @@ fn bytecode_classic_script_roundtrip() {
 
     let throwing = "globalThis.__beforeThrow = (globalThis.__beforeThrow || 0) + 1; throw new Error('cached throw');";
     let cache = compiler
-        .compile_bytecode(throwing, "vn://throws.js")
+        .compile_bytecode(throwing, "sk://throws.js")
         .unwrap();
-    let result = ctx.eval_named_with_bytecode(throwing, "vn://throws.js", Some(&cache));
+    let result = ctx.eval_named_with_bytecode(throwing, "sk://throws.js", Some(&cache));
     let Err(Error::Exception(exception)) = result else {
         panic!("expected JS exception: {result:?}")
     };
@@ -97,7 +97,7 @@ fn bytecode_classic_script_roundtrip() {
     // still install its own global references and call Rust host callbacks.
     let recursive = "globalThis.__nested = x => () => hostTimesSeven(x); 42;";
     let cache = compiler
-        .compile_bytecode_recursive(recursive, "vn://recursive.js")
+        .compile_bytecode_recursive(recursive, "sk://recursive.js")
         .unwrap();
     let other = ManuallyDrop::new(Context::new());
     let host = other
@@ -108,7 +108,7 @@ fn bytecode_classic_script_roundtrip() {
         .unwrap();
     other.global_set("hostTimesSeven", host).unwrap();
     let (value, used) = other
-        .eval_named_with_bytecode(recursive, "vn://recursive.js", Some(&cache))
+        .eval_named_with_bytecode(recursive, "sk://recursive.js", Some(&cache))
         .unwrap();
     assert!(used);
     assert_eq!(other.to_number(value).unwrap(), 42.0);
@@ -123,15 +123,15 @@ fn bytecode_classic_script_roundtrip() {
 
     let bundled = "(function () { globalThis.__depthOne = () => 42; return __depthOne(); })()";
     let cache = compiler
-        .compile_bytecode_with_depth(bundled, "vn://bundle.js", 1)
+        .compile_bytecode_with_depth(bundled, "sk://bundle.js", 1)
         .unwrap();
     let (value, used) = ctx
-        .eval_named_with_bytecode(bundled, "vn://bundle.js", Some(&cache))
+        .eval_named_with_bytecode(bundled, "sk://bundle.js", Some(&cache))
         .unwrap();
     assert!(used);
     assert_eq!(ctx.to_number(value).unwrap(), 42.0);
 
-    let result = compiler.compile_bytecode("function (", "vn://invalid.js");
+    let result = compiler.compile_bytecode("function (", "sk://invalid.js");
     assert!(matches!(result, Err(Error::Exception(_))));
 }
 

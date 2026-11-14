@@ -423,7 +423,7 @@ mod tests {
     fn an_unknown_type_falls_back_to_the_registry() {
         assert!(TABLE.iter().all(|(_, t)| *t != "audio/x-ms-wma"));
         assert_eq!(exts_for("audio/x-ms-wma"), vec!["wma".to_string()]);
-        assert!(exts_for("application/x-vn-test-no-such-type").is_empty());
+        assert!(exts_for("application/x-sk-test-no-such-type").is_empty());
         // The table's answer comes first; the registry only adds.
         let png = exts_for("image/png");
         assert_eq!(png.first().map(String::as_str), Some("png"));

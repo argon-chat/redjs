@@ -107,7 +107,7 @@ mod tests {
         ok(&context, "performance instanceof Performance && performance instanceof EventTarget && Object.getPrototypeOf(performance) === Performance.prototype && Object.getPrototypeOf(Performance.prototype) === EventTarget.prototype && Object.getPrototypeOf(Performance) === EventTarget");
         ok(&context, "Object.prototype.toString.call(performance) === '[object Performance]' && performance.constructor === Performance");
         ok(&context, "(() => { const a = performance.now(), b = performance.now(); const json = performance.toJSON(); return Number.isFinite(a) && b >= a && json.timeOrigin === performance.timeOrigin && performance.timeOrigin > 0 && !Object.hasOwn(performance, 'now') && !Object.hasOwn(performance, 'timeOrigin'); })()");
-        ok(&context, "(() => { let calls = 0; const callback = () => calls++; performance.addEventListener('vn-probe', callback); performance.dispatchEvent(new Event('vn-probe')); performance.removeEventListener('vn-probe', callback); performance.dispatchEvent(new Event('vn-probe')); return calls === 1; })()");
+        ok(&context, "(() => { let calls = 0; const callback = () => calls++; performance.addEventListener('sk-probe', callback); performance.dispatchEvent(new Event('sk-probe')); performance.removeEventListener('sk-probe', callback); performance.dispatchEvent(new Event('sk-probe')); return calls === 1; })()");
     }
 
     #[test]

@@ -356,7 +356,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 // Platform objects a host implements in script, which are not [Serializable]
 // ---------------------------------------------------------------------------
 //
-// A host that implements a platform interface as a script class (vue-native's
+// A host that implements a platform interface as a script class (skathi's
 // File System Access handles and its FileReader) makes ORDINARY objects, and
 // the algorithm would clone them as plain objects: `{}` from a
 // FileSystemFileHandle, with no error. HTML says a platform object that is not
@@ -2018,7 +2018,7 @@ mod tests {
         s(c, &format!("(() => {{ try {{ {src}; return 'no throw'; }} catch (e) {{ return (e instanceof DOMException ? 'DOMException:' : '') + e.name + '/' + (e.code ?? '-'); }} }})()"))
     }
 
-    /// A host's script-defined platform class (vue-native's FileReader, its
+    /// A host's script-defined platform class (skathi's FileReader, its
     /// file handles) is refused by name, a subclass of it too, and every
     /// other plain object still clones.
     #[test]
@@ -2055,7 +2055,7 @@ mod tests {
         call(g, make, UNDEF, &[js_string(g, t)]).map_err(|_| "Unable to deserialize cloned data.".to_string())
     }
 
-    /// A host's script class for a [Serializable] interface (vue-native's
+    /// A host's script class for a [Serializable] interface (skathi's
     /// FileSystemHandle) round-trips through its codec, identity and storage
     /// included; a context with no codec for it refuses to read it.
     #[test]

@@ -25,7 +25,7 @@
 //!
 //! - a `MediaStreamAudioSourceNode` pushes into its streaming-PCM node
 //!   (`pcm.rs`), which resamples to its own graph's rate;
-//! - an embedder subscribes through [`subscribe`]. vue-native's voice layer
+//! - an embedder subscribes through [`subscribe`]. skathi's voice layer
 //!   reads the track a page publishes to a LiveKit room that way.
 //!
 //! Consumers run on the producing thread (the device callback or the audio
@@ -150,7 +150,7 @@ pub fn fake_capture() -> bool {
 }
 
 /// What the embedder adds to a "not enabled" refusal, so the developer reading
-/// it knows which switch is theirs (vue-native names its config key).
+/// it knows which switch is theirs (skathi names its config key).
 fn hint() -> &'static Mutex<String> {
     static H: OnceLock<Mutex<String>> = OnceLock::new();
     H.get_or_init(|| Mutex::new(String::new()))
@@ -161,7 +161,7 @@ pub fn set_capture_hint(text: &str) {
 }
 
 /// Where the user changes the operating system's microphone setting, for the
-/// advisory a "Permission denied by system" refusal logs (vue-native names the
+/// advisory a "Permission denied by system" refusal logs (skathi names the
 /// Windows Settings page). The rejection's own message stays Chrome's.
 fn system_hint() -> &'static Mutex<String> {
     static H: OnceLock<Mutex<String>> = OnceLock::new();
@@ -296,7 +296,7 @@ pub enum SourceKind {
     /// A `MediaStreamAudioDestinationNode`.
     Graph,
     /// Frames an embedder receives from the network and delivers itself
-    /// ([`remote_source`]): vue-native's remote call participants.
+    /// ([`remote_source`]): skathi's remote call participants.
     Remote,
 }
 
@@ -876,7 +876,7 @@ pub fn unpipe(node: u64) {
 // A browser hands a page every remote WebRTC track as a `MediaStreamTrack`:
 // the page can put it in a `MediaStream`, read it with an analyser, or play it
 // through its own graph. An embedder that receives such audio itself
-// (vue-native's LiveKit rooms) makes a [`remote_source`], delivers the
+// (skathi's LiveKit rooms) makes a [`remote_source`], delivers the
 // decoded frames to it ([`Source::deliver`], from any thread, never
 // blocking), and hands the page a track of it with [`js_track`].
 // [`Source::fail`] ends every track of it when the network track goes away.
@@ -1443,8 +1443,8 @@ mod capture {
     }
 }
 
-/// The synthetic input: [`set_fake_capture`] for a whole process (vue-native's
-/// `VN_MEDIA_CAPTURE=fake`), or one context in a test. `cargo test` never
+/// The synthetic input: [`set_fake_capture`] for a whole process (skathi's
+/// `SK_MEDIA_CAPTURE=fake`), or one context in a test. `cargo test` never
 /// opens a device.
 pub(crate) mod fake {
     use super::*;

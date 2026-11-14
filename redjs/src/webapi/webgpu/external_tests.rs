@@ -173,7 +173,7 @@ fn webgpu_external_native_html_image_and_blank_mirror_canvas() {
       const source=new OffscreenCanvas(1,1);const ctx=source.getContext('2d');ctx.fillStyle='#00ff00';ctx.fillRect(0,0,1,1);
       const url=URL.createObjectURL(await source.convertToBlob());const image=new Image(99,88);image.src=url;await image.decode();
       const t=makeTexture('rgba8unorm',[1,1]);d.queue.copyExternalImageToTexture({source:image},{texture:t},[1,1]);const green=Array.from(await readTexture(t,1,1)).join(',');
-      const blank={tagName:'CANVAS',__vnId:9721,width:1,height:1};__rjs_canvas_source_hook(value=>value===blank?null:undefined);
+      const blank={tagName:'CANVAS',__skId:9721,width:1,height:1};__rjs_canvas_source_hook(value=>value===blank?null:undefined);
       d.queue.copyExternalImageToTexture({source:blank},{texture:t},[1,1]);const clear=Array.from(await readTexture(t,1,1)).join(',');
       URL.revokeObjectURL(url);t.destroy();d.destroy();return green+';'+clear;
     "#

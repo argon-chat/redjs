@@ -199,8 +199,8 @@ and unsupported platforms use the specification's defaults (`true`, `0`,
 connection falls back to defaults for that subscription. The native web
 installer provides a Window-like application context; there is no Worker installer or Document permissions-policy model.
 The feature is off by default in redjs and the generic SDK host; Argon enables
-it by default. SDK consumers opt in with `vn-app/battery` (forwarded through
-`vn-runtime/battery`); building Argon with `--no-default-features` omits it.
+it by default. SDK consumers opt in with `sk-app/battery` (forwarded through
+`sk-runtime/battery`); building Argon with `--no-default-features` omits it.
 
 These APIs cover parts of the web platform. DOM, rendering, permissions, and
 OS integration depend on what the host provides. The

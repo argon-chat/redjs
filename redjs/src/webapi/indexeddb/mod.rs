@@ -22,7 +22,7 @@
 //! - **SQLite** ([`sqlite`], feature `indexeddb-sqlite`, m25 P2): one file per
 //!   database in the folder an installed [`IndexedDbHost`] names, encrypted
 //!   at rest when the host hands over a key. This is what runs whenever a host
-//!   is installed (vue-native: `vn-storage`), or a C# embedder called
+//!   is installed (skathi: `sk-storage`), or a C# embedder called
 //!   `redjs_idb_configure`.
 //! - **Memory** ([`memory`]): no host installed (or a build without the
 //!   SQLite feature). Nothing survives a restart, and the first use says so
@@ -235,7 +235,7 @@ pub(crate) fn advise_locked(name: &[u16], detail: &str) {
         &format!("locked:{n}"),
         format!(
             "IndexedDB: database \"{n}\" is open in another instance of the app ({detail}); open() fails with \
-             UnknownError. Give the second instance its own storage folder (VN_APP_NAME=…)."
+             UnknownError. Give the second instance its own storage folder (SK_APP_NAME=…)."
         ),
     );
 }
@@ -245,7 +245,7 @@ pub(crate) fn advise_folder_locked(detail: &str) {
         "locked-folder",
         format!(
             "IndexedDB: the storage folder is in use by another instance of the app ({detail}); databases() and \
-             open() fail with UnknownError. Give the second instance its own storage folder (VN_APP_NAME=…)."
+             open() fail with UnknownError. Give the second instance its own storage folder (SK_APP_NAME=…)."
         ),
     );
 }

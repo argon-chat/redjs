@@ -434,7 +434,7 @@ pub const PUMP_MICROTASKS: u32 = 4;
 /// A microtask checkpoint after EVERY task the pump runs (each timer, rAF and
 /// idle callback, each native task, each module pump's delivery batch), the
 /// way the HTML event loop does it — instead of one drain at the end of the
-/// pump. OFF for vue-native's window today: turning it on there changes Vue's
+/// pump. OFF for skathi's window today: turning it on there changes Vue's
 /// flush timing runtime-wide, which is its own decision (m25 indexeddb-design
 /// §4.1 IDB-D1, workers-design §3.2). A worker agent's loop always sets it.
 pub const PUMP_CHECKPOINT_PER_TASK: u32 = 8;
@@ -575,7 +575,7 @@ pub fn register_pump_source(src: PumpSource) {
 /// per 1000 awaited gets) — the budget only decides how many frames that work
 /// is spread over (6 at 4 ms, 12 at 2 ms, 24 at 1 ms, 1000 at 0). For strict
 /// commits most of it is waiting on the fsync. An embedder that knows its
-/// display rate should scale the budget with the frame (vue-native: a quarter
+/// display rate should scale the budget with the frame (skathi: a quarter
 /// of the refresh interval, capped here) — the wall-clock latency of a chain
 /// then stays the same at 60 and 144 Hz, and so does the frame's share.
 pub const DEFAULT_PUMP_BUDGET_US: u32 = 4000;
@@ -820,7 +820,7 @@ pub enum Checkpoint {
 
 /// THE microtask checkpoint — the single entry point every drain in redjs goes
 /// through: the end of [`pump`], [`crate::api::Context::drain_microtasks`], the
-/// `redjs_drain_microtasks` export (so vue-native's own drains and a C# host's
+/// `redjs_drain_microtasks` export (so skathi's own drains and a C# host's
 /// count), and an event dispatcher's between-listeners step. Nothing calls
 /// `rjs_drain_microtasks` directly any more.
 ///
@@ -830,7 +830,7 @@ pub enum Checkpoint {
 /// One drain this function does not see: JSC drains by itself whenever the
 /// OUTERMOST API lock is released (`JSLock::willReleaseLock`), i.e. after any
 /// top-level call made without the lock held. Those drains run no hooks. An
-/// embedder that holds the lock across its frame — vue-native's pump holds
+/// embedder that holds the lock across its frame — skathi's pump holds
 /// `redjs_lock`, a worker agent's loop will too — routes every drain here.
 ///
 /// # Safety
@@ -1251,7 +1251,7 @@ mod checkpoint_tests {
                  setTimeout(() => { log.push('a'); Promise.resolve().then(() => log.push('micro')); }, 0);
                  setTimeout(() => log.push('b'), 0); 0",
             );
-            // Held across the pump, as an embedder's frame does (vue-native's
+            // Held across the pump, as an embedder's frame does (skathi's
             // pump holds `redjs_lock`): JSC drains microtasks by itself whenever
             // the OUTERMOST API lock is released, so an unlocked pump would get
             // a drain after every call regardless of the flag.

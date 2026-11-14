@@ -56,11 +56,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|_| "invalid identity")?;
             load_selected(path,identity,selected_profile(args.get(3).map(String::as_str))?,false)?;
             let context = Context::new();
-            let host = context.function("__vn_aot_probe", 1, |_global, frame| {
+            let host = context.function("__sk_aot_probe", 1, |_global, frame| {
                 let args = unsafe { HostArgs::new(frame) };
                 Value::number(args.arg(0).as_number().unwrap_or(0.0) * 7.0).0
             })?;
-            context.global_set("__vn_aot_probe", host)?;
+            context.global_set("__sk_aot_probe", host)?;
             let entries = std::fs::read_to_string(format!("{path}.entries"))?;
             let entry: u32 = entries.lines().next().ok_or("no entry")?.parse()?;
             assert!(matches!(context.run_aot_module(0), Err(redjs::api::Error::BadArg)));
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             if matches!(evaluation, redjs::aot::ModuleEvaluation::Pending(_)) { return Err("entry still awaits host work".into()); }
             context.gc();
-            let result = context.global_get("__vn_aot_answer")?;
+            let result = context.global_get("__sk_aot_answer")?;
             println!(
                 "aot_active={} answer={}",
                 redjs::aot::is_active(),
@@ -170,17 +170,17 @@ fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn s
         );
     }
     println!("web_bootstrap_before_native_entry=ok");
-    context.global_set("__VN_AOT_HOST__", context.global())?;
+    context.global_set("__SK_AOT_HOST__", context.global())?;
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
-    let host = context.function("__vn_aot_probe", 1, move |global, frame| {
+    let host = context.function("__sk_aot_probe", 1, move |global, frame| {
         count.fetch_add(1, Ordering::SeqCst);
         let args = unsafe { HostArgs::new(frame) };
         let value = args.arg(0).as_number().unwrap_or(0.0);
         unsafe { redjs::ffi::redjs_gc(global, 0) };
         Value::number(value * 7.0).0
     })?;
-    context.global_set("__vn_aot_probe", host)?;
+    context.global_set("__sk_aot_probe", host)?;
     let entry: u32 = std::fs::read_to_string(format!("{path}.entries"))?
         .lines()
         .next()
@@ -195,11 +195,11 @@ fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn s
     println!("initial={evaluation:?}");
     if verify_host_startup {
         assert_eq!(
-            context.to_rust_string(context.global_get("__vn_aot_math_guard")?)?,
+            context.to_rust_string(context.global_get("__sk_aot_math_guard")?)?,
             "native-locked",
             "compiled Math.abs write was accepted or did not preserve the original"
         );
-        let refusal = context.to_rust_string(context.global_get("__vn_aot_math_refusal")?)?;
+        let refusal = context.to_rust_string(context.global_get("__sk_aot_math_refusal")?)?;
         assert!(
             refusal.contains("Math.abs"),
             "unexpected mutation refusal: {refusal}"
@@ -216,7 +216,7 @@ fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn s
     while Instant::now() < until {
         unsafe { redjs::ffi::redjs_pump(context.raw(), 7, std::ptr::null_mut()) };
         if context
-            .to_number(context.global_get("__vn_aot_answer")?)
+            .to_number(context.global_get("__sk_aot_answer")?)
             .unwrap_or(0.0)
             == 42.0
         {
@@ -234,12 +234,12 @@ fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn s
         Err(redjs::api::Error::BadArg)
     ));
     for (name, expected) in [
-        ("__vn_aot_clone", "ok"),
-        ("__vn_aot_url", "example.invalid"),
-        ("__vn_aot_event", "1"),
-        ("__vn_aot_async", "42"),
+        ("__sk_aot_clone", "ok"),
+        ("__sk_aot_url", "example.invalid"),
+        ("__sk_aot_event", "1"),
+        ("__sk_aot_async", "42"),
         (
-            "__vn_aot_builtins",
+            "__sk_aot_builtins",
             "[true,\"ok\",42,2,true,\"abc\",1234,6]",
         ),
     ] {
@@ -250,11 +250,11 @@ fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn s
         );
     }
     for name in [
-        "__vn_aot_clone",
-        "__vn_aot_url",
-        "__vn_aot_event",
-        "__vn_aot_async",
-        "__vn_aot_builtins",
+        "__sk_aot_clone",
+        "__sk_aot_url",
+        "__sk_aot_event",
+        "__sk_aot_async",
+        "__sk_aot_builtins",
     ] {
         println!(
             "{name}={}",
@@ -262,19 +262,19 @@ fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn s
         );
     }
     for name in [
-        "__vn_aot_plain",
-        "__vn_aot_array",
-        "__vn_aot_callback",
-        "__vn_aot_map",
-        "__vn_aot_date",
-        "__vn_aot_error",
+        "__sk_aot_plain",
+        "__sk_aot_array",
+        "__sk_aot_callback",
+        "__sk_aot_map",
+        "__sk_aot_date",
+        "__sk_aot_error",
     ] {
         let value = context.global_get(name)?;
         let mut info = redjs::glue::RjsBrandInfo::default();
         let brand = unsafe { redjs::glue::rjs_brand(context.raw(), value.0, &mut info) };
         println!("brand:{name}={brand} flags={}", info.flags);
     }
-    let answer = context.to_number(context.global_get("__vn_aot_answer")?)?;
+    let answer = context.to_number(context.global_get("__sk_aot_answer")?)?;
     println!(
         "native={};answer={answer};rust_calls={}",
         redjs::aot::is_active(),
@@ -304,22 +304,22 @@ fn run_web_host_startup_jit(source_path: &str) -> Result<(), Box<dyn std::error:
             0
         );
     }
-    context.global_set("__VN_AOT_HOST__", context.global())?;
-    let callback = context.function("__vn_aot_probe", 1, |_global, frame| {
+    context.global_set("__SK_AOT_HOST__", context.global())?;
+    let callback = context.function("__sk_aot_probe", 1, |_global, frame| {
         let arguments = unsafe { HostArgs::new(frame) };
         Value::number(arguments.arg(0).as_number().unwrap_or(0.0) * 7.0).0
     })?;
-    context.global_set("__vn_aot_probe", callback)?;
+    context.global_set("__sk_aot_probe", callback)?;
     let source = std::fs::read_to_string(source_path)?;
     // Direct embedding API, not the JS indirect eval disabled by native images.
     context.eval_named(&source, "aot-host-startup-jit.js")?;
     assert_eq!(
-        context.to_rust_string(context.global_get("__vn_aot_math_guard")?)?,
+        context.to_rust_string(context.global_get("__sk_aot_math_guard")?)?,
         "jit-writable",
         "JIT contrast did not restore its accepted write"
     );
     assert_eq!(
-        context.to_rust_string(context.global_get("__vn_aot_math_refusal")?)?,
+        context.to_rust_string(context.global_get("__sk_aot_math_refusal")?)?,
         ""
     );
     println!("same_source_math_abs=jit-writable;original_restored=true");
@@ -339,10 +339,10 @@ fn run_stress(
         .map_err(|_| "invalid identity")?;
     load_selected(path, identity, profile, true)?;
     let context = Context::new();
-    context.global_set("__VN_AOT_HOST__", context.global())?;
+    context.global_set("__SK_AOT_HOST__", context.global())?;
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let host = context.function("__vn_aot_stress_gc", 1, move |global, frame| unsafe {
+    let host = context.function("__sk_aot_stress_gc", 1, move |global, frame| unsafe {
         let args = HostArgs::new(frame);
         let token = args.arg(0).as_number().unwrap_or(f64::NAN);
         if !token.is_finite() || token < 0.0 || token.fract() != 0.0 {
@@ -352,7 +352,7 @@ fn run_stress(
         ffi::redjs_gc(global, 0);
         // Reenter the compiled JS callback while the allocating compiled loop
         // and its Rust callback are live. That callback never calls this host.
-        let reenter = u::get(global, glue::rjs_global(global), "__vn_aot_stress_reenter");
+        let reenter = u::get(global, glue::rjs_global(global), "__sk_aot_stress_reenter");
         match u::call(global, reenter, u::UNDEF, &[Value::number(token).0]) {
             Ok(value) if u::dec_f64(value) == Some(((token as u32) ^ 0x5A5A) as f64) => {
                 Value::number(token + 1.0).0
@@ -364,7 +364,7 @@ fn run_stress(
             }
         }
     })?;
-    context.global_set("__vn_aot_stress_gc", host)?;
+    context.global_set("__sk_aot_stress_gc", host)?;
     let entry: u32 = std::fs::read_to_string(format!("{path}.entries"))?
         .lines()
         .next()
@@ -381,7 +381,7 @@ fn run_stress(
     }
     context.gc();
     let verified = context.call(
-        context.global_get("__vn_aot_stress_verify")?,
+        context.global_get("__sk_aot_stress_verify")?,
         Value::undefined(),
         &[],
     )?;
@@ -391,10 +391,10 @@ fn run_stress(
         "retained samples after final GC"
     );
     assert_eq!(
-        context.to_rust_string(context.global_get("__vn_aot_stress_result")?)?,
+        context.to_rust_string(context.global_get("__sk_aot_stress_result")?)?,
         "ok"
     );
-    let stats = context.to_rust_string(context.global_get("__vn_aot_stress_stats")?)?;
+    let stats = context.to_rust_string(context.global_get("__sk_aot_stress_stats")?)?;
     assert_eq!(
         calls.load(Ordering::SeqCst),
         61,

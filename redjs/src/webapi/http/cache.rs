@@ -106,7 +106,7 @@
 //!
 //! ## On disk
 //!
-//! One folder, given by the embedder (vue-native uses
+//! One folder, given by the embedder (skathi uses
 //! `%LOCALAPPDATA%\<app>\cache\http`):
 //!
 //! ```text
@@ -148,8 +148,8 @@
 //!
 //! The embedder decides, with a [`Sealer`] in [`Config`], whose
 //! `seal`/`open` wrap every entry's payload. redjs carries no cipher.
-//! vue-native's sealer follows the app's storage encryption setting
-//! (vn-storage, docs/STORAGE.md). A different sealer tag than the one the
+//! skathi's sealer follows the app's storage encryption setting
+//! (sk-storage, docs/STORAGE.md). A different sealer tag than the one the
 //! folder was written with purges the folder at install: a cache is cheaper
 //! to refill than to migrate. An entry that fails to open is deleted and
 //! counted in [`Stats::errors`].
@@ -251,7 +251,7 @@ pub trait Sealer: Send + Sync {
 pub struct Config {
     pub dir: PathBuf,
     /// The cap on the entries' total size on disk. Chromium's default is
-    /// computed from the free space; vue-native's is a fixed 256 MB.
+    /// computed from the free space; skathi's is a fixed 256 MB.
     pub max_bytes: u64,
     /// `None` stores entries as plaintext, as every browser does.
     pub sealer: Option<Arc<dyn Sealer>>,

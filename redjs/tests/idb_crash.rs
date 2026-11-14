@@ -4,7 +4,7 @@
 //! not there at all; the file passes `PRAGMA integrity_check`.
 //!
 //! The child is this same binary (`REDJS_IDB_CRASH_CHILD=<folder>`): a real
-//! context on the SQLite backend, pumped like vue-native's frame, writing
+//! context on the SQLite backend, pumped like skathi's frame, writing
 //! transactions of 3000 records × ~2 KB (6 MB, more than the 4 MiB page
 //! cache, so SQLite spills uncommitted pages into the WAL before COMMIT —
 //! the case where "nothing partial" is actually at stake). It prints `begin k`
