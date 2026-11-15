@@ -1,8 +1,5 @@
-//! Where the `redjs-webgpu` crate plugs in. WebGPU lives in its own crate so
-//! that wgpu's tree and this crate compile in parallel; the places here that
-//! must reach a GPU canvas (OffscreenCanvas, createImageBitmap, the pump, the
-//! context fan-out) go through the one implementation registered here. With
-//! none registered, `navigator.gpu` is absent and `getContext("webgpu")` is null.
+//! Where `redjs-webgpu` plugs in, so wgpu's tree and redjs compile in parallel. With nothing
+//! registered, `navigator.gpu` is absent and `getContext("webgpu")` is null.
 
 use core::ffi::c_void;
 use std::sync::OnceLock;
