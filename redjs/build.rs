@@ -285,10 +285,9 @@ fn main() {
     }
     if engine_dll.is_some() {
         // Into the DLL, not the Rust link.
-        glue.file("cpp/engine_dll.cpp").cargo_metadata(false);
+        glue.file("cpp/engine_dll.cpp");
         println!("cargo:rerun-if-changed=cpp/engine_dll.cpp");
     }
-    glue.compile("redjs_glue");
 
     // --- mimalloc (JSC's allocator; the embedder provides it) --------------
     // Mirrors Bun's scripts/build/deps/mimalloc.ts (bun-v1.4.4) for Windows:
@@ -326,7 +325,6 @@ fn main() {
         allocator.flag("-x").flag("c++");
     }
     allocator
-        .cargo_metadata(engine_dll.is_none())
         .file(mimalloc.join("src").join("static.c"))
         .include(mimalloc.join("include"))
         .flag("-w")
@@ -335,8 +333,7 @@ fn main() {
         .define("MI_NO_PROCESS_DETACH", "1")
         .define("MI_FREE_USE_PAGEMAP", "1")
         .define("MI_BUILD_RELEASE", None)
-        .define("MI_CMAKE_BUILD_TYPE", "release")
-        .compile("redjs_mimalloc");
+        .define("MI_CMAKE_BUILD_TYPE", "release");
 
     // --- SQLite3 Multiple Ciphers (IndexedDB on disk) ----------------------
     // ONE C translation unit, `cpp/idb_sqlite.c`, which #includes the pinned
@@ -349,7 +346,7 @@ fn main() {
     // (research/reports/m25/indexeddb-p2-impl.md has the numbers, and the
     // benchmarks that say what it costs). /Gy + /Gw put every function and
     // global in its own COMDAT, so the linker drops what nothing reaches.
-    if env::var_os("CARGO_FEATURE_INDEXEDDB_SQLITE").is_some() {
+    let sqlite = env::var_os("CARGO_FEATURE_INDEXEDDB_SQLITE").is_some().then(|| {
         let mc = manifest
             .parent()
             .unwrap()
@@ -370,10 +367,27 @@ fn main() {
             .include(&mc)
             .opt_level_str("s")
             .flag("-w")
-            .define("NDEBUG", None)
-            .compile("redjs_sqlite");
+            .define("NDEBUG", None);
         println!("cargo:rerun-if-changed=cpp/idb_sqlite.c");
         println!("cargo:rerun-if-changed={}", mc.join(".redjs-pin").display());
+        sqlite
+    });
+
+    // The three compile at once; archiving stays in this order so the link
+    // lines (GNU ld resolves left to right) come out as before.
+    let (glue_objects, allocator_objects, sqlite_objects) = std::thread::scope(|s| {
+        let allocator = s.spawn(|| allocator.compile_intermediates());
+        let sqlite = s.spawn(|| sqlite.as_ref().map(cc::Build::compile_intermediates));
+        let glue = glue.compile_intermediates();
+        (glue, allocator.join().unwrap(), sqlite.join().unwrap())
+    });
+    let archive = |cpp: bool, objects: Vec<PathBuf>, metadata: bool, name: &str| {
+        native_build(cpp, windows).objects(objects).cargo_metadata(metadata).compile(name);
+    };
+    archive(true, glue_objects, engine_dll.is_none(), "redjs_glue");
+    archive(true, allocator_objects, engine_dll.is_none(), "redjs_mimalloc");
+    if let Some(objects) = sqlite_objects {
+        archive(false, objects, true, "redjs_sqlite");
     }
 
     if let Some(name) = &engine_dll {
