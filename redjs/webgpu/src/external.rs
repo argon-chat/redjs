@@ -1,6 +1,6 @@
 //! External-image copies: source snapshots, conversion, native queue upload.
 use super::*;
-use crate::webapi::image::{external_pixels, ExternalImage};
+use redjs::webapi::image::{external_pixels, ExternalImage};
 
 unsafe fn source_origin(g: *mut c_void, value: u64) -> Result<(u32, u32), ()> {
     if value == UNDEF || value == NULL {
@@ -193,7 +193,7 @@ fn validate_destination(
     Encoding::for_format(t.raw.format()).ok_or("Unsupported external copy destination format")
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
@@ -211,7 +211,7 @@ pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
             invalid(g, "Invalid external image colorSpace")?;
         }
         if color_space != "srgb" {
-            return Ok(super::super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "NotSupportedError",
                 "External image uploads currently support sRGB only",
@@ -221,7 +221,7 @@ pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
         // Resolve and own the actual pixels only once those conversions finish.
         let pixels = external_pixels(g, source.v, 0)?;
         if !pixels.origin_clean {
-            return Ok(super::super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "SecurityError",
                 "External image source is not origin-clean",
@@ -231,14 +231,14 @@ pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
             || u64::from(src_origin.1) + u64::from(size.height) > u64::from(pixels.height)
             || size.depth_or_array_layers > 1
         {
-            return Ok(super::super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "OperationError",
                 "External image copy region is out of bounds",
             ));
         }
         if let Err(e) = c.check() {
-            return Ok(super::super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "InvalidStateError",
                 &e,
@@ -256,7 +256,7 @@ pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         let bytes =
             convert(&pixels, src_origin, size, flip, premultiply, encoding).map_err(|e| {
-                super::super::super::domexception::throw(g, "OperationError", &e);
+                redjs::webapi::domexception::throw(g, "OperationError", &e);
             })?;
         checked(g, &c, || {
             c.context.queue.write_texture(

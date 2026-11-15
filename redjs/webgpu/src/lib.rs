@@ -3,6 +3,8 @@
 //! Opt-in while canvas presentation is being integrated. JSC objects own logical
 //! clients, not the physical device: embedders may supply an existing context.
 //! WGSL always goes through wgpu validation; no shader passthrough is exposed.
+//!
+//! [`register`] once, before the contexts that should have WebGPU are installed.
 pub mod backend;
 mod buffer;
 pub mod canvas;
@@ -12,13 +14,52 @@ mod readback;
 mod tests;
 mod texture;
 
-use super::util::*;
-use crate::{capi, glue};
 use backend::{Adapter, Client};
 use core::ffi::c_void;
+use redjs::webapi::util::*;
+use redjs::{capi, glue};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// Makes every redjs context installed after this call carry `navigator.gpu`.
+pub fn register() {
+    redjs::webapi::gpu_ext::register(&Extension);
+}
+
+struct Extension;
+impl redjs::webapi::gpu_ext::GpuExtension for Extension {
+    unsafe fn install(&self, g: *mut c_void) {
+        install(g);
+    }
+    fn forget(&self, gone: redjs::context::Gone) {
+        forget(gone);
+    }
+    unsafe fn pump(&self, g: *mut c_void) {
+        canvas::pump(g);
+    }
+    unsafe fn create_context(&self, g: *mut c_void, owner: u64, w: u32, h: u32) -> u64 {
+        canvas::create(g, owner, w, h, None)
+    }
+    unsafe fn resize(&self, g: *mut c_void, ctx: u64, w: u32, h: u32) {
+        let _ = canvas::resize(g, ctx, w, h);
+    }
+    unsafe fn is_context(&self, g: *mut c_void, v: u64) -> bool {
+        canvas::is_context(g, v)
+    }
+    unsafe fn pixels(&self, g: *mut c_void, v: u64) -> redjs::webapi::gpu_ext::Pixels {
+        canvas::pixels(g, v)
+    }
+    unsafe fn premul_pixels(&self, g: *mut c_void, v: u64) -> redjs::webapi::gpu_ext::Pixels {
+        canvas::premul_pixels(g, v)
+    }
+    unsafe fn convert_to_blob(&self, g: *mut c_void, ctx: u64, options: u64) -> u64 {
+        canvas::convert_to_blob(g, ctx, options)
+    }
+    unsafe fn transfer_to_image_bitmap(&self, g: *mut c_void, ctx: u64) -> u64 {
+        canvas::transfer(g, ctx)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Kind {
@@ -130,7 +171,7 @@ struct Val {
 impl Val {
     pub unsafe fn new(g: *mut c_void, v: u64) -> Self {
         if is_cell(v) {
-            crate::ffi::redjs_protect(g, v);
+            redjs::ffi::redjs_protect(g, v);
         }
         Self { g, v }
     }
@@ -139,7 +180,7 @@ impl Drop for Val {
     fn drop(&mut self) {
         if is_cell(self.v) {
             unsafe {
-                crate::ffi::redjs_unprotect(self.g, self.v);
+                redjs::ffi::redjs_unprotect(self.g, self.v);
             }
         }
     }
@@ -231,7 +272,7 @@ unsafe fn this(g: *mut c_void, cf: *mut c_void, kind: Kind) -> Result<Handle, ()
 unsafe fn client(g: *mut c_void, h: &Handle) -> Result<Arc<Client>, ()> {
     let c = h.client.as_ref().unwrap().clone();
     if let Err(e) = c.check() {
-        super::domexception::throw(g, "InvalidStateError", &e);
+        redjs::webapi::domexception::throw(g, "InvalidStateError", &e);
         return Err(());
     }
     Ok(c)
@@ -336,8 +377,10 @@ unsafe fn route_errors(g: *mut c_void, id: u64, errors: Vec<backend::GpuError>) 
                 .push_back(Box::new(move |g| unsafe {
                     if let Some(target) = device_target(g, id) {
                         let error = Val::new(g, error_object(g, e));
-                        let event =
-                            Val::new(g, super::events::new_trusted_event(g, "uncapturederror"));
+                        let event = Val::new(
+                            g,
+                            redjs::webapi::events::new_trusted_event(g, "uncapturederror"),
+                        );
                         define(g, event.v, "error", error.v, 1 | 2);
                         let proto = states().lock().unwrap()[&(g as usize)]
                             .classes
@@ -349,13 +392,13 @@ unsafe fn route_errors(g: *mut c_void, id: u64, errors: Vec<backend::GpuError>) 
                             event.v as usize as capi::JSObjectRef,
                             proto as usize as capi::JSValueRef,
                         );
-                        super::events::dispatch(g, target.v, event.v);
+                        redjs::webapi::events::dispatch(g, target.v, event.v);
                     }
                 }));
         }
     }
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn gpu_error_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let message = text(g, cf_arg(cf, 0), "")?;
@@ -364,7 +407,7 @@ unsafe fn gpu_error_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(o.v)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn error_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let init = Val::new(g, cf_arg(cf, 1));
@@ -374,9 +417,13 @@ unsafe fn error_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         let o = Val::new(
             g,
-            ordinary_create(g, cf_new_target(cf), super::util::state(g).event.proto),
+            ordinary_create(
+                g,
+                cf_new_target(cf),
+                redjs::webapi::util::state(g).event.proto,
+            ),
         );
-        super::events::init_event(g, o.v, cf_arg(cf, 0), init.v, false);
+        redjs::webapi::events::init_event(g, o.v, cf_arg(cf, 0), init.v, false);
         define(g, o.v, "error", error.v, 1 | 2);
         Ok(o.v)
     })
@@ -393,16 +440,16 @@ where
 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let (mut resolve, mut reject, mut p) = (UNDEF, UNDEF, UNDEF);
-    if crate::ffi::redjs_promise_create(g, &mut resolve, &mut reject, &mut p) != 0 {
+    if redjs::ffi::redjs_promise_create(g, &mut resolve, &mut reject, &mut p) != 0 {
         return UNDEF;
     }
     for &v in roots.iter().chain([&resolve, &reject]) {
         if is_cell(v) {
-            crate::ffi::redjs_protect(g, v);
+            redjs::ffi::redjs_protect(g, v);
         }
     }
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let id = crate::context::id_of(g);
+    let id = redjs::context::id_of(g);
     let address = g as usize;
     states()
         .lock()
@@ -425,7 +472,7 @@ where
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pollster::block_on(work)))
                     .unwrap_or_else(|_| Err("Native WebGPU asynchronous operation failed".into()));
             let mut ss = states().lock().unwrap();
-            if crate::context::id_of(address as *mut c_void) != id {
+            if redjs::context::id_of(address as *mut c_void) != id {
                 return;
             }
             let Some(st) = ss.get_mut(&address) else {
@@ -452,7 +499,7 @@ where
                             Err(_) => {
                                 let err = Val::new(
                                     g,
-                                    super::domexception::create(
+                                    redjs::webapi::domexception::create(
                                         g,
                                         "OperationError",
                                         "Native WebGPU completion failed",
@@ -465,7 +512,7 @@ where
                     Err(message) => {
                         let err = Val::new(
                             g,
-                            super::domexception::create(g, "OperationError", &message),
+                            redjs::webapi::domexception::create(g, "OperationError", &message),
                         );
                         let _ = call(g, pending.reject, UNDEF, &[err.v]);
                     }
@@ -476,13 +523,13 @@ where
                     .chain([pending.resolve, pending.reject])
                 {
                     if is_cell(v) {
-                        crate::ffi::redjs_unprotect(g, v);
+                        redjs::ffi::redjs_unprotect(g, v);
                     }
                 }
             }));
             drop(ss);
             if let Some(id) = id {
-                crate::web::wake(id);
+                redjs::web::wake(id);
             }
         });
     if let Err(error) = worker {
@@ -496,7 +543,7 @@ where
             .unwrap();
         let e = Val::new(
             g,
-            super::domexception::create(g, "OperationError", &error.to_string()),
+            redjs::webapi::domexception::create(g, "OperationError", &error.to_string()),
         );
         let _ = call(g, pending.reject, UNDEF, &[e.v]);
         for v in pending
@@ -505,7 +552,7 @@ where
             .chain([pending.resolve, pending.reject])
         {
             if is_cell(v) {
-                crate::ffi::redjs_unprotect(g, v);
+                redjs::ffi::redjs_unprotect(g, v);
             }
         }
     }
@@ -542,7 +589,7 @@ unsafe fn drain(g: *mut c_void) -> usize {
     let mut n = tasks.len();
     for task in tasks {
         task(g);
-        crate::web::checkpoint(g);
+        redjs::web::checkpoint(g);
     }
     let clients: Vec<_> = states()
         .lock()
@@ -592,7 +639,7 @@ unsafe fn drain(g: *mut c_void) -> usize {
     n
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn request_adapter(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this(g, cf, Kind::Gpu)?;
@@ -625,7 +672,7 @@ unsafe fn request_adapter(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn preferred_format(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this(g, cf, Kind::Gpu)?;
@@ -642,7 +689,7 @@ unsafe fn feature_flags(g: *mut c_void, cf: *mut c_void) -> Result<wgpu::Feature
     };
     Ok(f)
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn feature_size(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let f = feature_flags(g, cf)?;
@@ -654,7 +701,7 @@ unsafe fn feature_size(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn feature_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let f = feature_flags(g, cf)?;
@@ -693,15 +740,15 @@ unsafe fn feature_iterator(g: *mut c_void, cf: *mut c_void, entries: bool) -> Re
         glue::rjs_throw(g, e);
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn feature_values(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || feature_iterator(g, cf, false))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn feature_entries(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || feature_iterator(g, cf, true))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn feature_each(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let f = feature_flags(g, cf)?;
@@ -744,7 +791,7 @@ unsafe fn plain(g: *mut c_void, kind: Kind) -> u64 {
 fn feature_names() -> Vec<(&'static str, wgpu::Features)> {
     Vec::new()
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
@@ -766,7 +813,7 @@ unsafe fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u64 {
         }))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn device_features(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -787,7 +834,7 @@ unsafe fn limits_object(g: *mut c_void, l: &wgpu::Limits) -> u64 {
     limits_fields!(write);
     o.v
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn adapter_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
@@ -809,7 +856,7 @@ unsafe fn adapter_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
         }))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn device_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -823,7 +870,7 @@ unsafe fn device_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
         }))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
@@ -860,7 +907,7 @@ unsafe fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(o.v)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Adapter)?;
@@ -872,7 +919,7 @@ unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
         for v in seq(g, field(g, d.v, "requiredFeatures")?.v)? {
             let name = text(g, v.v, "")?;
             let Some((_, flag)) = feature_names().into_iter().find(|(n, _)| *n == name) else {
-                return Ok(super::domexception::rejected(
+                return Ok(redjs::webapi::domexception::rejected(
                     g,
                     "NotSupportedError",
                     &format!("Unsupported WebGPU feature: {name}"),
@@ -904,7 +951,7 @@ unsafe fn make_device(g: *mut c_void, c: Arc<Client>) -> u64 {
     let queue = Val::new(g, wrap(g, Kind::Queue, Some(c.clone()), Resource::Queue));
     define(g, o.v, "queue", queue.v, 1 | 2);
     let (mut res, mut rej, mut p) = (UNDEF, UNDEF, UNDEF);
-    crate::ffi::redjs_promise_create(g, &mut res, &mut rej, &mut p);
+    redjs::ffi::redjs_promise_create(g, &mut res, &mut rej, &mut p);
     let pr = Val::new(g, p);
     let rr = Val::new(g, res);
     let (sl, sr) = {
@@ -933,7 +980,7 @@ unsafe fn make_device(g: *mut c_void, c: Arc<Client>) -> u64 {
         );
     o.v
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn lost(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this(g, cf, Kind::Device)?;
@@ -963,7 +1010,7 @@ unsafe fn prune_clients(g: *mut c_void) {
     };
     for r in dead {
         for v in r.buffers.into_iter().chain([r.weak]) {
-            crate::ffi::redjs_unprotect(g, v);
+            redjs::ffi::redjs_unprotect(g, v);
         }
     }
 }
@@ -977,7 +1024,7 @@ unsafe fn weak_ref(g: *mut c_void, obj: u64) -> u64 {
     if glue::rjs_construct(g, ctor, &obj, 1, &mut out) != 0 {
         panic!("Intrinsic WeakRef construction failed");
     }
-    crate::ffi::redjs_protect(g, out);
+    redjs::ffi::redjs_protect(g, out);
     out
 }
 unsafe fn deref(g: *mut c_void, weak: u64) -> Val {
@@ -1021,7 +1068,7 @@ unsafe fn track_buffer_object(g: *mut c_void, c: &Arc<Client>, obj: u64) {
         if is_cell(deref(g, w).v) {
             live.push(w)
         } else {
-            crate::ffi::redjs_unprotect(g, w);
+            redjs::ffi::redjs_unprotect(g, w);
         }
     }
     if !live.is_empty() {
@@ -1050,7 +1097,7 @@ unsafe fn release_buffers(g: *mut c_void, id: u64) {
         if is_cell(o.v) {
             buffer::release_on_device_destroy(g, o.v);
         }
-        crate::ffi::redjs_unprotect(g, w);
+        redjs::ffi::redjs_unprotect(g, w);
     }
 }
 unsafe fn resolve_loss(g: *mut c_void, target: u64, reason: &str, message: &str) {
@@ -1076,7 +1123,7 @@ unsafe fn resolve_loss(g: *mut c_void, target: u64, reason: &str, message: &str)
         }
     }
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -1093,7 +1140,7 @@ unsafe fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn push_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -1118,7 +1165,7 @@ unsafe fn push_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pop_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -1132,7 +1179,7 @@ unsafe fn pop_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
             .or_default()
             .pop();
         let Some(scope) = scope else {
-            return Ok(super::domexception::rejected(
+            return Ok(redjs::webapi::domexception::rejected(
                 g,
                 "OperationError",
                 "No WebGPU error scope to pop",
@@ -1148,7 +1195,11 @@ unsafe fn run(g: *mut c_void, f: impl FnOnce() -> Result<u64, ()>) -> u64 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(v)) => v,
         Ok(Err(())) => UNDEF,
-        Err(_) => super::domexception::throw(g, "OperationError", "Native WebGPU operation failed"),
+        Err(_) => redjs::webapi::domexception::throw(
+            g,
+            "OperationError",
+            "Native WebGPU operation failed",
+        ),
     }
 }
 
@@ -1176,16 +1227,16 @@ pub(crate) unsafe fn install(g: *mut c_void) {
     let global = glue::rjs_global(g);
     let array = Val::new(g, get(g, global, "Array"));
     let from = Val::new(g, get(g, array.v, "from"));
-    crate::ffi::redjs_protect(g, from.v);
+    redjs::ffi::redjs_protect(g, from.v);
     let weak_ctor = Val::new(g, get(g, global, "WeakRef"));
     let weak_proto = field(g, weak_ctor.v, "prototype").unwrap();
     let weak_deref = field(g, weak_proto.v, "deref").unwrap();
     for v in [weak_ctor.v, weak_deref.v] {
-        crate::ffi::redjs_protect(g, v);
+        redjs::ffi::redjs_protect(g, v);
     }
     let ap = field(g, array.v, "prototype").unwrap();
     let array_values = field(g, ap.v, "values").unwrap();
-    crate::ffi::redjs_protect(g, array_values.v);
+    redjs::ffi::redjs_protect(g, array_values.v);
     let classes = Classes {
         array_values: array_values.v,
         s_features: atom_priv(g, "webgpu.features") as usize,
@@ -1324,7 +1375,7 @@ pub(crate) unsafe fn install(g: *mut c_void) {
             name: "GPUUncapturedErrorEvent",
             arity: 2,
             construct: Some(error_event_construct),
-            parent_proto: super::util::state(g).event.proto,
+            parent_proto: redjs::webapi::util::state(g).event.proto,
             methods: &[],
             getters: &[],
             accessors: &[],
@@ -1347,7 +1398,7 @@ pub(crate) unsafe fn install(g: *mut c_void) {
     let nav = Val::new(g, get(g, global, "navigator"));
     let gpu = wrap(g, Kind::Gpu, None, Resource::Gpu);
     define(g, nav.v, "gpu", gpu, 1 | 2);
-    crate::web::register_pump_source(crate::web::PumpSource {
+    redjs::web::register_pump_source(redjs::web::PumpSource {
         inflight,
         ready,
         drain,
@@ -1362,7 +1413,7 @@ unsafe fn class(
 ) {
     let host = make_gpu_host_class(name) as usize;
     let parent = if kind == Kind::Device {
-        super::util::state(g).event_target.proto
+        redjs::webapi::util::state(g).event_target.proto
     } else {
         0
     };
@@ -1415,7 +1466,7 @@ unsafe fn constants(g: *mut c_void, name: &str, values: &[(&str, u32)]) {
     }
     define(g, glue::rjs_global(g), name, o.v, 1 | 2);
 }
-pub(crate) fn forget(gone: crate::context::Gone) {
+pub(crate) fn forget(gone: redjs::context::Gone) {
     canvas::forget(gone);
     let s = states().lock().unwrap().remove(&gone.key);
     if let Some(s) = s {

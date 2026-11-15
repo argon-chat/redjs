@@ -62,7 +62,7 @@ unsafe fn ranges_slot(g: *mut c_void) -> *mut c_void {
         .unwrap()
         .s_ranges as *mut c_void
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -122,17 +122,17 @@ unsafe fn create(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(o.v)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn size(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || Ok(enc_f64(get_buffer(g, cf)?.1.size as f64)))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn usage(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         Ok(enc_f64(get_buffer(g, cf)?.1.usage.bits().0[0] as f64))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn map_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (_, b) = get_buffer(g, cf)?;
@@ -147,7 +147,7 @@ unsafe fn map_state(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, b) = get_buffer(g, cf)?;
@@ -159,7 +159,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
             1 => wgpu::MapMode::Read,
             2 => wgpu::MapMode::Write,
             _ => {
-                return Ok(super::super::domexception::rejected(
+                return Ok(redjs::webapi::domexception::rejected(
                     g,
                     "OperationError",
                     "Invalid GPUMapMode",
@@ -180,7 +180,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
             || end.is_none_or(|e| e > b.size)
         {
             validation(g, &c, "Invalid buffer mapping range, state, or usage");
-            return Ok(super::super::domexception::rejected(
+            return Ok(redjs::webapi::domexception::rejected(
                 g,
                 "OperationError",
                 "Invalid buffer mapping range, state, or usage",
@@ -190,7 +190,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
             let mut m = b.mapping.lock().unwrap();
             if m.status != 0 {
                 drop(m);
-                return Ok(super::super::domexception::rejected(
+                return Ok(redjs::webapi::domexception::rejected(
                     g,
                     "OperationError",
                     "GPUBuffer is already mapped or mapping",
@@ -259,7 +259,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
                 let mut m = b.mapping.lock().unwrap();
                 if m.epoch != epoch || m.status != 1 {
                     drop(m);
-                    return super::super::domexception::rejected(
+                    return redjs::webapi::domexception::rejected(
                         g,
                         "AbortError",
                         "Buffer mapping was aborted",
@@ -271,7 +271,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn get_range(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, b) = get_buffer(g, cf)?;
@@ -292,7 +292,7 @@ unsafe fn get_range(g: *mut c_void, cf: *mut c_void) -> u64 {
                     .any(|r| offset < r.offset + r.size && end.unwrap() > r.offset)
             {
                 drop(m);
-                return Ok(super::super::domexception::throw(
+                return Ok(redjs::webapi::domexception::throw(
                     g,
                     "OperationError",
                     "Invalid or overlapping getMappedRange",
@@ -306,7 +306,7 @@ unsafe fn get_range(g: *mut c_void, cf: *mut c_void) -> u64 {
             match b.raw.get_mapped_range(offset..end.unwrap()) {
                 Ok(view) => view.to_vec(),
                 Err(e) => {
-                    return Ok(super::super::domexception::throw(
+                    return Ok(redjs::webapi::domexception::throw(
                         g,
                         "OperationError",
                         &e.to_string(),
@@ -328,7 +328,7 @@ unsafe fn get_range(g: *mut c_void, cf: *mut c_void) -> u64 {
         if m.epoch != epoch {
             drop(m);
             glue::rjs_arraybuffer_detach(g, ab.v);
-            return Ok(super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "OperationError",
                 "Buffer was unmapped during allocation",
@@ -368,7 +368,7 @@ unsafe fn unmap_inner(g: *mut c_void, obj: u64, b: &Buffer, write: bool) {
     let edges = new_array(g);
     glue::rjs_define(g, obj, ranges_slot(g), edges, 2);
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn unmap(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (_, b) = get_buffer(g, cf)?;
@@ -376,7 +376,7 @@ unsafe fn unmap(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (_, b) = get_buffer(g, cf)?;
@@ -394,8 +394,8 @@ pub(super) unsafe fn copy_source(
     offset: u64,
     size: Option<u64>,
 ) -> Result<Vec<u8>, ()> {
-    let mut ta = crate::ffi::RjsTaInfo::default();
-    let mut ab = crate::ffi::RjsAbInfo::default();
+    let mut ta = redjs::ffi::RjsTaInfo::default();
+    let mut ab = redjs::ffi::RjsAbInfo::default();
     let (ptr, len, units, detached) = if glue::rjs_typedarray_info(g, value, &mut ta) == 0 {
         (
             ta.data,
@@ -415,7 +415,7 @@ pub(super) unsafe fn copy_source(
         unreachable!()
     };
     if ta.shared != 0 || ab.shared != 0 {
-        super::super::domexception::throw(
+        redjs::webapi::domexception::throw(
             g,
             "NotSupportedError",
             "Shared WebGPU uploads require an atomic native copy path",
@@ -435,7 +435,7 @@ pub(super) unsafe fn copy_source(
         unreachable!()
     };
     if detached || start > len || size > len - start || (ptr.is_null() && size != 0) {
-        super::super::domexception::throw(
+        redjs::webapi::domexception::throw(
             g,
             "OperationError",
             "BufferSource range is out of bounds or detached",
@@ -451,7 +451,7 @@ pub(super) unsafe fn copy_source(
         )
     }
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn write(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;

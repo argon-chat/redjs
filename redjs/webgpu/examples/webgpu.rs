@@ -4,6 +4,7 @@ use redjs::api::Context;
 use std::time::{Duration, Instant};
 
 fn main() {
+    redjs_webgpu::register();
     let c = Context::new();
     unsafe {
         assert_eq!(redjs::ffi::redjs_web_install(c.raw()), 0);

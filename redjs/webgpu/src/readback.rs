@@ -37,7 +37,7 @@ struct Slot {
 }
 struct Pool {
     slots: [Slot; SLOTS],
-    waiters: HashSet<crate::context::ContextId>,
+    waiters: HashSet<redjs::context::ContextId>,
 }
 impl Default for Pool {
     fn default() -> Self {
@@ -71,7 +71,7 @@ impl Drop for Lease {
         // Wakers can acquire other runtime locks. Never call them while the
         // staging pool is locked or a deferred surface is being registered.
         for id in waiters {
-            crate::web::wake(id);
+            redjs::web::wake(id);
         }
     }
 }
@@ -199,7 +199,7 @@ impl Reader {
 
     /// Arm a retry after backpressure. Checking capacity and registering the
     /// waiter under the same lock closes the race with a just-released lease.
-    pub(super) fn wake_when_available(&self, id: crate::context::ContextId) {
+    pub(super) fn wake_when_available(&self, id: redjs::context::ContextId) {
         let ready = {
             let mut pool = self.0.pool.lock().unwrap_or_else(|e| e.into_inner());
             if pool.slots.iter().any(|slot| !slot.busy) {
@@ -210,7 +210,7 @@ impl Reader {
             }
         };
         if ready {
-            crate::web::wake(id);
+            redjs::web::wake(id);
         }
     }
 
@@ -548,9 +548,9 @@ mod tests {
     }
     #[test]
     fn pool_release_wakes_waiters_and_late_registration_cannot_miss_capacity() {
-        let ctx = crate::api::Context::new();
-        let id = crate::context::id_of(ctx.raw()).unwrap();
-        let waker = crate::web::waker(id);
+        let ctx = redjs::api::Context::new();
+        let id = redjs::context::id_of(ctx.raw()).unwrap();
+        let waker = redjs::web::waker(id);
         let pool = Arc::new(Mutex::new(Pool::default()));
         let reader = Reader(Arc::new(Service {
             context: Weak::new(),
@@ -583,6 +583,6 @@ mod tests {
             waker.wait(Duration::from_millis(50)),
             "late registration must observe free capacity"
         );
-        crate::context::forget(ctx.raw());
+        redjs::context::forget(ctx.raw());
     }
 }

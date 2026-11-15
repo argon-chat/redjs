@@ -138,7 +138,6 @@ fn webgpu_external_invalid_descriptors_and_destination_errors_are_distinct() {
     );
 }
 
-#[cfg(feature = "canvas")]
 #[test]
 fn webgpu_external_2d_and_gpu_canvases_preserve_premultiplied_channels() {
     let _host = HostGuard::new();
@@ -161,7 +160,6 @@ fn webgpu_external_2d_and_gpu_canvases_preserve_premultiplied_channels() {
         "200,50,5,64"
     );
 }
-#[cfg(feature = "canvas")]
 #[test]
 fn webgpu_external_native_html_image_and_blank_mirror_canvas() {
     let _host = HostGuard::new();
@@ -181,24 +179,23 @@ fn webgpu_external_native_html_image_and_blank_mirror_canvas() {
         "0,255,0,255;0,0,0,0"
     );
 }
-#[cfg(feature = "canvas")]
 #[test]
 fn webgpu_external_origin_clean_metadata_survives_hooks_and_canvas_draws() {
     let _host = HostGuard::new();
     let c = ctx();
     unsafe {
-        let bitmap = crate::webapi::image::create_bitmap(
+        let bitmap = redjs::webapi::image::create_bitmap(
             c.raw(),
-            crate::webapi::image::BitmapData {
+            redjs::webapi::image::BitmapData {
                 width: 1,
                 height: 1,
                 rgba: vec![255, 0, 0, 255],
                 origin_clean: false,
             },
         );
-        crate::webapi::util::define(
+        redjs::webapi::util::define(
             c.raw(),
-            crate::glue::rjs_global(c.raw()),
+            redjs::glue::rjs_global(c.raw()),
             "tainted",
             bitmap,
             0,
@@ -218,7 +215,6 @@ fn webgpu_external_origin_clean_metadata_survives_hooks_and_canvas_draws() {
         "SecurityError,SecurityError,SecurityError"
     );
 }
-#[cfg(feature = "canvas")]
 #[test]
 fn webgpu_external_source_hooks_are_gc_safe_and_revalidate_destination() {
     let _host = HostGuard::new();

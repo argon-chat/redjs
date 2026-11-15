@@ -1,7 +1,7 @@
 //! Owned snapshots for WebGPU external-image uploads. No JS-backed slice escapes.
 use super::*;
 
-pub(crate) struct ExternalImage {
+pub struct ExternalImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
@@ -36,7 +36,7 @@ pub(crate) unsafe fn fail<T>(g: *mut c_void, name: &str, message: &str) -> Resul
 
 /// Snapshot only after the WebGPU descriptor getters finished. The hook may
 /// reenter JS, close a bitmap, resize a canvas or collect the resolved wrapper.
-pub(crate) unsafe fn external_pixels(
+pub unsafe fn external_pixels(
     g: *mut c_void,
     value: u64,
     depth: u8,

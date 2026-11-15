@@ -50,7 +50,8 @@ mod color;
 mod context;
 mod cpu;
 mod effects;
-pub(crate) mod encode;
+#[doc(hidden)]
+pub mod encode;
 pub mod surface;
 pub mod text;
 
@@ -102,7 +103,6 @@ pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u
 #[cfg(test)]
 mod jsc_tests;
 
-#[cfg(feature = "webgpu")]
 pub(crate) unsafe fn external_pixels(g: *mut c_void, v: u64, depth: u8) -> Result<super::image::ExternalImage, ()> {
     context::external_pixels(g, v, depth)
 }

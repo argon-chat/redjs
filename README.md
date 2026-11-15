@@ -164,9 +164,10 @@ In C#, these are `InstallWebGlobals()`,
 `InstallWebShims(scriptsRoot, assetsRoot)`, and `Pump()`.
 A render loop can pump once per frame.
 
-The default Cargo features include `audio`, `indexeddb`, `svg-images`, `canvas`,
-and `webgpu`. Native GPU
-acquisition is lazy; see the [WebGPU support notes](redjs/WEBGPU.md). Use
+The default Cargo features include `audio`, `indexeddb`, `svg-images` and
+`canvas`. WebGPU is the separate `redjs-webgpu` crate (`redjs/webgpu`): call
+`redjs_webgpu::register()` before installing the web shims. Native GPU
+acquisition is lazy; see the [WebGPU support notes](redjs/webgpu/WEBGPU.md). Use
 `--no-default-features` for a smaller starting point, then enable what you need.
 
 Some additions are opt-in:

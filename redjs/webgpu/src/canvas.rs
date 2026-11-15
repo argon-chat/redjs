@@ -152,7 +152,7 @@ struct State {
 }
 pub(super) struct Surface {
     key: Option<u64>,
-    context: crate::context::ContextId,
+    context: redjs::context::ContextId,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -186,7 +186,7 @@ fn notify(s: &Surface, st: &State) {
     s.changed.notify_all();
     if st.enabled && s.key.is_some() {
         CHANGED.store(true, Ordering::Release);
-        crate::web::wake(s.context);
+        redjs::web::wake(s.context);
     }
 }
 fn discard(t: Option<Arc<texture::Texture>>) {
@@ -268,8 +268,8 @@ pub fn register_present(key: u64) {
 }
 
 pub(crate) unsafe fn create(g: *mut c_void, owner: u64, w: u32, h: u32, key: Option<u64>) -> u64 {
-    let context = crate::context::id_of(g).unwrap();
-    let _ = crate::web::waker(context);
+    let context = redjs::context::id_of(g).unwrap();
+    let _ = redjs::web::waker(context);
     let surface = Arc::new(Surface {
         key,
         context,
@@ -329,7 +329,6 @@ unsafe fn surface(g: *mut c_void, v: u64) -> Option<Arc<Surface>> {
         None
     }
 }
-#[cfg(feature = "canvas")]
 pub(crate) unsafe fn is_context(g: *mut c_void, v: u64) -> bool {
     surface(g, v).is_some()
 }
@@ -349,14 +348,14 @@ pub(crate) unsafe fn resize(g: *mut c_void, ctx: u64, w: u32, h: u32) -> Result<
     glue::rjs_define(g, ctx, slots(g).2, UNDEF, 1 | 2);
     Ok(())
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn get_canvas(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         this_surface(g, cf)?;
         Ok(get_a(g, cf_this(cf), slots(g).0))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
@@ -369,7 +368,7 @@ unsafe fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
             "rgba8unorm" => wgpu::TextureFormat::Rgba8Unorm,
             "bgra8unorm" => wgpu::TextureFormat::Bgra8Unorm,
             _ => {
-                return Ok(super::super::domexception::throw(
+                return Ok(redjs::webapi::domexception::throw(
                     g,
                     "NotSupportedError",
                     "Canvas presentation currently supports rgba8unorm and bgra8unorm",
@@ -414,7 +413,7 @@ unsafe fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
             names.push(name);
         }
         if text(g, field(g, d.v, "colorSpace")?.v, "srgb")? != "srgb" {
-            return Ok(super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "NotSupportedError",
                 "Only sRGB canvas presentation is supported",
@@ -422,7 +421,7 @@ unsafe fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         let tone = field(g, d.v, "toneMapping")?;
         if text(g, field(g, tone.v, "mode")?.v, "standard")? != "standard" {
-            return Ok(super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "NotSupportedError",
                 "Extended tone mapping is not supported",
@@ -433,7 +432,7 @@ unsafe fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
             invalid(g, "Invalid GPUCanvasAlphaMode")?;
         }
         if let Err(e) = c.check() {
-            return Ok(super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "InvalidStateError",
                 &e,
@@ -457,7 +456,7 @@ unsafe fn configure(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn unconfigure(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
@@ -467,7 +466,7 @@ unsafe fn unconfigure(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn configuration(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
@@ -497,14 +496,14 @@ unsafe fn configuration(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(o.v)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn current_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let s = this_surface(g, cf)?;
         let (c, w, h, existing, epoch) = {
             let st = s.state.lock().unwrap();
             let Some(c) = st.config.clone() else {
-                return Ok(super::super::domexception::throw(
+                return Ok(redjs::webapi::domexception::throw(
                     g,
                     "InvalidStateError",
                     "GPUCanvasContext is not configured",
@@ -513,7 +512,7 @@ unsafe fn current_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
             (c, st.width, st.height, st.current.clone(), st.epoch)
         };
         if let Err(e) = c.client.check() {
-            return Ok(super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "InvalidStateError",
                 &e,
@@ -527,7 +526,7 @@ unsafe fn current_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
             || w > c.client.limits.max_texture_dimension_2d
             || h > c.client.limits.max_texture_dimension_2d
         {
-            return Ok(super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "OperationError",
                 "Canvas dimensions are zero or exceed the device limit",
@@ -571,7 +570,7 @@ unsafe fn current_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
             let mut st = s.state.lock().unwrap();
             if st.epoch != epoch {
                 discard(Some(t));
-                return Ok(super::super::domexception::throw(
+                return Ok(redjs::webapi::domexception::throw(
                     g,
                     "InvalidStateError",
                     "Canvas was reconfigured",
@@ -683,7 +682,6 @@ pub(crate) unsafe fn pixels(g: *mut c_void, v: u64) -> Option<Result<(Vec<u8>, u
     Some(snapshot(&s).map(|f| (straight(&f), f.width, f.height)))
 }
 /// Used by native 2D draws without round-tripping premultiplied pixels.
-#[cfg(feature = "canvas")]
 pub(crate) unsafe fn premul_pixels(
     g: *mut c_void,
     v: u64,
@@ -894,7 +892,7 @@ pub(super) fn device_destroyed(id: u64) {
     }
 }
 
-pub(crate) fn forget(gone: crate::context::Gone) {
+pub(crate) fn forget(gone: redjs::context::Gone) {
     let surfaces: Vec<_> = {
         let mut a = all().lock().unwrap();
         let surfaces = a
@@ -913,7 +911,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     }
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let owner = cf_arg(cf, 0);
@@ -926,7 +924,7 @@ unsafe fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(create(g, owner, w, h, (key != 0).then_some(key)))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn h_resize(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let w = uint(g, cf_arg(cf, 1), 0)?;
@@ -935,7 +933,6 @@ unsafe fn h_resize(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[cfg(feature = "canvas")]
 unsafe fn capture_args(
     g: *mut c_void,
     cf: *mut c_void,
@@ -951,63 +948,38 @@ unsafe fn capture_args(
         Some(to_number(g, cf_arg(cf, 2))?)
     };
     let f = snapshot(&s).map_err(|e| {
-        super::super::domexception::throw(g, "OperationError", &e);
+        redjs::webapi::domexception::throw(g, "OperationError", &e);
     })?;
     Ok((f, ty, q))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn h_data_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
-        #[cfg(feature = "canvas")]
-        {
-            let (f, ty, q) = capture_args(g, cf)?;
-            let rgba = straight(&f);
-            return Ok(js_string(
-                g,
-                &super::super::canvas2d::encode::data_url(&rgba, f.width, f.height, &ty, q),
-            ));
-        }
-        #[cfg(not(feature = "canvas"))]
-        {
-            let _ = cf;
-            Ok(super::super::domexception::throw(
-                g,
-                "NotSupportedError",
-                "Image encoding requires the canvas feature",
-            ))
-        }
+        let (f, ty, q) = capture_args(g, cf)?;
+        let rgba = straight(&f);
+        Ok(js_string(
+            g,
+            &redjs::webapi::canvas2d::encode::data_url(&rgba, f.width, f.height, &ty, q),
+        ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn h_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
-        #[cfg(feature = "canvas")]
-        {
-            let (f, ty, q) = capture_args(g, cf)?;
-            if f.width == 0 || f.height == 0 {
-                return Ok(NULL);
-            }
-            let (mime, data) =
-                super::super::canvas2d::encode::encode(&straight(&f), f.width, f.height, &ty, q);
-            return Ok(super::super::blob::create(
-                g,
-                super::super::util::state(g).blob.proto,
-                data,
-                mime,
-            ));
+        let (f, ty, q) = capture_args(g, cf)?;
+        if f.width == 0 || f.height == 0 {
+            return Ok(NULL);
         }
-        #[cfg(not(feature = "canvas"))]
-        {
-            let _ = cf;
-            Ok(super::super::domexception::throw(
-                g,
-                "NotSupportedError",
-                "Image encoding requires the canvas feature",
-            ))
-        }
+        let (mime, data) =
+            redjs::webapi::canvas2d::encode::encode(&straight(&f), f.width, f.height, &ty, q);
+        Ok(redjs::webapi::blob::create(
+            g,
+            redjs::webapi::util::state(g).blob.proto,
+            data,
+            mime,
+        ))
     })
 }
-#[cfg(feature = "canvas")]
 pub(crate) unsafe fn convert_to_blob(g: *mut c_void, ctx: u64, options: u64) -> u64 {
     run(g, || {
         let Some(s) = surface(g, ctx) else {
@@ -1027,20 +999,20 @@ pub(crate) unsafe fn convert_to_blob(g: *mut c_void, ctx: u64, options: u64) -> 
             (st.width, st.height)
         };
         if w == 0 || h == 0 {
-            return Ok(super::super::domexception::rejected(
+            return Ok(redjs::webapi::domexception::rejected(
                 g,
                 "IndexSizeError",
                 "Canvas has no pixels",
             ));
         }
         let f = snapshot(&s).map_err(|e| {
-            super::super::domexception::throw(g, "OperationError", &e);
+            redjs::webapi::domexception::throw(g, "OperationError", &e);
         })?;
         Ok(async_op(
             g,
             vec![ctx],
             async move {
-                Ok(super::super::canvas2d::encode::encode(
+                Ok(redjs::webapi::canvas2d::encode::encode(
                     &straight(&f),
                     f.width,
                     f.height,
@@ -1049,12 +1021,16 @@ pub(crate) unsafe fn convert_to_blob(g: *mut c_void, ctx: u64, options: u64) -> 
                 ))
             },
             |g, (mime, bytes)| {
-                super::super::blob::create(g, super::super::util::state(g).blob.proto, bytes, mime)
+                redjs::webapi::blob::create(
+                    g,
+                    redjs::webapi::util::state(g).blob.proto,
+                    bytes,
+                    mime,
+                )
             },
         ))
     })
 }
-#[cfg(feature = "canvas")]
 pub(crate) unsafe fn transfer(g: *mut c_void, ctx: u64) -> u64 {
     run(g, || {
         let Some(s) = surface(g, ctx) else {
@@ -1062,14 +1038,14 @@ pub(crate) unsafe fn transfer(g: *mut c_void, ctx: u64) -> u64 {
             unreachable!()
         };
         let f = snapshot(&s).map_err(|e| {
-            super::super::domexception::throw(g, "OperationError", &e);
+            redjs::webapi::domexception::throw(g, "OperationError", &e);
         })?;
         let config = s.state.lock().unwrap().config.clone();
         reset(&s, config, None);
         glue::rjs_define(g, ctx, slots(g).2, UNDEF, 1 | 2);
-        Ok(super::super::image::create_bitmap(
+        Ok(redjs::webapi::image::create_bitmap(
             g,
-            super::super::image::BitmapData::new(f.width, f.height, straight(&f)),
+            redjs::webapi::image::BitmapData::new(f.width, f.height, straight(&f)),
         ))
     })
 }

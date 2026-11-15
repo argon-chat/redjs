@@ -1,7 +1,7 @@
 //! GPUCanvasContext through real JSC, native GPU work and canvas snapshots.
 use super::*;
-use crate::webapi::webgpu::canvas;
-use crate::webapi::webgpu::{handle, Kind, Resource};
+use crate::canvas;
+use crate::{handle, Kind, Resource};
 use std::sync::atomic::Ordering;
 
 const HELPERS: &str = r#"
@@ -57,16 +57,16 @@ fn texture_destroyed(c: &Context, expression: &str) -> bool {
 }
 fn pump_frame(c: &Context) {
     unsafe {
-        crate::glue::rjs_lock(c.raw());
-        crate::ffi::redjs_pump(
+        redjs::glue::rjs_lock(c.raw());
+        redjs::ffi::redjs_pump(
             c.raw(),
-            crate::web::PUMP_TIMERS
-                | crate::web::PUMP_RAF
-                | crate::web::PUMP_MICROTASKS
-                | crate::web::PUMP_CHECKPOINT_PER_TASK,
+            redjs::web::PUMP_TIMERS
+                | redjs::web::PUMP_RAF
+                | redjs::web::PUMP_MICROTASKS
+                | redjs::web::PUMP_CHECKPOINT_PER_TASK,
             core::ptr::null_mut(),
         );
-        crate::glue::rjs_unlock(c.raw());
+        redjs::glue::rjs_unlock(c.raw());
     }
 }
 

@@ -90,7 +90,7 @@ jobs:
         if: matrix.suite.name == 'web'
         working-directory: redjs/redjs
         # Compilation needs no GPU; the real-device tests stay opt-in.
-        run: cargo check --locked --target "${{ matrix.platform.target }}" --no-default-features --features webgpu
+        run: cargo check --locked --target "${{ matrix.platform.target }}" -p redjs-webgpu
       - name: Stage native library for C#
         if: matrix.suite.name == 'web'
         env:

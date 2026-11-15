@@ -245,7 +245,7 @@ unsafe fn color(g: *mut c_void, v: u64) -> Result<wgpu::Color, ()> {
     Ok(wgpu::Color { r, g: green, b, a })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -334,7 +334,7 @@ unsafe fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_view(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Texture)?;
@@ -390,7 +390,7 @@ unsafe fn create_view(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn destroy_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Texture)?;
@@ -405,7 +405,7 @@ unsafe fn destroy_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 macro_rules! texture_getter {
     ($fn:ident,$expr:expr) => {
-        #[crate::host_fn]
+        #[redjs::host_fn]
         unsafe fn $fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             run(g, || {
                 let h = this(g, cf, Kind::Texture)?;
@@ -440,7 +440,7 @@ texture_getter!(texture_usage, |_g, t: &Texture| enc_f64(
     t.usage.bits() as f64
 ));
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_sampler(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -548,7 +548,7 @@ struct VertexLayout {
     step: wgpu::VertexStepMode,
     attributes: Vec<wgpu::VertexAttribute>,
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -789,7 +789,7 @@ unsafe fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
         ))
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn render_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::RenderPipeline)?;
@@ -872,7 +872,7 @@ unsafe fn stencil_ops(g: *mut c_void, v: u64) -> Result<Option<wgpu::Operations<
         store: parse_store(g, required(g, v, "stencilStoreOp")?.v)?,
     }))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn begin_render_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -1024,7 +1024,7 @@ unsafe fn pass_this(
     };
     Ok((c, pass))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1036,7 +1036,7 @@ unsafe fn pass_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1086,7 +1086,7 @@ unsafe fn buffer_range(
     }
     Ok((b, offset..end))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_vertex_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1106,7 +1106,7 @@ unsafe fn pass_vertex_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_index_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1126,7 +1126,7 @@ unsafe fn draw_range(g: *mut c_void, start: u32, count: u32) -> Result<std::ops:
     };
     Ok(start..end)
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_draw(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1140,7 +1140,7 @@ unsafe fn pass_draw(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_draw_indexed(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1157,7 +1157,7 @@ unsafe fn pass_draw_indexed(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_viewport(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1171,7 +1171,7 @@ unsafe fn pass_viewport(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_scissor(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1183,7 +1183,7 @@ unsafe fn pass_scissor(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_blend(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1192,7 +1192,7 @@ unsafe fn pass_blend(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_stencil(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1201,7 +1201,7 @@ unsafe fn pass_stencil(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn end_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let (c, pass) = pass_this(g, cf)?;
@@ -1268,7 +1268,7 @@ unsafe fn copy_buffer(
     };
     Ok((buffer, copy_layout(g, v.v)?))
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn copy_texture_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -1305,7 +1305,7 @@ unsafe fn copy_texture_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn copy_buffer_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -1342,7 +1342,7 @@ unsafe fn copy_buffer_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn copy_texture_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -1378,7 +1378,7 @@ unsafe fn copy_texture_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn write_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
@@ -1485,7 +1485,13 @@ pub(super) unsafe fn install(g: *mut c_void) {
         copy_texture_texture,
     );
     method(g, Kind::Queue, "writeTexture", 4, write_texture);
-    method(g, Kind::Queue, "copyExternalImageToTexture", 3, external::copy);
+    method(
+        g,
+        Kind::Queue,
+        "copyExternalImageToTexture",
+        3,
+        external::copy,
+    );
     constants(
         g,
         "GPUTextureUsage",

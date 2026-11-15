@@ -9,6 +9,7 @@ description = "Full-control Rust embedding layer over Bun's JavaScriptCore prebu
 # Standalone crate on purpose (own lockfile, no repo workspace): the webkit link
 # requirements must not leak into other Rust crates in the monorepo.
 [workspace]
+members = ["webgpu"]
 
 [lib]
 # Keep Rust/static consumers independent of whether the engine archive supports
@@ -85,12 +86,6 @@ bytes = { version = "1", optional = true }
 # Only to read hyper's HTTP/2 errors (GOAWAY / REFUSED_STREAM decide retries).
 h2 = { version = "0.4", optional = true }
 tokio-native-tls = { version = "0.3", optional = true }
-
-# Same revision as gpui_wgpu; a host can inject its existing Device/Queue without a second GPU backend.
-wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "3b3506ea31154edc04de64debda0e780cba2639c", default-features = false, features = ["std", "wgsl", "dx12", "metal", "vulkan"], optional = true }
-pollster = { version = "0.4", optional = true }
-# Exact IEEE f16 encoding for external-image texture uploads.
-half = { version = "2", default-features = false, optional = true }
 urlpattern = "0.6.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -116,9 +111,7 @@ native-aot = []
 # Native Windows, UPower (Linux), and IOPowerSources (macOS) notifications.
 # D-Bus dependencies compile only on Linux.
 battery = ["dep:zbus", "dep:futures-lite", "dep:async-channel"]
-# Native WebGPU is part of the default web API surface; GPU acquisition is lazy.
-webgpu = ["dep:wgpu", "dep:pollster", "dep:half"]
-default = ["audio", "indexeddb", "svg-images", "canvas", "webgpu"]
+default = ["audio", "indexeddb", "svg-images", "canvas"]
 # Web Audio (AudioContext & co) + navigator.mediaDevices over the Firewheel graph.
 audio = ["dep:firewheel", "dep:symphonium"]
 # decodeAudioData beyond the base formats: AAC-LC + the MP4/M4A, CAF, MKV and
@@ -254,10 +247,6 @@ required-features = ["audio"]
 [[example]]
 name = "aot-image"
 required-features = ["native-aot"]
-
-[[example]]
-name = "webgpu"
-required-features = ["webgpu"]
 
 [build-dependencies]
 cc = "1"

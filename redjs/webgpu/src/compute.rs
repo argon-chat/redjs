@@ -126,7 +126,7 @@ pub(super) unsafe fn dynamic_offsets(
         offsets.push(uint(g, value.v, 0)?);
     }
     if cf_argc(cf) > startarg + 1 {
-        let mut info = crate::ffi::RjsTaInfo::default();
+        let mut info = redjs::ffi::RjsTaInfo::default();
         if glue::rjs_typedarray_info(g, value, &mut info) != 0
             || info.kind != 7
             || info.detached != 0
@@ -175,7 +175,7 @@ pub(super) unsafe fn stage_constants(g: *mut c_void, stage: u64) -> Result<Vec<(
     Ok(out)
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_shader(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -261,7 +261,7 @@ unsafe fn compilation_info(g: *mut c_void, info: wgpu::CompilationInfo, source: 
     object.v
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn get_compilation_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Shader)?;
@@ -383,7 +383,7 @@ unsafe fn binding_type(g: *mut c_void, entry: u64) -> Result<wgpu::BindingType, 
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -428,7 +428,7 @@ unsafe fn create_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_pipeline_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -538,7 +538,7 @@ unsafe fn binding(g: *mut c_void, value: u64, c: &Arc<Client>) -> Result<Binding
     Ok(Binding::Buffer(buffer, offset, size))
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -590,7 +590,7 @@ unsafe fn create_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_compute_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -636,7 +636,7 @@ unsafe fn create_compute_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn compute_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePipeline)?;
@@ -655,7 +655,7 @@ unsafe fn compute_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn create_encoder(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -682,7 +682,7 @@ unsafe fn create_encoder(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -693,7 +693,7 @@ unsafe fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
         let descriptor = Val::new(g, cf_arg(cf, 0));
         let label = text(g, field(g, descriptor.v, "label")?.v, "")?;
         if field(g, descriptor.v, "timestampWrites")?.v != UNDEF {
-            super::super::domexception::throw(
+            redjs::webapi::domexception::throw(
                 g,
                 "NotSupportedError",
                 "Timestamp queries are not implemented",
@@ -723,7 +723,7 @@ unsafe fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn copy_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -762,7 +762,7 @@ unsafe fn copy_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn clear_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -788,7 +788,7 @@ unsafe fn clear_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Encoder)?;
@@ -825,7 +825,7 @@ unsafe fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_set_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
@@ -842,7 +842,7 @@ unsafe fn pass_set_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn pass_set_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
@@ -872,7 +872,7 @@ unsafe fn pass_set_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn dispatch(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
@@ -898,7 +898,7 @@ unsafe fn dispatch(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn dispatch_indirect(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
@@ -920,7 +920,7 @@ unsafe fn dispatch_indirect(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn end(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::ComputePass)?;
@@ -943,7 +943,7 @@ unsafe fn end(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn submit(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;
@@ -965,7 +965,7 @@ unsafe fn submit(g: *mut c_void, cf: *mut c_void) -> u64 {
             commands.push(raw);
         }
         if let Err(e) = c.check() {
-            return Ok(super::super::domexception::throw(
+            return Ok(redjs::webapi::domexception::throw(
                 g,
                 "InvalidStateError",
                 &e,
@@ -999,7 +999,7 @@ unsafe fn submit(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn on_submitted_work_done(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Queue)?;

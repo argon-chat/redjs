@@ -1,7 +1,9 @@
 # Native WebGPU
 
-`redjs` feature `webgpu` installs native JavaScriptCore classes backed by
-`wgpu`, without a browser or a TypeScript implementation. It is enabled by default; `--no-default-features` remains available to headless embedders.
+The `redjs-webgpu` crate installs native JavaScriptCore classes backed by
+`wgpu`, without a browser or a TypeScript implementation. `redjs_webgpu::register()`
+makes every context installed after it carry `navigator.gpu`; a context installed
+without it has no WebGPU.
 Windows uses DirectX 12. Metal/Vulkan dependencies are configured for other
 platforms; only Windows has been qualified in this change.
 
@@ -10,8 +12,8 @@ platforms; only Windows has been qualified in this change.
 From `redjs/` (after `setup.ps1`):
 
 ```powershell
-cargo run --no-default-features --features webgpu --example webgpu
-cargo test --no-default-features --features webgpu --lib webgpu -- --test-threads=1
+cargo run -p redjs-webgpu --example webgpu
+cargo test -p redjs-webgpu -- --test-threads=1
 ```
 
 Initialize the ordinary redjs scheduler and Web API layer and keep pumping
@@ -61,7 +63,7 @@ logical clients; native finalizers do not invoke JavaScript.
 
 ## Embedder-owned device
 
-`webapi::webgpu::backend::set_host(Some(Arc<dyn GpuHost>))` replaces standalone
+`redjs_webgpu::backend::set_host(Some(Arc<dyn GpuHost>))` replaces standalone
 adapter discovery for future requests. Return an `Adapter` whose `shared`
 context was constructed with:
 

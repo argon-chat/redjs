@@ -78,6 +78,8 @@ pub mod file_reader;
 pub mod formdata;
 pub mod fsutil;
 pub mod geometry;
+#[doc(hidden)]
+pub mod gpu_ext;
 pub mod headers;
 #[cfg(feature = "audio")]
 pub mod hrtf;
@@ -111,8 +113,6 @@ pub mod uievents;
 pub mod url;
 pub mod urlpattern;
 pub mod util;
-#[cfg(feature = "webgpu")]
-pub mod webgpu;
 pub mod websocket;
 pub mod xhr;
 pub mod xmlser;
@@ -232,8 +232,9 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     uievents::forget(gone);
     url::forget(gone);
     urlpattern::forget(gone);
-    #[cfg(feature = "webgpu")]
-    webgpu::forget(gone);
+    if let Some(ext) = gpu_ext::get() {
+        ext.forget(gone);
+    }
     websocket::forget(gone);
     xhr::forget(gone);
 }
@@ -401,8 +402,9 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     navigator::install(g);
     #[cfg(feature = "battery")]
     battery::install(g, et_proto);
-    #[cfg(feature = "webgpu")]
-    webgpu::install(g);
+    if let Some(ext) = gpu_ext::get() {
+        ext.install(g);
+    }
     #[cfg(feature = "audio")]
     {
         audio::install(g);

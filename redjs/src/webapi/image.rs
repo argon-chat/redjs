@@ -25,10 +25,9 @@ use super::fsutil;
 use super::util::*;
 use crate::glue;
 
-#[cfg(feature = "webgpu")]
 pub(crate) mod external;
-#[cfg(feature = "webgpu")]
-pub(crate) use external::{external_pixels, ExternalImage};
+#[doc(hidden)]
+pub use external::{external_pixels, ExternalImage};
 
 pub struct BitmapData {
     pub width: u32,
@@ -98,8 +97,7 @@ unsafe fn bitmap_close(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// HTMLImageElement (its loaded bitmap), a canvas (feature `canvas`), or
 /// ImageData-shaped {data,width,height}.
 pub unsafe fn source_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u32, u32)> {
-    #[cfg(feature = "webgpu")]
-    if let Some(result) = super::webgpu::canvas::pixels(g, v) {
+    if let Some(result) = super::gpu_ext::get().and_then(|ext| ext.pixels(g, v)) {
         return result.ok();
     }
     let st = state(g);

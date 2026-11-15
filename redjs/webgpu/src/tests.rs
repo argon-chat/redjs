@@ -3,18 +3,44 @@
 //! embedded activity sharing the renderer's device would.
 
 use super::backend;
-use crate::api::Context;
-use crate::webapi::testing::{ok, s, throws};
+use redjs::api::{Context, Error};
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+fn s(c: &Context, src: &str) -> String {
+    match c.eval(src) {
+        Ok(v) => c
+            .to_rust_string(v)
+            .unwrap_or_else(|_| "<unstringifiable>".into()),
+        Err(Error::Exception(e)) => panic!("eval threw:\n  {src}\n  → {}", c.error_info(e).0),
+        Err(e) => panic!("eval failed:\n  {src}\n  → {e}"),
+    }
+}
+
+fn ok(c: &Context, src: &str) {
+    assert_eq!(s(c, src), "true", "expected true from: {src}");
+}
+
+fn throws(c: &Context, src: &str) -> String {
+    match c.eval(src) {
+        Err(Error::Exception(e)) => c.error_info(e).0,
+        Err(e) => panic!("expected a JS exception, got {e}: {src}"),
+        Ok(v) => panic!(
+            "expected a throw from `{src}`, but it returned {}",
+            c.to_rust_string(v)
+                .unwrap_or_else(|_| "<unstringifiable>".into())
+        ),
+    }
+}
+
 fn ctx() -> Context {
+    crate::register();
     let c = Context::new();
     unsafe {
-        assert_eq!(crate::ffi::redjs_web_install(c.raw()), 0);
+        assert_eq!(redjs::ffi::redjs_web_install(c.raw()), 0);
         assert_eq!(
-            crate::ffi::redjs_webshim_install(c.raw(), core::ptr::null(), 0, core::ptr::null(), 0),
+            redjs::ffi::redjs_webshim_install(c.raw(), core::ptr::null(), 0, core::ptr::null(), 0),
             0
         );
     }
@@ -87,13 +113,13 @@ impl Drop for HostGuard {
 }
 
 unsafe fn pump(c: &Context) {
-    crate::glue::rjs_lock(c.raw());
-    crate::ffi::redjs_pump(
+    redjs::glue::rjs_lock(c.raw());
+    redjs::ffi::redjs_pump(
         c.raw(),
-        crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+        redjs::web::PUMP_TIMERS | redjs::web::PUMP_MICROTASKS,
         core::ptr::null_mut(),
     );
-    crate::glue::rjs_unlock(c.raw());
+    redjs::glue::rjs_unlock(c.raw());
 }
 
 fn run(c: &Context, body: &str) -> String {
@@ -166,9 +192,9 @@ fn run_gpu(c: &Context, body: &str) -> String {
     run(c, &format!("{SETUP}\n{body}"))
 }
 
-#[crate::host_fn]
+#[redjs::host_fn]
 unsafe fn force_gc(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    crate::ffi::redjs_gc(g, 0);
+    redjs::ffi::redjs_gc(g, 0);
     super::UNDEF
 }
 
@@ -532,7 +558,7 @@ fn webgpu_descriptor_getters_and_pending_operations_survive_gc() {
         let f = super::make_fn(c.raw(), "__forceGpuGc", 0, force_gc);
         super::define(
             c.raw(),
-            crate::glue::rjs_global(c.raw()),
+            redjs::glue::rjs_global(c.raw()),
             "__forceGpuGc",
             f,
             2,
@@ -599,7 +625,7 @@ fn install_gc(c: &Context) {
         let f = super::make_fn(c.raw(), "__forceGpuGc", 0, force_gc);
         super::define(
             c.raw(),
-            crate::glue::rjs_global(c.raw()),
+            redjs::glue::rjs_global(c.raw()),
             "__forceGpuGc",
             f,
             2,
@@ -705,14 +731,14 @@ fn finalize_wrapper(c: &Context, name: &str) -> Arc<backend::Client> {
         impl Drop for ApiLock {
             fn drop(&mut self) {
                 unsafe {
-                    crate::glue::rjs_unlock(self.0);
+                    redjs::glue::rjs_unlock(self.0);
                 }
             }
         }
-        crate::glue::rjs_lock(c.raw());
+        redjs::glue::rjs_lock(c.raw());
         let _lock = ApiLock(c.raw());
-        let object = value.0 as usize as crate::capi::JSObjectRef;
-        let pointer = crate::capi::JSObjectGetPrivate(object) as *mut super::Handle;
+        let object = value.0 as usize as redjs::capi::JSObjectRef;
+        let pointer = redjs::capi::JSObjectGetPrivate(object) as *mut super::Handle;
         assert!(
             !pointer.is_null(),
             "Expected an unfinalized native resource wrapper"
@@ -722,7 +748,7 @@ fn finalize_wrapper(c: &Context, name: &str) -> Arc<backend::Client> {
             super::Kind::Buffer | super::Kind::Texture
         ));
         let client = (*pointer).client.as_ref().unwrap().clone();
-        assert!(crate::capi::JSObjectSetPrivate(
+        assert!(redjs::capi::JSObjectSetPrivate(
             object,
             core::ptr::null_mut()
         ));
@@ -847,7 +873,6 @@ fn webgpu_texture_upload_snapshots_after_descriptor_getters() {
     );
 }
 
-#[cfg(feature = "canvas")]
 #[path = "canvas_tests.rs"]
 mod canvas_tests;
 
