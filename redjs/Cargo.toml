@@ -12,9 +12,10 @@ description = "Full-control Rust embedding layer over Bun's JavaScriptCore prebu
 members = ["webgpu"]
 
 [lib]
-# Keep Rust/static consumers independent of whether the engine archive supports
-# shared linking. build.ps1 / build.sh request cdylib explicitly when available.
-crate-type = ["rlib", "staticlib"]
+# rlib only: a staticlib here makes every Rust consumer wait for the full build
+# of all of redjs's dependencies. build.ps1 / build.sh request staticlib (and
+# cdylib when available) explicitly.
+crate-type = ["rlib"]
 
 [dependencies]
 redjs-macros = { path = "macros" }
