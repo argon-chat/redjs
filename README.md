@@ -57,7 +57,9 @@ evaluates a few expressions, and prints each step.
 
 Versions and hashes live in [pins.txt](pins.txt). Run `setup.ps1` again after
 a pin change. To use a prebuilt stored elsewhere, set `BUN_WEBKIT_DIR`; the
-build checks it against the same pin.
+build checks it against the same pin. Debug builds on Windows link JavaScriptCore
+and WTF without their debug info; `REDJS_WEBKIT_DEBUG_INFO=1` keeps it, for
+stepping through engine source.
 
 Back in the repository root, run `./build.ps1 -Test` to build
 the library, run the Rust suite, and stage the DLL and static library under

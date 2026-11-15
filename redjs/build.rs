@@ -393,6 +393,11 @@ fn main() {
     if let Some(name) = &engine_dll {
         link_engine_dll(&manifest, &out_dir, &lib, name);
     } else {
+        if windows {
+            if let Some(stripped) = webkit_without_debug_info(&out_dir, &lib) {
+                println!("cargo:rustc-link-search=native={}", stripped.display());
+            }
+        }
         println!("cargo:rustc-link-search=native={}", lib.display());
     }
 
@@ -492,6 +497,38 @@ fn main() {
         inc.join("cmakeconfig.h").display()
     );
     println!("cargo:rerun-if-env-changed=BUN_WEBKIT_DIR");
+}
+
+/// Dev builds link JavaScriptCore and WTF without their CodeView (1.3 GB), which every consumer
+/// relink would otherwise copy into its PDB. `REDJS_WEBKIT_DEBUG_INFO=1` keeps it.
+fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBuf> {
+    println!("cargo:rerun-if-env-changed=REDJS_WEBKIT_DEBUG_INFO");
+    if env::var("REDJS_WEBKIT_DEBUG_INFO").is_ok_and(|v| v == "1") {
+        return None;
+    }
+    // OUT_DIR is target/<triple>/<profile>/build/redjs-<hash>/out.
+    if out_dir.ancestors().nth(3)?.file_name()? != "debug" {
+        return None;
+    }
+    let sysroot = std::process::Command::new(env::var_os("RUSTC")?).args(["--print", "sysroot"]).output().ok()?;
+    let objcopy = PathBuf::from(String::from_utf8(sysroot.stdout).ok()?.trim())
+        .join("lib/rustlib")
+        .join(env::var("HOST").ok()?)
+        .join("bin")
+        .join(format!("rust-objcopy{}", env::consts::EXE_SUFFIX));
+    let dir = out_dir.join("webkit-no-debug-info");
+    fs::create_dir_all(&dir).ok()?;
+    for name in ["JavaScriptCore.lib", "WTF.lib"] {
+        let status = std::process::Command::new(&objcopy)
+            .arg("--strip-debug")
+            .arg(webkit_lib.join(name))
+            .arg(dir.join(name))
+            .status();
+        if !status.is_ok_and(|s| s.success()) {
+            return None;
+        }
+    }
+    Some(dir)
 }
 
 /// Links the engine DLL (`REDJS_ENGINE_DLL`) from the glue and mimalloc this
