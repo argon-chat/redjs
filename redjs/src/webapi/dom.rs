@@ -269,16 +269,9 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
         glue::rjs_atom_free(g, a);
     }
 
-    // body/head/documentElement: dumb elements.
-    let mk_el = |tag: &str| -> u64 {
-        let el = new_object(g, event_target_proto);
-        define(g, el, "tagName", js_string(g, &tag.to_ascii_uppercase()), 0);
-        define(g, el, "style", new_object(g, UNDEF), 0);
-        el
-    };
-    define(g, document, "body", mk_el("body"), 0);
-    define(g, document, "head", mk_el("head"), 0);
-    define(g, document, "documentElement", mk_el("html"), 0);
+    for (name, tag) in [("body", "body"), ("head", "head"), ("documentElement", "html")] {
+        define(g, document, name, dumb_element(g, event_target_proto, document, tag), 0);
+    }
 
     crate::ffi::redjs_protect(g, document);
     define(g, global, "document", document, 2);
@@ -288,6 +281,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     let global_proxy = get(g, global, "globalThis");
     define(g, global, "window", global_proxy, 2);
     define(g, global, "self", global_proxy, 2);
+    define(g, document, "defaultView", global_proxy, 2);
     install_viewport(g, global);
     // add/remove/dispatchEventListener come from EventTarget.prototype methods
     // defined as bare globals (their `this` defaults to the global object).
@@ -297,6 +291,107 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     def_fn(global, "matchMedia", 1, match_media);
 
     (document, elements)
+}
+
+// ---------------------------------------------------------------------------
+// The dumb elements' members
+// ---------------------------------------------------------------------------
+
+#[crate::host_fn]
+unsafe fn answer_null(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+    NULL
+}
+
+#[crate::host_fn]
+unsafe fn answer_false(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+    FALSE
+}
+
+#[crate::host_fn]
+unsafe fn answer_undefined(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+    UNDEF
+}
+
+#[crate::host_fn]
+unsafe fn answer_empty(g: *mut c_void, _cf: *mut c_void) -> u64 {
+    new_array(g)
+}
+
+#[crate::host_fn]
+unsafe fn answer_first(_g: *mut c_void, cf: *mut c_void) -> u64 {
+    cf_arg(cf, 0)
+}
+
+unsafe fn bag_key(g: *mut c_void, cf: *mut c_void) -> Option<(u64, String)> {
+    let this = cf_this(cf);
+    if !is_cell(this) {
+        return None;
+    }
+    let key = to_js_string(g, cf_arg(cf, 0)).ok()?;
+    Some((this, read_string(g, key)?))
+}
+
+#[crate::host_fn]
+unsafe fn bag_set_property(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if let Some((bag, key)) = bag_key(g, cf) {
+        let v = cf_arg(cf, 1);
+        let text = if v == UNDEF || v == NULL { js_string(g, "") } else { to_js_string(g, v).unwrap_or(UNDEF) };
+        define(g, bag, &key, text, 0);
+    }
+    UNDEF
+}
+
+#[crate::host_fn]
+unsafe fn bag_get_property_value(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match bag_key(g, cf) {
+        Some((bag, key)) => match get(g, bag, &key) {
+            UNDEF => js_string(g, ""),
+            v => v,
+        },
+        None => js_string(g, ""),
+    }
+}
+
+#[crate::host_fn]
+unsafe fn bag_remove_property(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some((bag, key)) = bag_key(g, cf) else {
+        return js_string(g, "");
+    };
+    let prev = match get(g, bag, &key) {
+        UNDEF => js_string(g, ""),
+        v => v,
+    };
+    let a = atom(g, &key);
+    glue::rjs_delete(g, bag, a);
+    glue::rjs_atom_free(g, a);
+    prev
+}
+
+/// `<head>`, `<body>` and `<html>` before anything replaces them: not boxes, so lookups find nothing and
+/// insertions keep nothing, and `style` is a property bag with the CSSOM methods.
+unsafe fn dumb_element(g: *mut c_void, proto: u64, document: u64, tag: &str) -> u64 {
+    let el = new_object(g, proto);
+    define(g, el, "tagName", js_string(g, &tag.to_ascii_uppercase()), 0);
+    let style = new_object(g, UNDEF);
+    let members: [(u64, &str, u32, HostFn); 11] = [
+        (style, "setProperty", 2, bag_set_property),
+        (style, "removeProperty", 1, bag_remove_property),
+        (style, "getPropertyValue", 1, bag_get_property_value),
+        (el, "querySelector", 1, answer_null),
+        (el, "querySelectorAll", 1, answer_empty),
+        (el, "contains", 1, answer_false),
+        (el, "getAttribute", 1, answer_null),
+        (el, "setAttribute", 2, answer_undefined),
+        (el, "appendChild", 1, answer_first),
+        (el, "removeChild", 1, answer_first),
+        (el, "insertBefore", 2, answer_first),
+    ];
+    for (target, name, arity, f) in members {
+        define(g, target, name, make_fn(g, name, arity, f), 2);
+    }
+    define(g, el, "style", style, 0);
+    define(g, el, "ownerDocument", document, 2);
+    el
 }
 
 // ---------------------------------------------------------------------------

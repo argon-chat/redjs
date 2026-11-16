@@ -665,6 +665,18 @@ fn webapi_fetch_images_dom(ctx: &Context) {
             .unwrap(),
             "1000,700,1016,739,1.5,1,5,1016"
         );
+        assert_eq!(
+            ctx.to_rust_string(
+                ctx.eval("(() => { const h = document.head, s = h.style, kid = {}; \
+                          s.setProperty('--x', 4); const r = [document.defaultView === window, h.tagName, h.ownerDocument === document, \
+                          s.getPropertyValue('--x'), s.removeProperty('--x'), s.getPropertyValue('--x'), h.querySelector('style'), \
+                          h.querySelectorAll('style').length, h.contains(kid), h.appendChild(kid) === kid, h.getAttribute('id')]; \
+                          return r.join('|'); })()")
+                    .unwrap()
+            )
+            .unwrap(),
+            "true|HEAD|true|4|4|||0|false|true|"
+        );
 
         ctx.eval("globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dcl:' + document.readyState)); window.addEventListener('load', () => lifecycle.push('load'));").unwrap();
         ffi::redjs_dom_content_loaded(ctx.raw());
