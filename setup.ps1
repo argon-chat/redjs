@@ -51,7 +51,7 @@ function Read-Pins([string] $path) {
     return $pins
 }
 
-$pins = Read-Pins (Join-Path $root 'pins.txt')
+$pins = Read-Pins (Join-Path $root 'redjs/pins.txt')
 
 if (-not $Proxy -and $env:REDJS_PROXY) { $Proxy = $env:REDJS_PROXY }
 

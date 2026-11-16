@@ -8,7 +8,7 @@ const TABLE_FILES = ["AOTBuiltinTableAttachments.cpp", "AOTBuiltinTableBuiltins.
 const TABLE_HEADERS = ["AOTBuiltinTableArrays.h", "AOTBuiltinNameSlots.h", "AOTBuiltinTableEnums.h", "AOTSchemaInlineBuiltins.h"];
 
 export function readPins(): Record<string, string> {
-  const pins = Object.fromEntries(readFileSync(join(ROOT, "pins.txt"), "utf8").split(/\r?\n/).flatMap(raw => {
+  const pins = Object.fromEntries(readFileSync(join(ROOT, "redjs", "pins.txt"), "utf8").split(/\r?\n/).flatMap(raw => {
     const line = raw.split("#", 1)[0]!.trim();
     if (!line) return [];
     const equals = line.indexOf("=");

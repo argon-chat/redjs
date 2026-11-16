@@ -121,7 +121,7 @@ pub unsafe fn compile_ir(program: &[u8]) -> Result<CompiledImage, String> {
     anchor_icu();
     let mut hash = Sha256::new();
     hash.update(b"skathi-aot-image-v1\0");
-    hash.update(include_bytes!("../../pins.txt"));
+    hash.update(include_bytes!("../pins.txt"));
     hash.update(BUILD_TABLE_ID);
     hash.update(COMPILE_OPTIONS);
     hash.update(program);

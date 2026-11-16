@@ -70,9 +70,7 @@ unsafe fn create(g: *mut c_void, cf: *mut c_void) -> u64 {
         let d = Val::new(g, cf_arg(cf, 0));
         let size = num(g, field(g, d.v, "size")?.v, 0)?;
         let bits = uint(g, field(g, d.v, "usage")?.v, 0)?;
-        let mut raw_bits = wgpu::BufferUsages::empty().bits();
-        raw_bits.0[0] = bits;
-        let Some(usage) = wgpu::BufferUsages::from_bits(raw_bits) else {
+        let Some(usage) = wgpu::BufferUsages::from_bits(bits) else {
             invalid(g, "Invalid GPUBufferUsage flags")?;
             unreachable!()
         };
@@ -129,7 +127,7 @@ unsafe fn size(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[redjs::host_fn]
 unsafe fn usage(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
-        Ok(enc_f64(get_buffer(g, cf)?.1.usage.bits().0[0] as f64))
+        Ok(enc_f64(get_buffer(g, cf)?.1.usage.bits() as f64))
     })
 }
 #[redjs::host_fn]

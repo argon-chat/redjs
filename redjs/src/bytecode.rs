@@ -127,7 +127,7 @@ impl Context {
         hash.update(usize::BITS.to_le_bytes());
         hash.update(std::env::consts::ARCH.as_bytes());
         hash.update(std::env::consts::OS.as_bytes());
-        hash.update(include_bytes!("../../pins.txt"));
+        hash.update(include_bytes!("../pins.txt"));
         hash.update(unsafe { glue::rjs_bytecode_cache_version() }.to_le_bytes());
         for bytes in [options.as_slice(), source.as_bytes(), url.as_bytes()] {
             hash.update((bytes.len() as u64).to_le_bytes());

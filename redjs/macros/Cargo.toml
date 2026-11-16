@@ -1,9 +1,12 @@
 [package]
 name = "redjs-macros"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-publish = false
+description = "Procedural macros for redjs: `#[redjs::host_fn]` with the JavaScriptCore host-callback ABI of each platform."
+repository = "https://github.com/argon-chat/redjs"
+homepage = "https://skathi.land"
+exclude = ["/tests"]
 
 [lib]
 proc-macro = true

@@ -649,10 +649,10 @@ unsafe fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
                     })
                 };
                 if blend.as_ref().is_some_and(|b| {
-                    b.color.src_factor.uses_second_blend_source()
-                        || b.color.dst_factor.uses_second_blend_source()
-                        || b.alpha.src_factor.uses_second_blend_source()
-                        || b.alpha.dst_factor.uses_second_blend_source()
+                    b.color.src_factor.ref_second_blend_source()
+                        || b.color.dst_factor.ref_second_blend_source()
+                        || b.alpha.src_factor.ref_second_blend_source()
+                        || b.alpha.dst_factor.ref_second_blend_source()
                 }) && !c.features.contains(wgpu::Features::DUAL_SOURCE_BLENDING)
                 {
                     invalid(

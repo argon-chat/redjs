@@ -55,9 +55,15 @@ cargo run --release --no-default-features --example mini
 gigabyte for the unpacked JavaScriptCore build. The `mini` probe creates a VM,
 evaluates a few expressions, and prints each step.
 
-Versions and hashes live in [pins.txt](pins.txt). Run `setup.ps1` again after
+Versions and hashes live in [redjs/pins.txt](redjs/pins.txt). Run `setup.ps1` again after
 a pin change. To use a prebuilt stored elsewhere, set `BUN_WEBKIT_DIR`; the
-build checks it against the same pin. Debug builds on Windows link JavaScriptCore
+build checks it against the same pin.
+
+Without a setup run (a crate from crates.io, for one), the build script fetches
+the same pinned inputs itself, checks the same hashes, and keeps them in a shared
+cache: `REDJS_CACHE_DIR`, else `redjs` under `%LOCALAPPDATA%`, `~/Library/Caches`
+or `$XDG_CACHE_HOME` (`~/.cache`). `REDJS_PROXY` or `HTTPS_PROXY` sets a proxy;
+with `CARGO_NET_OFFLINE` set it fails instead of downloading. Debug builds on Windows link JavaScriptCore
 and WTF without their debug info; `REDJS_WEBKIT_DEBUG_INFO=1` keeps it, for
 stepping through engine source.
 
@@ -248,7 +254,7 @@ your option.
 It links JavaScriptCore, WTF and bmalloc from Bun's WebKit build, statically by default. Parts of
 JavaScriptCore and WTF are licensed under the GNU LGPL 2; the rest of WebKit is BSD. To meet the
 LGPL, the patched WebKit source is public at [oven-sh/WebKit](https://github.com/oven-sh/WebKit):
-the exact commit is `webkit.version` in [pins.txt](pins.txt). To relink redjs, or a program built
+the exact commit is `webkit.version` in [redjs/pins.txt](redjs/pins.txt). To relink redjs, or a program built
 on it, against a modified JavaScriptCore: build that commit, point `BUN_WEBKIT_DIR` at the result
 and rebuild (`build.ps1` / `build.sh`). On Windows, `REDJS_ENGINE_DLL=redjs.dll` puts the engine in
 a DLL of its own that can be replaced without relinking the program.

@@ -12,14 +12,14 @@
 //!    the exact flags of the prebuilt (clang-cl, /MT, NDEBUG, C++23,
 //!    force-included cmakeconfig.h).
 //!
-//! 3. Compiles oven-sh/mimalloc (`cpp/mimalloc`, fetched by setup.ps1). This
+//! 3. Compiles oven-sh/mimalloc (see `build_fetch.rs` for where it comes from). This
 //!    JSC build (`USE_MIMALLOC 1`, `USE_EXTERNAL_MIMALLOC 1`) allocates
 //!    through `mi_*` and leaves the allocator to the embedder, the way Bun
 //!    links its own. It is a normal (bundled) static lib, so it lands INSIDE
 //!    the thin redjs.lib and a NativeAOT consumer gets it without listing it.
 //!
 //! 4. With `indexeddb-sqlite` only: compiles `cpp/idb_sqlite.c` — SQLite3
-//!    Multiple Ciphers (`../prebuilt/sqlite3mc`, fetched by setup.ps1) as ONE
+//!    Multiple Ciphers (the pinned amalgamation) as ONE
 //!    translation unit whose `sqlite3_*` API is `static`, trimmed to the
 //!    ChaCha20-Poly1305 cipher and size-optimised (-Os, /Gy /Gw so the final
 //!    link's /OPT:REF drops what IndexedDB never calls). Bundled into the
@@ -30,15 +30,15 @@
 //!    thin — the consuming link (ILC) must also pass the WebKit libs. The
 //!    `cdylib` artifact (redjs.dll) is always fully self-contained.
 //!
-//! Before any of it, the prebuilt, the mimalloc tree and (with
-//! `indexeddb-sqlite`) the sqlite3mc tree are checked against `../pins.txt`:
-//! a mismatch is a build error with the command that fixes it, because
-//! linking whatever happens to be on disk is how a checkout keeps the OLD
-//! engine after pulling a new pin.
-//!
-//! Prebuilt location: `BUN_WEBKIT_DIR` env or `../prebuilt/bun-webkit`.
-//! Unix uses platform-specific directories under `prebuilt`, Clang with the
-//! platform C++ standard library, and native system libraries/frameworks.
+//! The prebuilt, the mimalloc tree and (with `indexeddb-sqlite`) the sqlite3mc
+//! tree are the ones `pins.txt` names, never whatever happens to be on disk:
+//! `build_fetch.rs` finds or fetches them. Prebuilt location: `BUN_WEBKIT_DIR`,
+//! a checkout's `../prebuilt/bun-webkit[-<platform>]`, or the redjs cache.
+//! Unix uses Clang with the platform C++ standard library, and native system
+//! libraries/frameworks.
+
+#[path = "build_fetch.rs"]
+mod fetch;
 
 use std::env;
 use std::fmt::Write as _;
@@ -108,6 +108,24 @@ fn main() {
     };
 
     generate_trampolines(&out_dir);
+    let pins_path = manifest.join("pins.txt");
+    let pins = read_pins(&pins_path);
+    println!("cargo:rerun-if-changed={}", pins_path.display());
+    println!("cargo:webkit_version={}", pin(&pins, "webkit.version"));
+
+    // docs.rs builds offline and links nothing.
+    if env::var_os("DOCS_RS").is_some() {
+        println!("cargo:rustc-check-cfg=cfg(redjs_engine_dll)");
+        return;
+    }
+    if windows && !env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default().split(',').any(|f| f == "crt-static") {
+        panic!(
+            "\n\nredjs links the static CRT on Windows: the JavaScriptCore prebuilt and its C++ glue are /MT,\n\
+             and mixing them with the dynamic CRT gives two heaps in one process. Add to .cargo/config.toml:\n\n\
+             [target.x86_64-pc-windows-msvc]\n\
+             rustflags = [\"-C\", \"target-feature=+crt-static\"]\n"
+        );
+    }
 
     // `REDJS_ENGINE_DLL=redjs.dll` (Windows): the C++ half — glue, mimalloc,
     // JavaScriptCore, WTF, bmalloc and ICU — is linked into that DLL rather
@@ -126,24 +144,12 @@ fn main() {
         println!("cargo:rustc-cfg=redjs_engine_dll");
     }
 
-    let webkit = env::var("BUN_WEBKIT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let directory = if windows {
-                "bun-webkit".to_owned()
-            } else {
-                format!("bun-webkit-{platform}")
-            };
-            manifest.parent().unwrap().join("prebuilt").join(directory)
-        });
+    let webkit = fetch::webkit(&manifest, platform, windows, &pins);
     let lib = webkit.join("lib");
     let inc = webkit.join("include");
-
-    let pins_path = manifest.parent().unwrap().join("pins.txt");
-    let pins = read_pins(&pins_path);
     check_prebuilt(&webkit, &pins);
-    let mimalloc = manifest.join("cpp").join("mimalloc");
-    check_mimalloc(&mimalloc, &pins);
+    println!("cargo:webkit_dir={}", webkit.display());
+    let mimalloc = fetch::mimalloc(&manifest, &pins);
 
     // --- C++ glue against WebKit internal headers -------------------------
     // Flags mirror how the prebuilt itself was produced (proven in
@@ -199,8 +205,10 @@ fn main() {
         let native_aot = std::env::var_os("CARGO_FEATURE_NATIVE_AOT").is_some();
         println!("cargo:rerun-if-env-changed=REDJS_AOT_BUILTIN_TABLE_DIR");
         let table = if native_aot {
-            let table = PathBuf::from(std::env::var_os("REDJS_AOT_BUILTIN_TABLE_DIR")
-                .expect("native-aot requires REDJS_AOT_BUILTIN_TABLE_DIR; run scripts/aot/generate-table.ts"));
+            let table = PathBuf::from(std::env::var_os("REDJS_AOT_BUILTIN_TABLE_DIR").expect(
+                "the native-aot feature needs REDJS_AOT_BUILTIN_TABLE_DIR: the builtin table generated by the \
+                 AOT frontend at Bun 237bba51e for this engine. Build without native-aot otherwise.",
+            ));
             let receipt = fs::read_to_string(table.join(".redjs-aot-table"))
                 .expect("native-aot table lacks its pinned generation receipt");
             assert!(
@@ -337,7 +345,7 @@ fn main() {
 
     // --- SQLite3 Multiple Ciphers (IndexedDB on disk) ----------------------
     // ONE C translation unit, `cpp/idb_sqlite.c`, which #includes the pinned
-    // amalgamation from prebuilt/sqlite3mc (setup.ps1) and exports only its
+    // amalgamation and exports only its
     // own `rjs_sql_*` wrappers: every sqlite3_* function is `static` there.
     // Only with `indexeddb-sqlite`; without it nothing is checked or compiled.
     //
@@ -347,12 +355,7 @@ fn main() {
     // benchmarks that say what it costs). /Gy + /Gw put every function and
     // global in its own COMDAT, so the linker drops what nothing reaches.
     let sqlite = env::var_os("CARGO_FEATURE_INDEXEDDB_SQLITE").is_some().then(|| {
-        let mc = manifest
-            .parent()
-            .unwrap()
-            .join("prebuilt")
-            .join("sqlite3mc");
-        check_sqlite3mc(&mc, &pins);
+        let mc = fetch::sqlite3mc(&manifest, &pins);
         let mut sqlite = native_build(false, windows);
         if windows {
             sqlite
@@ -485,18 +488,16 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cpp/glue.cpp");
     println!("cargo:rerun-if-changed=cpp/compat/wtf/PlatformEnableWin.h");
-    // setup.ps1 rewrites the stamp only after a verified fetch, so it stands
-    // for the whole mimalloc tree.
+    // The stamp is written only after a verified fetch, so it stands for the
+    // whole mimalloc tree.
     println!(
         "cargo:rerun-if-changed={}",
         mimalloc.join(".redjs-pin").display()
     );
-    println!("cargo:rerun-if-changed={}", pins_path.display());
     println!(
         "cargo:rerun-if-changed={}",
         inc.join("cmakeconfig.h").display()
     );
-    println!("cargo:rerun-if-env-changed=BUN_WEBKIT_DIR");
 }
 
 /// Dev builds link JavaScriptCore and WTF without their CodeView (1.3 GB), which every consumer
@@ -715,9 +716,8 @@ fn pin<'a>(pins: &'a [(String, String)], key: &str) -> &'a str {
 fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
     let want = pin(pins, "webkit.version");
     let cfg = webkit.join("include").join("cmakeconfig.h");
-    let fix =
-        "Run setup.ps1 (or setup.sh) at the redjs repository root: it fetches the pinned \
-               prebuilt and REPLACES one at any other version. Or point BUN_WEBKIT_DIR at an extraction of the pinned tarball.";
+    let fix = "Point BUN_WEBKIT_DIR at an extraction of the pinned tarball, or unset it to let redjs \
+               fetch the pinned prebuilt.";
     let Ok(text) = fs::read_to_string(&cfg) else {
         panic!(
             "\n\nno bun-webkit prebuilt at {} (missing include/cmakeconfig.h).\n{fix}\n\
@@ -761,47 +761,6 @@ fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
             "\n\n{} names the pinned build but has no lib/{library} — an interrupted \
              extraction?\n{fix}\n",
             webkit.display()
-        );
-    }
-}
-
-/// setup.ps1 writes `cpp/mimalloc/.redjs-pin` (the commit) only after the
-/// extracted tree's sha256 matched pins.txt.
-fn check_mimalloc(dir: &Path, pins: &[(String, String)]) {
-    let want = pin(pins, "mimalloc.commit");
-    let have = fs::read_to_string(dir.join(".redjs-pin"))
-        .ok()
-        .map(|s| s.trim().to_owned());
-    if have.as_deref() != Some(want) || !dir.join("src").join("static.c").is_file() {
-        panic!(
-            "\n\nmimalloc sources at {} are {}, but redjs pins oven-sh/mimalloc@{want} (pins.txt).\n\
-             This JSC build allocates through the embedder's mimalloc, so redjs compiles it.\n\
-             Run setup.ps1 (or setup.sh) at the redjs repository root to fetch it.\n",
-            dir.display(),
-            have.as_deref().unwrap_or("missing"),
-        );
-    }
-}
-
-/// setup.ps1 writes `prebuilt/sqlite3mc/.redjs-pin` (`<version> <tree sha256>`)
-/// only after the release asset's sha256 AND the extracted tree's matched
-/// pins.txt; a stamp naming anything else is a tree this build refuses.
-fn check_sqlite3mc(dir: &Path, pins: &[(String, String)]) {
-    let want = format!(
-        "{} {}",
-        pin(pins, "sqlite3mc.version"),
-        pin(pins, "sqlite3mc.tree-sha256")
-    );
-    let have = fs::read_to_string(dir.join(".redjs-pin"))
-        .ok()
-        .map(|s| s.trim().to_owned());
-    if have.as_deref() != Some(want.as_str()) || !dir.join("sqlite3mc_amalgamation.c").is_file() {
-        panic!(
-            "\n\nthe SQLite3 Multiple Ciphers amalgamation at {} is {}, but redjs pins `{want}` (pins.txt).\n\
-             The `indexeddb-sqlite` feature compiles it into IndexedDB's persistent backend.\n\
-             Run setup.ps1 (or setup.sh) at the redjs repository root to fetch and verify it.\n",
-            dir.display(),
-            have.as_deref().unwrap_or("missing"),
         );
     }
 }

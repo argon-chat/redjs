@@ -2,8 +2,8 @@
  * IndexedDB's SQLite (m25 P2, research/reports/m25/indexeddb-design.md §2.2).
  *
  * ONE translation unit: the SQLite3 Multiple Ciphers amalgamation (MIT;
- * SQLite itself is public domain), fetched and hash-verified by setup.ps1 at
- * the version pinned in ../pins.txt, compiled by build.rs only with the
+ * SQLite itself is public domain), fetched and hash-verified by setup or build.rs at
+ * the version pinned in pins.txt, compiled by build.rs only with the
  * `indexeddb-sqlite` feature — plus the handful of `rjs_sql_*` wrappers below,
  * which are the whole of what Rust sees (src/webapi/indexeddb/sqlite.rs).
  *

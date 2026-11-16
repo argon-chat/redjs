@@ -71,7 +71,7 @@ jobs:
           path: |
             redjs/prebuilt
             redjs/redjs/cpp/mimalloc
-          key: redjs-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('redjs/pins.txt') }}
+          key: redjs-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('redjs/redjs/pins.txt') }}
       - name: Fetch and verify native dependencies
         run: bash ./redjs/setup.sh
       - name: Run Rust tests

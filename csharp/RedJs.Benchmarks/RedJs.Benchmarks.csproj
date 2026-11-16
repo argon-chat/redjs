@@ -17,7 +17,7 @@
     <PackageReference Include="YantraJS.Core" Version="1.2.507" />
     <PackageReference Include="Jurassic" Version="3.2.9" />
     <PackageReference Include="NiL.JS" Version="2.6.1725" />
-    <None Include="../../pins.txt" Link="native-pins.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../redjs/pins.txt" Link="native-pins.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="$(RedJsNativePath)" Link="runtimes/win-x64/native/redjs.dll" CopyToOutputDirectory="PreserveNewest"
           Condition="Exists('$(RedJsNativePath)')" />
     <None Include="../../redjs/target/benchmarks-aot/x86_64-pc-windows-msvc/release/redjs.dll"

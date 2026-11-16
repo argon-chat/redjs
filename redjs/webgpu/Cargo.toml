@@ -1,14 +1,17 @@
 [package]
 name = "redjs-webgpu"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Native WebGPU for redjs over wgpu. A crate of its own so that redjs and wgpu compile in parallel."
+repository = "https://github.com/argon-chat/redjs"
+homepage = "https://skathi.land"
+exclude = ["/examples", "src/tests.rs", "src/*_tests.rs"]
 
 [dependencies]
-redjs = { path = "..", default-features = false, features = ["canvas"] }
-# Same revision as gpui_wgpu; a host can inject its existing Device/Queue without a second GPU backend.
-wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "cddb2f5d80dc0009b2ef6767635140cacf90a007", default-features = false, features = ["std", "wgsl", "dx12", "metal", "vulkan"] }
+redjs = { path = "..", version = "0.2.0", default-features = false, features = ["canvas"] }
+# The wgpu gpui builds on; a host can inject its existing Device/Queue without a second GPU backend.
+wgpu = { version = "30.0.2", default-features = false, features = ["std", "wgsl", "dx12", "metal", "vulkan"] }
 pollster = "0.4"
 # Exact IEEE f16 encoding for external-image texture uploads.
 half = { version = "2", default-features = false }

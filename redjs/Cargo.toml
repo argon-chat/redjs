@@ -1,10 +1,28 @@
 [package]
 name = "redjs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 build = "build.rs"
+# Dependents read the engine pin as DEP_REDJS_WEBKIT_VERSION (see build.rs).
+links = "redjs"
 description = "Full-control Rust embedding layer over Bun's JavaScriptCore prebuilt. C ABI designed for zero-alloc C# (NativeAOT) codegen bindings."
+repository = "https://github.com/argon-chat/redjs"
+homepage = "https://skathi.land"
+readme = "../README.md"
+keywords = ["javascript", "javascriptcore", "jsc", "embedding", "runtime"]
+categories = ["api-bindings", "web-programming"]
+exclude = [
+    "/.cargo",
+    "/docs",
+    "/examples",
+    "/tests",
+    "/testdata",
+    "/cpp/mimalloc",
+    "src/**/tests.rs",
+    "src/**/*_tests.rs",
+    "src/**/testdata",
+]
 
 # Standalone crate on purpose (own lockfile, no repo workspace): the webkit link
 # requirements must not leak into other Rust crates in the monorepo.
@@ -18,7 +36,7 @@ members = ["webgpu"]
 crate-type = ["rlib"]
 
 [dependencies]
-redjs-macros = { path = "macros" }
+redjs-macros = { path = "macros", version = "0.2.0" }
 # Image decoding for the web shim (HTMLImageElement / createImageBitmap).
 # Pure-Rust decoders only; matches the formats apps actually ship.
 url = "2"
@@ -174,7 +192,7 @@ clipboard = []
 # dependency; one OS thread, spawned at the first `open`, never at install.
 indexeddb = []
 # IndexedDB ON DISK: the SQLite3 Multiple Ciphers backend (one C TU compiled
-# by build.rs from the amalgamation pinned in ../pins.txt, size-optimised and
+# by build.rs from the amalgamation pinned in pins.txt, size-optimised and
 # trimmed to ChaCha20-Poly1305; no sqlite3_* symbol leaves it). Still no
 # Rust dependency. Used only when an `IndexedDbHost` is installed (or a test
 # asks for it); without a host the memory backend runs, as with `indexeddb`
@@ -252,6 +270,11 @@ required-features = ["native-aot"]
 [build-dependencies]
 cc = "1"
 sha2 = "0.10"
+# Fetching the pinned native inputs (build_fetch.rs): platform TLS like `fetch`.
+ureq = { version = "3.5", default-features = false, features = ["native-tls-no-default"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4.46", default-features = false }
+zip = { version = "9.6", default-features = false, features = ["deflate-flate2"] }
 
 [profile.release]
 opt-level = 3
