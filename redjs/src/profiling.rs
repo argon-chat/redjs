@@ -126,6 +126,7 @@ struct CurrentFrame {
     dropped: u64,
     counters: BTreeMap<String, u64>,
     last_layout_write_epoch: Option<u64>,
+    hints: Vec<Hint>,
 }
 struct Recorder {
     id: u64,
@@ -245,6 +246,7 @@ pub fn frame_start() {
             dropped: 0,
             counters: BTreeMap::new(),
             last_layout_write_epoch: None,
+            hints: Vec::new(),
         });
     });
 }
@@ -713,6 +715,40 @@ pub fn mark(label: &str) {
     let span = begin("user", label, None);
     drop(span);
 }
+/// An embedder's finding about the current frame, listed with its hints; a repeat of the same message
+/// counts up instead of adding a line.
+pub fn hint(code: &'static str, message: &str) {
+    if !enabled() {
+        return;
+    }
+    RECORDER.with(|cell| {
+        let Ok(mut cell) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(recorder) = cell.as_mut().filter(|recorder| allowed(recorder)) else {
+            return;
+        };
+        let Some(frame) = recorder.current.as_mut() else {
+            return;
+        };
+        let message = text(message, 1024);
+        if let Some(seen) = frame
+            .hints
+            .iter_mut()
+            .find(|hint| hint.code == code && hint.message == message)
+        {
+            seen.count += 1;
+        } else if frame.hints.len() < 16 {
+            frame.hints.push(Hint {
+                code,
+                severity: "warning",
+                message,
+                count: 1,
+                span_id: None,
+            });
+        }
+    });
+}
 impl CurrentFrame {
     fn finish_top(&mut self, now: Instant) {
         let Some(open) = self.stack.pop() else { return };
@@ -748,7 +784,7 @@ impl Recorder {
         }
         let mut categories: BTreeMap<&'static str, Category> = BTreeMap::new();
         let mut cpu_ms = 0.;
-        let mut hints = Vec::new();
+        let mut hints = std::mem::take(&mut frame.hints);
         for span in &frame.spans {
             let category = categories.entry(span.category).or_insert(Category {
                 category: span.category,
