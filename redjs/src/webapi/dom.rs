@@ -288,9 +288,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     let global_proxy = get(g, global, "globalThis");
     define(g, global, "window", global_proxy, 2);
     define(g, global, "self", global_proxy, 2);
-    define(g, global, "innerWidth", enc_i32(0), 0);
-    define(g, global, "innerHeight", enc_i32(0), 0);
-    define(g, global, "devicePixelRatio", enc_f64(1.0), 0);
+    install_viewport(g, global);
     // add/remove/dispatchEventListener come from EventTarget.prototype methods
     // defined as bare globals (their `this` defaults to the global object).
     def_fn(global, "addEventListener", 2, events::add_event_listener);
@@ -306,14 +304,31 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn resize(g: *mut c_void, w: i32, h: i32, dpr: f64) {
+    VIEWPORT.with(|c| {
+        let mut v = c.get();
+        v.inner = (w, h);
+        if dpr > 0.0 {
+            v.dpr = dpr;
+        }
+        c.set(v);
+    });
     let global = glue::rjs_global(g);
-    define(g, global, "innerWidth", enc_i32(w), 0);
-    define(g, global, "innerHeight", enc_i32(h), 0);
-    if dpr > 0.0 {
-        define(g, global, "devicePixelRatio", enc_f64(dpr), 0);
-    }
     let ev = events::new_trusted_event(g, "resize");
     events::dispatch(g, global, ev);
+}
+
+/// Publishes the viewport, the window frame and the device pixel ratio without a `resize` event;
+/// `dpr` <= 0 keeps the current value.
+pub fn set_viewport(inner: (i32, i32), outer: (i32, i32), dpr: f64) {
+    VIEWPORT.with(|c| {
+        let mut v = c.get();
+        v.inner = inner;
+        v.outer = Some(outer);
+        if dpr > 0.0 {
+            v.dpr = dpr;
+        }
+        c.set(v);
+    });
 }
 
 pub unsafe fn set_visibility(g: *mut c_void, hidden: bool) {
@@ -338,4 +353,85 @@ pub unsafe fn dom_content_loaded(g: *mut c_void) {
 pub unsafe fn register_element(g: *mut c_void, id: &str, value: u64) {
     let st = state(g);
     define(g, st.elements, id, value, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Viewport metrics
+// ---------------------------------------------------------------------------
+
+/// What the host last published: the viewport (`inner*`), the window frame (`outer*`, the viewport until
+/// a host says otherwise) and the device pixel ratio.
+#[derive(Clone, Copy)]
+struct Viewport {
+    inner: (i32, i32),
+    outer: Option<(i32, i32)>,
+    dpr: f64,
+}
+
+std::thread_local! {
+    static VIEWPORT: std::cell::Cell<Viewport> =
+        const { std::cell::Cell::new(Viewport { inner: (0, 0), outer: None, dpr: 1.0 }) };
+}
+
+macro_rules! viewport_getter {
+    ($name:ident, |$v:ident| $value:expr) => {
+        #[crate::host_fn]
+        unsafe fn $name(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+            let $v = VIEWPORT.with(|c| c.get());
+            $value
+        }
+    };
+}
+viewport_getter!(inner_width, |v| enc_i32(v.inner.0));
+viewport_getter!(inner_height, |v| enc_i32(v.inner.1));
+viewport_getter!(outer_width, |v| enc_i32(v.outer.unwrap_or(v.inner).0));
+viewport_getter!(outer_height, |v| enc_i32(v.outer.unwrap_or(v.inner).1));
+viewport_getter!(device_pixel_ratio, |v| enc_f64(v.dpr));
+viewport_getter!(no_scroll, |_v| enc_i32(0));
+
+/// WebIDL `[Replaceable]`: an assignment replaces the accessor with a plain data property.
+macro_rules! replaceable {
+    ($name:ident, $prop:literal) => {
+        #[crate::host_fn]
+        unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
+            define(g, glue::rjs_global(g), $prop, cf_arg(cf, 0), 0);
+            UNDEF
+        }
+    };
+}
+replaceable!(replace_inner_width, "innerWidth");
+replaceable!(replace_inner_height, "innerHeight");
+replaceable!(replace_outer_width, "outerWidth");
+replaceable!(replace_outer_height, "outerHeight");
+replaceable!(replace_device_pixel_ratio, "devicePixelRatio");
+replaceable!(replace_scroll_x, "scrollX");
+replaceable!(replace_scroll_y, "scrollY");
+replaceable!(replace_page_x_offset, "pageXOffset");
+replaceable!(replace_page_y_offset, "pageYOffset");
+
+unsafe fn install_viewport(g: *mut c_void, global: u64) {
+    let members: [(&str, HostFn, HostFn); 9] = [
+        ("innerWidth", inner_width, replace_inner_width),
+        ("innerHeight", inner_height, replace_inner_height),
+        ("outerWidth", outer_width, replace_outer_width),
+        ("outerHeight", outer_height, replace_outer_height),
+        ("devicePixelRatio", device_pixel_ratio, replace_device_pixel_ratio),
+        // The window itself never scrolls: the app root is the scroll container.
+        ("scrollX", no_scroll, replace_scroll_x),
+        ("scrollY", no_scroll, replace_scroll_y),
+        ("pageXOffset", no_scroll, replace_page_x_offset),
+        ("pageYOffset", no_scroll, replace_page_y_offset),
+    ];
+    for (name, get_fn, set_fn) in members {
+        let a = atom(g, name);
+        glue::rjs_define_accessor(
+            g,
+            global,
+            a,
+            make_fn(g, &format!("get {name}"), 0, get_fn),
+            make_fn(g, &format!("set {name}"), 1, set_fn),
+            0,
+        );
+        glue::rjs_atom_free(g, a);
+    }
 }

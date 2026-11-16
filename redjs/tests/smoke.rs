@@ -651,6 +651,20 @@ fn webapi_fetch_images_dom(ctx: &Context) {
             ctx.to_rust_string(ctx.eval("[sizes.join(), devicePixelRatio, window === globalThis].join('|')").unwrap()).unwrap(),
             "1280x720|2|true"
         );
+        assert_eq!(
+            ctx.to_rust_string(ctx.eval("[outerWidth, outerHeight, scrollY, pageXOffset].join()").unwrap()).unwrap(),
+            "1280,720,0,0"
+        );
+        ffi::redjs_dom_set_viewport(ctx.raw(), 1000, 700, 1016, 739, 1.5);
+        assert_eq!(
+            ctx.to_rust_string(
+                ctx.eval("const before = [innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio, sizes.length]; \
+                          innerWidth = 5; [...before, innerWidth, outerWidth].join()")
+                    .unwrap()
+            )
+            .unwrap(),
+            "1000,700,1016,739,1.5,1,5,1016"
+        );
 
         ctx.eval("globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dcl:' + document.readyState)); window.addEventListener('load', () => lifecycle.push('load'));").unwrap();
         ffi::redjs_dom_content_loaded(ctx.raw());

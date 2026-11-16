@@ -1130,6 +1130,20 @@ pub unsafe extern "C" fn redjs_dom_resize(ctx: *mut c_void, width: i32, height: 
     crate::webapi::dom::resize(ctx, width, height, dpr)
 }
 
+/// Publishes innerWidth/innerHeight, outerWidth/outerHeight and devicePixelRatio without an event;
+/// `dpr` <= 0 keeps the current value.
+#[no_mangle]
+pub unsafe extern "C" fn redjs_dom_set_viewport(
+    _ctx: *mut c_void,
+    width: i32,
+    height: i32,
+    outer_width: i32,
+    outer_height: i32,
+    dpr: f64,
+) {
+    crate::webapi::dom::set_viewport((width, height), (outer_width, outer_height), dpr)
+}
+
 /// Updates document.hidden/visibilityState and dispatches `visibilitychange`.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_dom_set_visibility(ctx: *mut c_void, hidden: i32) {
