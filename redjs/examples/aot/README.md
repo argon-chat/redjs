@@ -1,7 +1,7 @@
 # Native image probes (Windows x64)
 
-These use Bun frontend `7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074` and
-WebKit `4d45755fed4aeef19e95beb90d3d0c884a2812bd`. `native-aot` is opt-in.
+These use Bun frontend `237bba51e98a8b3d5b62d2d6c33853c2e83820a7` and
+WebKit `3bc94211496460feda299ef85eef710eb67fafb3`. `native-aot` is opt-in.
 Generate the full matching builtin table with the embedder's pinned generator
 (skathi: `scripts/aot/generate-table.ts`), then point
 `REDJS_AOT_BUILTIN_TABLE_DIR` at it. An engine-only table cannot consume the

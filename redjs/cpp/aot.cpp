@@ -4,12 +4,13 @@
 #include <JavaScriptCore/JavaScript.h>
 #include <JavaScriptCore/ExceptionScope.h>
 #include <JavaScriptCore/AOTBuiltinTableBindings.h>
-#include <JavaScriptCore/AOTCompile.h>
+#include <JavaScriptCore/AOTDriver.h>
 #include <JavaScriptCore/AOTCompileOptionWords.h>
 #include <JavaScriptCore/AOTHost.h>
 #include <JavaScriptCore/AOTImageLoading.h>
 #include <JavaScriptCore/AOTModuleHost.h>
 #include <JavaScriptCore/AOTRealmStartup.h>
+#include <JavaScriptCore/AOTWireDiagnosticColumns.h>
 #include <JavaScriptCore/APICast.h>
 #include <JavaScriptCore/Completion.h>
 #include <JavaScriptCore/Exception.h>
@@ -111,40 +112,59 @@ extern "C" void* rjs_aot_compile(const uint8_t* program, size_t length, const ui
     compilerInitialized.store(true, std::memory_order_release);
     if (rjs_init(nullptr))
         return nullptr;
+    // A front end that writes the program to a file puts the options it compiled with behind it.
+    if (length > sizeof(AOT::Wire::CompileOptions)) {
+        AOT::Wire::CompileOptions behind;
+        std::memcpy(&behind, program + length - sizeof(behind), sizeof(behind));
+        if (behind.size == sizeof(behind))
+            length -= sizeof(behind);
+    }
     auto compilation = std::make_unique<RjsAotCompilation>();
     auto options = AOT::makeDefaultCompileOptions();
     options.target.referenceWidth = AOT::Wire::ReferenceWidth::Narrow;
     options.target.imageForm = AOT::Wire::ImageForm::PositionIndependent;
     options.threadCount = 1;
-    // The host runs its preludes and binds native globals before the entry: code the image has not seen.
-    options.admittedCode = static_cast<AOT::Wire::AdmittedCode>(static_cast<uint32_t>(options.admittedCode) | static_cast<uint32_t>(AOT::Wire::AdmittedCode::FilesRunByHost));
     std::memcpy(options.executableIdentity.data(), identity, 16);
     compilation->output = AOT::compileProgram({ program, length }, options);
     StringBuilder messages;
     if (!compilation->output)
         messages.append("native compiler returned no output"_s);
     else {
-        const auto& diagnostics = compilation->output->diagnostics;
-        for (size_t index = 0; index < diagnostics.userDiagnostics().size(); ++index) {
-            messages.append(diagnostics.messageOfUserDiagnostic(index));
+        const auto& output = *compilation->output;
+        auto text = output.section(AOT::Wire::ResultSection::Text);
+        auto append = [&](AOT::Wire::TextRange range) {
+            if (range.offset <= text.size() && range.length <= text.size() - range.offset)
+                messages.append(String::fromUTF8ReplacingInvalidSequences(text.subspan(range.offset, range.length)));
             messages.append('\n');
-        }
-        for (size_t index = 0; index < diagnostics.internalErrors().size(); ++index) {
-            messages.append(diagnostics.messageOfInternalError(index));
-            messages.append('\n');
-        }
+        };
+        for (const auto& record : output.records<AOT::Wire::UserDiagnosticRecord>(AOT::Wire::ResultSection::UserDiagnostics))
+            append(record.message);
+        for (const auto& record : output.records<AOT::Wire::InternalErrorRecord>(AOT::Wire::ResultSection::InternalErrors))
+            append(record.message);
     }
     compilation->diagnostic = messages.toString().utf8();
     return compilation.release();
 }
 
+static bool compiledWithoutErrors(const AOT::CompileOutput& output)
+{
+    if (!output.hasImage() || !output.section(AOT::Wire::ResultSection::InternalErrors).empty())
+        return false;
+    for (const auto& record : output.records<AOT::Wire::UserDiagnosticRecord>(AOT::Wire::ResultSection::UserDiagnostics)) {
+        if (AOT::Wire::severityOf(record.kind) == AOT::Wire::DiagnosticSeverity::Error)
+            return false;
+    }
+    return true;
+}
+
 extern "C" size_t rjs_aot_compilation_image(void* handle, const uint8_t** bytes)
 {
     auto* compilation = static_cast<RjsAotCompilation*>(handle);
-    if (!compilation || !compilation->output || compilation->output->diagnostics.hasErrors())
+    if (!compilation || !compilation->output || !compiledWithoutErrors(*compilation->output))
         return 0;
-    *bytes = compilation->output->image.span().data();
-    return compilation->output->image.size();
+    auto image = compilation->output->section(AOT::Wire::ResultSection::Image);
+    *bytes = image.data();
+    return image.size();
 }
 
 extern "C" size_t rjs_aot_compilation_entries(void* handle, const uint32_t** entries)
@@ -152,8 +172,9 @@ extern "C" size_t rjs_aot_compilation_entries(void* handle, const uint32_t** ent
     auto* compilation = static_cast<RjsAotCompilation*>(handle);
     if (!compilation || !compilation->output)
         return 0;
-    *entries = compilation->output->entryModuleIDs.span().data();
-    return compilation->output->entryModuleIDs.size();
+    auto ids = compilation->output->records<uint32_t>(AOT::Wire::ResultSection::EntryModuleIds);
+    *entries = ids.data();
+    return ids.size();
 }
 
 extern "C" size_t rjs_aot_compilation_diagnostic(void* handle, const uint8_t** bytes)
@@ -215,7 +236,7 @@ AOT::Wire::ImageVerdict checkLoad(uint32_t rawProfile)
     if (initializedProfile != noMemoryProfile && initializedProfile != rawProfile)
         return ImageVerdict::OptionsConflict;
     if (contextWasCreated.load(std::memory_order_acquire))
-        return ImageVerdict::AlreadyInUse;
+        return ImageVerdict::OptionsConflict;
     if (compilerInitialized.load(std::memory_order_acquire))
         return ImageVerdict::OptionsConflict;
     return ImageVerdict::Accepted;
@@ -228,7 +249,7 @@ uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, const uint8_t* identi
     if (preflight != ImageVerdict::Accepted)
         return static_cast<uint32_t>(preflight);
     if (!identity)
-        return static_cast<uint32_t>(ImageVerdict::AlreadyInUse);
+        return static_cast<uint32_t>(ImageVerdict::CannotReadExecutable);
     auto profile = static_cast<MemoryProfile>(rawProfile);
     auto initializedProfile = initializedMemoryProfile.load(std::memory_order_acquire);
 #if defined(_WIN32)
@@ -261,7 +282,7 @@ uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, const uint8_t* identi
         }
         Options::useAOT() = true;
         Options::useJIT() = false;
-        Options::useSharedArrayBuffer() = true;
+        Options::alwaysUseSharedArrayBuffer() = true;
         Options::useTemporal() = true;
         Options::useExplicitResourceManagement() = true;
     });
@@ -291,7 +312,8 @@ uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, const uint8_t* identi
     if (verdict != ImageVerdict::Accepted)
         return static_cast<uint32_t>(verdict);
     imageMemoryProfile = profile;
-    imageAdmitsHostFiles = static_cast<uint32_t>(header.options.admitted()) & static_cast<uint32_t>(AOT::Wire::AdmittedCode::FilesRunByHost);
+    // The host runs its preludes and binds native globals before the entry: code the image has not seen.
+    imageAdmitsHostFiles = AOT::Image::current() && AOT::Image::current()->loadsCodeOutsideImage();
     initialImageView = view.release();
     file.release();
     imageActive = true;
@@ -305,7 +327,7 @@ extern "C" uint32_t rjs_aot_load_file_with_profile(const char16_t* path, size_t 
     if (verdict != AOT::Wire::ImageVerdict::Accepted)
         return static_cast<uint32_t>(verdict);
     if (!path || !identity)
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::AlreadyInUse);
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
 #if defined(_WIN32)
     std::wstring terminated(reinterpret_cast<const wchar_t*>(path), length);
     HANDLE file = CreateFileW(terminated.c_str(), GENERIC_READ | GENERIC_EXECUTE,
@@ -331,7 +353,7 @@ extern "C" uint32_t rjs_aot_load_handle_with_profile(intptr_t rawFile, const uin
     if (verdict != AOT::Wire::ImageVerdict::Accepted)
         return static_cast<uint32_t>(verdict);
     if (!identity)
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::AlreadyInUse);
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
 #if defined(_WIN32)
     HANDLE original = reinterpret_cast<HANDLE>(rawFile);
     if (!original || original == INVALID_HANDLE_VALUE)
@@ -387,7 +409,7 @@ extern "C" void* rjs_aot_create_context()
     // Custom embedding realms must apply the image's own evaluation policy,
     // just as the engine's normal host does. This is a no-op for images that
     // explicitly admit unknown JavaScript; closed images keep JS eval disabled.
-    AOT::refuseEvaluationUnlessAdmitted(global);
+    AOT::rejectEvaluationUnlessAllowed(global);
     startedRealms.erase(global);
     return const_cast<OpaqueJSContext*>(JSGlobalContextRetain(toGlobalRef(global)));
 }

@@ -8,9 +8,14 @@
 #include <JavaScriptCore/ExceptionScope.h>
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/JSCInlines.h>
+#include <wtf/SHA1.h>
 #include <wtf/text/MakeString.h>
 #include <cstdio>
 #include <cstdlib>
+#include <new>
+#if ENABLE(WEBASSEMBLY)
+#include <JavaScriptCore/WasmStreamingParser.h>
+#endif
 
 using namespace WTF;
 
@@ -70,3 +75,35 @@ extern "C" EncodedJSValue Bun__throwForRemovedBuiltin(JSGlobalObject* global, ui
 }
 
 } // namespace JSC
+
+extern "C" bool mi_on_thread_idle_start(void) noexcept;
+extern "C" void mi_on_thread_idle_end(void) noexcept;
+
+// mimalloc starts its scavenger thread only when a second thread appears or one first parks.
+extern "C" void Bun__didFinishFirstCollectionOfCompiledProgram()
+{
+    if (mi_on_thread_idle_start())
+        mi_on_thread_idle_end();
+}
+
+#if ENABLE(WEBASSEMBLY)
+// The engine leaves the SHA-1 of streamed WebAssembly to the embedder; WTF's fits its context.
+static_assert(sizeof(WTF::SHA1) <= JSC::Wasm::SourceHasher::contextSize && alignof(WTF::SHA1) <= 8);
+
+extern "C" void Bun__initializeSHA1(void* context)
+{
+    new (context) WTF::SHA1();
+}
+
+extern "C" void Bun__updateSHA1(void* context, std::span<const uint8_t> bytes)
+{
+    static_cast<WTF::SHA1*>(context)->addBytes(bytes);
+}
+
+extern "C" void Bun__finishSHA1(void* context, std::array<uint8_t, 20>& digest)
+{
+    auto* sha1 = static_cast<WTF::SHA1*>(context);
+    sha1->computeHash(digest);
+    sha1->~SHA1();
+}
+#endif

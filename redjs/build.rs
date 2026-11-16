@@ -204,7 +204,7 @@ fn main() {
             let receipt = fs::read_to_string(table.join(".redjs-aot-table"))
                 .expect("native-aot table lacks its pinned generation receipt");
             assert!(
-                receipt.contains("7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074")
+                receipt.contains("237bba51e98a8b3d5b62d2d6c33853c2e83820a7")
                     && receipt.contains(pin(&pins, "webkit.version")),
                 "AOT frontend/engine receipt mismatch"
             );

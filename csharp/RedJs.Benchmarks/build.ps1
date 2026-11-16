@@ -15,7 +15,7 @@ if ($NativeAot) {
     $Frontend = (Resolve-Path -LiteralPath $Frontend).Path
     $BuiltinTable = (Resolve-Path -LiteralPath $BuiltinTable).Path
     $revision = (& $Frontend --revision) -join ''
-    if ($LASTEXITCODE -ne 0 -or -not $revision.EndsWith('7ca0042d3')) { throw 'AOT frontend must be Bun 7ca0042d3' }
+    if ($LASTEXITCODE -ne 0 -or -not $revision.EndsWith('237bba51e')) { throw 'AOT frontend must be Bun 237bba51e' }
 }
 
 if (-not $SkipNativeBuild) {

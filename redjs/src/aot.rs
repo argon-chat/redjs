@@ -7,13 +7,13 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// Exact experimental frontend/wire-table provenance.
-pub const FRONTEND_REVISION: &str = "7ca0042d3ba23ed60fd9cd8af1a1ce6ec3f8d074";
+pub const FRONTEND_REVISION: &str = "237bba51e98a8b3d5b62d2d6c33853c2e83820a7";
 pub const ENGINE_VERSION: &str = env!("REDJS_AOT_ENGINE_VERSION");
 pub const BUILD_TABLE_ID: &str = env!("REDJS_AOT_TABLE_ID");
 #[cfg(windows)]
 pub const COMPILE_OPTIONS: &str = concat!(
     env!("REDJS_AOT_TARGET_ARCH"),
-    ";references=narrow;image=pic;threads=1;admit=FilesRunByHost;default-options@",
+    ";references=narrow;image=pic;threads=1;default-options@",
     env!("REDJS_AOT_ENGINE_VERSION")
 );
 #[cfg(unix)]
@@ -21,7 +21,7 @@ pub const COMPILE_OPTIONS: &str = concat!(
     env!("REDJS_AOT_TARGET_ARCH"),
     ";os=",
     env!("REDJS_AOT_TARGET_OS"),
-    ";references=narrow;image=pic;threads=1;admit=FilesRunByHost;default-options@",
+    ";references=narrow;image=pic;threads=1;default-options@",
     env!("REDJS_AOT_ENGINE_VERSION")
 );
 pub fn digest_hex(bytes: &[u8]) -> String {
@@ -370,7 +370,6 @@ mod tests {
         assert_eq!(MemoryProfile::Default as u32, 0);
         assert_eq!(MemoryProfile::Compact as u32, 1);
         assert!(COMPILE_OPTIONS.contains("references=narrow"));
-        assert!(COMPILE_OPTIONS.contains(";admit=FilesRunByHost;"));
         assert!(!COMPILE_OPTIONS.contains("Compact"));
     }
     #[test]
@@ -378,7 +377,7 @@ mod tests {
         let verdict = unsafe {
             rjs_aot_load_file_with_profile(std::ptr::null(), 0, std::ptr::null(), u32::MAX)
         };
-        assert_eq!(verdict, 11); // pinned ImageVerdict::OptionsConflict
+        assert_eq!(verdict, 10); // pinned ImageVerdict::OptionsConflict
     }
     #[test]
     fn original_c_loader_symbol_remains_available() {
@@ -387,7 +386,7 @@ mod tests {
         }
         assert_eq!(
             unsafe { rjs_aot_load_file(std::ptr::null(), 0, std::ptr::null()) },
-            6
+            16
         );
     }
     #[test]
@@ -396,20 +395,20 @@ mod tests {
         #[cfg(windows)] // Unix descriptor zero is a valid file (stdin).
         assert_eq!(
             unsafe { rjs_aot_load_handle_with_profile(0, identity.as_ptr(), 0) },
-            17
+            16
         );
         #[cfg(unix)]
         assert_eq!(
             unsafe { rjs_aot_load_handle_with_profile(isize::MAX, identity.as_ptr(), 0) },
-            17
+            16
         );
         assert_eq!(
             unsafe { rjs_aot_load_handle_with_profile(-1, identity.as_ptr(), 1) },
-            17
+            16
         );
         assert_eq!(
             unsafe { rjs_aot_load_handle_with_profile(0, identity.as_ptr(), u32::MAX) },
-            11
+            10
         );
         assert!(memory_settings().is_none());
     }
