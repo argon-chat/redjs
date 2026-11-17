@@ -30,6 +30,11 @@
 //!    thin — the consuming link (ILC) must also pass the WebKit libs. The
 //!    `cdylib` artifact (redjs.dll) is always fully self-contained.
 //!
+//! 6. With `icu-root` (Windows, Linux): links a root-only subset of the
+//!    prebuilt's ICU data in place of all of it (`build_icu.rs`), and writes
+//!    the full package beside the build's binaries as `icudt<NN>l.dat` for
+//!    `icu::set_common_data`.
+//!
 //! The prebuilt, the mimalloc tree and (with `indexeddb-sqlite`) the sqlite3mc
 //! tree are the ones `pins.txt` names, never whatever happens to be on disk:
 //! `build_fetch.rs` finds or fetches them. Prebuilt location: `BUN_WEBKIT_DIR`,
@@ -39,6 +44,8 @@
 
 #[path = "build_fetch.rs"]
 mod fetch;
+#[path = "build_icu.rs"]
+mod icu;
 
 use std::env;
 use std::fmt::Write as _;
@@ -113,6 +120,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", pins_path.display());
     println!("cargo:webkit_version={}", pin(&pins, "webkit.version"));
 
+    println!("cargo:rustc-check-cfg=cfg(redjs_icu_root)");
     // docs.rs builds offline and links nothing.
     if env::var_os("DOCS_RS").is_some() {
         println!("cargo:rustc-check-cfg=cfg(redjs_engine_dll)");
@@ -393,8 +401,11 @@ fn main() {
         archive(false, objects, true, "redjs_sqlite");
     }
 
+    let icu_root = (env::var_os("CARGO_FEATURE_ICU_ROOT").is_some() && target_os != "macos")
+        .then(|| link_icu_root(&manifest, &out_dir, &lib, windows, &target_arch, platform, &pins));
+
     if let Some(name) = &engine_dll {
-        link_engine_dll(&manifest, &out_dir, &lib, name);
+        link_engine_dll(&manifest, &out_dir, &lib, name, icu_root.as_deref());
     } else {
         if windows {
             if let Some(stripped) = webkit_without_debug_info(&out_dir, &lib) {
@@ -435,6 +446,10 @@ fn main() {
         &["JavaScriptCore", "WTF", "bmalloc"]
     };
     for l in libraries {
+        let l = match *l {
+            "sicudt" | "redjs_icudata" if icu_root.is_some() => ICU_ROOT_LIB,
+            l => l,
+        };
         println!("cargo:rustc-link-lib=static:-bundle={l}");
     }
 
@@ -500,6 +515,58 @@ fn main() {
     );
 }
 
+const ICU_ROOT_LIB: &str = "redjs_icudata_root";
+
+/// `icu-root`: archives the root-only ICU data as `ICU_ROOT_LIB` in OUT_DIR, held to its pin, and
+/// writes the full package beside the binaries. Returns the archive.
+fn link_icu_root(
+    manifest: &Path,
+    out_dir: &Path,
+    webkit_lib: &Path,
+    windows: bool,
+    arch: &str,
+    platform: &str,
+    pins: &[(String, String)],
+) -> PathBuf {
+    let library = webkit_lib.join(if windows { "sicudt.lib" } else { "libicudata.a" });
+    let keep_path = manifest.join("icu-root.txt");
+    println!("cargo:rerun-if-changed={}", keep_path.display());
+    println!("cargo:rerun-if-changed=build_icu.rs");
+    let keep_text = fs::read_to_string(&keep_path).expect("icu-root.txt is readable");
+    let keep: Vec<&str> =
+        keep_text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+
+    let full = icu::read(&library, windows);
+    let root = icu::subset(&full, &keep);
+    let hash = icu::sha256(&root);
+    let key = format!("icu.root.{platform}.sha256");
+    match pins.iter().find(|(k, _)| *k == key) {
+        Some((_, want)) => assert_eq!(
+            &hash, want,
+            "the root-only ICU data built from {} is not the one pins.txt names ({key}): \
+             the prebuilt or icu-root.txt changed. Check the change, then pin the new hash.",
+            library.display()
+        ),
+        None => panic!("pins.txt has no `{key}`; the root-only ICU data built here is {hash}"),
+    }
+
+    let object = out_dir.join(if windows { "icudata_root.obj" } else { "icudata_root.o" });
+    fs::write(&object, icu::object(&full.symbol, &root, &full.dict, windows, arch)).unwrap();
+    native_build(false, windows).object(&object).cargo_metadata(false).compile(ICU_ROOT_LIB);
+    println!("cargo:rustc-cfg=redjs_icu_root");
+
+    let name = format!("{}.dat", full.package);
+    let dat = out_dir.join(&name);
+    fs::write(&dat, &full.data).unwrap();
+    println!("cargo:icu_full_data={}", dat.display());
+    println!("cargo:rustc-env=REDJS_ICU_FULL_DATA={}", dat.display());
+    // OUT_DIR is target/<triple>/<profile>/build/redjs-<hash>/out.
+    if let Some(profile) = out_dir.ancestors().nth(3) {
+        fs::copy(&dat, profile.join(&name)).unwrap_or_else(|e| panic!("copying {name} to {}: {e}", profile.display()));
+    }
+    out_dir.join(if windows { format!("{ICU_ROOT_LIB}.lib") } else { format!("lib{ICU_ROOT_LIB}.a") })
+}
+
 /// Dev builds link JavaScriptCore and WTF without their CodeView (1.3 GB), which every consumer
 /// relink would otherwise copy into its PDB. `REDJS_WEBKIT_DEBUG_INFO=1` keeps it.
 fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBuf> {
@@ -545,7 +612,7 @@ fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBu
 ///   so the same inputs give the same DLL.
 /// - It lands in OUT_DIR and is copied beside the images of this profile
 ///   (`target/<triple>/<profile>/` and its `deps/`), where they load it from.
-fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &str) {
+fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &str, icu_root: Option<&Path>) {
     let target = env::var("TARGET").unwrap();
     let tool = |name: &str| {
         cc::windows_registry::find_tool(&target, "link.exe")
@@ -553,7 +620,10 @@ fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &st
             .to_command()
     };
     let mut libraries: Vec<PathBuf> = ["redjs_glue.lib", "redjs_mimalloc.lib"].iter().map(|l| out_dir.join(l)).collect();
-    libraries.extend(WINDOWS_WEBKIT_LIBS.iter().map(|l| webkit_lib.join(format!("{l}.lib"))));
+    libraries.extend(WINDOWS_WEBKIT_LIBS.iter().map(|l| match icu_root {
+        Some(root) if *l == "sicudt" => root.to_path_buf(),
+        _ => webkit_lib.join(format!("{l}.lib")),
+    }));
 
     let mut defined = std::collections::HashSet::new();
     let mut mimalloc = Vec::new();

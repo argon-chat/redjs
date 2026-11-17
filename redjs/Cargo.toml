@@ -126,6 +126,10 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 [features]
 # Experimental native images; never enabled by default. Requires the matching frontend table.
 native-aot = []
+# Links only the root locale of ICU's data (icu-root.txt, ~3 MB instead of ~11.5 MB) on Windows
+# and Linux; the full package is written beside the binaries as icudt<NN>l.dat for the embedder to
+# ship and hand over with `icu::set_common_data`. No effect on macOS, which uses the system ICU.
+icu-root = []
 # Battery Status API / navigator.getBattery. Opt-in for generic embedders.
 # Native Windows, UPower (Linux), and IOPowerSources (macOS) notifications.
 # D-Bus dependencies compile only on Linux.
@@ -245,6 +249,16 @@ name = "http_cache"
 [[test]]
 name = "idb_crash"
 required-features = ["indexeddb-sqlite"]
+
+# The root-only ICU data, alone and with the full package handed over; one
+# process each, since ICU's data is set once per process.
+[[test]]
+name = "icu_root"
+required-features = ["icu-root"]
+
+[[test]]
+name = "icu_full_data"
+required-features = ["icu-root"]
 
 # Examples that cannot compile without their host-class feature.
 [[example]]

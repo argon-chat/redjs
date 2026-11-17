@@ -32,6 +32,11 @@ webkit.macos-amd64.sha256 = 2a0b8ea265cef41d3c2860b4f44da38c77f949c721f626dc867c
 webkit.macos-arm64.asset = bun-webkit-macos-arm64-aot.tar.gz
 webkit.macos-arm64.sha256 = e98ec1a90c0594f607c3aaadc1da599c9da1488e208f7d391e00de7c090b0be4
 
+# sha256 of the root-only ICU data package the `icu-root` feature links: the
+# items icu-root.txt names, cut from each platform's prebuilt (build_icu.rs).
+icu.root.windows-amd64.sha256 = af5e0bd80970780ae1a710b14308364c74f02a2dc789a5eeae7141e46d35ca71
+icu.root.linux-amd64.sha256   = af5e0bd80970780ae1a710b14308364c74f02a2dc789a5eeae7141e46d35ca71
+
 # oven-sh/mimalloc, the allocator this JSC build calls
 # directly (USE_MIMALLOC=1, USE_EXTERNAL_MIMALLOC=1): the embedder links it.
 # Same commit as Bun 237bba51e's scripts/build/deps/mimalloc.ts. MIT.

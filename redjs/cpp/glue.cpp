@@ -234,6 +234,20 @@ extern "C" void rjs_layout(RjsLayout* out)
 // prebuilt is a recompile, not an edit.
 #if !defined(__APPLE__)
 extern "C" const char U_ICUDATA_ENTRY_POINT[];
+
+// A package handed over by the embedder (`icu::set_common_data`). ICU searches its common data in
+// the order it was set, so this one is found before the linked one.
+static const void* rjsIcuCommonData;
+
+extern "C" void rjs_icu_set_common_data(const void* data)
+{
+    rjsIcuCommonData = data;
+}
+
+extern "C" const void* rjs_icu_linked_data()
+{
+    return U_ICUDATA_ENTRY_POINT;
+}
 #endif
 
 extern "C" int32_t rjs_init(const char* options)
@@ -243,6 +257,12 @@ extern "C" int32_t rjs_init(const char* options)
     if (!icuReady) {
         icuReady = true;
         UErrorCode err = U_ZERO_ERROR;
+        if (rjsIcuCommonData) {
+            udata_setCommonData(rjsIcuCommonData, &err);
+            if (U_FAILURE(err))
+                fprintf(stderr, "[redjs] udata_setCommonData (embedder data) failed: %s (%d)\n", u_errorName(err), static_cast<int>(err));
+            err = U_ZERO_ERROR;
+        }
         udata_setCommonData(U_ICUDATA_ENTRY_POINT, &err);
         if (U_FAILURE(err))
             fprintf(stderr, "[redjs] udata_setCommonData failed: %s (%d)\n", u_errorName(err), static_cast<int>(err));

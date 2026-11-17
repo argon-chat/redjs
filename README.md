@@ -188,6 +188,7 @@ Some additions are opt-in:
 | `indexeddb-sqlite` | Persistent IndexedDB when the host supplies its storage configuration |
 | `net-h2` | Pooled HTTP/1.1 and HTTP/2 for fetch |
 | `audio-codecs-extra` | More audio formats, including AAC-LC and ALAC |
+| `icu-root` | Links only ICU's root locale (about 3 MB instead of 12) on Windows and Linux; hand the full `icudt79l.dat`, which the build writes beside your binaries, to `icu::set_common_data` before the first context to get every locale back |
 
 The optional [Battery Status API](redjs/src/webapi/battery.rs) caches one
 Promise and one `BatteryManager` per context. Its read-only `charging`,

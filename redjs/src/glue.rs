@@ -82,12 +82,17 @@ pub mod brand {
 pub unsafe fn init(options: *const c_char) -> i32 {
     #[cfg(redjs_engine_dll)]
     rjs_set_icu_decompress(crate::icu::bun_icu_maybe_decompress);
+    crate::icu::mark_initialized();
     rjs_init(options)
 }
 
 extern "C" {
     pub fn rjs_layout(out: *mut RjsLayout);
     pub fn rjs_init(options: *const c_char) -> i32;
+    #[cfg(not(target_os = "macos"))]
+    pub fn rjs_icu_set_common_data(data: *const c_void);
+    #[cfg(not(target_os = "macos"))]
+    pub fn rjs_icu_linked_data() -> *const c_void;
     /// Engine DLL only (cpp/engine_dll.cpp).
     #[cfg(redjs_engine_dll)]
     pub fn rjs_set_icu_decompress(hook: unsafe extern "C" fn(*const c_void, *mut i32) -> *const c_void);
