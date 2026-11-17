@@ -239,7 +239,12 @@ unsafe fn raf_request(g: *mut c_void, cf: *mut c_void) -> u64 {
     let s = reg.entry(g as usize).or_default();
     s.raf_next_id += 1;
     let id = s.raf_next_id;
+    let first = s.raf.is_empty();
     s.raf.push((id, cb));
+    drop(reg);
+    if first {
+        notify_embedder();
+    }
     enc_int32(id as i32)
 }
 
@@ -1362,5 +1367,9 @@ mod native_from_tests {
             .unwrap();
         assert!(WOKEN.load(Ordering::SeqCst) > before, "woken");
         assert!(next_work_ms(g).expect("the task") <= now_ms());
+
+        let before = WOKEN.load(Ordering::SeqCst);
+        crate::webapi::testing::s(&c, "requestAnimationFrame(() => {}); 0");
+        assert!(WOKEN.load(Ordering::SeqCst) > before, "a frame is wanted");
     }
 }
