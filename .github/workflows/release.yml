@@ -1,0 +1,63 @@
+name: Release
+
+# A `v<version>` tag publishes redjs, redjs-macros and redjs-webgpu to crates.io at that version
+# (scripts/publish-crates.ts). A re-run goes on from the first crate crates.io does not have.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing tag, v<redjs version>"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Windows, where the packaged sources are verified to build, as Skathi's release does.
+  crates:
+    name: crates.io
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Rust and LLVM
+        shell: pwsh
+        run: |
+          $llvm = Join-Path $env:ProgramFiles 'LLVM/bin'
+          if (Test-Path -LiteralPath $llvm) { Add-Content -LiteralPath $env:GITHUB_PATH -Value $llvm }
+          rustup toolchain install 1.97.1 --profile minimal --target x86_64-pc-windows-msvc
+          rustup default 1.97.1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            prebuilt
+            redjs/cpp/mimalloc
+          key: redjs-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('redjs/pins.txt') }}
+      - name: Native dependencies
+        shell: pwsh
+        run: ./setup.ps1
+      - name: Publish
+        shell: pwsh
+        run: bun scripts/publish-crates.ts --tag "$env:TAG"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

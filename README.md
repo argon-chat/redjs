@@ -247,6 +247,24 @@ for results and the conditions they were measured under.
 - [Native image probes](redjs/examples/aot/README.md) and
   [AOT memory profiles](redjs/docs/native-aot-memory.md) — the experimental JavaScript AOT path.
 
+## Releases
+
+redjs, redjs-macros and redjs-webgpu are published from this repository on their own version line,
+not Skathi's, and always together at one version. The version is semver for this code: a breaking
+change to the Rust API, the C ABI or a feature's default bumps the minor version (0.3 to 0.4),
+anything else the patch version. Skathi requires a compatible version next to its path dependency
+on this checkout, and its release stops while that version is not on crates.io, or while its
+checkout has changes made since that version was published.
+
+To release:
+
+1. Set `version` in `redjs/Cargo.toml`, `redjs/macros/Cargo.toml` and `redjs/webgpu/Cargo.toml`,
+   and the `version` of the dependencies between them, and commit.
+2. `bun scripts/publish-crates.ts --tag v<version> --dry-run` packages and verifies the three crates.
+3. Push the tag `v<version>`: `.github/workflows/release.yml` publishes them in dependency order. A
+   re-run goes on where the last one stopped.
+4. In Skathi, raise the `version` of its `redjs` and `redjs-webgpu` dependencies to this one.
+
 ## License
 
 redjs is licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at
