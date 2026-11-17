@@ -47,6 +47,49 @@ impl Default for RjsBrandInfo {
     }
 }
 
+/// `rjs_json_node` output: a value as JSON.stringify writes it (`json::*` kinds). `value` is the
+/// value after toJSON and unboxing, which owns a string's characters (`ptr`, `len` units).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RjsJsonNode {
+    pub value: u64,
+    pub number: f64,
+    pub ptr: *const c_void,
+    pub len: u32,
+    pub kind: u32,
+}
+
+impl Default for RjsJsonNode {
+    fn default() -> Self {
+        RjsJsonNode {
+            value: 0,
+            number: 0.0,
+            ptr: core::ptr::null(),
+            len: 0,
+            kind: 0,
+        }
+    }
+}
+
+pub mod json {
+    /// undefined, a function or a symbol: left out of an object, null in an array.
+    pub const ABSENT: u32 = 0;
+    pub const NULL: u32 = 1;
+    pub const FALSE: u32 = 2;
+    pub const TRUE: u32 = 3;
+    pub const NUMBER: u32 = 4;
+    pub const STRING8: u32 = 5;
+    pub const STRING16: u32 = 6;
+    pub const ARRAY: u32 = 7;
+    pub const OBJECT: u32 = 8;
+    /// A Proxy that is not an array.
+    pub const PROXY: u32 = 9;
+    /// A BigInt, which JSON.stringify refuses; `value` is the BigInt.
+    pub const BIGINT: u32 = 10;
+    /// Not made into a node: `rjs_json_node` it.
+    pub const UNREAD: u32 = 11;
+}
+
 pub mod brand {
     pub const NONE: u32 = 0;
     pub const PLAIN: u32 = 1;
@@ -144,6 +187,47 @@ extern "C" {
     /// CreateDataProperty with an index key (no prototype-chain setter).
     pub fn rjs_define_index(g: *mut c_void, obj: u64, index: u32, val: u64) -> i32;
     pub fn rjs_stack_soft_limit(g: *mut c_void) -> usize;
+    /// `v` as JSON.stringify writes it, toJSON called with `key`, else `key_atom`'s name, else
+    /// the string of `index`.
+    pub fn rjs_json_node(
+        g: *mut c_void,
+        v: u64,
+        to_json: *mut c_void,
+        key: u64,
+        key_atom: *mut c_void,
+        index: u32,
+        out: *mut RjsJsonNode,
+    ) -> i32;
+    /// Own enumerable properties by atom, getters run; 0 for one that is missing. A string's
+    /// node is made too (`nodes[i]`, else `json::UNREAD`). BAD_ARG for a Proxy or a non-object.
+    pub fn rjs_json_fields(
+        g: *mut c_void,
+        obj: u64,
+        atoms: *const *mut c_void,
+        n: usize,
+        out: *mut u64,
+        nodes: *mut RjsJsonNode,
+    ) -> i32;
+    /// Array elements `start..len` as `rjs_json_node` makes them, up to `cap`, stopping after the
+    /// first that may have run JS; `count` is how many.
+    pub fn rjs_json_items(
+        g: *mut c_void,
+        array: u64,
+        start: u32,
+        len: u32,
+        to_json: *mut c_void,
+        out: *mut RjsJsonNode,
+        cap: u32,
+        count: *mut u32,
+    ) -> i32;
+    /// A value built from the flat encoding described in glue.cpp.
+    pub fn rjs_json_build(
+        g: *mut c_void,
+        code: *const u8,
+        len: usize,
+        blobs: u64,
+        out: *mut u64,
+    ) -> i32;
     pub fn rjs_gc(g: *mut c_void, mode: i32);
     pub fn rjs_heap_stats(g: *mut c_void, out: *mut RjsHeapStats);
     pub fn rjs_report_extra_memory(g: *mut c_void, bytes: u64);

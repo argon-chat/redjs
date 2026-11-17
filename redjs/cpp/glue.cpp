@@ -1835,3 +1835,592 @@ extern "C" void rjs_release_memory(void* g)
     }
     WTF::releaseFastMallocFreeMemory();
 }
+
+// ---------------------------------------------------------------------------
+// JSON-shaped values, for embedders that exchange values with the meaning a
+// JSON round trip gives them (JSON.stringify on the way in, JSON.parse on the
+// way out) without the text: one value as JSON.stringify sees it, an object's
+// fields by atom, and a whole value built from a flat encoding.
+// ---------------------------------------------------------------------------
+
+#include <JavaScriptCore/ArrayConstructor.h>
+#include <JavaScriptCore/JSONObject.h>
+#include <JavaScriptCore/ProxyObject.h>
+#include <wtf/text/ASCIIFastPath.h>
+#include <unordered_map>
+
+enum RjsJsonKind : uint32_t {
+    RJS_JSON_ABSENT = 0,
+    RJS_JSON_NULL = 1,
+    RJS_JSON_FALSE = 2,
+    RJS_JSON_TRUE = 3,
+    RJS_JSON_NUMBER = 4,
+    RJS_JSON_STRING8 = 5,
+    RJS_JSON_STRING16 = 6,
+    RJS_JSON_ARRAY = 7,
+    RJS_JSON_OBJECT = 8,
+    RJS_JSON_PROXY = 9,
+    RJS_JSON_BIGINT = 10,
+    RJS_JSON_UNREAD = 11,
+};
+
+struct RjsJsonNode {
+    uint64_t value;
+    double number;
+    const void* ptr;
+    uint32_t len;
+    uint32_t kind;
+};
+
+namespace {
+
+void jsonString(JSGlobalObject* go, JSString* s, RjsJsonNode* out)
+{
+    out->value = JSValue::encode(s);
+    out->kind = RJS_JSON_STRING8;
+    auto held = s->value(go);
+    const WTF::String& w = held;
+    auto* impl = w.impl();
+    if (!impl || !impl->length())
+        return;
+    out->len = impl->length();
+    if (impl->is8Bit())
+        out->ptr = impl->span8().data();
+    else {
+        out->kind = RJS_JSON_STRING16;
+        out->ptr = impl->span16().data();
+    }
+}
+
+void jsonNumber(double d, RjsJsonNode* out)
+{
+    if (std::isfinite(d)) {
+        out->kind = RJS_JSON_NUMBER;
+        out->number = d;
+    } else
+        out->kind = RJS_JSON_NULL;
+}
+
+// SerializeJSONProperty after toJSON: what the value is written as.
+int32_t jsonClassify(JSGlobalObject* go, VM& vm, JSValue val, RjsJsonNode* out)
+{
+    out->value = JSValue::encode(val);
+    if (!val || val.isUndefined() || val.isSymbol())
+        return out->kind = RJS_JSON_ABSENT, RJS_OK;
+    if (val.isNull())
+        return out->kind = RJS_JSON_NULL, RJS_OK;
+    if (val.isBoolean())
+        return out->kind = val.asBoolean() ? RJS_JSON_TRUE : RJS_JSON_FALSE, RJS_OK;
+    if (val.isNumber())
+        return jsonNumber(val.asNumber(), out), RJS_OK;
+    if (val.isString()) {
+        jsonString(go, asString(val), out);
+        return takeException(vm, &out->value) ? RJS_EXCEPTION : RJS_OK;
+    }
+    if (val.isBigInt())
+        return out->kind = RJS_JSON_BIGINT, RJS_OK;
+    if (!val.isObject())
+        return out->kind = RJS_JSON_OBJECT, RJS_OK;
+    JSObject* o = asObject(val);
+    if (o->isCallable())
+        return out->kind = RJS_JSON_ABSENT, RJS_OK;
+    switch (o->type()) {
+    case NumberObjectType: {
+        double d = val.toNumber(go);
+        if (takeException(vm, &out->value))
+            return RJS_EXCEPTION;
+        return jsonNumber(d, out), RJS_OK;
+    }
+    case StringObjectType:
+    case DerivedStringObjectType: {
+        JSString* s = val.toString(go);
+        if (takeException(vm, &out->value))
+            return RJS_EXCEPTION;
+        jsonString(go, s, out);
+        return takeException(vm, &out->value) ? RJS_EXCEPTION : RJS_OK;
+    }
+    case BooleanObjectType:
+        return out->kind = uncheckedDowncast<BooleanObject>(o)->internalValue().asBoolean() ? RJS_JSON_TRUE : RJS_JSON_FALSE, RJS_OK;
+    case ProxyObjectType: {
+        bool array = isArray(go, val);
+        if (takeException(vm, &out->value))
+            return RJS_EXCEPTION;
+        return out->kind = array ? RJS_JSON_ARRAY : RJS_JSON_PROXY, RJS_OK;
+    }
+    default:
+        break;
+    }
+    if (auto* big = dynamicDowncast<BigIntObject>(o)) {
+        out->value = JSValue::encode(big->internalValue());
+        return out->kind = RJS_JSON_BIGINT, RJS_OK;
+    }
+    out->kind = isJSArray(val) ? RJS_JSON_ARRAY : RJS_JSON_OBJECT;
+    return RJS_OK;
+}
+
+// `val.toJSON(key)` in place of `val` when it has one; `key()` makes the key.
+template<typename Key>
+int32_t jsonToJSON(JSGlobalObject* go, VM& vm, JSValue& val, void* toJSON, const Key& key, RjsJsonNode* out)
+{
+    JSValue fn = val.get(go, *static_cast<Identifier*>(toJSON));
+    if (takeException(vm, &out->value))
+        return RJS_EXCEPTION;
+    if (!fn.isCallable())
+        return RJS_OK;
+    auto callData = JSC::getCallData(fn);
+    MarkedArgumentBuffer args;
+    args.append(key());
+    NakedPtr<Exception> exc;
+    val = JSC::call(go, fn, callData, val, args, exc);
+    if (exc) {
+        out->value = JSValue::encode(exc->value());
+        return RJS_EXCEPTION;
+    }
+    return RJS_OK;
+}
+
+} // namespace
+
+// `v` as JSON.stringify writes it: toJSON called with `key` (a string value),
+// else `keyAtom`'s name, else the string of `index`; then unboxed and classified.
+extern "C" int32_t rjs_json_node(void* g, uint64_t v, void* toJSON, uint64_t key, void* keyAtom, uint32_t index, RjsJsonNode* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    RjsLock lock(vm);
+    *out = RjsJsonNode {};
+    JSValue val = JSValue::decode(v);
+    if (val.isObject() || val.isBigInt()) {
+        int32_t r = jsonToJSON(go, vm, val, toJSON, [&]() -> JSValue {
+            if (key)
+                return JSValue::decode(key);
+            if (keyAtom)
+                return jsString(vm, static_cast<Identifier*>(keyAtom)->string());
+            return jsString(vm, String::number(index));
+        }, out);
+        if (r != RJS_OK)
+            return r;
+    }
+    return jsonClassify(go, vm, val, out);
+}
+
+// Elements `start`.. of an array whose length was `len`, each as rjs_json_node
+// makes it with its index. Stops at `len`, after `cap` elements, or after the
+// first element that may have run JS (an object or a BigInt, or any element of
+// an array that is not plain), so nothing is read ahead of what JS could change.
+// `count` is how many were read; on an exception, out[0].value is what was thrown.
+extern "C" int32_t rjs_json_items(void* g, uint64_t array, uint32_t start, uint32_t len, void* toJSON, RjsJsonNode* out, uint32_t cap, uint32_t* count)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    RjsLock lock(vm);
+    *count = 0;
+    JSValue base = JSValue::decode(array);
+    if (!base.isObject() || !cap)
+        return RJS_BAD_ARG;
+    JSObject* a = asObject(base);
+    bool plain = isJSArray(a) && go->isOriginalArrayStructure(a->structure()) && go->arrayPrototypeChainIsSane();
+    for (uint32_t i = start; i < len && *count < cap; ++i) {
+        RjsJsonNode* node = &out[*count];
+        *node = RjsJsonNode {};
+        JSValue val = a->getIndex(go, i);
+        if (takeException(vm, &out[0].value))
+            return RJS_EXCEPTION;
+        ++*count;
+        bool ran = !plain;
+        if (val.isObject() || val.isBigInt()) {
+            ran = true;
+            int32_t r = jsonToJSON(go, vm, val, toJSON, [&]() -> JSValue { return jsString(vm, String::number(i)); }, node);
+            if (r == RJS_OK)
+                r = jsonClassify(go, vm, val, node);
+            if (r != RJS_OK) {
+                out[0].value = node->value;
+                return r;
+            }
+        } else if (int32_t r = jsonClassify(go, vm, val, node); r != RJS_OK) {
+            out[0].value = node->value;
+            return r;
+        }
+        if (ran)
+            break;
+    }
+    return RJS_OK;
+}
+
+// An object's own enumerable properties by atom, getters run, in atom order:
+// out[i] is 0 for one it does not have. A string value is also made into
+// nodes[i]; anything else leaves nodes[i].kind RJS_JSON_UNREAD. RJS_BAD_ARG for
+// a Proxy or a non-object, whose keys only a full walk reads right.
+extern "C" int32_t rjs_json_fields(void* g, uint64_t obj, void* const* atoms, size_t n, uint64_t* out, RjsJsonNode* nodes)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    RjsLock lock(vm);
+    JSValue base = JSValue::decode(obj);
+    if (!base.isObject())
+        return RJS_BAD_ARG;
+    JSObject* o = asObject(base);
+    if (o->type() == ProxyObjectType)
+        return RJS_BAD_ARG;
+    for (size_t i = 0; i < n; ++i) {
+        const Identifier& id = *static_cast<Identifier*>(atoms[i]);
+        PropertySlot slot(o, PropertySlot::InternalMethodType::GetOwnProperty);
+        bool has = o->methodTable()->getOwnPropertySlot(o, go, id, slot);
+        if (takeException(vm, out))
+            return RJS_EXCEPTION;
+        if (!has || (slot.attributes() & PropertyAttribute::DontEnum)) {
+            out[i] = 0;
+            continue;
+        }
+        JSValue r = slot.getValue(go, id);
+        if (takeException(vm, out))
+            return RJS_EXCEPTION;
+        out[i] = JSValue::encode(r);
+        nodes[i] = RjsJsonNode {};
+        nodes[i].kind = RJS_JSON_UNREAD;
+        if (r.isString()) {
+            jsonString(go, asString(r), &nodes[i]);
+            if (takeException(vm, out))
+                return RJS_EXCEPTION;
+        }
+    }
+    return RJS_OK;
+}
+
+namespace {
+
+enum : uint8_t {
+    BUILD_NULL = 0,
+    BUILD_FALSE = 1,
+    BUILD_TRUE = 2,
+    BUILD_NUMBER = 3,
+    BUILD_STRING = 4,
+    BUILD_JSON = 5,
+    BUILD_BYTES = 6,
+    BUILD_ARRAY = 7,
+    BUILD_OBJECT = 8,
+    BUILD_FIELD = 9,
+    BUILD_ENTRY = 10,
+};
+
+struct FieldAtom {
+    Identifier id;
+    std::optional<uint32_t> index;
+};
+
+struct FieldKeyHash {
+    size_t operator()(const std::pair<uintptr_t, size_t>& k) const { return k.first * 31 + k.second; }
+};
+
+// Field names are `&'static str`s of the program: their atoms are made once
+// per VM and kept for good (an Identifier must not outlive its VM's lock).
+struct FieldAtoms {
+    VM* vm { nullptr };
+    std::unordered_map<std::pair<uintptr_t, size_t>, FieldAtom*, FieldKeyHash> map;
+};
+
+const FieldAtom& fieldAtom(VM& vm, const char* p, size_t n)
+{
+    static thread_local FieldAtoms* atoms = nullptr;
+    if (!atoms || atoms->vm != &vm) {
+        atoms = new FieldAtoms;
+        atoms->vm = &vm;
+    }
+    auto key = std::make_pair(reinterpret_cast<uintptr_t>(p), n);
+    auto it = atoms->map.find(key);
+    if (it != atoms->map.end())
+        return *it->second;
+    auto s = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(p), n });
+    auto* atom = new FieldAtom { Identifier::fromString(vm, s), std::nullopt };
+    atom->index = parseIndex(atom->id);
+    atoms->map.emplace(key, atom);
+    return *atom;
+}
+
+struct JsonBuilder {
+    JSGlobalObject* go;
+    VM& vm;
+    const uint8_t* p;
+    const uint8_t* end;
+    JSValue blobs;
+    // Short strings met in this build, reused: one cell for every "ok".
+    struct Recent {
+        const uint8_t* bytes;
+        uint32_t len;
+        JSString* cell;
+    } recent[64] {};
+    // Empty object structures by inline capacity, looked up once per build.
+    Structure* empty[JSFinalObject::maxInlineCapacity + 1] {};
+    // Field atoms met in this build, by the key's address.
+    struct Field {
+        uintptr_t ptr;
+        size_t len;
+        const FieldAtom* atom;
+    } fields[64] {};
+    // The structure an object of these field atoms, in this order, ended with: the next one is
+    // made with it and filled by offset. Kept for one build, alive on this stack.
+    static constexpr unsigned shapeMax = 16;
+    struct Shape {
+        uint32_t count;
+        uintptr_t keys[shapeMax];
+        Structure* structure;
+        bool resolved;
+        PropertyOffset offsets[shapeMax];
+    } shapes[8] {};
+    bool failed { false };
+
+    const FieldAtom& field(uintptr_t ptr, size_t len)
+    {
+        Field& f = fields[(ptr >> 3) & 63];
+        if (f.atom && f.ptr == ptr && f.len == len)
+            return *f.atom;
+        const FieldAtom& atom = fieldAtom(vm, reinterpret_cast<const char*>(ptr), len);
+        f = Field { ptr, len, &atom };
+        return atom;
+    }
+
+    Shape& shapeSlot(const uintptr_t* keys, uint32_t count)
+    {
+        uintptr_t h = count;
+        for (uint32_t i = 0; i < count; ++i)
+            h = h * 31 + (keys[i] >> 3);
+        return shapes[h & 7];
+    }
+
+    JSObject* emptyObject(uint32_t count)
+    {
+        unsigned capacity = std::min<unsigned>(std::max<unsigned>(count, 1), JSFinalObject::maxInlineCapacity);
+        if (!empty[capacity])
+            empty[capacity] = go->structureCache().emptyObjectStructureForPrototype(go, go->objectPrototype(), capacity);
+        return constructEmptyObject(vm, empty[capacity]);
+    }
+
+    // An object of `count` FIELD keys that are not indices, values read first; null when the
+    // encoding has anything else, with `p` back where it was.
+    JSObject* shaped(uint32_t count)
+    {
+        const uint8_t* start = p;
+        uintptr_t keys[shapeMax];
+        const FieldAtom* atoms[shapeMax];
+        JSValue values[shapeMax];
+        for (uint32_t i = 0; i < count; ++i) {
+            if (p >= end || *p != BUILD_FIELD) {
+                p = start;
+                return nullptr;
+            }
+            ++p;
+            auto ptr = take<uintptr_t>();
+            auto len = take<size_t>();
+            if (failed)
+                return nullptr;
+            const FieldAtom& atom = field(ptr, len);
+            if (atom.index) {
+                p = start;
+                return nullptr;
+            }
+            keys[i] = reinterpret_cast<uintptr_t>(&atom);
+            atoms[i] = &atom;
+            values[i] = value();
+            if (failed)
+                return nullptr;
+        }
+        Shape& shape = shapeSlot(keys, count);
+        if (shape.structure && shape.count == count && std::equal(keys, keys + count, shape.keys)) {
+            // The offsets are looked up when the shape is met a second time.
+            for (uint32_t i = 0; i < count && !shape.resolved; ++i) {
+                shape.offsets[i] = shape.structure->get(vm, atoms[i]->id);
+                if (!isValidOffset(shape.offsets[i]))
+                    shape.structure = nullptr;
+            }
+            shape.resolved = true;
+            if (shape.structure) {
+                JSObject* o = constructEmptyObject(vm, shape.structure);
+                for (uint32_t i = 0; i < count; ++i)
+                    o->putDirectOffset(vm, shape.offsets[i], values[i]);
+                return o;
+            }
+        }
+        JSObject* o = emptyObject(count);
+        for (uint32_t i = 0; i < count; ++i)
+            o->putDirect(vm, atoms[i]->id, values[i]);
+        Structure* structure = o->structure();
+        if (structure->isDictionary() || structure->outOfLineCapacity())
+            return o;
+        shape.count = count;
+        shape.structure = structure;
+        shape.resolved = false;
+        std::copy(keys, keys + count, shape.keys);
+        return o;
+    }
+
+    template<typename T> T take()
+    {
+        T v;
+        if (end - p < static_cast<ptrdiff_t>(sizeof(T))) {
+            failed = true;
+            return T {};
+        }
+        std::memcpy(&v, p, sizeof(T));
+        p += sizeof(T);
+        return v;
+    }
+
+    std::span<const uint8_t> bytes()
+    {
+        uint32_t n = take<uint32_t>();
+        if (failed || end - p < static_cast<ptrdiff_t>(n)) {
+            failed = true;
+            return {};
+        }
+        std::span<const uint8_t> s { p, n };
+        p += n;
+        return s;
+    }
+
+    JSString* string(std::span<const uint8_t> s)
+    {
+        if (s.empty())
+            return jsEmptyString(vm);
+        if (s.size() == 1 && s[0] < 0x80)
+            return vm.smallStrings.singleCharacterString(s[0]);
+        Recent* slot = nullptr;
+        if (s.size() <= 24) {
+            uint32_t h = 2166136261u;
+            for (uint8_t c : s)
+                h = (h ^ c) * 16777619u;
+            slot = &recent[h & 63];
+            if (slot->cell && slot->len == s.size() && !std::memcmp(slot->bytes, s.data(), s.size()))
+                return slot->cell;
+        }
+        auto latin1 = std::span<const Latin1Character> { reinterpret_cast<const Latin1Character*>(s.data()), s.size() };
+        JSString* cell = charactersAreAllASCII(latin1)
+            ? jsString(vm, WTF::String(latin1))
+            : jsString(vm, WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(s.data()), s.size() }));
+        if (slot)
+            *slot = Recent { s.data(), static_cast<uint32_t>(s.size()), cell };
+        return cell;
+    }
+
+    JSValue value()
+    {
+        if (failed || p >= end) {
+            failed = true;
+            return {};
+        }
+        switch (*p++) {
+        case BUILD_NULL:
+            return jsNull();
+        case BUILD_FALSE:
+            return jsBoolean(false);
+        case BUILD_TRUE:
+            return jsBoolean(true);
+        case BUILD_NUMBER:
+            return jsNumber(take<double>());
+        case BUILD_STRING:
+            return string(bytes());
+        case BUILD_JSON: {
+            auto s = bytes();
+            if (failed)
+                return {};
+            JSValue v = JSONParseWithException(go, WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(s.data()), s.size() }));
+            if (!v)
+                failed = true;
+            return v;
+        }
+        case BUILD_BYTES: {
+            uint32_t i = take<uint32_t>();
+            if (failed || !isJSArray(blobs)) {
+                failed = true;
+                return {};
+            }
+            return blobs.get(go, i);
+        }
+        case BUILD_ARRAY: {
+            uint32_t count = take<uint32_t>();
+            if (failed)
+                return {};
+            if (!count)
+                return constructEmptyArray(go, nullptr);
+            MarkedArgumentBuffer items;
+            for (uint32_t i = 0; i < count; ++i) {
+                JSValue v = value();
+                if (failed)
+                    return {};
+                items.append(v);
+            }
+            JSArray* a = items.hasOverflowed() ? nullptr : constructArray(go, go->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), items);
+            if (!a)
+                failed = true;
+            return a;
+        }
+        case BUILD_OBJECT: {
+            uint32_t count = take<uint32_t>();
+            if (failed)
+                return {};
+            if (count && count <= shapeMax) {
+                if (JSObject* o = shaped(count))
+                    return o;
+                if (failed)
+                    return {};
+            }
+            JSObject* o = emptyObject(count);
+            for (uint32_t i = 0; i < count && !failed; ++i) {
+                if (p >= end) {
+                    failed = true;
+                    break;
+                }
+                uint8_t tag = *p++;
+                if (tag == BUILD_FIELD) {
+                    auto ptr = take<uintptr_t>();
+                    auto len = take<size_t>();
+                    if (failed)
+                        break;
+                    const FieldAtom& atom = field(ptr, len);
+                    JSValue v = value();
+                    if (failed)
+                        break;
+                    if (atom.index)
+                        o->putDirectIndex(go, *atom.index, v);
+                    else
+                        o->putDirect(vm, atom.id, v);
+                } else if (tag == BUILD_ENTRY) {
+                    auto s = bytes();
+                    if (failed)
+                        break;
+                    auto name = WTF::String::fromUTF8(std::span<const char8_t> { reinterpret_cast<const char8_t*>(s.data()), s.size() });
+                    JSValue v = value();
+                    if (failed)
+                        break;
+                    o->putDirectMayBeIndex(go, Identifier::fromString(vm, name), v);
+                } else
+                    failed = true;
+            }
+            return failed ? JSValue() : JSValue(o);
+        }
+        default:
+            failed = true;
+            return {};
+        }
+    }
+};
+
+} // namespace
+
+// A value from the flat encoding the Rust side writes (tags above; numbers,
+// lengths and counts little-endian; a field key the address and length of a
+// string that lives as long as the process). `blobs`: an array whose element
+// i is what BYTES i stands for.
+extern "C" int32_t rjs_json_build(void* g, const uint8_t* code, size_t len, uint64_t blobs, uint64_t* out)
+{
+    JSGlobalObject* go = G(g);
+    VM& vm = go->vm();
+    RjsLock lock(vm);
+    JsonBuilder b { go, vm, code, code + len, JSValue::decode(blobs) };
+    JSValue v = b.value();
+    if (takeException(vm, out))
+        return RJS_EXCEPTION;
+    if (b.failed || !v)
+        return RJS_BAD_ARG;
+    *out = JSValue::encode(v);
+    return RJS_OK;
+}
