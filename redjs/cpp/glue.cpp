@@ -1789,6 +1789,25 @@ extern "C" void rjs_run_loop_cycle()
     WTF::RunLoop::cycle();
 }
 
+#include <JavaScriptCore/GCActivityCallback.h>
+#include <JavaScriptCore/IncrementalSweeper.h>
+
+// Seconds until the first of `g`'s GC timers fires, -1 when none is armed: an
+// embedder that stops pumping while idle must still pump for them.
+extern "C" double rjs_gc_timers_due_s(void* g)
+{
+    Heap& heap = G(g)->vm().heap;
+    JSRunLoopTimer* timers[] = { heap.fullActivityCallback(), heap.edenActivityCallback(), &heap.sweeper() };
+    double due = -1;
+    for (JSRunLoopTimer* timer : timers) {
+        if (!timer)
+            continue;
+        if (auto left = timer->timeUntilFire(); left && (due < 0 || left->seconds() < due))
+            due = std::max(left->seconds(), 0.0);
+    }
+    return due;
+}
+
 // rjs_release_memory, after throwing away all compiled code (bytecode, JIT)
 // that is not running — what JSC's VM::shrinkFootprintWhenIdle does. Every
 // function compiles again from its source the next time it is called. A

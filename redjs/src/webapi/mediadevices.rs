@@ -116,6 +116,7 @@ pub fn set_host_notifications() {
 /// safe from any thread, the OS's notification thread included.
 pub fn notify_devices_changed() {
     CHANGES.fetch_add(1, Ordering::AcqRel);
+    crate::web::notify_embedder();
 }
 
 /// The system default endpoint for `flow` moved (on Windows, the "console"
@@ -344,6 +345,23 @@ impl PollState {
         }
         false
     }
+
+    /// When [`step`](Self::step) next has something to do while a `devicechange` listener is
+    /// armed. A listener added later is picked up by whatever pump runs next.
+    fn next_due(&self, host: bool) -> Option<Instant> {
+        if host {
+            return self.moved_at.map(|at| at + SETTLE);
+        }
+        self.armed.then(|| self.last_poll + POLL_INTERVAL)
+    }
+}
+
+/// [`crate::web::next_work_ms`]'s share: when context `g`'s device polling next needs a pump.
+pub(crate) fn next_poll_ms(g: *mut c_void) -> Option<f64> {
+    let host = HOST_NOTIFIES.load(Ordering::Acquire);
+    let due = polls().lock().unwrap().get(&(g as usize))?.next_due(host)?;
+    let now = Instant::now();
+    Some(crate::web::now_ms() + due.saturating_duration_since(now).as_secs_f64() * 1000.0)
 }
 
 fn polls() -> &'static Mutex<HashMap<usize, PollState>> {

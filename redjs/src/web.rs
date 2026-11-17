@@ -111,6 +111,45 @@ pub(crate) fn schedule_native_from(g: *mut c_void, id: Option<crate::context::Co
         return;
     }
     reg.entry(g as usize).or_default().native.push((deadline, task));
+    drop(reg);
+    notify_embedder();
+}
+
+static WAKE_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Called, from any thread, whenever work for a context is queued from outside its pump, so an
+/// embedder that stops pumping while idle knows to pump again. Set once.
+pub fn set_wake_hook(hook: fn()) {
+    let _ = WAKE_HOOK.set(hook);
+}
+
+pub(crate) fn notify_embedder() {
+    if let Some(hook) = WAKE_HOOK.get() {
+        hook();
+    }
+}
+
+/// When context `g` next has work for its pump, in [`now_ms`] time: its earliest timer or native
+/// task, now for a pending idle callback, JSC's GC and sweeper timers, or what a polling module
+/// needs. `None` when nothing is scheduled: work arriving from other threads then calls the
+/// [wake hook](set_wake_hook).
+pub fn next_work_ms(g: *mut c_void) -> Option<f64> {
+    let gc = unsafe { glue::rjs_gc_timers_due_s(g) };
+    let gc = (gc >= 0.0).then(|| now_ms() + gc * 1000.0);
+    #[cfg(feature = "audio")]
+    let polled = crate::webapi::mediadevices::next_poll_ms(g);
+    #[cfg(not(feature = "audio"))]
+    let polled = None;
+    next_scheduled_ms(g).into_iter().chain(gc).chain(polled).reduce(f64::min)
+}
+
+fn next_scheduled_ms(g: *mut c_void) -> Option<f64> {
+    let reg = registry().lock().unwrap();
+    let s = reg.get(&(g as usize))?;
+    let timers = s.timers.values().map(|t| t.next_fire);
+    let native = s.native.iter().map(|(at, _)| *at);
+    let idle = (!s.idle.is_empty()).then(now_ms);
+    timers.chain(native).chain(idle).reduce(f64::min)
 }
 
 fn registry() -> &'static Mutex<HashMap<usize, Scheduler>> {
@@ -535,6 +574,7 @@ pub fn wake(id: crate::context::ContextId) {
     if let Some(w) = w {
         w.wake();
     }
+    notify_embedder();
 }
 
 /// A producer of results for a context, delivered inside the pump's budget.
@@ -1291,5 +1331,36 @@ mod native_from_tests {
         schedule_native_from(g, old, 0.0, Box::new(move |_| drop(held)));
         assert!(!has_scheduler(g), "nothing re-created for the old context");
         assert_eq!(std::sync::Arc::strong_count(&owned), 1, "the task was dropped, not parked");
+    }
+
+    /// An embedder that stops pumping while idle is told when the next work is due, and woken for
+    /// work queued from another thread.
+    #[test]
+    fn an_idle_embedder_learns_of_due_and_queued_work() {
+        use std::sync::atomic::AtomicUsize;
+        static WOKEN: AtomicUsize = AtomicUsize::new(0);
+        set_wake_hook(|| {
+            WOKEN.fetch_add(1, Ordering::SeqCst);
+        });
+        let c = crate::webapi::testing::ctx();
+        let g = c.raw();
+        unsafe { install(g) };
+        assert_eq!(next_scheduled_ms(g), None);
+        crate::webapi::testing::s(&c, "setTimeout(() => {}, 5000); 0");
+        let due = next_scheduled_ms(g).expect("the timer");
+        assert!(due > now_ms() + 4000.0 && due <= now_ms() + 5000.0, "{due}");
+        assert!(next_work_ms(g).expect("the timer") <= due);
+        crate::webapi::testing::s(&c, "globalThis.junk = []; for (let i = 0; i < 200000; i++) junk.push({ i }); junk = null; 0");
+        let gc = unsafe { glue::rjs_gc_timers_due_s(g) };
+        assert!(gc >= 0.0 && gc < 60.0, "a GC timer is armed after allocating: {gc}");
+
+        let before = WOKEN.load(Ordering::SeqCst);
+        let id = crate::context::id_of(g);
+        let addr = g as usize;
+        std::thread::spawn(move || schedule_native_from(addr as *mut c_void, id, 0.0, Box::new(|_| {})))
+            .join()
+            .unwrap();
+        assert!(WOKEN.load(Ordering::SeqCst) > before, "woken");
+        assert!(next_work_ms(g).expect("the task") <= now_ms());
     }
 }

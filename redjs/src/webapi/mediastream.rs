@@ -499,6 +499,7 @@ impl Source {
             if !t.ended.swap(true, Ordering::AcqRel) {
                 ended_queue().lock().unwrap().push((t.owner, t.id));
                 WORK.store(true, Ordering::Release);
+                crate::web::notify_embedder();
             }
         }
         drop(tracks);
@@ -970,6 +971,8 @@ fn finish(owner: usize, token: u32, result: OpenResult) {
     if o.inflight.remove(&(owner, token)) {
         o.done.push((owner, token, result));
         WORK.store(true, Ordering::Release);
+        drop(o);
+        crate::web::notify_embedder();
     } else if let OpenResult::Ok(id) = result {
         drop(o);
         stop(id);

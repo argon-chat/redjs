@@ -595,6 +595,7 @@ impl Shared {
 
     fn post(&self, ev: Incoming) {
         self.inbox.lock().unwrap().push(ev);
+        crate::web::notify_embedder();
     }
 
     fn drain_inbox(&self) -> Vec<Incoming> {

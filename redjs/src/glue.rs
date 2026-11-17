@@ -152,6 +152,8 @@ extern "C" {
     /// One non-blocking turn of this thread's WTF RunLoop: fires the due JSC
     /// timers (incremental sweeper, GC activity callbacks) — see glue.cpp.
     pub fn rjs_run_loop_cycle();
+    /// Seconds until the first of `g`'s GC timers fires, -1 when none is armed.
+    pub fn rjs_gc_timers_due_s(g: *mut c_void) -> f64;
     /// rjs_release_memory after deleting all compiled code that is not running.
     pub fn rjs_release_memory_and_code(g: *mut c_void);
 
