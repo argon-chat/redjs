@@ -307,6 +307,25 @@ fn webgpu_mapped_at_creation_upload_and_writebuffer_element_offsets() {
 }
 
 #[test]
+fn webgpu_unmap_and_destroy_of_an_unmapped_buffer_are_quiet() {
+    let _host = HostGuard::new();
+    let c = ctx();
+    assert_eq!(
+        run_gpu(
+            &c,
+            r#"
+        d.pushErrorScope('validation');
+        const b = d.createBuffer({size:16,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+        b.unmap(); b.destroy();
+        const plain = d.createBuffer({size:16,usage:GPUBufferUsage.COPY_DST}); plain.destroy();
+        const error = await d.popErrorScope(); d.destroy(); return String(error);
+    "#
+        ),
+        "null"
+    );
+}
+
+#[test]
 fn webgpu_map_ranges_refuse_overlap_and_detach_on_unmap_and_destroy() {
     let _host = HostGuard::new();
     let c = ctx();

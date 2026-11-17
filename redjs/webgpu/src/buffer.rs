@@ -245,7 +245,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
                     if m.epoch == epoch {
                         m.status = 0;
                         m.epoch = m.epoch.wrapping_add(1);
-                        cb.raw.unmap();
+                        cc.checked(|| cb.raw.unmap());
                     }
                 }
                 if result.is_ok() {
@@ -343,11 +343,11 @@ unsafe fn get_range(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// Detach the JSC-owned shadow ranges before releasing the native mapping.
 /// No pointer into mapped GPU memory survives an allocation or GC callback.
 unsafe fn unmap_inner(g: *mut c_void, obj: u64, b: &Buffer, write: bool) {
-    let (mode, ranges) = {
+    let (mode, ranges, was_mapped) = {
         let mut m = b.mapping.lock().unwrap();
         m.epoch = m.epoch.wrapping_add(1);
-        m.status = 0;
-        (m.mode, std::mem::take(&mut m.ranges))
+        let was_mapped = std::mem::replace(&mut m.status, 0) != 0;
+        (m.mode, std::mem::take(&mut m.ranges), was_mapped)
     };
     for r in ranges {
         if write && mode == 2 && r.size != 0 && b.valid && !b.destroyed.load(Ordering::Acquire) {
@@ -360,7 +360,8 @@ unsafe fn unmap_inner(g: *mut c_void, obj: u64, b: &Buffer, write: bool) {
         }
         glue::rjs_arraybuffer_detach(g, r.ab);
     }
-    if b.valid {
+    // wgpu treats unmapping an unmapped buffer as a validation error, fatal outside a scope.
+    if b.valid && was_mapped {
         b.raw.unmap();
     }
     let edges = new_array(g);

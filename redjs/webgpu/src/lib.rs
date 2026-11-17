@@ -1195,11 +1195,19 @@ unsafe fn run(g: *mut c_void, f: impl FnOnce() -> Result<u64, ()>) -> u64 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(v)) => v,
         Ok(Err(())) => UNDEF,
-        Err(_) => redjs::webapi::domexception::throw(
-            g,
-            "OperationError",
-            "Native WebGPU operation failed",
-        ),
+        Err(payload) => {
+            let reason = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("an internal error");
+            let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+            redjs::webapi::domexception::throw(
+                g,
+                "OperationError",
+                &format!("Native WebGPU operation failed: {reason}"),
+            )
+        }
     }
 }
 
