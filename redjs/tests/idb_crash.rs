@@ -194,9 +194,15 @@ fn a_kill_mid_transaction_leaves_the_committed_state() {
             }
         }
         let _ = child.wait();
-        while let Ok(l) = rx_lines.try_recv() {
+        // The kill lands wherever the child is, which can be past the `begin`
+        // this side read: the last `begin` it printed bounds what it wrote.
+        let mut last_begun = killed_in.unwrap_or(-1);
+        while let Ok(l) = rx_lines.recv_timeout(Duration::from_secs(5)) {
             if let Some(k) = l.strip_prefix("committed ") {
                 last_committed = last_committed.max(k.parse().unwrap());
+            }
+            if let Some(k) = l.strip_prefix("begin ") {
+                last_begun = last_begun.max(k.parse().unwrap());
             }
         }
         let killed_in = killed_in.unwrap_or_else(|| panic!("round {round}: the child never got going: {seen:?}"));
@@ -217,7 +223,7 @@ fn a_kill_mid_transaction_leaves_the_committed_state() {
         // Everything whose `complete` fired is there (relaxed durability
         // survives a process kill: the WAL write reached the OS) ...
         assert!(n_done as i64 >= last_committed + 1, "committed transactions lost: {n_done} present, {} completed", last_committed + 1);
-        // ... and nothing past the transaction the kill interrupted.
-        assert!(n_done as i64 <= killed_in + 1, "{n_done} transactions present, the kill was in {killed_in}");
+        // ... and nothing past the last transaction the child began.
+        assert!(n_done as i64 <= last_begun + 1, "{n_done} transactions present, the last one begun was {last_begun}");
     }
 }
