@@ -83,6 +83,7 @@ jobs:
           if [[ "$RUNNER_OS" == macOS ]]; then
             skip=(-- --skip real_graph_ --skip processing_defaults_on_as_in_chrome --skip the_destination_node_is_a_track)
           fi
+          if [[ "$RUNNER_OS" == macOS && "$RUNNER_ARCH" == X64 ]]; then export REDJS_LOOSE_PUMP_GUARDS=1; fi
           cargo "${args[@]}" "${skip[@]}"
       - name: Check host callback ABI
         if: matrix.suite.name == 'core'

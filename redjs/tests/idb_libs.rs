@@ -91,6 +91,12 @@ impl Run {
     }
 }
 
+/// `REDJS_LOOSE_PUMP_GUARDS` is for CI machines too slow for the frame model:
+/// the server thread misses the 1 ms frame and every hop costs a pump.
+fn pumps_ok(pumps: u32) -> bool {
+    pumps <= 30 || std::env::var_os("REDJS_LOOSE_PUMP_GUARDS").is_some()
+}
+
 /// Runs an async body as skathi would: one pump per ~frame (a 1 ms sleep
 /// between pumps stands in for the rest of the frame), under the API lock.
 fn run(c: &Context, body: &str) -> Run {
@@ -417,7 +423,7 @@ fn bench_sequential_gets_take_few_pumps() {
     );
     eprintln!("[bench:{}] 1000 sequential awaited gets, a transaction each: {}", backend(), r.line());
     expect(&r, "499500");
-    assert!(r.pumps <= 30, "1000 sequential gets took {} pumps (guard: <= 30)", r.pumps);
+    assert!(pumps_ok(r.pumps), "1000 sequential gets took {} pumps (guard: <= 30)", r.pumps);
 
     // One transaction, every get awaited in turn (idb's shape).
     let r = run(
@@ -430,7 +436,7 @@ fn bench_sequential_gets_take_few_pumps() {
     );
     eprintln!("[bench:{}] 1000 sequential awaited gets, one transaction: {}", backend(), r.line());
     expect(&r, "499500");
-    assert!(r.pumps <= 30, "1000 sequential gets in one transaction took {} pumps (guard: <= 30)", r.pumps);
+    assert!(pumps_ok(r.pumps), "1000 sequential gets in one transaction took {} pumps (guard: <= 30)", r.pumps);
 
     // Pipelined: 1000 gets issued at once, then awaited together.
     let r = run(
