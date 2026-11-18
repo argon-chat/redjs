@@ -16,7 +16,15 @@ const BLOCK: usize = 128;
 #[derive(Clone)]
 enum Plan {
     Refuse(&'static str),
-    Accept { channels: u32, mask: u32, objects: u32 },
+    /// Refuse a context without object panners, so it starts on cpal.
+    Objects {
+        block: u32,
+    },
+    Accept {
+        channels: u32,
+        mask: u32,
+        objects: u32,
+    },
 }
 
 thread_local! {
@@ -56,6 +64,21 @@ impl OutputBackend for TestBackend {
         match PLAN.with(|p| p.borrow().clone()) {
             None => Err("not a context of this test".into()),
             Some(Plan::Refuse(why)) => Err(why.into()),
+            Some(Plan::Objects { .. }) if !request.objects => Err("no objects asked for".into()),
+            Some(Plan::Objects { block }) => {
+                let lost = Arc::new(AtomicBool::new(false));
+                LOST.with(|l| *l.borrow_mut() = Some(Arc::clone(&lost)));
+                RENDERER.with(|r| *r.borrow_mut() = Some(renderer));
+                Ok(OutputOpen {
+                    stream: Box::new(TestStream(lost)),
+                    sample_rate: RATE,
+                    channels: 2,
+                    channel_mask: 0,
+                    max_block_frames: block,
+                    max_objects: 1,
+                    label: "test-objects".into(),
+                })
+            }
             Some(Plan::Accept {
                 channels,
                 mask,
@@ -493,5 +516,32 @@ fn the_gains_after_an_object_panner_reach_its_object_and_a_dead_end_silences_it(
         "__a.resume(); __p.disconnect(); __p.connect(__a.createAnalyser()); 0",
     );
     assert_eq!(gain(), Some(0.0), "a panner that reaches no destination is silent");
+    s(&c, "__a.close(); 0");
+}
+
+#[test]
+fn a_context_moves_from_cpal_to_the_backend_when_a_panner_asks() {
+    let c = context(Plan::Objects { block: 333 });
+    s(&c, LEVELS);
+    s(
+        &c,
+        "globalThis.__a = new AudioContext(); const g = __a.createGain(); g.connect(__a.destination);
+         const s1 = levels(__a, 1); s1.connect(g); s1.start(); 0",
+    );
+    s(
+        &c,
+        "const p = __a.createPanner(); p.panningModel = 'spatial'; p.connect(__a.destination); 0",
+    );
+    let mut out = vec![0.0f32; 333 * 2];
+    for _ in 0..8 {
+        unsafe { super::pump(c.raw()) };
+        RENDERER.with(|r| {
+            r.borrow_mut()
+                .as_mut()
+                .expect("the backend took the output")
+                .render(&mut out, 2, 333)
+        });
+    }
+    assert!(out.iter().any(|&v| v != 0.0), "the graph plays on the backend's stream");
     s(&c, "__a.close(); 0");
 }

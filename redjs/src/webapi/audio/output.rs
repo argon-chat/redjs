@@ -16,6 +16,11 @@ use firewheel::processor::FirewheelProcessor;
 use firewheel::StreamInfo;
 
 const DEFAULT_BLOCK_FRAMES: u32 = 1024;
+
+/// The graph's block size on every stream. A restart reuses the processor, and a schedule compiled
+/// for the old stream can still reach it; firewheel 0.10 panics when their block sizes differ.
+/// Longer callbacks are rendered in blocks.
+const GRAPH_BLOCK_FRAMES: core::num::NonZeroU32 = core::num::NonZeroU32::new(DEFAULT_BLOCK_FRAMES).unwrap();
 const BUILD_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What a context asks an [`OutputBackend`] for.
@@ -474,7 +479,7 @@ fn open_embedder(b: &dyn OutputBackend, config: &RedConfig) -> Result<(RedBacken
         objects: config.objects,
     };
     let open = b.open(&request, renderer)?;
-    let (Some(rate), Some(block)) = (
+    let (Some(rate), Some(_)) = (
         core::num::NonZeroU32::new(open.sample_rate),
         core::num::NonZeroU32::new(open.max_block_frames),
     ) else {
@@ -493,7 +498,7 @@ fn open_embedder(b: &dyn OutputBackend, config: &RedConfig) -> Result<(RedBacken
     let info = StreamInfo {
         sample_rate: rate,
         prev_sample_rate: rate,
-        max_block_frames: block,
+        max_block_frames: GRAPH_BLOCK_FRAMES,
         num_stream_out_channels: open.channels,
         output_device_id: request.device_id.unwrap_or_default(),
         ..Default::default()
@@ -549,10 +554,6 @@ fn open_cpal(config: &RedConfig) -> Result<(CpalOut, StreamInfo), OutputError> {
         &cpal::SupportedBufferSize::Range { min, max } => cpal::BufferSize::Fixed(DEFAULT_BLOCK_FRAMES.clamp(min, max)),
         cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Default,
     };
-    let max_block = match buffer_size {
-        cpal::BufferSize::Fixed(f) => f,
-        cpal::BufferSize::Default => DEFAULT_BLOCK_FRAMES,
-    };
     let stream_config = cpal::StreamConfig {
         channels,
         sample_rate: rate,
@@ -583,7 +584,7 @@ fn open_cpal(config: &RedConfig) -> Result<(CpalOut, StreamInfo), OutputError> {
     stream.play().map_err(|e| err(&e))?;
     let info = StreamInfo {
         sample_rate: core::num::NonZeroU32::new(rate).unwrap_or(core::num::NonZeroU32::new(48_000).unwrap()),
-        max_block_frames: core::num::NonZeroU32::new(max_block.max(1)).unwrap(),
+        max_block_frames: GRAPH_BLOCK_FRAMES,
         num_stream_out_channels: channels as u32,
         output_device_id: id,
         ..Default::default()
