@@ -112,7 +112,13 @@ unsafe fn create(g: *mut c_void, cf: *mut c_void) -> u64 {
         });
         let o = Val::new(
             g,
-            wrap(g, Kind::Buffer, Some(c.clone()), Resource::Buffer(b)),
+            wrap_labeled(
+                g,
+                Kind::Buffer,
+                Some(c.clone()),
+                Resource::Buffer(b),
+                &label,
+            ),
         );
         track_buffer_object(g, &c, o.v);
         let ranges = new_array(g);
@@ -126,9 +132,7 @@ unsafe fn size(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 #[redjs::host_fn]
 unsafe fn usage(g: *mut c_void, cf: *mut c_void) -> u64 {
-    run(g, || {
-        Ok(enc_f64(get_buffer(g, cf)?.1.usage.bits() as f64))
-    })
+    run(g, || Ok(enc_f64(get_buffer(g, cf)?.1.usage.bits() as f64)))
 }
 #[redjs::host_fn]
 unsafe fn map_state(g: *mut c_void, cf: *mut c_void) -> u64 {

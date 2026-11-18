@@ -122,6 +122,7 @@ pub async fn request_adapter(options: AdapterOptions) -> Result<Option<Adapter>,
     } else {
         wgpu::Backends::PRIMARY
     };
+    descriptor.flags |= wgpu::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION;
     let instance = wgpu::Instance::new(descriptor);
     match instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -141,26 +142,56 @@ pub async fn request_adapter(options: AdapterOptions) -> Result<Option<Adapter>,
     }
 }
 
+/// Physical capabilities a shared client may lack: redjs validates every JS
+/// path to them against the client's own features and limits.
+pub const VIRTUALIZED_FEATURES: wgpu::Features =
+    wgpu::Features::TIMESTAMP_QUERY.union(wgpu::Features::IMMEDIATES);
+
+/// What a physical device needs for JS clients to get every feature and the
+/// immediate-data limit the adapter can expose. Hosts creating a shared device
+/// should request these, on an instance with
+/// `InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION`.
+pub fn shareable_capabilities(adapter: &wgpu::Adapter) -> (wgpu::Features, wgpu::Limits) {
+    let features = adapter.features() & VIRTUALIZED_FEATURES;
+    let mut limits = wgpu::Limits::default();
+    if features.contains(wgpu::Features::IMMEDIATES) {
+        limits.max_immediate_size = adapter.limits().max_immediate_size;
+    }
+    (features, limits)
+}
+
 impl Adapter {
+    pub fn features(&self) -> wgpu::Features {
+        match &self.shared {
+            // WebGPU resolves timestamps in nanoseconds; an unnormalized
+            // device period cannot honour that.
+            Some(c) if c.queue.get_timestamp_period() != 1.0 => {
+                c.device.features() - wgpu::Features::TIMESTAMP_QUERY
+            }
+            Some(c) => c.device.features(),
+            None => self.raw.features(),
+        }
+    }
+
+    pub fn limits(&self) -> wgpu::Limits {
+        self.shared
+            .as_ref()
+            .map_or_else(|| self.raw.limits(), |c| c.device.limits())
+    }
+
     pub async fn request_device(
         &self,
         features: wgpu::Features,
         limits: wgpu::Limits,
     ) -> Result<Arc<Context>, String> {
-        let available_features = self
-            .shared
-            .as_ref()
-            .map_or_else(|| self.raw.features(), |c| c.device.features());
+        let available_features = self.features();
         if !available_features.contains(features) {
             return Err(format!(
                 "Unsupported requiredFeatures: {:?}",
                 features - available_features
             ));
         }
-        let available_limits = self
-            .shared
-            .as_ref()
-            .map_or_else(|| self.raw.limits(), |c| c.device.limits());
+        let available_limits = self.limits();
         if !limits.check_limits(&available_limits) {
             let mut failures = Vec::new();
             limits.check_limits_with_fail_fn(
@@ -181,7 +212,14 @@ impl Adapter {
             // Until every shader/pipeline limit is virtualized per client,
             // refuse capability subsets rather than silently validating them
             // against stronger physical capabilities.
-            if features != context.device.features() || limits != context.device.limits() {
+            let physical = context.device.limits();
+            let comparable = wgpu::Limits {
+                max_immediate_size: physical.max_immediate_size,
+                ..limits.clone()
+            };
+            if !VIRTUALIZED_FEATURES.contains(context.device.features() - features)
+                || comparable != physical
+            {
                 return Err(
                     "Shared WebGPU clients currently require matching physical capabilities".into(),
                 );
@@ -194,6 +232,11 @@ impl Adapter {
             }
             return Ok(context.clone());
         }
+        let features = if limits.max_immediate_size > 0 {
+            features | wgpu::Features::IMMEDIATES
+        } else {
+            features
+        };
         let (device, queue) = self
             .raw
             .request_device(&wgpu::DeviceDescriptor {
@@ -230,6 +273,24 @@ impl Adapter {
             });
         Ok(context)
     }
+}
+
+/// Runs `operation` inside this thread's own error scopes and returns the
+/// first error it raised, instead of recording it on a client.
+pub fn scoped<T>(device: &wgpu::Device, operation: impl FnOnce() -> T) -> (T, Option<wgpu::Error>) {
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let oom = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let result = operation();
+    let error = [
+        pollster::block_on(validation.pop()),
+        pollster::block_on(oom.pop()),
+        pollster::block_on(internal.pop()),
+    ]
+    .into_iter()
+    .flatten()
+    .next();
+    (result, error)
 }
 
 #[derive(Clone, Debug)]

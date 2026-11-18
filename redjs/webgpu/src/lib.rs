@@ -7,8 +7,10 @@
 //! [`register`] once, before the contexts that should have WebGPU are installed.
 pub mod backend;
 mod buffer;
+mod bundle;
 pub mod canvas;
 mod compute;
+mod query;
 mod readback;
 #[cfg(test)]
 mod tests;
@@ -86,6 +88,10 @@ enum Kind {
     Sampler,
     RenderPipeline,
     RenderPass,
+    QuerySet,
+    BundleEncoder,
+    Bundle,
+    LanguageFeatures,
 }
 #[derive(Clone)]
 enum Resource {
@@ -94,7 +100,7 @@ enum Resource {
     Adapter(Arc<Adapter>),
     Device,
     Queue,
-    Features(wgpu::Features),
+    Features(Arc<[&'static str]>),
     Buffer(Arc<buffer::Buffer>),
     Shader(compute::Shader),
     BindGroupLayout(wgpu::BindGroupLayout),
@@ -109,6 +115,9 @@ enum Resource {
     Sampler(wgpu::Sampler),
     RenderPipeline(wgpu::RenderPipeline),
     RenderPass(Arc<Mutex<texture::RenderPass>>),
+    QuerySet(Arc<query::QuerySet>),
+    BundleEncoder(Arc<Mutex<bundle::Encoder>>),
+    Bundle(Arc<bundle::Bundle>),
 }
 #[derive(Clone)]
 struct Handle {
@@ -133,6 +142,11 @@ struct Classes {
     s_ranges: usize,
     s_lost: usize,
     s_resolve_lost: usize,
+    s_label: usize,
+    s_handlers: usize,
+    s_language: usize,
+    s_reason: usize,
+    pipeline_error_proto: u64,
 }
 unsafe impl Send for Classes {}
 struct Pending {
@@ -248,23 +262,30 @@ unsafe fn seq(g: *mut c_void, v: u64) -> Result<Vec<Val>, ()> {
     }
     (0..n).map(|i| field(g, arr.v, &i.to_string())).collect()
 }
-unsafe fn handle(g: *mut c_void, v: u64, kind: Kind) -> Result<Handle, ()> {
+unsafe fn try_handle(g: *mut c_void, v: u64, kind: Kind) -> Option<Handle> {
     let cls = states()
         .lock()
         .unwrap()
         .get(&(g as usize))
         .and_then(|s| s.classes.as_ref())
         .and_then(|c| c.hosts.get(&kind).copied())
-        .map(|c| c as capi::JSClassRef);
-    if let Some(cls) = cls {
-        if let Some(h) = host_data::<Handle>(g, cls, v) {
-            if h.kind == kind {
-                return Ok(h.clone());
-            }
-        }
+        .map(|c| c as capi::JSClassRef)?;
+    host_data::<Handle>(g, cls, v)
+        .filter(|h| h.kind == kind)
+        .map(|h| h.clone())
+}
+unsafe fn handle(g: *mut c_void, v: u64, kind: Kind) -> Result<Handle, ()> {
+    if let Some(h) = try_handle(g, v, kind) {
+        return Ok(h);
     }
     throw_type_error(g, "WebGPU object has the wrong interface or receiver");
     Err(())
+}
+unsafe fn with_classes<T>(g: *mut c_void, f: impl FnOnce(&Classes) -> T) -> T {
+    f(states().lock().unwrap()[&(g as usize)]
+        .classes
+        .as_ref()
+        .unwrap())
 }
 unsafe fn this(g: *mut c_void, cf: *mut c_void, kind: Kind) -> Result<Handle, ()> {
     handle(g, cf_this(cf), kind)
@@ -302,6 +323,62 @@ unsafe fn wrap(g: *mut c_void, kind: Kind, c: Option<Arc<Client>>, r: Resource) 
         },
     )
 }
+unsafe fn wrap_labeled(
+    g: *mut c_void,
+    kind: Kind,
+    c: Option<Arc<Client>>,
+    r: Resource,
+    label: &str,
+) -> u64 {
+    let o = Val::new(g, wrap(g, kind, c, r));
+    set_label(g, o.v, label);
+    o.v
+}
+unsafe fn set_label(g: *mut c_void, obj: u64, label: &str) {
+    if label.is_empty() {
+        return;
+    }
+    let slot = with_classes(g, |c| c.s_label);
+    let s = Val::new(g, js_string(g, label));
+    glue::rjs_define(g, obj, slot as *mut c_void, s.v, 2);
+}
+unsafe fn object_base(g: *mut c_void, v: u64) -> Result<(), ()> {
+    let hosts: Vec<_> = with_classes(g, |c| c.hosts.values().copied().collect());
+    if hosts
+        .into_iter()
+        .any(|h| host_data::<Handle>(g, h as capi::JSClassRef, v).is_some())
+    {
+        return Ok(());
+    }
+    invalid(g, "WebGPU object has the wrong interface or receiver")
+}
+#[redjs::host_fn]
+unsafe fn label_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        object_base(g, cf_this(cf))?;
+        let slot = with_classes(g, |c| c.s_label);
+        let v = get_a(g, cf_this(cf), slot as *mut c_void);
+        Ok(if v == UNDEF { js_string(g, "") } else { v })
+    })
+}
+#[redjs::host_fn]
+unsafe fn label_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        object_base(g, cf_this(cf))?;
+        let s = Val::new(g, to_js_string(g, cf_arg(cf, 0))?);
+        let slot = with_classes(g, |c| c.s_label);
+        glue::rjs_define(g, cf_this(cf), slot as *mut c_void, s.v, 2);
+        Ok(UNDEF)
+    })
+}
+unsafe fn rejected_from_exception(g: *mut c_void) -> u64 {
+    let mut e = UNDEF;
+    if glue::rjs_exception_pending(g, &mut e) == 0 {
+        return UNDEF;
+    }
+    let e = Val::new(g, e);
+    redjs::webapi::domexception::rejected_with(g, e.v)
+}
 unsafe fn invalid(g: *mut c_void, msg: &str) -> Result<(), ()> {
     throw_type_error(g, msg);
     Err(())
@@ -315,6 +392,8 @@ fn resource_alive(r: &Resource) -> bool {
         Resource::Texture(t) => !t.destroyed.load(Ordering::Acquire),
         Resource::TextureView(v) => !v._owner.destroyed.load(Ordering::Acquire),
         Resource::BindGroup(b) => b._resources.iter().all(resource_alive),
+        Resource::QuerySet(q) => !q.destroyed.load(Ordering::Acquire),
+        Resource::Bundle(b) => b.resources.iter().all(resource_alive),
         _ => true,
     }
 }
@@ -438,6 +517,14 @@ where
     F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     C: FnOnce(*mut c_void, T) -> u64 + Send + 'static,
 {
+    async_settle(g, roots, work, move |g, value| Ok(convert(g, value)))
+}
+unsafe fn async_settle<T, F, C>(g: *mut c_void, roots: Vec<u64>, work: F, convert: C) -> u64
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    C: FnOnce(*mut c_void, T) -> Result<u64, u64> + Send + 'static,
+{
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let (mut resolve, mut reject, mut p) = (UNDEF, UNDEF, UNDEF);
     if redjs::ffi::redjs_promise_create(g, &mut resolve, &mut reject, &mut p) != 0 {
@@ -492,9 +579,13 @@ where
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             convert(g, value)
                         })) {
-                            Ok(value) => {
+                            Ok(Ok(value)) => {
                                 let value = Val::new(g, value);
                                 let _ = call(g, pending.resolve, UNDEF, &[value.v]);
+                            }
+                            Ok(Err(reason)) => {
+                                let reason = Val::new(g, reason);
+                                let _ = call(g, pending.reject, UNDEF, &[reason.v]);
                             }
                             Err(_) => {
                                 let err = Val::new(
@@ -680,10 +771,18 @@ unsafe fn preferred_format(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 unsafe fn features_object(g: *mut c_void, features: wgpu::Features) -> u64 {
-    wrap(g, Kind::Features, None, Resource::Features(features))
+    let names = feature_names()
+        .into_iter()
+        .filter(|(_, flag)| features.contains(*flag))
+        .map(|(name, _)| name)
+        .collect();
+    wrap(g, Kind::Features, None, Resource::Features(names))
 }
-unsafe fn feature_flags(g: *mut c_void, cf: *mut c_void) -> Result<wgpu::Features, ()> {
-    let h = this(g, cf, Kind::Features)?;
+unsafe fn feature_flags(g: *mut c_void, cf: *mut c_void) -> Result<Arc<[&'static str]>, ()> {
+    let h = match try_handle(g, cf_this(cf), Kind::LanguageFeatures) {
+        Some(h) => h,
+        None => this(g, cf, Kind::Features)?,
+    };
     let Resource::Features(f) = h.resource else {
         unreachable!()
     };
@@ -691,36 +790,20 @@ unsafe fn feature_flags(g: *mut c_void, cf: *mut c_void) -> Result<wgpu::Feature
 }
 #[redjs::host_fn]
 unsafe fn feature_size(g: *mut c_void, cf: *mut c_void) -> u64 {
-    run(g, || {
-        let f = feature_flags(g, cf)?;
-        Ok(enc_f64(
-            feature_names()
-                .iter()
-                .filter(|(_, flag)| f.contains(*flag))
-                .count() as f64,
-        ))
-    })
+    run(g, || Ok(enc_f64(feature_flags(g, cf)?.len() as f64)))
 }
 #[redjs::host_fn]
 unsafe fn feature_has(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let f = feature_flags(g, cf)?;
         let name = text(g, cf_arg(cf, 0), "")?;
-        Ok(enc_bool(
-            feature_names()
-                .iter()
-                .any(|(n, flag)| *n == name && f.contains(*flag)),
-        ))
+        Ok(enc_bool(f.iter().any(|n| *n == name)))
     })
 }
 unsafe fn feature_iterator(g: *mut c_void, cf: *mut c_void, entries: bool) -> Result<u64, ()> {
     let f = feature_flags(g, cf)?;
     let a = Val::new(g, new_array(g));
-    for (i, (name, _)) in feature_names()
-        .into_iter()
-        .filter(|(_, flag)| f.contains(*flag))
-        .enumerate()
-    {
+    for (i, name) in f.iter().copied().enumerate() {
         let value = Val::new(g, js_string(g, name));
         if entries {
             let pair = Val::new(g, new_array(g));
@@ -756,10 +839,7 @@ unsafe fn feature_each(g: *mut c_void, cf: *mut c_void) -> u64 {
         if glue::rjs_kind(g, cb) != 9 {
             invalid(g, "GPUSupportedFeatures.forEach requires a callback")?;
         }
-        for (name, _) in feature_names()
-            .into_iter()
-            .filter(|(_, flag)| f.contains(*flag))
-        {
+        for name in f.iter() {
             let s = Val::new(g, js_string(g, name));
             call(g, cb, cf_arg(cf, 1), &[s.v, s.v, cf_this(cf)]).map_err(|e| {
                 glue::rjs_throw(g, e);
@@ -786,10 +866,13 @@ unsafe fn plain(g: *mut c_void, kind: Kind) -> u64 {
         .proto;
     new_object(g, proto)
 }
-// Capability advertising follows implemented APIs. Optional query, compressed
-// texture and f16 surfaces will be enabled together with their validation/tests.
-fn feature_names() -> Vec<(&'static str, wgpu::Features)> {
-    Vec::new()
+// Capability advertising follows implemented APIs. Compressed texture, f16 and
+// subgroup surfaces need per-client shader virtualization on a shared device.
+fn feature_names() -> [(&'static str, wgpu::Features); 2] {
+    [
+        ("core-features-and-limits", wgpu::Features::empty()),
+        ("timestamp-query", wgpu::Features::TIMESTAMP_QUERY),
+    ]
 }
 #[redjs::host_fn]
 unsafe fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -798,18 +881,23 @@ unsafe fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u64 {
         let Resource::Adapter(a) = h.resource else {
             unreachable!()
         };
-        let slot = states().lock().unwrap()[&(g as usize)]
-            .classes
-            .as_ref()
-            .unwrap()
-            .s_features;
+        let slot = with_classes(g, |c| c.s_features);
         Ok(cached(g, cf_this(cf), slot, || {
-            features_object(
-                g,
-                a.shared
-                    .as_ref()
-                    .map_or_else(|| a.raw.features(), |c| c.device.features()),
-            )
+            features_object(g, a.features())
+        }))
+    })
+}
+#[redjs::host_fn]
+unsafe fn wgsl_language_features(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        this(g, cf, Kind::Gpu)?;
+        let slot = with_classes(g, |c| c.s_language);
+        Ok(cached(g, cf_this(cf), slot, || {
+            let names = wgpu::naga::front::wgsl::ImplementedLanguageExtension::all()
+                .iter()
+                .map(|e| e.to_ident())
+                .collect();
+            wrap(g, Kind::LanguageFeatures, None, Resource::Features(names))
         }))
     })
 }
@@ -827,11 +915,36 @@ unsafe fn device_features(g: *mut c_void, cf: *mut c_void) -> u64 {
         }))
     })
 }
-macro_rules! limits_fields {($m:ident)=>{$m!{maxTextureDimension1D=>max_texture_dimension_1d,maxTextureDimension2D=>max_texture_dimension_2d,maxTextureDimension3D=>max_texture_dimension_3d,maxTextureArrayLayers=>max_texture_array_layers,maxBindGroups=>max_bind_groups,maxBindingsPerBindGroup=>max_bindings_per_bind_group,maxDynamicUniformBuffersPerPipelineLayout=>max_dynamic_uniform_buffers_per_pipeline_layout,maxDynamicStorageBuffersPerPipelineLayout=>max_dynamic_storage_buffers_per_pipeline_layout,maxSampledTexturesPerShaderStage=>max_sampled_textures_per_shader_stage,maxSamplersPerShaderStage=>max_samplers_per_shader_stage,maxStorageBuffersPerShaderStage=>max_storage_buffers_per_shader_stage,maxStorageTexturesPerShaderStage=>max_storage_textures_per_shader_stage,maxUniformBuffersPerShaderStage=>max_uniform_buffers_per_shader_stage,maxUniformBufferBindingSize=>max_uniform_buffer_binding_size,maxStorageBufferBindingSize=>max_storage_buffer_binding_size,minUniformBufferOffsetAlignment=>min_uniform_buffer_offset_alignment,minStorageBufferOffsetAlignment=>min_storage_buffer_offset_alignment,maxVertexBuffers=>max_vertex_buffers,maxBufferSize=>max_buffer_size,maxVertexAttributes=>max_vertex_attributes,maxVertexBufferArrayStride=>max_vertex_buffer_array_stride,maxInterStageShaderVariables=>max_inter_stage_shader_variables,maxColorAttachments=>max_color_attachments,maxColorAttachmentBytesPerSample=>max_color_attachment_bytes_per_sample,maxComputeWorkgroupStorageSize=>max_compute_workgroup_storage_size,maxComputeInvocationsPerWorkgroup=>max_compute_invocations_per_workgroup,maxComputeWorkgroupSizeX=>max_compute_workgroup_size_x,maxComputeWorkgroupSizeY=>max_compute_workgroup_size_y,maxComputeWorkgroupSizeZ=>max_compute_workgroup_size_z,maxComputeWorkgroupsPerDimension=>max_compute_workgroups_per_dimension}};}
+macro_rules! limits_fields {($m:ident)=>{$m!{maxTextureDimension1D=>max_texture_dimension_1d,maxTextureDimension2D=>max_texture_dimension_2d,maxTextureDimension3D=>max_texture_dimension_3d,maxTextureArrayLayers=>max_texture_array_layers,maxBindGroups=>max_bind_groups,maxBindingsPerBindGroup=>max_bindings_per_bind_group,maxDynamicUniformBuffersPerPipelineLayout=>max_dynamic_uniform_buffers_per_pipeline_layout,maxDynamicStorageBuffersPerPipelineLayout=>max_dynamic_storage_buffers_per_pipeline_layout,maxSampledTexturesPerShaderStage=>max_sampled_textures_per_shader_stage,maxSamplersPerShaderStage=>max_samplers_per_shader_stage,maxStorageBuffersPerShaderStage=>max_storage_buffers_per_shader_stage,maxStorageTexturesPerShaderStage=>max_storage_textures_per_shader_stage,maxUniformBuffersPerShaderStage=>max_uniform_buffers_per_shader_stage,maxUniformBufferBindingSize=>max_uniform_buffer_binding_size,maxStorageBufferBindingSize=>max_storage_buffer_binding_size,minUniformBufferOffsetAlignment=>min_uniform_buffer_offset_alignment,minStorageBufferOffsetAlignment=>min_storage_buffer_offset_alignment,maxVertexBuffers=>max_vertex_buffers,maxBufferSize=>max_buffer_size,maxVertexAttributes=>max_vertex_attributes,maxVertexBufferArrayStride=>max_vertex_buffer_array_stride,maxInterStageShaderVariables=>max_inter_stage_shader_variables,maxColorAttachments=>max_color_attachments,maxColorAttachmentBytesPerSample=>max_color_attachment_bytes_per_sample,maxComputeWorkgroupStorageSize=>max_compute_workgroup_storage_size,maxComputeInvocationsPerWorkgroup=>max_compute_invocations_per_workgroup,maxComputeWorkgroupSizeX=>max_compute_workgroup_size_x,maxComputeWorkgroupSizeY=>max_compute_workgroup_size_y,maxComputeWorkgroupSizeZ=>max_compute_workgroup_size_z,maxComputeWorkgroupsPerDimension=>max_compute_workgroups_per_dimension,maxBindGroupsPlusVertexBuffers=>max_bind_groups_plus_vertex_buffers,maxImmediateSize=>max_immediate_size}};}
+// With core-features-and-limits the per-stage storage limits are the
+// vertex/fragment ones; wgpu has no separate fields for them.
+fn stage_limit_aliases(l: &wgpu::Limits) -> [(&'static str, u32); 4] {
+    [
+        (
+            "maxStorageBuffersInVertexStage",
+            l.max_storage_buffers_per_shader_stage,
+        ),
+        (
+            "maxStorageBuffersInFragmentStage",
+            l.max_storage_buffers_per_shader_stage,
+        ),
+        (
+            "maxStorageTexturesInVertexStage",
+            l.max_storage_textures_per_shader_stage,
+        ),
+        (
+            "maxStorageTexturesInFragmentStage",
+            l.max_storage_textures_per_shader_stage,
+        ),
+    ]
+}
 unsafe fn limits_object(g: *mut c_void, l: &wgpu::Limits) -> u64 {
     let o = Val::new(g, plain(g, Kind::Limits));
     macro_rules! write {($($js:ident=>$rust:ident),*)=>{$(define(g,o.v,stringify!($js),enc_f64(l.$rust as f64),1|2);)*};}
     limits_fields!(write);
+    for (name, value) in stage_limit_aliases(l) {
+        define(g, o.v, name, enc_f64(value as f64), 1 | 2);
+    }
     o.v
 }
 #[redjs::host_fn]
@@ -847,12 +960,7 @@ unsafe fn adapter_limits(g: *mut c_void, cf: *mut c_void) -> u64 {
             .unwrap()
             .s_limits;
         Ok(cached(g, cf_this(cf), slot, || {
-            limits_object(
-                g,
-                &a.shared
-                    .as_ref()
-                    .map_or_else(|| a.raw.limits(), |c| c.device.limits()),
-            )
+            limits_object(g, &a.limits())
         }))
     })
 }
@@ -882,30 +990,44 @@ unsafe fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
             .as_ref()
             .unwrap()
             .s_info;
-        let existing = get_a(g, cf_this(cf), slot as *mut c_void);
-        if existing != UNDEF {
-            return Ok(existing);
-        }
-        let i = a.raw.get_info();
-        let o = Val::new(g, plain(g, Kind::AdapterInfo));
-        for (k, v) in [
-            ("vendor", format!("{:x}", i.vendor)),
-            ("architecture", String::new()),
-            ("device", format!("{:x}", i.device)),
-            ("description", i.name),
-        ] {
-            define(g, o.v, k, js_string(g, &v), 1 | 2);
-        }
-        define(
-            g,
-            o.v,
-            "isFallbackAdapter",
-            enc_bool(i.device_type == wgpu::DeviceType::Cpu),
-            1 | 2,
-        );
-        glue::rjs_define(g, cf_this(cf), slot as *mut c_void, o.v, 1 | 2);
-        Ok(o.v)
+        Ok(cached(g, cf_this(cf), slot, || {
+            info_object(g, a.raw.get_info())
+        }))
     })
+}
+#[redjs::host_fn]
+unsafe fn device_adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let h = this(g, cf, Kind::Device)?;
+        let adapter = h.client.unwrap().context.adapter.clone();
+        let slot = with_classes(g, |c| c.s_info);
+        Ok(cached(g, cf_this(cf), slot, || {
+            info_object(g, adapter.get_info())
+        }))
+    })
+}
+unsafe fn info_object(g: *mut c_void, i: wgpu::AdapterInfo) -> u64 {
+    let o = Val::new(g, plain(g, Kind::AdapterInfo));
+    for (k, v) in [
+        ("vendor", format!("{:x}", i.vendor)),
+        ("architecture", String::new()),
+        ("device", format!("{:x}", i.device)),
+        ("description", i.name),
+    ] {
+        define(g, o.v, k, js_string(g, &v), 1 | 2);
+    }
+    // The spec's values while "subgroups" is not an exposed feature.
+    for (k, v) in [("subgroupMinSize", 4), ("subgroupMaxSize", 128)] {
+        define(g, o.v, k, enc_f64(v as f64), 1 | 2);
+    }
+    define(
+        g,
+        o.v,
+        "isFallbackAdapter",
+        enc_bool(i.device_type == wgpu::DeviceType::Cpu),
+        1 | 2,
+    );
+    o.v
 }
 #[redjs::host_fn]
 unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -915,10 +1037,15 @@ unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
             unreachable!()
         };
         let d = Val::new(g, cf_arg(cf, 0));
+        let label = text(g, field(g, d.v, "label")?.v, "")?;
         let mut features = wgpu::Features::empty();
+        let available = a.features();
         for v in seq(g, field(g, d.v, "requiredFeatures")?.v)? {
             let name = text(g, v.v, "")?;
-            let Some((_, flag)) = feature_names().into_iter().find(|(n, _)| *n == name) else {
+            let Some((_, flag)) = feature_names()
+                .into_iter()
+                .find(|(n, flag)| *n == name && available.contains(*flag))
+            else {
                 return Ok(redjs::webapi::domexception::rejected(
                     g,
                     "NotSupportedError",
@@ -928,19 +1055,41 @@ unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
             features |= flag;
         }
         let l = field(g, d.v, "requiredLimits")?;
-        let mut limits = wgpu::Limits::default();
+        let adapter_limits = a.limits();
+        let mut limits = wgpu::Limits {
+            max_immediate_size: 64.min(adapter_limits.max_immediate_size),
+            ..Default::default()
+        };
         macro_rules! read {($($js:ident=>$rust:ident),*)=>{$(let v=field(g,l.v,stringify!($js))?;if v.v!=UNDEF {limits.$rust=num(g,v.v,0)?.try_into().map_err(|_|{throw_type_error(g,"WebGPU limit out of range");})?;})*};}
         limits_fields!(read);
+        for (name, available) in stage_limit_aliases(&adapter_limits) {
+            let v = field(g, l.v, name)?;
+            if v.v != UNDEF && num(g, v.v, 0)? > available as u64 {
+                return Ok(redjs::webapi::domexception::rejected(
+                    g,
+                    "OperationError",
+                    &format!("Unsupported requiredLimits: {name}"),
+                ));
+            }
+        }
+        let queue = field(g, d.v, "defaultQueue")?;
+        let queue_label = text(g, field(g, queue.v, "label")?.v, "")?;
         let client_limits = limits.clone();
         Ok(async_op(
             g,
             vec![],
             async move { a.request_device(features, limits).await },
             move |g, context| {
-                make_device(
+                let device = Val::new(
                     g,
-                    Client::new_with_capabilities(context, features, client_limits),
-                )
+                    make_device(
+                        g,
+                        Client::new_with_capabilities(context, features, client_limits),
+                    ),
+                );
+                set_label(g, device.v, &label);
+                set_label(g, get(g, device.v, "queue"), &queue_label);
+                device.v
             },
         ))
     })
@@ -1141,6 +1290,95 @@ unsafe fn destroy(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 #[redjs::host_fn]
+unsafe fn uncaptured_handler_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        this(g, cf, Kind::Device)?;
+        let slot = with_classes(g, |c| c.s_handlers);
+        let v = get_a(g, cf_this(cf), slot as *mut c_void);
+        Ok(if v == UNDEF { NULL } else { v })
+    })
+}
+#[redjs::host_fn]
+unsafe fn uncaptured_handler_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        this(g, cf, Kind::Device)?;
+        let v = cf_arg(cf, 0);
+        let v = if redjs::webapi::events::is_callable(g, v) {
+            v
+        } else {
+            NULL
+        };
+        let slot = with_classes(g, |c| c.s_handlers);
+        glue::rjs_define(g, cf_this(cf), slot as *mut c_void, v, 2);
+        Ok(UNDEF)
+    })
+}
+unsafe fn pipeline_error(g: *mut c_void, reason: &str, message: &str) -> u64 {
+    let (proto, slot) = with_classes(g, |c| (c.pipeline_error_proto, c.s_reason));
+    let e = Val::new(
+        g,
+        redjs::webapi::domexception::create(g, "GPUPipelineError", message),
+    );
+    capi::JSObjectSetPrototype(
+        g,
+        e.v as usize as capi::JSObjectRef,
+        proto as usize as capi::JSValueRef,
+    );
+    let r = Val::new(g, js_string(g, reason));
+    glue::rjs_define(g, e.v, slot as *mut c_void, r.v, 1 | 2);
+    e.v
+}
+#[redjs::host_fn]
+unsafe fn pipeline_error_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let message = text(g, cf_arg(cf, 0), "")?;
+        let options = Val::new(g, cf_arg(cf, 1));
+        if !is_cell(options.v) {
+            invalid(g, "GPUPipelineError requires a GPUPipelineErrorInit")?;
+        }
+        let reason = field(g, options.v, "reason")?;
+        if reason.v == UNDEF {
+            invalid(g, "GPUPipelineErrorInit.reason is required")?;
+        }
+        let reason = text(g, reason.v, "")?;
+        if reason != "validation" && reason != "internal" {
+            invalid(g, "Invalid GPUPipelineErrorReason")?;
+        }
+        let e = Val::new(g, pipeline_error(g, &reason, &message));
+        let target = cf_new_target(cf);
+        if is_cell(target) {
+            let proto = get(g, target, "prototype");
+            if is_cell(proto) {
+                capi::JSObjectSetPrototype(
+                    g,
+                    e.v as usize as capi::JSObjectRef,
+                    proto as usize as capi::JSValueRef,
+                );
+            }
+        }
+        Ok(e.v)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pipeline_error_reason(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let slot = with_classes(g, |c| c.s_reason);
+        let this = cf_this(cf);
+        let v = if is_cell(this) {
+            get_a(g, this, slot as *mut c_void)
+        } else {
+            UNDEF
+        };
+        if v == UNDEF {
+            invalid(
+                g,
+                "GPUPipelineError.reason called on an incompatible receiver",
+            )?;
+        }
+        Ok(v)
+    })
+}
+#[redjs::host_fn]
 unsafe fn push_scope(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
@@ -1262,6 +1500,11 @@ pub(crate) unsafe fn install(g: *mut c_void) {
         s_ranges: atom_priv(g, "webgpu.ranges") as usize,
         s_lost: atom_priv(g, "webgpu.lost") as usize,
         s_resolve_lost: atom_priv(g, "webgpu.resolveLost") as usize,
+        s_label: atom_priv(g, "webgpu.label") as usize,
+        s_handlers: atom_priv(g, "webgpu.onuncapturederror") as usize,
+        s_language: atom_priv(g, "webgpu.wgslLanguageFeatures") as usize,
+        s_reason: atom_priv(g, "webgpu.pipelineErrorReason") as usize,
+        pipeline_error_proto: 0,
     };
     states()
         .lock()
@@ -1277,7 +1520,7 @@ pub(crate) unsafe fn install(g: *mut c_void) {
             ("requestAdapter", 0, request_adapter),
             ("getPreferredCanvasFormat", 0, preferred_format),
         ],
-        &[],
+        &[("wgslLanguageFeatures", wgsl_language_features)],
     );
     class(
         g,
@@ -1303,40 +1546,46 @@ pub(crate) unsafe fn install(g: *mut c_void) {
             ("features", device_features),
             ("limits", device_limits),
             ("lost", lost),
+            ("adapterInfo", device_adapter_info),
         ],
     );
-    class(g, Kind::Queue, "GPUQueue", &[], &[]);
-    class(
+    let device_proto = with_classes(g, |c| c.types[&Kind::Device].proto);
+    let a = atom(g, "onuncapturederror");
+    glue::rjs_define_accessor(
         g,
-        Kind::Features,
-        "GPUSupportedFeatures",
-        &[
-            ("has", 1, feature_has),
-            ("keys", 0, feature_values),
-            ("values", 0, feature_values),
-            ("entries", 0, feature_entries),
-            ("forEach", 1, feature_each),
-        ],
-        &[("size", feature_size)],
+        device_proto,
+        a,
+        make_fn(g, "get onuncapturederror", 0, uncaptured_handler_get),
+        make_fn(g, "set onuncapturederror", 1, uncaptured_handler_set),
+        2,
     );
+    glue::rjs_atom_free(g, a);
+    class(g, Kind::Queue, "GPUQueue", &[], &[]);
+    for (kind, name) in [
+        (Kind::Features, "GPUSupportedFeatures"),
+        (Kind::LanguageFeatures, "WGSLLanguageFeatures"),
+    ] {
+        class(
+            g,
+            kind,
+            name,
+            &[
+                ("has", 1, feature_has),
+                ("keys", 0, feature_values),
+                ("values", 0, feature_values),
+                ("entries", 0, feature_entries),
+                ("forEach", 1, feature_each),
+            ],
+            &[("size", feature_size)],
+        );
+        let proto = with_classes(g, |c| c.types[&kind].proto);
+        let iter = glue::rjs_atom_iterator(g);
+        glue::rjs_define(g, proto, iter, make_fn(g, "values", 0, feature_values), 2);
+        glue::rjs_atom_free(g, iter);
+    }
     class(g, Kind::Limits, "GPUSupportedLimits", &[], &[]);
     class(g, Kind::AdapterInfo, "GPUAdapterInfo", &[], &[]);
     class(g, Kind::LostInfo, "GPUDeviceLostInfo", &[], &[]);
-    let feature_proto = states().lock().unwrap()[&(g as usize)]
-        .classes
-        .as_ref()
-        .unwrap()
-        .types[&Kind::Features]
-        .proto;
-    let iter = glue::rjs_atom_iterator(g);
-    glue::rjs_define(
-        g,
-        feature_proto,
-        iter,
-        make_fn(g, "values", 0, feature_values),
-        2,
-    );
-    glue::rjs_atom_free(g, iter);
     let base = define_class(
         g,
         &ClassSpec {
@@ -1399,9 +1648,34 @@ pub(crate) unsafe fn install(g: *mut c_void) {
         .unwrap()
         .error_protos
         .insert("GPUUncapturedErrorEvent", event_class.proto);
+    let dom_exception = Val::new(g, get(g, global, "DOMException"));
+    let dom_proto = field(g, dom_exception.v, "prototype").unwrap();
+    let pipeline_error_class = define_class(
+        g,
+        &ClassSpec {
+            name: "GPUPipelineError",
+            arity: 2,
+            construct: Some(pipeline_error_construct),
+            parent_proto: dom_proto.v,
+            methods: &[],
+            getters: &[("reason", pipeline_error_reason)],
+            accessors: &[],
+        },
+    );
+    states()
+        .lock()
+        .unwrap()
+        .get_mut(&(g as usize))
+        .unwrap()
+        .classes
+        .as_mut()
+        .unwrap()
+        .pipeline_error_proto = pipeline_error_class.proto;
     buffer::install(g);
     compute::install(g);
     texture::install(g);
+    query::install(g);
+    bundle::install(g);
     canvas::install(g);
     let nav = Val::new(g, get(g, global, "navigator"));
     let gpu = wrap(g, Kind::Gpu, None, Resource::Gpu);
@@ -1425,6 +1699,18 @@ unsafe fn class(
     } else {
         0
     };
+    let object_base = !matches!(
+        kind,
+        Kind::Gpu
+            | Kind::Canvas
+            | Kind::Adapter
+            | Kind::Features
+            | Kind::LanguageFeatures
+            | Kind::Limits
+            | Kind::AdapterInfo
+            | Kind::LostInfo
+    );
+    let label: &[(&str, HostFn, HostFn)] = &[("label", label_get, label_set)];
     let c = define_class(
         g,
         &ClassSpec {
@@ -1434,7 +1720,7 @@ unsafe fn class(
             parent_proto: parent,
             methods,
             getters,
-            accessors: &[],
+            accessors: if object_base { label } else { &[] },
         },
     );
     states()

@@ -40,6 +40,17 @@ It does not open a window or access an application profile.
   blend/depth/stencil/MSAA state, draw/drawIndexed, viewport/scissor, render
   passes, texture uploads and buffer/texture copy commands.
 - Single-use command buffers, queue submission and asynchronous work completion.
+- Render bundles, `drawIndirect`/`drawIndexedIndirect`, occlusion and timestamp
+  query sets with pass `timestampWrites` and `resolveQuerySet`, debug groups and
+  markers, `setImmediates` (wgpu immediates; `maxImmediateSize` defaults to 64),
+  readable/writable `label` on every object, `createComputePipelineAsync` and
+  `createRenderPipelineAsync` (rejecting with `GPUPipelineError`),
+  `onuncapturederror`, `device.adapterInfo` and `navigator.gpu.wgslLanguageFeatures`.
+  Bundles record owned commands and replay them into a wgpu bundle at `finish()`.
+  'timestamp-query' is advertised only when the device reports nanosecond
+  timestamps. naga's HLSL backend accepts struct-typed `var<immediate>` only, so
+  a scalar or vector immediate fails pipeline creation on DirectX 12 with an
+  internal error.
 - `copyExternalImageToTexture` for native/mirror images, ImageData, ImageBitmap,
   2D and WebGPU canvases, with crop/flipY, alpha conversion, mip/layer selection
   and renderable unorm/float destination formats.
@@ -81,10 +92,12 @@ its logical device lost. It never calls `wgpu::Device::destroy()`. Cross-client
 resource use is rejected even when their physical device is identical.
 
 **Current shared-device restriction:** requested features and limits must match
-those of the physical device exactly. Capability-subset virtualization across
-all shaders and pipelines is not implemented, so mismatched imports fail
-explicitly. JS optional features are currently not advertised. A host requiring
-additional physical features needs the next validation/negotiation stage.
+those of the physical device, except 'timestamp-query', immediates and
+`maxImmediateSize`, which a client may request below the physical device's.
+Create the shared device with `backend::shareable_capabilities(&adapter)` and
+`InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION` to offer them. Other
+capability-subset virtualization is not implemented, so mismatched imports
+fail explicitly.
 This is a shared-device foundation; the SDK supplies its renderer integration.
 It does not by itself establish an untrusted activity security boundary.
 
@@ -168,10 +181,12 @@ The conversion contract follows [WebGPU external-image copies](https://gpuweb.gi
 
 - Direct swapchain rendering and copy-free atlas sampling. The SDK qualifies
   a native shared-texture import path with GPU conversion and atlas copies.
-- External video textures, VideoFrame/HTML video uploads and zero-copy video.
+- `importExternalTexture`, VideoFrame/HTML video uploads and zero-copy video.
+  wgpu's external textures exist on DirectX 12 and Metal only, and the
+  embedder's video frames live on its renderer device.
 - SharedArrayBuffer uploads (rejected until an atomic native copy path exists).
-- Async pipeline factories, query sets/timestamps, render bundles, optional
-  compressed formats/features, WebGPU CTS qualification.
+- Optional compressed formats/features beyond 'timestamp-query', subgroups,
+  WebGPU CTS qualification.
 - Slang/DXIL artifact loading; standard `createShaderModule` accepts WGSL only.
 - Full WebIDL/error semantics: e.g. some lifecycle/capability failures currently
   throw a TypeError or InvalidStateError rather than producing an invalid object.
@@ -182,7 +197,5 @@ WebCodecs or every optional WebGPU feature. The SDK qualifies its image-editor
 path independently from the remaining video and activity work.
 
 The standard contract is [WebGPU](https://gpuweb.github.io/gpuweb/); the Rust
-backend is pinned to `gfx-rs/wgpu` revision
-`3b3506ea31154edc04de64debda0e780cba2639c`, matching the GPUI fork used by the
-embedder. GPU integration tests require a real adapter; they do not silently
+backend is wgpu 30.0.2, matching the GPUI fork used by the embedder. GPU integration tests require a real adapter; they do not silently
 pass against a noop backend.

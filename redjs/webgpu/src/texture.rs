@@ -42,8 +42,8 @@ impl Drop for RenderPass {
 }
 
 macro_rules! enum_parser {
-    ($name:ident, $ty:ty, $default:literal; $($key:literal => $value:expr),+ $(,)?) => {
-        unsafe fn $name(g: *mut c_void, v: u64) -> Result<$ty, ()> {
+    ($vis:vis $name:ident, $ty:ty, $default:literal; $($key:literal => $value:expr),+ $(,)?) => {
+        $vis unsafe fn $name(g: *mut c_void, v: u64) -> Result<$ty, ()> {
             let name = text(g, v, $default)?;
             match name.as_str() {
                 $($key => Ok($value),)+
@@ -86,7 +86,7 @@ enum_parser!(parse_mipmap,wgpu::MipmapFilterMode,"nearest";"nearest"=>wgpu::Mipm
 enum_parser!(parse_compare,wgpu::CompareFunction,"always";"never"=>wgpu::CompareFunction::Never,"less"=>wgpu::CompareFunction::Less,"equal"=>wgpu::CompareFunction::Equal,"less-equal"=>wgpu::CompareFunction::LessEqual,"greater"=>wgpu::CompareFunction::Greater,"not-equal"=>wgpu::CompareFunction::NotEqual,"greater-equal"=>wgpu::CompareFunction::GreaterEqual,"always"=>wgpu::CompareFunction::Always);
 enum_parser!(parse_topology,wgpu::PrimitiveTopology,"triangle-list";"point-list"=>wgpu::PrimitiveTopology::PointList,"line-list"=>wgpu::PrimitiveTopology::LineList,"line-strip"=>wgpu::PrimitiveTopology::LineStrip,"triangle-list"=>wgpu::PrimitiveTopology::TriangleList,"triangle-strip"=>wgpu::PrimitiveTopology::TriangleStrip);
 enum_parser!(parse_front,wgpu::FrontFace,"ccw";"ccw"=>wgpu::FrontFace::Ccw,"cw"=>wgpu::FrontFace::Cw);
-enum_parser!(parse_index,wgpu::IndexFormat,"";"uint16"=>wgpu::IndexFormat::Uint16,"uint32"=>wgpu::IndexFormat::Uint32);
+enum_parser!(pub(super) parse_index,wgpu::IndexFormat,"";"uint16"=>wgpu::IndexFormat::Uint16,"uint32"=>wgpu::IndexFormat::Uint32);
 enum_parser!(parse_step,wgpu::VertexStepMode,"vertex";"vertex"=>wgpu::VertexStepMode::Vertex,"instance"=>wgpu::VertexStepMode::Instance);
 enum_parser!(parse_vertex_format,wgpu::VertexFormat,"";
 "uint8x2"=>wgpu::VertexFormat::Uint8x2,"uint8x4"=>wgpu::VertexFormat::Uint8x4,"sint8x2"=>wgpu::VertexFormat::Sint8x2,"sint8x4"=>wgpu::VertexFormat::Sint8x4,"unorm8x2"=>wgpu::VertexFormat::Unorm8x2,"unorm8x4"=>wgpu::VertexFormat::Unorm8x4,"snorm8x2"=>wgpu::VertexFormat::Snorm8x2,"snorm8x4"=>wgpu::VertexFormat::Snorm8x4,
@@ -118,14 +118,14 @@ unsafe fn float(g: *mut c_void, v: u64, default: f32) -> Result<f32, ()> {
     }
     Ok(value)
 }
-unsafe fn signed(g: *mut c_void, v: u64, default: i32) -> Result<i32, ()> {
+pub(super) unsafe fn signed(g: *mut c_void, v: u64, default: i32) -> Result<i32, ()> {
     let n = finite(g, v, default as f64)?.trunc();
     if n < i32::MIN as f64 || n > i32::MAX as f64 {
         invalid(g, "WebGPU signed integer out of range")?;
     }
     Ok(n as i32)
 }
-unsafe fn optional_u32(g: *mut c_void, v: u64) -> Result<Option<u32>, ()> {
+pub(super) unsafe fn optional_u32(g: *mut c_void, v: u64) -> Result<Option<u32>, ()> {
     if v == UNDEF {
         Ok(None)
     } else {
@@ -145,14 +145,6 @@ unsafe fn required(g: *mut c_void, obj: u64, name: &str) -> Result<Val, ()> {
         invalid(g, &format!("Missing required WebGPU member: {name}"))?;
     }
     Ok(v)
-}
-unsafe fn reject_present(g: *mut c_void, obj: u64, names: &[&str]) -> Result<(), ()> {
-    for name in names {
-        if field(g, obj, name)?.v != UNDEF {
-            invalid(g, &format!("WebGPU member is not implemented: {name}"))?;
-        }
-    }
-    Ok(())
 }
 unsafe fn is_sequence(g: *mut c_void, v: u64) -> Result<bool, ()> {
     let a = glue::rjs_atom_wellknown(g, 0);
@@ -326,11 +318,12 @@ unsafe fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
             format_name,
             canvas: false,
         };
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::Texture,
             Some(c),
             Resource::Texture(Arc::new(texture)),
+            &label,
         ))
     })
 }
@@ -382,11 +375,12 @@ unsafe fn create_view(g: *mut c_void, cf: *mut c_void) -> u64 {
                 ..Default::default()
             })
         });
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::TextureView,
             Some(c),
             Resource::TextureView(TextureView { raw, _owner: t }),
+            &label,
         ))
     })
 }
@@ -439,6 +433,8 @@ texture_getter!(texture_format, |g, t: &Texture| js_string(
 texture_getter!(texture_usage, |_g, t: &Texture| enc_f64(
     t.usage.bits() as f64
 ));
+// Undefined on devices with core-features-and-limits, which every device is.
+texture_getter!(texture_binding_view_dimension, |_g, _t: &Texture| UNDEF);
 
 #[redjs::host_fn]
 unsafe fn create_sampler(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -481,7 +477,13 @@ unsafe fn create_sampler(g: *mut c_void, cf: *mut c_void) -> u64 {
                 border_color: None,
             })
         });
-        Ok(wrap(g, Kind::Sampler, Some(c), Resource::Sampler(sampler)))
+        Ok(wrap_labeled(
+            g,
+            Kind::Sampler,
+            Some(c),
+            Resource::Sampler(sampler),
+            &label,
+        ))
     })
 }
 unsafe fn blend_component(g: *mut c_void, v: u64) -> Result<wgpu::BlendComponent, ()> {
@@ -548,9 +550,107 @@ struct VertexLayout {
     step: wgpu::VertexStepMode,
     attributes: Vec<wgpu::VertexAttribute>,
 }
+struct FragmentSpec {
+    module: wgpu::ShaderModule,
+    entry: Option<String>,
+    constants: Vec<(String, f64)>,
+    targets: Vec<Option<wgpu::ColorTargetState>>,
+}
+struct RenderSpec {
+    label: String,
+    layout: Option<wgpu::PipelineLayout>,
+    vertex_module: wgpu::ShaderModule,
+    vertex_entry: Option<String>,
+    vertex_constants: Vec<(String, f64)>,
+    buffers: Vec<Option<VertexLayout>>,
+    fragment: Option<FragmentSpec>,
+    primitive: wgpu::PrimitiveState,
+    depth_stencil: Option<wgpu::DepthStencilState>,
+    multisample: wgpu::MultisampleState,
+}
+impl RenderSpec {
+    fn build(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+        fn refs(c: &[(String, f64)]) -> Vec<(&str, f64)> {
+            c.iter().map(|(n, v)| (n.as_str(), *v)).collect()
+        }
+        let vertex_constants = refs(&self.vertex_constants);
+        let fragment_constants = self
+            .fragment
+            .as_ref()
+            .map_or_else(Vec::new, |f| refs(&f.constants));
+        let buffers = self
+            .buffers
+            .iter()
+            .map(|v| {
+                v.as_ref().map(|v| wgpu::VertexBufferLayout {
+                    array_stride: v.stride,
+                    step_mode: v.step,
+                    attributes: &v.attributes,
+                })
+            })
+            .collect::<Vec<_>>();
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(&self.label),
+            layout: self.layout.as_ref(),
+            vertex: wgpu::VertexState {
+                module: &self.vertex_module,
+                entry_point: self.vertex_entry.as_deref(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &vertex_constants,
+                    ..Default::default()
+                },
+                buffers: &buffers,
+            },
+            primitive: self.primitive,
+            depth_stencil: self.depth_stencil.clone(),
+            multisample: self.multisample,
+            fragment: self.fragment.as_ref().map(|f| wgpu::FragmentState {
+                module: &f.module,
+                entry_point: f.entry.as_deref(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &fragment_constants,
+                    ..Default::default()
+                },
+                targets: &f.targets,
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+}
 #[redjs::host_fn]
 unsafe fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
+        let (c, spec) = render_spec(g, cf)?;
+        let pipeline = checked(g, &c, || spec.build(&c.context.device));
+        Ok(wrap_labeled(
+            g,
+            Kind::RenderPipeline,
+            Some(c),
+            Resource::RenderPipeline(pipeline),
+            &spec.label,
+        ))
+    })
+}
+#[redjs::host_fn]
+unsafe fn create_render_pipeline_async(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let Ok((c, spec)) = render_spec(g, cf) else {
+            return Ok(rejected_from_exception(g));
+        };
+        let label = spec.label.clone();
+        Ok(compute::pipeline_async(
+            g,
+            cf,
+            c,
+            label,
+            move |device| spec.build(device),
+            |raw| (Kind::RenderPipeline, Resource::RenderPipeline(raw)),
+        ))
+    })
+}
+unsafe fn render_spec(g: *mut c_void, cf: *mut c_void) -> Result<(Arc<Client>, RenderSpec), ()> {
+    {
         let h = this(g, cf, Kind::Device)?;
         let c = client(g, &h)?;
         let d = Val::new(g, cf_arg(cf, 0));
@@ -604,16 +704,6 @@ unsafe fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
         {
             invalid(g, "Vertex buffers exceed logical device limits")?;
         }
-        let vertex_buffers = vertex_owned
-            .iter()
-            .map(|v| {
-                v.as_ref().map(|v| wgpu::VertexBufferLayout {
-                    array_stride: v.stride,
-                    step_mode: v.step,
-                    attributes: &v.attributes,
-                })
-            })
-            .collect::<Vec<_>>();
         let fragment = field(g, d.v, "fragment")?;
         let mut fs_module = None;
         let mut fs_entry = None;
@@ -742,52 +832,28 @@ unsafe fn create_render_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
                 )?;
             }
         }
-        let vs_constants_ref = vs_constants
-            .iter()
-            .map(|(n, v)| (n.as_str(), *v))
-            .collect::<Vec<_>>();
-        let fs_constants_ref = fs_constants
-            .iter()
-            .map(|(n, v)| (n.as_str(), *v))
-            .collect::<Vec<_>>();
-        let pipeline = checked(g, &c, || {
-            c.context
-                .device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(&label),
-                    layout: layout.as_ref(),
-                    vertex: wgpu::VertexState {
-                        module: &vs.raw,
-                        entry_point: vs_entry.as_deref(),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &vs_constants_ref,
-                            ..Default::default()
-                        },
-                        buffers: &vertex_buffers,
-                    },
-                    primitive,
-                    depth_stencil,
-                    multisample,
-                    fragment: fs_module.as_ref().map(|s| wgpu::FragmentState {
-                        module: &s.raw,
-                        entry_point: fs_entry.as_deref(),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &fs_constants_ref,
-                            ..Default::default()
-                        },
-                        targets: &targets,
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
+        let fragment = fs_module.map(|s| FragmentSpec {
+            module: s.raw,
+            entry: fs_entry,
+            constants: fs_constants,
+            targets,
         });
-        Ok(wrap(
-            g,
-            Kind::RenderPipeline,
-            Some(c),
-            Resource::RenderPipeline(pipeline),
+        Ok((
+            c,
+            RenderSpec {
+                label,
+                layout,
+                vertex_module: vs.raw,
+                vertex_entry: vs_entry,
+                vertex_constants: vs_constants,
+                buffers: vertex_owned,
+                fragment,
+                primitive,
+                depth_stencil,
+                multisample,
+            },
         ))
-    })
+    }
 }
 #[redjs::host_fn]
 unsafe fn render_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -882,7 +948,8 @@ unsafe fn begin_render_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
         };
         let d = Val::new(g, cf_arg(cf, 0));
         let label = text(g, field(g, d.v, "label")?.v, "")?;
-        reject_present(g, d.v, &["timestampWrites", "occlusionQuerySet"])?;
+        let occlusion = query::occlusion_set(g, d.v, &c)?;
+        let timestamps = query::timestamp_writes(g, d.v, &c)?;
         let mut colors = Vec::new();
         for a in seq(g, required(g, d.v, "colorAttachments")?.v)? {
             if a.v == NULL {
@@ -950,6 +1017,9 @@ unsafe fn begin_render_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
         if let Some(depth) = &depth_view {
             resources.push(Resource::TextureView(depth.clone()));
         }
+        for set in occlusion.iter().chain(timestamps.as_ref().map(|t| &t.set)) {
+            resources.push(Resource::QuerySet(set.clone()));
+        }
         compute::retain_encoder(&owner, &resources);
         let pass = compute::with_encoder(g, &c, &owner, |encoder| {
             encoder
@@ -963,14 +1033,20 @@ unsafe fn begin_render_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
                             stencil_ops: sops,
                         }
                     }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
+                    timestamp_writes: timestamps.as_ref().map(|t| {
+                        wgpu::RenderPassTimestampWrites {
+                            query_set: &t.set.raw,
+                            beginning_of_pass_write_index: t.beginning,
+                            end_of_pass_write_index: t.end,
+                        }
+                    }),
+                    occlusion_query_set: occlusion.as_ref().map(|set| &set.raw),
                     multiview_mask: None,
                 })
                 .forget_lifetime()
         })?;
         owner.lock().unwrap().active = true;
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::RenderPass,
             Some(c.clone()),
@@ -979,10 +1055,11 @@ unsafe fn begin_render_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
                 owner,
                 client: c,
             }))),
+            &label,
         ))
     })
 }
-unsafe fn with_pass<T>(
+pub(super) unsafe fn with_pass<T>(
     g: *mut c_void,
     c: &Arc<Client>,
     pass: &Arc<Mutex<RenderPass>>,
@@ -996,7 +1073,7 @@ unsafe fn with_pass<T>(
     };
     Ok(checked(g, c, || f(raw)))
 }
-unsafe fn retain_pass(
+pub(super) unsafe fn retain_pass(
     g: *mut c_void,
     pass: &Arc<Mutex<RenderPass>>,
     resources: &[Resource],
@@ -1013,7 +1090,7 @@ unsafe fn retain_pass(
     Ok(())
 }
 
-unsafe fn pass_this(
+pub(super) unsafe fn pass_this(
     g: *mut c_void,
     cf: *mut c_void,
 ) -> Result<(Arc<Client>, Arc<Mutex<RenderPass>>), ()> {
@@ -1063,7 +1140,7 @@ unsafe fn pass_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe fn buffer_range(
+pub(super) unsafe fn buffer_range(
     g: *mut c_void,
     cf: *mut c_void,
     c: &Arc<Client>,
@@ -1119,7 +1196,11 @@ unsafe fn pass_index_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(UNDEF)
     })
 }
-unsafe fn draw_range(g: *mut c_void, start: u32, count: u32) -> Result<std::ops::Range<u32>, ()> {
+pub(super) unsafe fn draw_range(
+    g: *mut c_void,
+    start: u32,
+    count: u32,
+) -> Result<std::ops::Range<u32>, ()> {
     let Some(end) = start.checked_add(count) else {
         invalid(g, "GPU draw range overflows unsigned long")?;
         unreachable!()
@@ -1198,6 +1279,92 @@ unsafe fn pass_stencil(g: *mut c_void, cf: *mut c_void) -> u64 {
         let (c, pass) = pass_this(g, cf)?;
         let reference = uint(g, cf_arg(cf, 0), 0)?;
         with_pass(g, &c, &pass, |raw| raw.set_stencil_reference(reference))?;
+        Ok(UNDEF)
+    })
+}
+pub(super) unsafe fn indirect_buffer(
+    g: *mut c_void,
+    cf: *mut c_void,
+    c: &Arc<Client>,
+) -> Result<(Arc<buffer::Buffer>, u64), ()> {
+    let h = owned(g, cf_arg(cf, 0), Kind::Buffer, c)?;
+    let Resource::Buffer(b) = h.resource else {
+        unreachable!()
+    };
+    Ok((b, num(g, cf_arg(cf, 1), 0)?))
+}
+#[redjs::host_fn]
+unsafe fn pass_draw_indirect(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        let (b, offset) = indirect_buffer(g, cf, &c)?;
+        retain_pass(g, &pass, &[Resource::Buffer(b.clone())])?;
+        with_pass(g, &c, &pass, |raw| raw.draw_indirect(&b.raw, offset))?;
+        Ok(UNDEF)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pass_draw_indexed_indirect(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        let (b, offset) = indirect_buffer(g, cf, &c)?;
+        retain_pass(g, &pass, &[Resource::Buffer(b.clone())])?;
+        with_pass(g, &c, &pass, |raw| {
+            raw.draw_indexed_indirect(&b.raw, offset)
+        })?;
+        Ok(UNDEF)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pass_begin_occlusion(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        let index = uint(g, cf_arg(cf, 0), 0)?;
+        with_pass(g, &c, &pass, |raw| raw.begin_occlusion_query(index))?;
+        Ok(UNDEF)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pass_end_occlusion(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        with_pass(g, &c, &pass, |raw| raw.end_occlusion_query())?;
+        Ok(UNDEF)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pass_immediates(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        if let Some((offset, bytes)) = compute::immediates(g, cf, &c)? {
+            with_pass(g, &c, &pass, |raw| raw.set_immediates(offset, &bytes))?;
+        }
+        Ok(UNDEF)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pass_push_debug_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        let label = text(g, cf_arg(cf, 0), "undefined")?;
+        with_pass(g, &c, &pass, |raw| raw.push_debug_group(&label))?;
+        Ok(UNDEF)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pass_pop_debug_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        with_pass(g, &c, &pass, |raw| raw.pop_debug_group())?;
+        Ok(UNDEF)
+    })
+}
+#[redjs::host_fn]
+unsafe fn pass_insert_debug_marker(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = pass_this(g, cf)?;
+        let label = text(g, cf_arg(cf, 0), "undefined")?;
+        with_pass(g, &c, &pass, |raw| raw.insert_debug_marker(&label))?;
         Ok(UNDEF)
     })
 }
@@ -1423,6 +1590,10 @@ pub(super) unsafe fn install(g: *mut c_void) {
             ("dimension", texture_dimension),
             ("format", texture_format),
             ("usage", texture_usage),
+            (
+                "textureBindingViewDimension",
+                texture_binding_view_dimension,
+            ),
         ],
     );
     class(g, Kind::TextureView, "GPUTextureView", &[], &[]);
@@ -1449,6 +1620,14 @@ pub(super) unsafe fn install(g: *mut c_void) {
             ("setScissorRect", 4, pass_scissor),
             ("setBlendConstant", 1, pass_blend),
             ("setStencilReference", 1, pass_stencil),
+            ("setImmediates", 2, pass_immediates),
+            ("drawIndirect", 2, pass_draw_indirect),
+            ("drawIndexedIndirect", 2, pass_draw_indexed_indirect),
+            ("beginOcclusionQuery", 1, pass_begin_occlusion),
+            ("endOcclusionQuery", 0, pass_end_occlusion),
+            ("pushDebugGroup", 1, pass_push_debug_group),
+            ("popDebugGroup", 0, pass_pop_debug_group),
+            ("insertDebugMarker", 1, pass_insert_debug_marker),
             ("end", 0, end_pass),
         ],
         &[],
@@ -1461,6 +1640,13 @@ pub(super) unsafe fn install(g: *mut c_void) {
         "createRenderPipeline",
         1,
         create_render_pipeline,
+    );
+    method(
+        g,
+        Kind::Device,
+        "createRenderPipelineAsync",
+        1,
+        create_render_pipeline_async,
     );
     method(g, Kind::Encoder, "beginRenderPass", 1, begin_render_pass);
     method(
@@ -1501,6 +1687,7 @@ pub(super) unsafe fn install(g: *mut c_void) {
             ("TEXTURE_BINDING", 4),
             ("STORAGE_BINDING", 8),
             ("RENDER_ATTACHMENT", 16),
+            ("TRANSIENT_ATTACHMENT", 32),
         ],
     );
     constants(

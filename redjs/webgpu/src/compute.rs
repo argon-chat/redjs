@@ -195,11 +195,12 @@ unsafe fn create_shader(g: *mut c_void, cf: *mut c_void) -> u64 {
                     source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(&source)),
                 })
         });
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::Shader,
             Some(c),
             Resource::Shader(Shader { raw, source }),
+            &label,
         ))
     })
 }
@@ -419,11 +420,12 @@ unsafe fn create_bind_group_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
                     entries: &entries,
                 })
         });
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::BindGroupLayout,
             Some(c),
             Resource::BindGroupLayout(raw),
+            &label,
         ))
     })
 }
@@ -447,6 +449,15 @@ unsafe fn create_pipeline_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
             };
             layouts.push(Some(raw));
         }
+        let mut immediate_size = uint(g, field(g, descriptor.v, "immediateSize")?.v, 0)?;
+        if immediate_size % 4 != 0 || immediate_size > c.limits.max_immediate_size {
+            validation(
+                g,
+                &c,
+                "immediateSize must be a multiple of 4 within maxImmediateSize",
+            );
+            immediate_size = 0;
+        }
         let refs: Vec<_> = layouts.iter().map(Option::as_ref).collect();
         let raw = checked(g, &c, || {
             c.context
@@ -454,14 +465,15 @@ unsafe fn create_pipeline_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some(&label),
                     bind_group_layouts: &refs,
-                    immediate_size: 0,
+                    immediate_size,
                 })
         });
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::PipelineLayout,
             Some(c),
             Resource::PipelineLayout(raw),
+            &label,
         ))
     })
 }
@@ -578,7 +590,7 @@ unsafe fn create_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
                 .map(|(_, binding)| binding.retained())
                 .collect(),
         );
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::BindGroup,
             Some(c),
@@ -586,54 +598,130 @@ unsafe fn create_bind_group(g: *mut c_void, cf: *mut c_void) -> u64 {
                 raw,
                 _resources: resources,
             }),
+            &label,
         ))
     })
+}
+
+struct ComputeSpec {
+    label: String,
+    layout: Option<wgpu::PipelineLayout>,
+    module: wgpu::ShaderModule,
+    entry: Option<String>,
+    constants: Vec<(String, f64)>,
+}
+impl ComputeSpec {
+    fn build(&self, device: &wgpu::Device) -> wgpu::ComputePipeline {
+        let constants: Vec<_> = self
+            .constants
+            .iter()
+            .map(|(n, v)| (n.as_str(), *v))
+            .collect();
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(&self.label),
+            layout: self.layout.as_ref(),
+            module: &self.module,
+            entry_point: self.entry.as_deref(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                zero_initialize_workgroup_memory: true,
+            },
+            cache: None,
+        })
+    }
+}
+
+unsafe fn compute_spec(g: *mut c_void, cf: *mut c_void) -> Result<(Arc<Client>, ComputeSpec), ()> {
+    let h = this(g, cf, Kind::Device)?;
+    let c = client(g, &h)?;
+    let descriptor = Val::new(g, cf_arg(cf, 0));
+    let label = text(g, field(g, descriptor.v, "label")?.v, "")?;
+    let layout = parse_pipeline_layout(g, descriptor.v, &c)?;
+    let stage = required(g, descriptor.v, "compute")?;
+    let module = field(g, stage.v, "module")?;
+    let h = owned(g, module.v, Kind::Shader, &c)?;
+    let Resource::Shader(shader) = h.resource else {
+        unreachable!()
+    };
+    let entry_value = field(g, stage.v, "entryPoint")?;
+    let entry = if entry_value.v == UNDEF {
+        None
+    } else {
+        Some(text(g, entry_value.v, "")?)
+    };
+    let constants = stage_constants(g, stage.v)?;
+    Ok((
+        c,
+        ComputeSpec {
+            label,
+            layout,
+            module: shader.raw,
+            entry,
+            constants,
+        },
+    ))
 }
 
 #[redjs::host_fn]
 unsafe fn create_compute_pipeline(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
-        let h = this(g, cf, Kind::Device)?;
-        let c = client(g, &h)?;
-        let descriptor = Val::new(g, cf_arg(cf, 0));
-        let label = text(g, field(g, descriptor.v, "label")?.v, "")?;
-        let layout = parse_pipeline_layout(g, descriptor.v, &c)?;
-        let stage = required(g, descriptor.v, "compute")?;
-        let module = field(g, stage.v, "module")?;
-        let h = owned(g, module.v, Kind::Shader, &c)?;
-        let Resource::Shader(shader) = h.resource else {
-            unreachable!()
-        };
-        let entry_value = field(g, stage.v, "entryPoint")?;
-        let entry = if entry_value.v == UNDEF {
-            None
-        } else {
-            Some(text(g, entry_value.v, "")?)
-        };
-        let constants = stage_constants(g, stage.v)?;
-        let constant_refs: Vec<_> = constants.iter().map(|(n, v)| (n.as_str(), *v)).collect();
-        let raw = checked(g, &c, || {
-            c.context
-                .device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(&label),
-                    layout: layout.as_ref(),
-                    module: &shader.raw,
-                    entry_point: entry.as_deref(),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &constant_refs,
-                        zero_initialize_workgroup_memory: true,
-                    },
-                    cache: None,
-                })
-        });
-        Ok(wrap(
+        let (c, spec) = compute_spec(g, cf)?;
+        let raw = checked(g, &c, || spec.build(&c.context.device));
+        Ok(wrap_labeled(
             g,
             Kind::ComputePipeline,
             Some(c),
             Resource::ComputePipeline(raw),
+            &spec.label,
         ))
     })
+}
+
+#[redjs::host_fn]
+unsafe fn create_compute_pipeline_async(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let Ok((c, spec)) = compute_spec(g, cf) else {
+            return Ok(rejected_from_exception(g));
+        };
+        let label = spec.label.clone();
+        Ok(pipeline_async(
+            g,
+            cf,
+            c,
+            label,
+            move |device| spec.build(device),
+            |raw| (Kind::ComputePipeline, Resource::ComputePipeline(raw)),
+        ))
+    })
+}
+
+pub(super) unsafe fn pipeline_async<T: Send + 'static>(
+    g: *mut c_void,
+    cf: *mut c_void,
+    c: Arc<Client>,
+    label: String,
+    build: impl FnOnce(&wgpu::Device) -> T + Send + 'static,
+    resource: fn(T) -> (Kind, Resource),
+) -> u64 {
+    let device = c.context.device.clone();
+    async_settle(
+        g,
+        vec![cf_this(cf)],
+        async move { Ok(backend::scoped(&device, || build(&device))) },
+        move |g, (value, error)| match error {
+            Some(error) => {
+                let reason = match error {
+                    wgpu::Error::Validation { .. } => "validation",
+                    _ => "internal",
+                };
+                Err(pipeline_error(g, reason, &error.to_string()))
+            }
+            None => {
+                let (kind, resource) = resource(value);
+                Ok(wrap_labeled(g, kind, Some(c), resource, &label))
+            }
+        },
+    )
 }
 
 #[redjs::host_fn]
@@ -669,7 +757,7 @@ unsafe fn create_encoder(g: *mut c_void, cf: *mut c_void) -> u64 {
                     label: Some(&label),
                 })
         });
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::Encoder,
             Some(c),
@@ -678,8 +766,78 @@ unsafe fn create_encoder(g: *mut c_void, cf: *mut c_void) -> u64 {
                 active: false,
                 resources: Vec::new(),
             }))),
+            &label,
         ))
     })
+}
+
+unsafe fn encoder_this(
+    g: *mut c_void,
+    cf: *mut c_void,
+) -> Result<(Arc<Client>, Arc<Mutex<Encoder>>), ()> {
+    let h = this(g, cf, Kind::Encoder)?;
+    let c = client(g, &h)?;
+    let Resource::Encoder(encoder) = h.resource else {
+        unreachable!()
+    };
+    Ok((c, encoder))
+}
+
+#[redjs::host_fn]
+unsafe fn encoder_push_debug_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, encoder) = encoder_this(g, cf)?;
+        let label = text(g, cf_arg(cf, 0), "undefined")?;
+        with_encoder(g, &c, &encoder, |e| e.push_debug_group(&label))?;
+        Ok(UNDEF)
+    })
+}
+
+#[redjs::host_fn]
+unsafe fn encoder_pop_debug_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, encoder) = encoder_this(g, cf)?;
+        with_encoder(g, &c, &encoder, |e| e.pop_debug_group())?;
+        Ok(UNDEF)
+    })
+}
+
+#[redjs::host_fn]
+unsafe fn encoder_insert_debug_marker(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, encoder) = encoder_this(g, cf)?;
+        let label = text(g, cf_arg(cf, 0), "undefined")?;
+        with_encoder(g, &c, &encoder, |e| e.insert_debug_marker(&label))?;
+        Ok(UNDEF)
+    })
+}
+
+pub(super) unsafe fn immediates(
+    g: *mut c_void,
+    cf: *mut c_void,
+    c: &Arc<Client>,
+) -> Result<Option<(u32, Vec<u8>)>, ()> {
+    let offset = uint(g, cf_arg(cf, 0), 0)?;
+    let data = Val::new(g, cf_arg(cf, 1));
+    let start = num(g, cf_arg(cf, 2), 0)?;
+    let size = if cf_arg(cf, 3) == UNDEF {
+        None
+    } else {
+        Some(num(g, cf_arg(cf, 3), 0)?)
+    };
+    let bytes = buffer::copy_source(g, data.v, start, size)?;
+    if offset % 4 != 0
+        || bytes.len() % 4 != 0
+        || offset as u64 + bytes.len() as u64 > c.limits.max_immediate_size as u64
+    {
+        validation(
+            g,
+            c,
+            "setImmediates needs a 4-byte aligned range within maxImmediateSize",
+        );
+        return Ok(None);
+    }
+    Ok((!bytes.is_empty()).then_some((offset, bytes)))
 }
 
 #[redjs::host_fn]
@@ -692,19 +850,21 @@ unsafe fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
         };
         let descriptor = Val::new(g, cf_arg(cf, 0));
         let label = text(g, field(g, descriptor.v, "label")?.v, "")?;
-        if field(g, descriptor.v, "timestampWrites")?.v != UNDEF {
-            redjs::webapi::domexception::throw(
-                g,
-                "NotSupportedError",
-                "Timestamp queries are not implemented",
-            );
-            return Err(());
+        let timestamps = query::timestamp_writes(g, descriptor.v, &c)?;
+        if let Some(t) = &timestamps {
+            retain_encoder(&owner, &[Resource::QuerySet(t.set.clone())]);
         }
         let raw = with_encoder(g, &c, &owner, |encoder| {
             encoder
                 .begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some(&label),
-                    timestamp_writes: None,
+                    timestamp_writes: timestamps.as_ref().map(|t| {
+                        wgpu::ComputePassTimestampWrites {
+                            query_set: &t.set.raw,
+                            beginning_of_pass_write_index: t.beginning,
+                            end_of_pass_write_index: t.end,
+                        }
+                    }),
                 })
                 .forget_lifetime()
         })?;
@@ -714,11 +874,12 @@ unsafe fn begin_compute_pass(g: *mut c_void, cf: *mut c_void) -> u64 {
             owner,
             client: c.clone(),
         };
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::ComputePass,
             Some(c),
             Resource::ComputePass(Arc::new(Mutex::new(pass))),
+            &label,
         ))
     })
 }
@@ -799,7 +960,7 @@ unsafe fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
         // The descriptor only contains a label; still run conversion before
         // consuming the encoder, so an accessor exception leaves it usable.
         let descriptor = Val::new(g, cf_arg(cf, 0));
-        let _label = text(g, field(g, descriptor.v, "label")?.v, "")?;
+        let label = text(g, field(g, descriptor.v, "label")?.v, "")?;
         let (raw, resources) = {
             let mut e = encoder.lock().unwrap();
             if e.active || e.raw.is_none() {
@@ -813,7 +974,7 @@ unsafe fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
             (e.raw.take().unwrap(), std::mem::take(&mut e.resources))
         };
         let raw = checked(g, &c, || raw.finish());
-        Ok(wrap(
+        Ok(wrap_labeled(
             g,
             Kind::CommandBuffer,
             Some(c),
@@ -821,6 +982,7 @@ unsafe fn finish(g: *mut c_void, cf: *mut c_void) -> u64 {
                 raw: Some(raw),
                 resources,
             }))),
+            &label,
         ))
     })
 }
@@ -916,6 +1078,58 @@ unsafe fn dispatch_indirect(g: *mut c_void, cf: *mut c_void) -> u64 {
         with_pass(g, &c, &pass, |p| {
             p.dispatch_workgroups_indirect(&buffer.raw, offset)
         })?;
+        Ok(UNDEF)
+    })
+}
+
+unsafe fn compute_pass_this(
+    g: *mut c_void,
+    cf: *mut c_void,
+) -> Result<(Arc<Client>, Arc<Mutex<ComputePass>>), ()> {
+    let h = this(g, cf, Kind::ComputePass)?;
+    let c = client(g, &h)?;
+    let Resource::ComputePass(pass) = h.resource else {
+        unreachable!()
+    };
+    Ok((c, pass))
+}
+
+#[redjs::host_fn]
+unsafe fn pass_set_immediates(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = compute_pass_this(g, cf)?;
+        if let Some((offset, bytes)) = immediates(g, cf, &c)? {
+            with_pass(g, &c, &pass, |p| p.set_immediates(offset, &bytes))?;
+        }
+        Ok(UNDEF)
+    })
+}
+
+#[redjs::host_fn]
+unsafe fn pass_push_debug_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = compute_pass_this(g, cf)?;
+        let label = text(g, cf_arg(cf, 0), "undefined")?;
+        with_pass(g, &c, &pass, |p| p.push_debug_group(&label))?;
+        Ok(UNDEF)
+    })
+}
+
+#[redjs::host_fn]
+unsafe fn pass_pop_debug_group(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = compute_pass_this(g, cf)?;
+        with_pass(g, &c, &pass, |p| p.pop_debug_group())?;
+        Ok(UNDEF)
+    })
+}
+
+#[redjs::host_fn]
+unsafe fn pass_insert_debug_marker(g: *mut c_void, cf: *mut c_void) -> u64 {
+    run(g, || {
+        let (c, pass) = compute_pass_this(g, cf)?;
+        let label = text(g, cf_arg(cf, 0), "undefined")?;
+        with_pass(g, &c, &pass, |p| p.insert_debug_marker(&label))?;
         Ok(UNDEF)
     })
 }
@@ -1059,6 +1273,9 @@ pub(super) unsafe fn install(g: *mut c_void) {
             ("copyBufferToBuffer", 5, copy_buffer),
             ("clearBuffer", 1, clear_buffer),
             ("finish", 0, finish),
+            ("pushDebugGroup", 1, encoder_push_debug_group),
+            ("popDebugGroup", 0, encoder_pop_debug_group),
+            ("insertDebugMarker", 1, encoder_insert_debug_marker),
         ],
         &[],
     );
@@ -1069,8 +1286,12 @@ pub(super) unsafe fn install(g: *mut c_void) {
         &[
             ("setPipeline", 1, pass_set_pipeline),
             ("setBindGroup", 2, pass_set_bind_group),
+            ("setImmediates", 2, pass_set_immediates),
             ("dispatchWorkgroups", 1, dispatch),
             ("dispatchWorkgroupsIndirect", 2, dispatch_indirect),
+            ("pushDebugGroup", 1, pass_push_debug_group),
+            ("popDebugGroup", 0, pass_pop_debug_group),
+            ("insertDebugMarker", 1, pass_insert_debug_marker),
             ("end", 0, end),
         ],
         &[],
@@ -1081,6 +1302,11 @@ pub(super) unsafe fn install(g: *mut c_void) {
         ("createPipelineLayout", 1, create_pipeline_layout),
         ("createBindGroup", 1, create_bind_group),
         ("createComputePipeline", 1, create_compute_pipeline),
+        (
+            "createComputePipelineAsync",
+            1,
+            create_compute_pipeline_async,
+        ),
         ("createCommandEncoder", 0, create_encoder),
     ] {
         method(g, Kind::Device, name, arity, function);

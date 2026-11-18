@@ -69,14 +69,16 @@ fn physical() -> Arc<backend::Context> {
         } else {
             wgpu::Backends::PRIMARY
         };
+        descriptor.flags |= wgpu::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION;
         let instance = wgpu::Instance::new(descriptor);
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .expect("WebGPU integration tests require a real native GPU adapter");
+        let (required_features, required_limits) = backend::shareable_capabilities(&adapter);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("redjs WebGPU integration tests"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_features,
+            required_limits,
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }))
@@ -222,7 +224,7 @@ fn webgpu_native_classes_brands_and_capabilities() {
           'buffer tag': Object.prototype.toString.call(b) === '[object GPUBuffer]',
           'native method': /native code/.test(GPUDevice.prototype.createBuffer.toString()),
           'feature brand': d.features instanceof GPUSupportedFeatures && adapter.features instanceof GPUSupportedFeatures,
-          'feature contents': d.features.size === 0 && d.features.has('shader-f16') === false,
+          'feature contents': d.features.size === 1 && d.features.has('core-features-and-limits') && d.features.has('shader-f16') === false,
           'readonly features': typeof d.features.add === 'undefined' && typeof d.features.delete === 'undefined' && typeof d.features.clear === 'undefined',
           'feature SameObject': d.features === d.features && adapter.features === adapter.features,
           'limit SameObject': d.limits === d.limits && adapter.limits === adapter.limits,
@@ -230,12 +232,12 @@ fn webgpu_native_classes_brands_and_capabilities() {
           'limit brands': d.limits instanceof GPUSupportedLimits && adapter.limits instanceof GPUSupportedLimits,
           'info brand': adapter.info instanceof GPUAdapterInfo,
           'limit values': d.limits.maxBufferSize >= 16 && adapter.limits.maxBufferSize >= d.limits.maxBufferSize,
-          'feature iteration': Array.from(d.features).length === 0 && d.features.values().next().done && d.features.keys().next().done && d.features.entries().next().done,
+          'feature iteration': Array.from(d.features).join() === 'core-features-and-limits' && d.features.values().next().value === 'core-features-and-limits' && d.features.entries().next().value.join() === 'core-features-and-limits,core-features-and-limits',
           'canvas format': ['rgba8unorm','bgra8unorm'].includes(navigator.gpu.getPreferredCanvasFormat())
         };
         for (const [name,valid] of Object.entries(checks)) if (!valid) throw new Error('WebGPU capability assertion: ' + name);
         let eachCount=0; d.features.forEach(() => {eachCount++;});
-        if(eachCount!==0) throw new Error('Empty feature iteration invoked callback');
+        if(eachCount!==1) throw new Error('Feature iteration did not visit each feature once');
         const result=true;
         b.destroy(); d.destroy(); return result;
     "#
@@ -471,7 +473,7 @@ fn webgpu_requested_limits_and_unknown_features_reject_without_destroying_host()
         const b=await navigator.gpu.requestAdapter();
         let badFeature=false; try { await b.requestDevice({requiredFeatures:['not-a-webgpu-feature']}); } catch(e) { badFeature=true; }
         const d=await (await navigator.gpu.requestAdapter()).requestDevice({requiredFeatures:[]});
-        const alive=d.features.size===0; d.destroy(); return badLimits&&badFeature&&alive;
+        const alive=d.features.size===1; d.destroy(); return badLimits&&badFeature&&alive;
     "#
         ),
         "true"
@@ -897,3 +899,6 @@ mod canvas_tests;
 
 #[path = "external_tests.rs"]
 mod external_tests;
+
+#[path = "command_tests.rs"]
+mod command_tests;
