@@ -19,6 +19,8 @@ enum Plan {
     /// Refuse a context without object panners, so it starts on cpal.
     Objects {
         block: u32,
+        channels: u32,
+        mask: u32,
     },
     Accept {
         channels: u32,
@@ -65,15 +67,19 @@ impl OutputBackend for TestBackend {
             None => Err("not a context of this test".into()),
             Some(Plan::Refuse(why)) => Err(why.into()),
             Some(Plan::Objects { .. }) if !request.objects => Err("no objects asked for".into()),
-            Some(Plan::Objects { block }) => {
+            Some(Plan::Objects {
+                block,
+                channels,
+                mask,
+            }) => {
                 let lost = Arc::new(AtomicBool::new(false));
                 LOST.with(|l| *l.borrow_mut() = Some(Arc::clone(&lost)));
                 RENDERER.with(|r| *r.borrow_mut() = Some(renderer));
                 Ok(OutputOpen {
                     stream: Box::new(TestStream(lost)),
                     sample_rate: RATE,
-                    channels: 2,
-                    channel_mask: 0,
+                    channels,
+                    channel_mask: mask,
                     max_block_frames: block,
                     max_objects: 1,
                     label: "test-objects".into(),
@@ -521,7 +527,11 @@ fn the_gains_after_an_object_panner_reach_its_object_and_a_dead_end_silences_it(
 
 #[test]
 fn a_context_moves_from_cpal_to_the_backend_when_a_panner_asks() {
-    let c = context(Plan::Objects { block: 333 });
+    let c = context(Plan::Objects {
+        block: 333,
+        channels: 2,
+        mask: 0,
+    });
     s(&c, LEVELS);
     s(
         &c,
@@ -543,5 +553,68 @@ fn a_context_moves_from_cpal_to_the_backend_when_a_panner_asks() {
         });
     }
     assert!(out.iter().any(|&v| v != 0.0), "the graph plays on the backend's stream");
+    s(&c, "__a.close(); 0");
+}
+
+#[test]
+fn an_object_panner_on_a_7_1_4_bed_leaves_the_bed_to_the_other_sources_and_follows_its_position() {
+    const FRAMES: usize = 480;
+    const CH: usize = 12;
+    let c = context(Plan::Objects {
+        block: FRAMES as u32,
+        channels: CH as u32,
+        mask: 0x2d63f,
+    });
+    s(&c, LEVELS);
+    s(
+        &c,
+        "globalThis.__a = new AudioContext();
+         const n = 48000, d = new Float32Array(n);
+         for (let i = 0; i < n; i++) d[i] = Math.sin(i * 12.9898) * 43758.5453 % 1;
+         const nb = __a.createBuffer(1, n, n); nb.copyToChannel(d, 0);
+         const noise = __a.createBufferSource(); noise.buffer = nb; noise.loop = true;
+         globalThis.__p = __a.createPanner(); __p.panningModel = 'spatial'; __p.rolloffFactor = 0;
+         noise.connect(__p).connect(__a.destination); noise.start();
+         const bed = levels(__a, 1); bed.connect(__a.destination); bed.start(); 0",
+    );
+    let mut out = vec![0.0f32; FRAMES * CH];
+    let mut pass = |c: &Context| {
+        for _ in 0..4 {
+            unsafe { super::pump(c.raw()) };
+            c.drain_microtasks();
+            RENDERER.with(|r| {
+                r.borrow_mut()
+                    .as_mut()
+                    .expect("the backend took the output")
+                    .render(&mut out, CH, FRAMES)
+            });
+        }
+        let object = RENDERER.with(|r| {
+            r.borrow().as_ref().unwrap().objects().next().map(|o| {
+                let energy: f32 = o.left.iter().map(|v| v * v).sum();
+                (o.left.len(), (energy / FRAMES as f32).sqrt(), o.placement)
+            })
+        });
+        (out.clone(), object)
+    };
+
+    for (x, z) in [(-2.0f32, 0.0f32), (0.0, 2.0), (1.5, -1.5)] {
+        s(
+            &c,
+            &format!("__p.positionX.value = {x}; __p.positionZ.value = {z}; 0"),
+        );
+        let (bed, object) = pass(&c);
+        for frame in bed.chunks(CH) {
+            assert!(
+                close(frame[0], 0.1) && close(frame[1], 0.1) && frame[2..].iter().all(|&v| v == 0.0),
+                "the bed carries the other source on L and R only, not the object's noise: {frame:?}"
+            );
+        }
+        let (len, rms, placement) = object.expect("the panner has an object");
+        assert_eq!(len, FRAMES, "the object block covers the whole pass");
+        assert!(rms > 0.3, "the object carries the noise: rms {rms}");
+        assert_eq!(placement.position, [x, 0.0, z]);
+        assert!(close(placement.gain, 1.0), "no rolloff: {}", placement.gain);
+    }
     s(&c, "__a.close(); 0");
 }
