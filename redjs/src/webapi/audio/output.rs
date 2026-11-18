@@ -373,6 +373,15 @@ impl Renderer {
 // The Firewheel backend
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// Why the backend refused a start whose fallback stream then failed too.
+    static START_REFUSAL: core::cell::Cell<Option<String>> = const { core::cell::Cell::new(None) };
+}
+
+pub(crate) fn take_start_refusal() -> Option<String> {
+    START_REFUSAL.take()
+}
+
 #[derive(Debug)]
 pub(crate) struct OutputError(pub String);
 
@@ -434,7 +443,7 @@ impl AudioBackend for RedBackend {
                 Err(e) => refused = config.objects.then_some(e),
             }
         }
-        let (mut out, info) = open_cpal(&config)?;
+        let (mut out, info) = open_cpal(&config).inspect_err(|_| START_REFUSAL.set(refused.clone()))?;
         out.refused = refused;
         Ok((RedBackend::Cpal(out), info))
     }

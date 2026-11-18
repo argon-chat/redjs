@@ -1233,6 +1233,7 @@ fn open_output(eng: &mut Engine, device: Option<firewheel::cpal::cpal::DeviceId>
         }
         Err(e) => {
             eng.running = false;
+            eng.refused = output::take_start_refusal();
             Err(match e {
                 firewheel::error::StartStreamError::BackendError(e) => e.0,
                 e => format!("{e:?}"),
