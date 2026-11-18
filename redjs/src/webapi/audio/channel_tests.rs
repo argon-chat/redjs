@@ -463,3 +463,35 @@ fn an_object_the_backend_gives_up_moves_the_panner_on_and_then_back_to_hrtf() {
     assert_eq!(status.objects.map(|o| o.in_use), Some(0));
     s(&c, "__a.close(); 0");
 }
+
+#[test]
+fn the_gains_after_an_object_panner_reach_its_object_and_a_dead_end_silences_it() {
+    let c = context(Plan::Accept {
+        channels: 2,
+        mask: 0,
+        objects: 1,
+    });
+    s(&c, LEVELS);
+    s(
+        &c,
+        "globalThis.__a = new AudioContext(); globalThis.__p = __a.createPanner(); __p.panningModel = 'spatial';
+         globalThis.__g = __a.createGain(); __g.gain.value = 0.5; globalThis.__h = __a.createGain(); __h.gain.value = 0.25;
+         const s1 = levels(__a, 1); s1.connect(__p); __p.connect(__g).connect(__a.destination);
+         __p.connect(__h).connect(__a.destination); s1.start(); 0",
+    );
+    let gain = || {
+        render(&c, 2, 2);
+        RENDERER.with(|r| r.borrow().as_ref().unwrap().objects().next().map(|o| o.placement.gain))
+    };
+    assert_eq!(gain(), Some(0.5), "the louder of the two paths");
+    s(&c, "__g.gain.value = 0.1; 0");
+    assert_eq!(gain(), Some(0.25));
+    s(&c, "__a.suspend(); 0");
+    assert_eq!(gain(), Some(0.0), "a suspended context is silent");
+    s(
+        &c,
+        "__a.resume(); __p.disconnect(); __p.connect(__a.createAnalyser()); 0",
+    );
+    assert_eq!(gain(), Some(0.0), "a panner that reaches no destination is silent");
+    s(&c, "__a.close(); 0");
+}

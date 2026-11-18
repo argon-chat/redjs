@@ -1006,6 +1006,8 @@ struct NodeRec {
     panning: Panning,
     /// The output backend object a panner renders through, slot + 1; 0 for none.
     object: u32,
+    /// What reaches the destination of an object panner's output (`graph::object_sends`).
+    send: f32,
     /// PannerNode world position.
     pos: [f32; 3],
     /// PannerNode orientation (cone direction; Web Audio default +x).
@@ -1078,6 +1080,7 @@ impl NodeRec {
             lout: 2,
             panning: Panning::EqualPower,
             object: 0,
+            send: 1.0,
             pos: [0.0; 3],
             orient: [1.0, 0.0, 0.0],
             cone: [360.0, 360.0, 0.0],
@@ -1648,7 +1651,7 @@ fn update_spatial_with(eng: &mut Engine, rec: &mut NodeRec, mutate: impl FnOnce(
                         listener_position: eng.listener,
                         listener_forward: eng.listener_fwd,
                         listener_up: eng.listener_up,
-                        gain: p.gain,
+                        gain: p.gain * rec.send,
                     },
                 );
             }
@@ -1696,7 +1699,9 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
         return;
     }
     let Some(rec) = nodes.get_mut(&handle) else { return };
-    let Some(eng) = engines.get_mut(&rec.engine) else { return };
+    let eh = rec.engine;
+    let Some(eng) = engines.get_mut(&eh) else { return };
+    let mut resend = false;
     unsafe {
         match (&mut rec.params, kind) {
             (Params::Gain(p), P_GAIN) => {
@@ -1704,6 +1709,7 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
                 rec.gain = v as f32;
                 p.volume = gain_volume(rec.gain);
                 queue_diff(&mut eng.fw, rec.id, &old, p);
+                resend = eng.objects.is_some();
             }
             (Params::Pan(p), P_PAN) => {
                 let old = *p;
@@ -1746,6 +1752,9 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
             }
             _ => {}
         }
+    }
+    if resend {
+        graph::object_sends(eng, nodes, eh);
     }
 }
 
@@ -3516,7 +3525,8 @@ unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) ->
     let Some(h) = this_engine_handle(g, cf) else {
         return rejected_promise(g, 1, "AudioContext method on wrong this");
     };
-    let mut gl = glob().lock().unwrap();
+    let mut guard = glob().lock().unwrap();
+    let gl = &mut *guard;
     if let Some(eng) = gl.engines.get_mut(&h) {
         if eng.state == ST_CLOSED {
             // Spec: "reject promise with an InvalidStateError".
@@ -3527,8 +3537,9 @@ unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) ->
         eng.master_params.volume = Volume::Linear(if suspended { 0.0 } else { 1.0 });
         let (id, new_params) = (eng.master, eng.master_params);
         queue_diff(&mut eng.fw, id, &old, &new_params);
+        graph::object_sends(eng, &mut gl.nodes, h);
     }
-    drop(gl);
+    drop(guard);
     resolved_promise(g, UNDEF)
 }
 

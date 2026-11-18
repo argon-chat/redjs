@@ -18,7 +18,9 @@ use firewheel::nodes::volume::VolumeNodeConfig;
 
 use super::mixing::{self, web_mix, Interp, MixNode, Route};
 use super::output::{BusCell, RedBackend};
-use super::{update_spatial, Engine, FirewheelContext, MonitorNode, NodeRec, PannerRoute, Panning, Params};
+use super::{
+    update_spatial, Engine, FirewheelContext, MonitorNode, NodeRec, PannerRoute, Panning, Params, ST_SUSPENDED,
+};
 
 /// One connection as built in Firewheel.
 pub(super) struct Wire {
@@ -374,6 +376,7 @@ pub(super) fn resync(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64
         }
         eng.out_wire = Some(Wire::build(&mut eng.fw, master, out, route));
     }
+    object_sends(eng, nodes, eh);
     if let Some(tap) = eng.ref_tap {
         let route = mixing::route(web_mix(c, 2, Interp::Speakers), c, 2, |x| x, |o| vec![o]);
         if !eng.tap_wire.as_ref().is_some_and(|w| w.is(master, tap, &route)) {
@@ -531,4 +534,61 @@ pub(super) fn assign_objects(eng: &mut Engine, nodes: &mut HashMap<u64, NodeRec>
             .queue_event_for(rec.id, route_event(Some(Arc::clone(&cell)), i, h));
         update_spatial(eng, rec);
     }
+    object_sends(eng, nodes, eh);
+}
+
+/// An object panner's sound goes to the backend, past the nodes after it. Of those, the gains carry
+/// over: each object gets the loudest product of `GainNode` gains on a path to the destination, 0
+/// without one (and while the context is suspended). Other nodes on the path are skipped.
+pub(super) fn object_sends(eng: &mut Engine, nodes: &mut HashMap<u64, NodeRec>, eh: u64) {
+    let panners: Vec<u64> = nodes
+        .iter()
+        .filter(|(_, r)| r.engine == eh && r.object != 0)
+        .map(|(&h, _)| h)
+        .collect();
+    if panners.is_empty() {
+        return;
+    }
+    let master = if eng.state == ST_SUSPENDED { 0.0 } else { 1.0 };
+    let mut memo: HashMap<u64, f32> = HashMap::new();
+    for h in panners {
+        let send = nodes[&h]
+            .outs
+            .iter()
+            .map(|c| reach(nodes, c.dst, master, &mut memo, &mut Vec::new()))
+            .fold(0.0, f32::max);
+        let rec = nodes.get_mut(&h).unwrap();
+        if rec.send != send {
+            rec.send = send;
+            update_spatial(eng, rec);
+        }
+    }
+}
+
+fn reach(nodes: &HashMap<u64, NodeRec>, h: u64, master: f32, memo: &mut HashMap<u64, f32>, path: &mut Vec<u64>) -> f32 {
+    if let Some(&v) = memo.get(&h) {
+        return v;
+    }
+    let Some(rec) = nodes.get(&h) else { return 0.0 };
+    if matches!(rec.params, Params::Dest) {
+        return master;
+    }
+    if path.contains(&h) {
+        return 0.0;
+    }
+    path.push(h);
+    let own = if matches!(rec.params, Params::Gain(_)) {
+        rec.gain.abs()
+    } else {
+        1.0
+    };
+    let best = rec
+        .outs
+        .iter()
+        .map(|c| reach(nodes, c.dst, master, memo, path))
+        .fold(0.0, f32::max);
+    path.pop();
+    let v = own * best;
+    memo.insert(h, v);
+    v
 }
