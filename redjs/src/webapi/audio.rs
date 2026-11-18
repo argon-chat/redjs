@@ -41,15 +41,16 @@
 //!   reads may tear across a processing-block boundary (fine for meters).
 //! - Scheduling (`start`/`stop`, automation) lands on the pump tick at or after
 //!   the requested time, not on the exact sample.
-//! - The graph mixes in stereo. An output wider than two channels (a
-//!   `ChannelMergerNode` of 3+ inputs, a wide `RedStreamSourceNode`) keeps
-//!   channels 0 and 1 when it feeds anything but a splitter, where a browser
-//!   would carry every channel or down-mix them (5.1 → stereo). A one-time
-//!   advisory says so on the first such `connect`.
-//! - `channelCount` / `channelCountMode` / `channelInterpretation` exist on
-//!   `ChannelSplitterNode` and `ChannelMergerNode` only — the two nodes whose
-//!   values the spec pins (see [`SplitterNode`] / [`MergerNode`]). The other
-//!   nodes do not have the three attributes.
+//! - Channels follow the spec (`channelCount`, `channelCountMode`,
+//!   `channelInterpretation`, up- and down-mixing; see `audio/graph.rs`), up to
+//!   32. A `BiquadFilterNode` filters at most 8 of them; `StereoPannerNode`,
+//!   `PannerNode`, `MediaStreamAudioDestinationNode` and the native worklets
+//!   take at most 2.
+//! - The output device opens at its own width (`destination.maxChannelCount`);
+//!   the destination's channels are mixed onto its speakers (`audio/mixing.rs`).
+//!   An embedder's [`OutputBackend`] may take the output instead, with panners
+//!   set to its `panningModel` as audio objects (`audio/output.rs`); a refusal
+//!   falls back to cpal.
 //! - `loadNativeAudioWorklet` selects precompiled Rust DSP; it does not execute
 //!   arbitrary JavaScript worklet modules (see `audio/native_worklet.rs`).
 //! - No `OfflineAudioContext`, JavaScript `AudioWorklet`, `ConvolverNode`, `DelayNode`,
@@ -78,7 +79,7 @@ use firewheel::{
         volume_pan::VolumePanNode,
     },
     sample_resource::{SampleResource, SampleResourceInfo},
-    FirewheelContext, Volume,
+    Volume,
 };
 
 use firewheel::nodes::stream::{
@@ -86,7 +87,7 @@ use firewheel::nodes::stream::{
     ResamplingChannelConfig,
 };
 
-use super::hrtf::{HrtfDatabase, WebPannerConfig, WebPannerNode};
+use super::hrtf::{HrtfDatabase, PannerRoute, WebPannerConfig, WebPannerNode};
 use super::mediadevices;
 use super::osc::{OscNode, OscShared, Wave};
 use super::pcm::{self, PcmStreamConfig};
@@ -94,7 +95,22 @@ use super::util::*;
 use crate::glue;
 use super::audio_worklet::{NativeKind, NativeMessage, NativeNode, NativeShared};
 
+#[cfg(test)]
+mod channel_tests;
+mod graph;
+mod mixing;
 mod native_worklet;
+pub mod output;
+
+use mixing::{CountMode, Interp};
+pub use mixing::speaker;
+pub use output::{
+    object_model, set_output_backend, ObjectBlock, ObjectPlacement, OutputBackend, OutputOpen, OutputRequest,
+    OutputStream, Renderer,
+};
+use output::{RedBackend, RedConfig};
+
+type FirewheelContext = firewheel::FirewheelCtx<RedBackend>;
 
 // ---------------------------------------------------------------------------
 // AudioParam kinds
@@ -421,13 +437,25 @@ struct MonitorRing {
     /// boundary are acceptable for analysis purposes.
     samples: Box<[AtomicU32]>,
     cursor: AtomicUsize,
+    /// Per input port, f32 bits: the spec's down-mix to mono of the computed channels.
+    mix: Box<[AtomicU32]>,
 }
 
 impl MonitorRing {
     fn new() -> Self {
-        Self {
+        let ring = Self {
             samples: (0..MONITOR_WINDOW).map(|_| AtomicU32::new(0)).collect(),
             cursor: AtomicUsize::new(0),
+            mix: (0..mixing::MAX_CHANNELS).map(|_| AtomicU32::new(0)).collect(),
+        };
+        ring.set_mix(&mixing::web_mix(2, 1, Interp::Speakers));
+        ring
+    }
+
+    fn set_mix(&self, m: &mixing::Matrix) {
+        for (port, g) in self.mix.iter().enumerate() {
+            let gain = m.iter().find(|e| e.0 as usize == port).map(|e| e.2).unwrap_or(0.0);
+            g.store(gain.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -446,18 +474,17 @@ impl MonitorRing {
 #[derive(Clone)]
 struct MonitorNode {
     ring: ArcGc<MonitorRing>,
+    channels: u32,
 }
 
 impl firewheel::node::AudioNode for MonitorNode {
     type Configuration = firewheel::node::EmptyConfig;
 
     fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
+        let n = firewheel::channel_config::ChannelCount::new(self.channels).unwrap();
         firewheel::node::AudioNodeInfo::new()
             .debug_name("webaudio_analyser")
-            .channel_config(firewheel::channel_config::ChannelConfig {
-                num_inputs: firewheel::channel_config::ChannelCount::new(2).unwrap(),
-                num_outputs: firewheel::channel_config::ChannelCount::new(2).unwrap(),
-            })
+            .channel_config(firewheel::channel_config::ChannelConfig { num_inputs: n, num_outputs: n })
     }
 
     fn construct_processor(
@@ -481,16 +508,21 @@ impl firewheel::node::AudioNodeProcessor for MonitorProcessor {
         _events: &mut firewheel::event::ProcEvents,
         _extra: &mut firewheel::node::ProcExtra,
     ) -> firewheel::node::ProcessStatus {
-        let n_ch = buffers.inputs.len().max(1) as f32;
+        let mut gains = [0.0f32; mixing::MAX_CHANNELS as usize];
+        for (ch, g) in gains.iter_mut().enumerate().take(buffers.inputs.len()) {
+            if !info.in_silence_mask.is_channel_silent(ch) {
+                *g = f32::from_bits(self.ring.mix[ch].load(Ordering::Relaxed));
+            }
+        }
         let mut cur = self.ring.cursor.load(Ordering::Relaxed);
         for i in 0..info.frames {
             let mut s = 0.0f32;
-            for (ch, buf) in buffers.inputs.iter().enumerate() {
-                if !info.in_silence_mask.is_channel_silent(ch) {
-                    s += buf[i];
+            for (buf, &g) in buffers.inputs.iter().zip(&gains) {
+                if g != 0.0 {
+                    s += g * buf[i];
                 }
             }
-            self.ring.samples[cur & (MONITOR_WINDOW - 1)].store((s / n_ch).to_bits(), Ordering::Relaxed);
+            self.ring.samples[cur & (MONITOR_WINDOW - 1)].store(s.to_bits(), Ordering::Relaxed);
             cur = cur.wrapping_add(1);
         }
         self.ring.cursor.store(cur, Ordering::Release);
@@ -929,7 +961,7 @@ enum Params {
 }
 
 /// One Web Audio connection, kept so `disconnect(…)` can find it again.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct Conn {
     dst: u64,
     output: u32,
@@ -944,18 +976,36 @@ enum DistModel {
     Exponential,
 }
 
+/// `PannerNode.panningModel`; `Objects` is the output backend's model (`output::object_model`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Panning {
+    EqualPower,
+    Hrtf,
+    Objects,
+}
+
 struct NodeRec {
     engine: u64,
     id: NodeID,
     params: Params,
-    /// Port counts of the Firewheel node, mirrored here so `connect` can
-    /// build a port list Firewheel will accept without reaching into the graph.
-    /// Everything is stereo except `RedStreamSourceNode` and the splitter /
-    /// merger.
+    /// Port counts of the Firewheel node. At least the node's channels (`lin`,
+    /// `lout`), and at least 2 for the nodes that carry a mono signal on a
+    /// stereo node.
     out_ch: u32,
     in_ch: u32,
     /// Outgoing connections, for `disconnect(…)`.
     outs: Vec<Conn>,
+    /// How each of `outs` is wired (`graph::resync`).
+    wires: HashMap<Conn, graph::Wire>,
+    ch_count: u32,
+    ch_mode: CountMode,
+    ch_interp: Interp,
+    /// The spec's computedNumberOfChannels of the input, and the channels of the output.
+    lin: u32,
+    lout: u32,
+    panning: Panning,
+    /// The output backend object a panner renders through, slot + 1; 0 for none.
+    object: u32,
     /// PannerNode world position.
     pos: [f32; 3],
     /// PannerNode orientation (cone direction; Web Audio default +x).
@@ -999,6 +1049,20 @@ impl NodeRec {
             Params::MediaDest(_) => (2, 0),
             _ => (2, 2),
         };
+        let (ch_count, ch_mode, ch_interp) = match &params {
+            Params::Dest | Params::MediaDest(_) => (2, CountMode::Explicit, Interp::Speakers),
+            Params::Pan(_) | Params::Spatial(_) => (2, CountMode::ClampedMax, Interp::Speakers),
+            Params::Native { discrete, .. } => {
+                (2, CountMode::Explicit, if *discrete { Interp::Discrete } else { Interp::Speakers })
+            }
+            Params::Splitter(n) => (*n, CountMode::Explicit, Interp::Discrete),
+            Params::Merger { discrete, .. } => (
+                1,
+                CountMode::Explicit,
+                if discrete.load(Ordering::Relaxed) { Interp::Discrete } else { Interp::Speakers },
+            ),
+            _ => (2, CountMode::Max, Interp::Speakers),
+        };
         Self {
             engine,
             id,
@@ -1006,6 +1070,14 @@ impl NodeRec {
             out_ch,
             in_ch,
             outs: Vec::new(),
+            wires: HashMap::new(),
+            ch_count,
+            ch_mode,
+            ch_interp,
+            lin: 1,
+            lout: 2,
+            panning: Panning::EqualPower,
+            object: 0,
             pos: [0.0; 3],
             orient: [1.0, 0.0, 0.0],
             cone: [360.0, 360.0, 0.0],
@@ -1071,11 +1143,29 @@ struct Engine {
     /// The system default output's generation this engine last followed
     /// (`mediadevices::default_generation`).
     default_seen: u64,
+    /// The output's channels and their speaker mask (0: the usual layout for the count).
+    device_channels: u32,
+    device_mask: u32,
+    /// The destination onto the output, and onto the render reference.
+    out_wire: Option<graph::Wire>,
+    ref_tap: Option<NodeID>,
+    tap_wire: Option<graph::Wire>,
+    /// A panner asked for the backend's object model: the output goes to the backend first.
+    wants_objects: bool,
+    objects: Option<graph::Objects>,
+    /// Why the output backend did not take the stream.
+    refused: Option<String>,
+    /// When to try again to open an output that stopped.
+    retry_at: Option<std::time::Instant>,
 }
 
 impl Engine {
     fn now(&self) -> f64 {
         self.fw.audio_clock().seconds.0
+    }
+
+    fn running_rate(&self) -> Option<u32> {
+        (self.sample_rate != 0).then_some(self.sample_rate)
     }
 }
 
@@ -1095,10 +1185,15 @@ const SINK_SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_milli
 /// `start_stream` recompiles the same one. Firewheel's clock survives too — it
 /// is rescaled, not reset, if the new device runs at a different rate — so
 /// `currentTime` stays monotonic and the `AudioParam` timelines keyed on it
-/// (which store absolute times) keep their meaning across the switch.
+/// (which store absolute times) keep their meaning across the switch. The
+/// caller rewires the destination with `graph::resync` afterwards.
 fn restart_stream(eng: &mut Engine, device: Option<firewheel::cpal::cpal::DeviceId>) -> Result<(), String> {
-    use firewheel::cpal::{CpalConfig, CpalOutputConfig};
+    // Not the default device in its place: that would resolve `setSinkId`
+    // while the audio came out of a device the user did not choose.
+    open_output(eng, device, false)
+}
 
+fn open_output(eng: &mut Engine, device: Option<firewheel::cpal::cpal::DeviceId>, fallback: bool) -> Result<(), String> {
     if eng.fw.is_audio_stream_running() {
         eng.fw.stop_stream();
     }
@@ -1110,33 +1205,35 @@ fn restart_stream(eng: &mut Engine, device: Option<firewheel::cpal::cpal::Device
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+    graph::drop_objects(eng);
+    if let Some(w) = eng.out_wire.take() {
+        w.tear(&mut eng.fw);
+    }
 
-    let cfg = CpalConfig {
-        output: CpalOutputConfig {
-            device_id: device,
-            // Keep the rate the context was built at. A device that cannot do
-            // it still opens at its own rate (and `sample_rate` below picks
-            // that up) — the request just avoids a gratuitous resample.
-            desired_sample_rate: Some(eng.sample_rate),
-            // NOT the CPAL default. Falling back to the system default here
-            // would resolve `setSinkId` while the audio came out of a device
-            // the user did not choose.
-            fallback: false,
-            ..Default::default()
-        },
-        input: None,
+    let cfg = RedConfig {
+        device,
+        // A device that cannot do this rate still opens at its own; asking
+        // avoids a gratuitous resample.
+        sample_rate: eng.running_rate(),
+        fallback,
+        objects: eng.wants_objects,
     };
     match eng.fw.start_stream(cfg) {
         Ok(()) => {
             eng.running = true;
+            eng.retry_at = None;
             if let Some(rate) = eng.fw.stream_info().map(|i| i.sample_rate.get()) {
                 eng.sample_rate = rate;
             }
+            graph::adopt_output(eng);
             Ok(())
         }
         Err(e) => {
             eng.running = false;
-            Err(format!("{e:?}"))
+            Err(match e {
+                firewheel::error::StartStreamError::BackendError(e) => e.0,
+                e => format!("{e:?}"),
+            })
         }
     }
 }
@@ -1165,6 +1262,34 @@ fn follow_default_output(eng: &mut Engine, generation: u64) -> bool {
             false
         }
     }
+}
+
+/// Reopen an output that stopped under the engine (device unplugged, backend reset), at most
+/// once a second. Returns whether it reopened.
+fn retry_output(eng: &mut Engine) -> bool {
+    let Some(at) = eng.retry_at else { return false };
+    if eng.state == ST_CLOSED || std::time::Instant::now() < at {
+        return false;
+    }
+    let device = mediadevices::resolve_output(&eng.sink_id).ok().flatten();
+    match open_output(eng, device, true) {
+        Ok(()) => true,
+        Err(e) => {
+            if audio_log() {
+                eprintln!("[audio] reopening the output failed: {e}");
+            }
+            eng.retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+            false
+        }
+    }
+}
+
+/// After an engine's output reopened: objects, then channels.
+fn reopened(gl: &mut Glob, eh: u64) {
+    if let Some(eng) = gl.engines.get_mut(&eh) {
+        graph::assign_objects(eng, &mut gl.nodes, eh);
+    }
+    graph::resync(&mut gl.engines, &mut gl.nodes, eh);
 }
 
 #[derive(Default)]
@@ -1299,6 +1424,46 @@ pub(crate) fn forget(gone: crate::context::Gone) {
         eng.state = ST_CLOSED;
         eng.g = 0;
     }
+}
+
+/// What an `AudioContext`'s output is, for an embedder's own API over it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputStatus {
+    /// `destination.maxChannelCount`.
+    pub channels: u32,
+    /// Whether a panner asked for the output backend's object model.
+    pub objects_requested: bool,
+    /// The output backend's stream, when it has the output.
+    pub objects: Option<ObjectOutput>,
+    /// Why the output backend did not take it, when it was asked and refused.
+    pub refused: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectOutput {
+    pub label: String,
+    pub max_objects: u32,
+    pub in_use: u32,
+}
+
+/// The output of the `AudioContext` `context` (a JS value), `None` when it is not one.
+///
+/// # Safety
+/// `g` is a live context and this runs on its thread.
+pub unsafe fn output_status(g: *mut c_void, context: u64) -> Option<OutputStatus> {
+    let h = host_data::<CtxHandle>(g, classes(g).ctx_cls, context)?.0;
+    let gl = glob().lock().unwrap();
+    let eng = gl.engines.get(&h)?;
+    Some(OutputStatus {
+        channels: eng.device_channels,
+        objects_requested: eng.wants_objects,
+        objects: eng.objects.as_ref().map(|o| ObjectOutput {
+            label: o.label.clone(),
+            max_objects: o.owners.len() as u32,
+            in_use: o.owners.iter().filter(|&&x| x != 0).count() as u32,
+        }),
+        refused: eng.refused.clone(),
+    })
 }
 
 /// Whether the page in `g` has audio work that advances on pump ticks: a
@@ -1467,8 +1632,27 @@ fn update_spatial_with(eng: &mut Engine, rec: &mut NodeRec, mutate: impl FnOnce(
         let to_listener = [-d[0], -d[1], -d[2]];
         p.gain = distance_gain(dist_model, dist, dist_params[0], dist_params[1], dist_params[2])
             * cone_gain(to_listener, orient, cone);
+        // The object model renders with HRTF while the panner has no object.
+        p.hrtf = rec.panning == Panning::Hrtf || (rec.panning == Panning::Objects && rec.object == 0);
 
         unsafe { queue_diff(&mut eng.fw, rec.id, &old, p) };
+
+        if rec.object != 0 {
+            let bus = eng.objects.as_ref().and_then(|o| o.bus.as_ref()).and_then(|b| b.get());
+            if let Some(bus) = bus {
+                bus.place(
+                    rec.object as usize - 1,
+                    output::ObjectPlacement {
+                        position: pos,
+                        orientation: orient,
+                        listener_position: eng.listener,
+                        listener_forward: eng.listener_fwd,
+                        listener_up: eng.listener_up,
+                        gain: p.gain,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -1824,7 +2008,7 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
         ),
         Params::Svf(p) => eng.fw.add_node((**p).clone(), None),
         Params::Sampler(s) => eng.fw.add_node((**s).clone(), Some(SamplerConfig::default())),
-        Params::Analyser { ring, .. } => eng.fw.add_node(MonitorNode { ring: ArcGc::clone(ring) }, None),
+        Params::Analyser { ring, .. } => eng.fw.add_node(MonitorNode { ring: ArcGc::clone(ring), channels: 2 }, None),
         Params::Osc(sh) => eng.fw.add_node(OscNode { shared: ArcGc::clone(sh) }, None),
         Params::Native { kind, shared, .. } => eng.fw.add_node(NativeNode { kind: *kind, shared: ArcGc::clone(shared) }, None),
         Params::PcmStream(cfg) => {
@@ -1864,52 +2048,6 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
 // AudioNode base: connect / disconnect
 // ---------------------------------------------------------------------------
 
-const STEREO_PORTS: &[(u32, u32)] = &[(0, 0), (1, 1)];
-
-/// The channels Web Audio output `output` of `src` carries, as Firewheel
-/// output ports: one port per splitter output, every port otherwise.
-fn out_channels(src: &NodeRec, output: u32) -> Vec<u32> {
-    match src.params {
-        Params::Splitter(_) => vec![output],
-        _ => (0..src.out_ch.max(1)).collect(),
-    }
-}
-
-/// The Firewheel port pairs one Web Audio connection — output `output` of
-/// `src` into input `input` of `dst` — occupies. `connect` and `disconnect`
-/// both go through here, so the edges they name always match.
-///
-/// Firewheel's `connect` refuses the WHOLE call if any port index is out of
-/// range, so a fixed `[(0,0),(1,1)]` would make a mono source connect to
-/// nothing at all — silently, since the result is only logged. Deriving the
-/// pairs also gets the spec's mixing right:
-/// - into a stereo input ("speakers"): a mono output feeds BOTH ports (the
-///   centre up-mix), a wider one gives ports 0 and 1 (see the module header
-///   for what that drops);
-/// - into a merger input j: the same rule onto its pair (2j, 2j+1), which the
-///   merger's processor then down-mixes to mono ([`merge_block`]);
-/// - into a splitter ("discrete"): channel k into port k, as far as both go.
-fn conn_ports(src: &NodeRec, output: u32, dst: &NodeRec, input: u32) -> Vec<(u32, u32)> {
-    let from = out_channels(src, output);
-    let pair = |l: u32, r: u32| -> Vec<(u32, u32)> {
-        match from.as_slice() {
-            [mono] => vec![(*mono, l), (*mono, r)],
-            [a, b, ..] => vec![(*a, l), (*b, r)],
-            [] => Vec::new(),
-        }
-    };
-    match &dst.params {
-        Params::Merger { .. } => pair(2 * input, 2 * input + 1),
-        Params::Splitter(n) => from.iter().copied().zip(0..*n).collect(),
-        Params::Native { discrete: true, .. } => from.iter().copied().zip(0..2).collect(),
-        _ => match dst.in_ch {
-            0 => Vec::new(),
-            1 => vec![(from[0], 0)],
-            _ => pair(0, 1),
-        },
-    }
-}
-
 /// WebIDL `unsigned long` (no `[EnforceRange]`): ToNumber, rethrowing, then
 /// ToUint32 — NaN and ±Infinity are 0, the rest wraps modulo 2^32. `undefined`
 /// is `default` (an omitted optional argument).
@@ -1938,19 +2076,6 @@ unsafe fn throw_refusal(g: *mut c_void, r: Refusal) -> u64 {
     }
 }
 
-/// Said once: the graph mixes in stereo, so a wider output loses channels 2+.
-fn advise_wide_output(channels: usize) {
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        eprintln!(
-            "[audio] advisory: a {channels}-channel output was connected to a stereo input. This \
-             graph mixes in stereo, so channels 0 and 1 are kept and the rest are dropped; a \
-             browser would carry every channel or down-mix them (5.1 → stereo). A \
-             ChannelSplitterNode takes every channel."
-        );
-    });
-}
-
 /// `connect(destinationNode, output = 0, input = 0)` — the AudioNode overload
 /// (an AudioParam destination is still a TypeError here).
 ///
@@ -1971,7 +2096,7 @@ unsafe fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(output) = idl_u32(g, cf_arg(cf, 1), 0) else { return UNDEF };
     let Ok(input) = idl_u32(g, cf_arg(cf, 2), 0) else { return UNDEF };
 
-    let step: Result<Option<usize>, Refusal> = 'step: {
+    let step: Result<(), Refusal> = 'step: {
         let mut guard = glob().lock().unwrap();
         let gl = &mut *guard;
         let (Some(sr), Some(dr)) = (gl.nodes.get(&src), gl.nodes.get(&dst)) else {
@@ -2010,28 +2135,16 @@ unsafe fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         let conn = Conn { dst, output, input };
         if sr.outs.contains(&conn) {
-            break 'step Ok(None);
+            break 'step Ok(());
         }
-        let ports = conn_ports(sr, output, dr, input);
-        let carried = out_channels(sr, output).len();
-        let wide = (carried > 2 && !matches!(dr.params, Params::Splitter(_))).then_some(carried);
-        let (sid, did, engine) = (sr.id, dr.id, sr.engine);
-        if let Some(eng) = gl.engines.get_mut(&engine) {
-            if let Err(e) = eng.fw.connect(sid, did, &ports, true) {
-                // Loud, because the symptom of a dropped edge is silence with a
-                // graph that looks correctly wired from JS.
-                eprintln!("[audio] connect failed ({e:?}) — {sid:?} → {did:?} on ports {ports:?}");
-            }
-        }
+        let engine = sr.engine;
         gl.nodes.get_mut(&src).unwrap().outs.push(conn);
-        Ok(wide)
+        graph::resync(&mut gl.engines, &mut gl.nodes, engine);
+        Ok(())
     };
     match step {
         Err(r) => throw_refusal(g, r),
-        Ok(wide) => {
-            if let Some(channels) = wide {
-                advise_wide_output(channels);
-            }
+        Ok(()) => {
             hold_downstream(g, cf_this(cf), dst_v);
             dst_v
         }
@@ -2161,20 +2274,16 @@ unsafe fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u64 {
         match picked {
             Err(r) => Some(r),
             Ok(gone) => {
-                let (sid, engine) = (sr.id, sr.engine);
-                let pairs: Vec<(NodeID, Vec<(u32, u32)>)> = gone
-                    .iter()
-                    .filter_map(|k| gl.nodes.get(&k.dst).map(|dr| (dr.id, conn_ports(sr, k.output, dr, k.input))))
-                    .collect();
-                if let Some(eng) = gl.engines.get_mut(&engine) {
-                    for (did, ports) in pairs {
-                        // The pairs `connect` used, so the edges match.
-                        let _ = eng.fw.disconnect(sid, did, &ports);
+                let engine = sr.engine;
+                if let (Some(sr), Some(eng)) = (gl.nodes.get_mut(&src), gl.engines.get_mut(&engine)) {
+                    sr.outs.retain(|k| !gone.contains(k));
+                    for k in &gone {
+                        if let Some(w) = sr.wires.remove(k) {
+                            w.tear(&mut eng.fw);
+                        }
                     }
                 }
-                if let Some(sr) = gl.nodes.get_mut(&src) {
-                    sr.outs.retain(|k| !gone.contains(k));
-                }
+                graph::resync(&mut gl.engines, &mut gl.nodes, engine);
                 None
             }
         }
@@ -2471,8 +2580,11 @@ unsafe fn src_set_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     let arc = host_data::<BufData>(g, c.buffer_cls, v).map(|b| b.buf.clone());
     {
         let mut gl = glob().lock().unwrap();
+        let gl = &mut *gl;
         if let Some(rec) = gl.nodes.get_mut(&handle) {
             rec.buffer = arc;
+            let eh = rec.engine;
+            graph::resync(&mut gl.engines, &mut gl.nodes, eh);
         }
     }
     let slots = slots_of(g, cf_this(cf));
@@ -2890,29 +3002,62 @@ unsafe fn panner_set_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     panner_write(g, cf, |rec| rec.dist_model = model)
 }
 
-/// Real HRTF: switches the node's panning mode live.
+/// `panningModel`: `equalpower`, `HRTF` (real binaural, live switch), or the output backend's
+/// object model, which renders the panner as one of the backend's objects while it has one and
+/// with HRTF otherwise.
 #[crate::host_fn]
 unsafe fn panner_get_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "PannerNode.panningModel on wrong this");
     };
     let gl = glob().lock().unwrap();
-    let hrtf = matches!(gl.nodes.get(&handle).map(|r| &r.params), Some(Params::Spatial(p)) if p.hrtf);
-    js_string(g, if hrtf { "HRTF" } else { "equalpower" })
+    let panning = gl.nodes.get(&handle).map(|r| r.panning);
+    drop(gl);
+    let name = match panning {
+        Some(Panning::Hrtf) => "HRTF",
+        Some(Panning::Objects) => output::object_model().unwrap_or("HRTF"),
+        _ => "equalpower",
+    };
+    js_string(g, name)
 }
 
 #[crate::host_fn]
 unsafe fn panner_set_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let ty = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
-    let hrtf = ty == "HRTF";
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "PannerNode.panningModel on wrong this");
+    };
+    let Ok(v) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let ty = read_string(g, v).unwrap_or_default();
+    let panning = match ty.as_str() {
+        "equalpower" => Panning::EqualPower,
+        "HRTF" => Panning::Hrtf,
+        t if output::object_model() == Some(t) => Panning::Objects,
+        // WebIDL: an enum attribute ignores a value outside the enum.
+        _ => return UNDEF,
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
     let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
-    let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
-    update_spatial_with(eng, rec, |p| p.hrtf = hrtf);
+    if !matches!(rec.params, Params::Spatial(_)) || rec.panning == panning {
+        return UNDEF;
+    }
+    rec.panning = panning;
+    let eh = rec.engine;
+    let Some(eng) = gl.engines.get_mut(&eh) else { return UNDEF };
+    update_spatial(eng, rec);
+    if panning == Panning::Objects && !eng.wants_objects && eng.state != ST_CLOSED {
+        // Only a page that asks for objects gets the backend's output: a plain stereo mix played
+        // through a spatial renderer's bed would sound different from a browser's.
+        eng.wants_objects = true;
+        let device = mediadevices::resolve_output(&eng.sink_id).ok().flatten();
+        if let Err(e) = open_output(eng, device, true) {
+            eprintln!("[audio] the output could not be reopened for '{ty}' ({e})");
+            eng.retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+        }
+        reopened(gl, eh);
+        return UNDEF;
+    }
+    graph::assign_objects(eng, &mut gl.nodes, eh);
     UNDEF
 }
 
@@ -3132,51 +3277,59 @@ slot_getter!(get_slot_stream_channels, "channelCount");
 unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
 
-    let mut fw = FirewheelContext::new(firewheel::FirewheelConfig::default());
+    // As wide as any output can be, fixed: `set_graph_channel_config` resizes the graph's input
+    // node in place of its output node (firewheel-graph 0.10.2). Unused outputs stay silent.
+    let mut fw = FirewheelContext::new(firewheel::FirewheelConfig {
+        num_graph_outputs: firewheel::channel_config::ChannelCount::new(mixing::MAX_CHANNELS).unwrap(),
+        ..Default::default()
+    });
     let master = fw.add_node(VolumeNode::default(), None);
-    let out = fw.graph_out_node_id();
-    let _ = fw.connect(master, out, STEREO_PORTS, true);
-    if let Some(&sink) = RENDER_REFERENCE.get() {
-        // What the speakers play, for the microphone's echo canceller.
+    // What the speakers play, for the microphone's echo canceller.
+    let ref_tap = RENDER_REFERENCE.get().map(|&sink| {
         let key = NEXT_REFERENCE_KEY.fetch_add(1, Ordering::Relaxed);
-        let tap = fw.add_node(RefTapNode { key, sink }, None);
-        let _ = fw.connect(master, tap, STEREO_PORTS, true);
-    }
-    let running = match fw.start_stream(firewheel::cpal::CpalConfig::default()) {
-        Ok(()) => true,
-        Err(e) => {
-            eprintln!("[audio] AudioContext: output stream failed ({e:?}) — graph runs silent");
-            false
-        }
+        fw.add_node(RefTapNode { key, sink }, None)
+    });
+    let mut eng = Engine {
+        g: g as usize,
+        fw,
+        running: false,
+        state: ST_RUNNING,
+        master,
+        master_params: VolumeNode::default(),
+        listener: [0.0; 3],
+        listener_fwd: [0.0, 0.0, -1.0],
+        listener_up: [0.0, 1.0, 0.0],
+        sample_rate: 0,
+        sink_id: String::new(),
+        default_seen: mediadevices::default_generation(mediadevices::Flow::Output),
+        device_channels: 2,
+        device_mask: 0,
+        out_wire: None,
+        ref_tap,
+        tap_wire: None,
+        wants_objects: false,
+        objects: None,
+        refused: None,
+        retry_at: None,
     };
-    let sample_rate = fw.stream_info().map(|i| i.sample_rate.get()).unwrap_or(48_000);
-    alog!("AudioContext created: running={running} rate={sample_rate}");
-
-    let engine_handle;
-    let dest_handle;
-    {
-        let mut gl = glob().lock().unwrap();
-        engine_handle = gl.next;
-        gl.next += 1;
-        gl.engines.insert(
-            engine_handle,
-            Engine {
-                g: g as usize,
-                fw,
-                running,
-                state: ST_RUNNING,
-                master,
-                master_params: VolumeNode::default(),
-                listener: [0.0; 3],
-                listener_fwd: [0.0, 0.0, -1.0],
-                listener_up: [0.0, 1.0, 0.0],
-                sample_rate,
-                sink_id: String::new(),
-                default_seen: mediadevices::default_generation(mediadevices::Flow::Output),
-            },
-        );
-        dest_handle = alloc_node(&mut gl, engine_handle, Params::Dest).unwrap();
+    if let Err(e) = open_output(&mut eng, None, true) {
+        eprintln!("[audio] AudioContext: output stream failed ({e}) — graph runs silent");
     }
+    if eng.sample_rate == 0 {
+        eng.sample_rate = 48_000;
+    }
+    alog!("AudioContext created: running={} rate={} channels={}", eng.running, eng.sample_rate, eng.device_channels);
+
+    let (engine_handle, dest_handle) = {
+        let mut gl = glob().lock().unwrap();
+        let gl = &mut *gl;
+        let engine_handle = gl.next;
+        gl.next += 1;
+        gl.engines.insert(engine_handle, eng);
+        let dest_handle = alloc_node(gl, engine_handle, Params::Dest).unwrap();
+        graph::resync(&mut gl.engines, &mut gl.nodes, engine_handle);
+        (engine_handle, dest_handle)
+    };
 
     let nt = cf_new_target(cf);
     let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
@@ -3307,7 +3460,7 @@ unsafe fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let outcome = {
         let mut gl = glob().lock().unwrap();
-        match gl.engines.get_mut(&h) {
+        let outcome = match gl.engines.get_mut(&h) {
             None => Outcome::Closed,
             Some(eng) if eng.state == ST_CLOSED => Outcome::Closed,
             Some(eng) => {
@@ -3339,7 +3492,9 @@ unsafe fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
                     }
                 }
             }
-        }
+        };
+        reopened(&mut gl, h);
+        outcome
     };
 
     match outcome {
@@ -3869,12 +4024,160 @@ unsafe fn pinned_set_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Err(m) = p.check_interpretation(&interp) {
         return set_refused(g, "channelInterpretation", &m);
     }
-    let gl = glob().lock().unwrap();
-    if let Some(Params::Merger { discrete, .. }) = gl.nodes.get(&h).map(|r| &r.params) {
-        // Live: the merger's processor reads it every block.
-        discrete.store(interp == "discrete", Ordering::Relaxed);
+    let mut gl = glob().lock().unwrap();
+    let gl = &mut *gl;
+    if let Some(rec) = gl.nodes.get_mut(&h) {
+        if let Params::Merger { discrete, .. } = &rec.params {
+            // Live: the merger's processor reads it every block.
+            discrete.store(interp == "discrete", Ordering::Relaxed);
+            rec.ch_interp = Interp::parse(&interp).unwrap_or(Interp::Speakers);
+            let eh = rec.engine;
+            graph::resync(&mut gl.engines, &mut gl.nodes, eh);
+        }
     }
     UNDEF
+}
+
+// ---------------------------------------------------------------------------
+// AudioNode channelCount / channelCountMode / channelInterpretation
+// ---------------------------------------------------------------------------
+
+/// Read one of the three attributes of `this` under the graph lock.
+unsafe fn channel_attr<T>(g: *mut c_void, cf: *mut c_void, read: impl FnOnce(&NodeRec) -> T) -> Option<T> {
+    let h = this_node_handle(g, cf)?;
+    let gl = glob().lock().unwrap();
+    gl.nodes.get(&h).map(read)
+}
+
+/// Apply a checked change to `this` and rewire its context. `check` returns the refusal as
+/// (DOMException name, message).
+unsafe fn channel_write(
+    g: *mut c_void,
+    cf: *mut c_void,
+    attr: &str,
+    check: impl FnOnce(&NodeRec, &Engine) -> Result<(), (&'static str, String)>,
+    apply: impl FnOnce(&mut NodeRec),
+) -> u64 {
+    let Some(h) = this_node_handle(g, cf) else {
+        return throw_type_error(g, &format!("AudioNode.{attr} on wrong this"));
+    };
+    let refusal = {
+        let mut gl = glob().lock().unwrap();
+        let gl = &mut *gl;
+        let Some(rec) = gl.nodes.get_mut(&h) else { return UNDEF };
+        let eh = rec.engine;
+        let Some(eng) = gl.engines.get(&eh) else { return UNDEF };
+        match check(rec, eng) {
+            Err(r) => Some(r),
+            Ok(()) => {
+                apply(rec);
+                graph::resync(&mut gl.engines, &mut gl.nodes, eh);
+                None
+            }
+        }
+    };
+    match refusal {
+        Some((name, msg)) => {
+            super::domexception::throw(g, name, &format!("Failed to set the '{attr}' property on 'AudioNode': {msg}"))
+        }
+        None => UNDEF,
+    }
+}
+
+/// The most channels a node of this kind takes on this host, below the spec's 32.
+fn host_channel_limit(rec: &NodeRec) -> u32 {
+    match rec.params {
+        Params::Pan(_) | Params::Spatial(_) | Params::MediaDest(_) | Params::Native { .. } => 2,
+        _ => mixing::MAX_CHANNELS,
+    }
+}
+
+#[crate::host_fn]
+unsafe fn node_get_channel_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match channel_attr(g, cf, |r| r.ch_count) {
+        Some(n) => enc_i32(n as i32),
+        None => throw_type_error(g, "AudioNode.channelCount on wrong this"),
+    }
+}
+
+#[crate::host_fn]
+unsafe fn node_set_channel_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Ok(v) = idl_u32(g, cf_arg(cf, 0), 0) else { return UNDEF };
+    channel_write(
+        g,
+        cf,
+        "channelCount",
+        |rec, eng| {
+            if matches!(rec.params, Params::Dest) && (v == 0 || v > eng.device_channels) {
+                return Err((
+                    "IndexSizeError",
+                    format!("The provided value ({v}) is outside the range [1, {}].", eng.device_channels),
+                ));
+            }
+            let limit = host_channel_limit(rec);
+            if v == 0 || v > limit {
+                return Err(("NotSupportedError", format!("The channel count provided ({v}) is outside the range [1, {limit}].")));
+            }
+            Ok(())
+        },
+        |rec| rec.ch_count = v,
+    )
+}
+
+#[crate::host_fn]
+unsafe fn node_get_channel_count_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match channel_attr(g, cf, |r| r.ch_mode) {
+        Some(m) => js_string(g, m.name()),
+        None => throw_type_error(g, "AudioNode.channelCountMode on wrong this"),
+    }
+}
+
+#[crate::host_fn]
+unsafe fn node_set_channel_count_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let mode = match enum_value(g, cf_arg(cf, 0), COUNT_MODES) {
+        Err(()) | Ok(None) => return UNDEF,
+        Ok(Some(m)) => CountMode::parse(&m).unwrap(),
+    };
+    channel_write(
+        g,
+        cf,
+        "channelCountMode",
+        |rec, _| match rec.params {
+            Params::Pan(_) | Params::Spatial(_) if mode == CountMode::Max => {
+                Err(("NotSupportedError", "a panner's channelCountMode cannot be 'max'.".into()))
+            }
+            _ => Ok(()),
+        },
+        |rec| rec.ch_mode = mode,
+    )
+}
+
+#[crate::host_fn]
+unsafe fn node_get_channel_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match channel_attr(g, cf, |r| r.ch_interp) {
+        Some(i) => js_string(g, i.name()),
+        None => throw_type_error(g, "AudioNode.channelInterpretation on wrong this"),
+    }
+}
+
+#[crate::host_fn]
+unsafe fn node_set_channel_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let interp = match enum_value(g, cf_arg(cf, 0), INTERPRETATIONS) {
+        Err(()) | Ok(None) => return UNDEF,
+        Ok(Some(i)) => Interp::parse(&i).unwrap(),
+    };
+    channel_write(g, cf, "channelInterpretation", |_, _| Ok(()), |rec| rec.ch_interp = interp)
+}
+
+/// `AudioDestinationNode.maxChannelCount`: the channels the output opened with.
+#[crate::host_fn]
+unsafe fn dest_get_max_channel_count(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(h) = this_node_handle(g, cf) else {
+        return throw_type_error(g, "AudioDestinationNode.maxChannelCount on wrong this");
+    };
+    let gl = glob().lock().unwrap();
+    let n = gl.nodes.get(&h).and_then(|r| gl.engines.get(&r.engine)).map_or(2, |e| e.device_channels);
+    enc_i32(n as i32)
 }
 
 #[crate::host_fn]
@@ -4164,18 +4467,29 @@ pub unsafe fn pump(g: *mut c_void) {
                 gl.timelines.retain(|(n, _), _| *n != h);
                 continue;
             }
-            if let Some(rec) = gl.nodes.remove(&h) {
+            if let Some(mut rec) = gl.nodes.remove(&h) {
                 if matches!(rec.params, Params::PcmStream(_)) {
                     // A MediaStreamAudioSourceNode stops reading its track.
                     super::mediastream::unpipe(h);
                     pcm::unregister(h);
                 }
-                if !matches!(rec.params, Params::Dest) {
-                    if let Some(eng) = gl.engines.get_mut(&rec.engine) {
+                if let Some(eng) = gl.engines.get_mut(&rec.engine) {
+                    graph::unwire(eng, &mut rec);
+                    if !matches!(rec.params, Params::Dest) {
                         let _ = eng.fw.remove_node(rec.id);
                     }
                 }
+                for other in gl.nodes.values_mut().filter(|r| r.engine == rec.engine) {
+                    other.outs.retain(|k| k.dst != h);
+                    other.wires.retain(|k, _| k.dst != h);
+                }
                 gl.timelines.retain(|(n, _), _| *n != h);
+                if rec.object != 0 || !rec.outs.is_empty() {
+                    if let Some(eng) = gl.engines.get_mut(&rec.engine) {
+                        graph::assign_objects(eng, &mut gl.nodes, rec.engine);
+                    }
+                    graph::resync(&mut gl.engines, &mut gl.nodes, rec.engine);
+                }
             }
         }
 
@@ -4195,11 +4509,17 @@ pub unsafe fn pump(g: *mut c_void) {
             // with any node created since the last one, rather than a frame
             // after it. A node that is created, automated and started in one
             // task must never play a block at its parameters' defaults.
-            let now = {
+            let (now, moved) = {
                 let eng = engines.get_mut(&eh).unwrap();
-                follow_default_output(eng, default_output);
-                eng.now()
+                let moved = follow_default_output(eng, default_output) || retry_output(eng);
+                (eng.now(), moved)
             };
+            if moved {
+                graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
+                graph::resync(engines, nodes, eh);
+            } else if engines[&eh].objects.as_ref().is_some_and(|o| o.lost_changed()) {
+                graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
+            }
 
             // Param timelines (per frame; node smoothers interpolate between ticks).
             let due: Vec<((u64, u8), f64, bool)> = timelines
@@ -4311,9 +4631,18 @@ pub unsafe fn pump(g: *mut c_void) {
 
             // Ship: graph changes since the last frame, and every value set
             // above, in one go (see the top of this loop).
-            if let Err(e) = eng.fw.update() {
+            match eng.fw.update() {
+                Ok(()) => {}
+                Err(firewheel::error::UpdateError::StreamStoppedUnexpectedly(e)) => {
+                    eprintln!(
+                        "[audio] the output stopped ({}); reopening it",
+                        e.map(|e| e.0).unwrap_or_else(|| "the audio thread ended".into())
+                    );
+                    eng.running = false;
+                    eng.retry_at = Some(std::time::Instant::now());
+                }
                 // Always loud: a swallowed update error is silent audio.
-                eprintln!("[audio] firewheel update error (engine {eh}): {e:?}");
+                Err(e) => eprintln!("[audio] firewheel update error (engine {eh}): {e:?}"),
             }
         }
     }
@@ -4356,7 +4685,11 @@ pub unsafe fn install(g: *mut c_void) {
         parent_proto: 0,
         methods: &[("connect", 1, node_connect), ("disconnect", 0, node_disconnect)],
         getters: &[("numberOfInputs", node_get_number_of_inputs), ("numberOfOutputs", node_get_number_of_outputs)],
-        accessors: &[],
+        accessors: &[
+            ("channelCount", node_get_channel_count, node_set_channel_count),
+            ("channelCountMode", node_get_channel_count_mode, node_set_channel_count_mode),
+            ("channelInterpretation", node_get_channel_interpretation, node_set_channel_interpretation),
+        ],
     });
 
     let param = define_class(g, &ClassSpec {
@@ -4396,7 +4729,7 @@ pub unsafe fn install(g: *mut c_void) {
         construct: None,
         parent_proto: node_base.proto,
         methods: &[],
-        getters: &[],
+        getters: &[("maxChannelCount", dest_get_max_channel_count)],
         accessors: &[],
     });
 
@@ -5905,29 +6238,43 @@ mod split_merge_graph_tests {
     }
 
     fn splitter(fw: &mut Fw, n: u32) -> NodeRec {
-        rec(fw.add_node(SplitterNode { n }, None), Params::Splitter(n))
+        let mut r = rec(fw.add_node(SplitterNode { n }, None), Params::Splitter(n));
+        r.lin = n;
+        r.lout = 1;
+        r
     }
 
     fn merger(fw: &mut Fw, n: u32, discrete: bool) -> NodeRec {
         let d = ArcGc::new(AtomicBool::new(discrete));
-        rec(fw.add_node(MergerNode { n, discrete: ArcGc::clone(&d) }, None), Params::Merger { n, discrete: d })
+        let mut r = rec(fw.add_node(MergerNode { n, discrete: ArcGc::clone(&d) }, None), Params::Merger { n, discrete: d });
+        r.lout = n;
+        r
     }
 
-    /// An analyser's monitor: it records the mono mix of its stereo input, so
-    /// a mono output fed into both ports reads back as itself, exactly.
-    fn monitor(fw: &mut Fw) -> (NodeRec, ArcGc<MonitorRing>) {
+    /// An analyser's monitor taking `channels`: it records their spec mono down-mix, so a
+    /// one-channel output reads back as itself, exactly.
+    fn monitor(fw: &mut Fw, channels: u32) -> (NodeRec, ArcGc<MonitorRing>) {
         let ring = ArcGc::new(MonitorRing::new());
-        let id = fw.add_node(MonitorNode { ring: ArcGc::clone(&ring) }, None);
-        (rec(id, Params::Analyser { ring: ArcGc::clone(&ring), smooth: Vec::new() }), ring)
+        ring.set_mix(&mixing::web_mix(channels, 1, Interp::Speakers));
+        let id = fw.add_node(MonitorNode { ring: ArcGc::clone(&ring), channels: 2 }, None);
+        let mut r = rec(id, Params::Analyser { ring: ArcGc::clone(&ring), smooth: Vec::new() });
+        r.lin = channels;
+        (r, ring)
     }
 
+    /// What `connect` wires, as `graph::resync` plans it.
     fn wire(fw: &mut Fw, src: &NodeRec, output: u32, dst: &NodeRec, input: u32) {
-        let ports = conn_ports(src, output, dst, input);
-        fw.connect(src.id, dst.id, &ports, true).unwrap_or_else(|e| panic!("connect {ports:?}: {e:?}"));
+        match graph::plan(src, output, dst, input) {
+            mixing::Route::Ports(ports) => {
+                fw.connect(src.id, dst.id, &ports, true).unwrap_or_else(|e| panic!("connect {ports:?}: {e:?}"));
+            }
+            r => panic!("a stereo graph took a mixer: {r:?}"),
+        }
     }
 
     fn tap(fw: &mut Fw, src: &NodeRec, output: u32) -> ArcGc<MonitorRing> {
-        let (m, ring) = monitor(fw);
+        let channels = if matches!(src.params, Params::Splitter(_)) { 1 } else { src.lout };
+        let (m, ring) = monitor(fw, channels);
         wire(fw, src, output, &m, 0);
         ring
     }
@@ -6091,7 +6438,9 @@ mod split_merge_graph_tests {
         for e in evs {
             fw.queue_event_for(id, e);
         }
-        tap(fw, &rec(id, Params::Sampler(Box::new(s))), 0)
+        let mut r = rec(id, Params::Sampler(Box::new(s)));
+        r.lout = 1;
+        tap(fw, &r, 0)
     }
 
     /// Everything `ring` recorded from the start of the stream (`total` < the

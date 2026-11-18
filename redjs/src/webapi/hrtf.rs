@@ -28,6 +28,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use super::audio::output::BusCell;
 use firewheel::{
     channel_config::{ChannelConfig, ChannelCount},
     diff::{Diff, Patch},
@@ -388,13 +389,29 @@ impl AudioNode for WebPannerNode {
         if self.hrtf {
             dsp.set_direction(self.azimuth, self.elevation);
         }
-        WebPannerProcessor { params: *self, dsp }
+        WebPannerProcessor {
+            params: *self,
+            dsp,
+            route: PannerRoute::default(),
+            silence: vec![0.0; cx.stream_info.max_block_frames.get() as usize],
+        }
     }
+}
+
+/// Sends a panner's input to an output backend's object instead of panning it (audio.rs,
+/// `assign_objects`). Delivered as a custom event.
+#[derive(Default)]
+pub(crate) struct PannerRoute {
+    pub bus: Option<Arc<BusCell>>,
+    pub slot: usize,
+    pub owner: u64,
 }
 
 struct WebPannerProcessor {
     params: WebPannerNode,
     dsp: PannerDsp,
+    route: PannerRoute,
+    silence: Vec<f32>,
 }
 
 impl AudioNodeProcessor for WebPannerProcessor {
@@ -406,8 +423,13 @@ impl AudioNodeProcessor for WebPannerProcessor {
         _extra: &mut ProcExtra,
     ) -> ProcessStatus {
         let before = self.params;
-        for patch in events.drain_patches::<WebPannerNode>() {
-            self.params.apply(patch);
+        for mut event in events.drain() {
+            if event.downcast_swap(&mut self.route) {
+                continue;
+            }
+            if let Some(patch) = WebPannerNode::patch_event(&event) {
+                self.params.apply(patch);
+            }
         }
         if self.params.hrtf
             && (!before.hrtf
@@ -422,6 +444,16 @@ impl AudioNodeProcessor for WebPannerProcessor {
         // keeps the browser's mono pan law and loudness).
         let l_silent = info.in_silence_mask.is_channel_silent(0);
         let r_silent = buffers.inputs.len() < 2 || info.in_silence_mask.is_channel_silent(1);
+
+        if let Some(bus) = self.route.bus.as_ref().and_then(|cell| cell.get()) {
+            let frames = info.frames.min(self.silence.len());
+            let left = if l_silent { &self.silence[..frames] } else { &buffers.inputs[0][..frames] };
+            let right = (!r_silent && buffers.inputs[1][..frames] != *left).then(|| &buffers.inputs[1][..frames]);
+            // SAFETY: a processor runs on the thread rendering the stream.
+            if unsafe { bus.write(self.route.slot, self.route.owner, left, right) } {
+                return ProcessStatus::ClearAllOutputs;
+            }
+        }
 
         let (out_l_slot, rest) = buffers.outputs.split_at_mut(1);
         let out_l = &mut *out_l_slot[0];
@@ -446,6 +478,10 @@ impl AudioNodeProcessor for WebPannerProcessor {
         }
 
         ProcessStatus::OutputsModified
+    }
+
+    fn new_stream(&mut self, stream_info: &firewheel::StreamInfo, _context: &mut firewheel::node::ProcStreamCtx) {
+        self.silence.resize(stream_info.max_block_frames.get() as usize, 0.0);
     }
 }
 
