@@ -23,11 +23,9 @@
 //! - `pageX` / `pageY` are `clientX + scrollX` (CSSOM View §"pageX"). There is
 //!   no scrolling viewport here, so `scrollX` is 0 and they equal `clientX` /
 //!   `clientY`. That is the correct value for this environment, not a stub.
-//! - `getCoalescedEvents()` / `getPredictedEvents()` return an empty list.
-//!   For a script-constructed event that is what the specification requires
-//!   (Pointer Events §"getCoalescedEvents" — the list is the UA's, and a
-//!   synthesized event has none). A host that starts delivering *trusted*
-//!   pointer events with coalescing would have to fill these.
+//! - `getCoalescedEvents()` / `getPredictedEvents()` return a copy of the
+//!   init dictionary's `coalescedEvents` / `predictedEvents` (Pointer Events
+//!   3), empty by default. A host delivering pen samples passes them there.
 //! - `DataTransfer` is the HTML drag data store: string and file items,
 //!   `items` (a `DataTransferItemList` of `DataTransferItem`s), `files` (a
 //!   `FileList`), and the four modes — read/write for a script-made one,
@@ -420,7 +418,100 @@ const POINTER: &[&str] = &[
 /// Spec defaults: altitude π/2 (perpendicular), azimuth 0.
 const POINTER_DEFAULTS: [f64; 10] = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2, 0.0];
 
-unsafe fn init_pointer_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
+/// WebIDL `long` (ToInt32): `tiltX`, `tiltY` and `twist` are whole degrees.
+fn to_int32(d: f64) -> i32 {
+    if !d.is_finite() {
+        return 0;
+    }
+    d.trunc().rem_euclid(4_294_967_296.0) as u32 as i32
+}
+
+/// Pointer Events §"Converting between tiltX/tiltY and altitudeAngle/azimuthAngle".
+fn tilt_to_spherical(tilt_x: f64, tilt_y: f64) -> (f64, f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let (xr, yr) = (tilt_x.to_radians(), tilt_y.to_radians());
+    let flat = tilt_x.abs() == 90.0 || tilt_y.abs() == 90.0;
+    let azimuth = if tilt_x == 0.0 {
+        if tilt_y > 0.0 {
+            FRAC_PI_2
+        } else if tilt_y < 0.0 {
+            3.0 * FRAC_PI_2
+        } else {
+            0.0
+        }
+    } else if tilt_y == 0.0 {
+        if tilt_x < 0.0 { PI } else { 0.0 }
+    } else if flat {
+        0.0
+    } else {
+        let a = yr.tan().atan2(xr.tan());
+        if a < 0.0 { a + 2.0 * PI } else { a }
+    };
+    let altitude = if flat {
+        0.0
+    } else if tilt_x == 0.0 {
+        FRAC_PI_2 - yr.abs()
+    } else if tilt_y == 0.0 {
+        FRAC_PI_2 - xr.abs()
+    } else {
+        (1.0 / (xr.tan().powi(2) + yr.tan().powi(2)).sqrt()).atan()
+    };
+    (altitude, azimuth)
+}
+
+fn spherical_to_tilt(altitude: f64, azimuth: f64) -> (f64, f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    if altitude != 0.0 {
+        let t = altitude.tan();
+        return ((azimuth.cos() / t).atan().to_degrees(), (azimuth.sin() / t).atan().to_degrees());
+    }
+    let (x, y) = if azimuth == 0.0 || azimuth == 2.0 * PI {
+        (FRAC_PI_2, 0.0)
+    } else if azimuth == FRAC_PI_2 {
+        (0.0, FRAC_PI_2)
+    } else if azimuth == PI {
+        (-FRAC_PI_2, 0.0)
+    } else if azimuth == 3.0 * FRAC_PI_2 {
+        (0.0, -FRAC_PI_2)
+    } else if azimuth < FRAC_PI_2 {
+        (FRAC_PI_2, FRAC_PI_2)
+    } else if azimuth < PI {
+        (-FRAC_PI_2, FRAC_PI_2)
+    } else if azimuth < 3.0 * FRAC_PI_2 {
+        (-FRAC_PI_2, -FRAC_PI_2)
+    } else {
+        (FRAC_PI_2, -FRAC_PI_2)
+    };
+    (x.to_degrees(), y.to_degrees())
+}
+
+const POINTER_LISTS: &[&str] = &["coalescedEvents", "predictedEvents"];
+
+/// A `sequence<PointerEvent>` init member, copied: `Err` (a TypeError thrown) for anything else.
+unsafe fn pointer_list(g: *mut c_void, v: u64, member: &str) -> Result<u64, ()> {
+    let out = new_array(g);
+    if v == UNDEF {
+        return Ok(out);
+    }
+    if !is_cell(v) {
+        throw_type_error(g, &format!("PointerEvent constructor: {member} is not a sequence"));
+        return Err(());
+    }
+    let proto = classes(g).pointer.proto;
+    let n = read_number(g, get(g, v, "length"));
+    let n = if n.is_finite() && n > 0.0 { n.min(u32::MAX as f64) as u32 } else { 0 };
+    for i in 0..n {
+        let e = get_i(g, v, i);
+        if !proto_chain_has(g, e, proto) {
+            throw_type_error(g, &format!("PointerEvent constructor: {member}[{i}] is not a PointerEvent"));
+            return Err(());
+        }
+        set_i(g, out, i, e);
+    }
+    Ok(out)
+}
+
+unsafe fn init_pointer_event(g: *mut c_void, obj: u64, ty: u64, init: u64) -> Result<(), ()> {
     let s = init_mouse_event(g, obj, ty, init);
     let mut m = [UNDEF; 12];
     get_many(g, init, POINTER, &mut m);
@@ -428,9 +519,32 @@ unsafe fn init_pointer_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     for i in 0..10 {
         v[i] = num(g, m[i], POINTER_DEFAULTS[i]);
     }
+    let number = |v: u64| dec_f64(v).unwrap_or(0.0);
+    let (tilt_given, angles_given) = (m[5] != UNDEF || m[6] != UNDEF, m[8] != UNDEF || m[9] != UNDEF);
+    if tilt_given && !angles_given {
+        let (altitude, azimuth) = tilt_to_spherical(
+            to_int32(number(v[5])) as f64,
+            to_int32(number(v[6])) as f64,
+        );
+        v[8] = enc_f64(altitude);
+        v[9] = enc_f64(azimuth);
+    } else if angles_given && !tilt_given {
+        let (x, y) = spherical_to_tilt(number(v[8]), number(v[9]));
+        v[5] = enc_f64(x.round());
+        v[6] = enc_f64(y.round());
+    }
+    for i in [5, 6, 7] {
+        v[i] = enc_f64(to_int32(number(v[i])) as f64);
+    }
     v[10] = string_or(g, m[10], "");
     v[11] = flag(g, m[11]);
     define_many(g, s, POINTER, &v, 0);
+    let mut lists = [UNDEF; 2];
+    get_many(g, init, POINTER_LISTS, &mut lists);
+    let coalesced = pointer_list(g, lists[0], "coalescedEvents")?;
+    let predicted = pointer_list(g, lists[1], "predictedEvents")?;
+    define_many(g, s, POINTER_LISTS, &[coalesced, predicted], 0);
+    Ok(())
 }
 
 const DRAG: &[&str] = &["dataTransfer"];
@@ -559,9 +673,26 @@ unsafe fn k_get_modifier_state(g: *mut c_void, cf: *mut c_void) -> u64 {
     modifier_state(g, cf, "KeyboardEvent.getModifierState")
 }
 
+/// A fresh array of the event's list: a caller may change what it gets.
+unsafe fn p_list(g: *mut c_void, cf: *mut c_void, key: &'static str, label: &str) -> u64 {
+    let list = slot_get(g, cf, key, label);
+    let out = new_array(g);
+    if is_cell(list) {
+        for i in 0..array_len(g, list) {
+            set_i(g, out, i, get_i(g, list, i));
+        }
+    }
+    out
+}
+
 #[crate::host_fn]
-unsafe fn p_empty_list(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    new_array(g)
+unsafe fn p_coalesced(g: *mut c_void, cf: *mut c_void) -> u64 {
+    p_list(g, cf, "coalescedEvents", "PointerEvent.getCoalescedEvents")
+}
+
+#[crate::host_fn]
+unsafe fn p_predicted(g: *mut c_void, cf: *mut c_void) -> u64 {
+    p_list(g, cf, "predictedEvents", "PointerEvent.getPredictedEvents")
 }
 
 // ---------------------------------------------------------------------------
@@ -589,7 +720,18 @@ event_ctor!(keyboard_construct, keyboard, init_keyboard_event, "KeyboardEvent");
 event_ctor!(wheel_construct, wheel, init_wheel_event, "WheelEvent");
 event_ctor!(focus_construct, focus, init_focus_event, "FocusEvent");
 event_ctor!(input_construct, input, init_input_event, "InputEvent");
-event_ctor!(pointer_construct, pointer, init_pointer_event, "PointerEvent");
+#[crate::host_fn]
+unsafe fn pointer_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if cf_argc(cf) < 1 {
+        return throw_type_error(g, "PointerEvent constructor requires a type argument");
+    }
+    let c = classes(g);
+    let obj = ordinary_create(g, cf_new_target(cf), c.pointer.proto);
+    match init_pointer_event(g, obj, cf_arg(cf, 0), cf_arg(cf, 1)) {
+        Ok(()) => obj,
+        Err(()) => UNDEF,
+    }
+}
 
 #[crate::host_fn]
 unsafe fn drag_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -1319,8 +1461,8 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
         construct: Some(pointer_construct),
         parent_proto: mouse.proto,
         methods: &[
-            ("getCoalescedEvents", 0, p_empty_list),
-            ("getPredictedEvents", 0, p_empty_list),
+            ("getCoalescedEvents", 0, p_coalesced),
+            ("getPredictedEvents", 0, p_predicted),
         ],
         getters: &[
             ("pointerId", p_id), ("width", p_width), ("height", p_height),
@@ -1504,6 +1646,30 @@ mod jsc_tests {
         ok(&c, "(e => e.data === null && e.inputType === '')(new InputEvent('i', { data: null }))");
         ok(&c, "(e => e.deltaY === 2 && e.deltaMode === 1 && e.clientX === 3)(new WheelEvent('w', { deltaY: 2, deltaMode: 1.7, clientX: 3 }))");
         ok(&c, "new MouseEvent('x', { get clientX() { throw 1 } }).clientX === 0");
+    }
+
+    #[test]
+    fn coalesced_and_predicted_events_come_from_the_init_dict() {
+        let c = ctx();
+        ok(&c, "(() => { const a = new PointerEvent('pointermove', { clientX: 1 }); \
+                const e = new PointerEvent('pointermove', { coalescedEvents: [a] }); \
+                const l = e.getCoalescedEvents(); l.pop(); \
+                return e.getCoalescedEvents()[0] === a && e.getPredictedEvents().length === 0 })()");
+        ok(&c, "(() => { try { new PointerEvent('p', { coalescedEvents: [new MouseEvent('m')] }); return false } \
+                catch (e) { return e instanceof TypeError } })()");
+        ok(&c, "new PointerEvent('p').getCoalescedEvents().length === 0");
+    }
+
+    #[test]
+    fn tilt_and_angles_fill_each_other_in() {
+        let c = ctx();
+        ok(&c, "(e => Math.abs(e.altitudeAngle - Math.PI / 4) < 1e-9 && e.azimuthAngle === 0 && e.tiltY === 0)\
+                (new PointerEvent('p', { tiltX: 45 }))");
+        ok(&c, "(e => Math.abs(e.altitudeAngle - Math.PI / 4) < 1e-9 && e.azimuthAngle === 3 * Math.PI / 2)\
+                (new PointerEvent('p', { tiltY: -45 }))");
+        ok(&c, "(e => e.tiltX === 0 && e.tiltY === 45)\
+                (new PointerEvent('p', { altitudeAngle: Math.PI / 4, azimuthAngle: Math.PI / 2 }))");
+        ok(&c, "(e => e.tiltX === 30 && e.twist === 359)(new PointerEvent('p', { tiltX: 30.9, twist: 359.5 }))");
     }
 
     #[test]
