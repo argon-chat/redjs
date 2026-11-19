@@ -268,7 +268,12 @@ extern "C" int32_t rjs_init(const char* options)
             fprintf(stderr, "[redjs] udata_setCommonData failed: %s (%d)\n", u_errorName(err), static_cast<int>(err));
     }
 #endif
+#if REDJS_NO_WASM
+    // The archive leaves WebAssembly out; with it off the engine leaves `WebAssembly` undefined.
+    JSC::initialize([] { Options::useWasm() = false; });
+#else
     JSC::initialize();
+#endif
     if (options && *options) {
         if (!Options::setOptions(options))
             return RJS_BAD_ARG;

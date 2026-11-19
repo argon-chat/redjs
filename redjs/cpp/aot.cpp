@@ -287,6 +287,9 @@ uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, const uint8_t* identi
         Options::alwaysUseSharedArrayBuffer() = true;
         Options::useTemporal() = true;
         Options::useExplicitResourceManagement() = true;
+#if REDJS_NO_WASM
+        Options::useWasm() = false;
+#endif
     });
     if (rjs_init(nullptr) || !Options::useAOT() || Options::useJIT()
         || (profile == MemoryProfile::Compact && ((!customized && initializedProfile != rawProfile)

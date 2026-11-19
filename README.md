@@ -156,7 +156,9 @@ JavaScript to native images is separate and experimental: the
 JavaScriptCore's image compiler, about 24 MiB of the `REDJS_ENGINE_DLL` build.
 With `no-jit` (Windows x64), the engine links an archive without the JIT that
 `bun scripts/aot/no-jit.ts --out <dir>` in Skathi produces, found through
-`REDJS_NO_JIT_DIR`; it can only run native images.
+`REDJS_NO_JIT_DIR`; it can only run native images. `no-wasm` also leaves
+WebAssembly out (`--remove JIT,WebAssembly`, the default); `WebAssembly` is
+undefined.
 
 **Other languages:** the [`redjs_*` C ABI](redjs/src/ffi.rs) exposes the same
 engine operations, with per-function documentation in the source.

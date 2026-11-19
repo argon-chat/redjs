@@ -302,6 +302,9 @@ fn main() {
         if no_jit.is_some() {
             glue.define("REDJS_NO_JIT", "1");
         }
+        if env::var_os("CARGO_FEATURE_NO_WASM").is_some() {
+            glue.define("REDJS_NO_WASM", "1");
+        }
         println!("cargo:rerun-if-changed=cpp/aot_support.cpp");
         println!("cargo:rerun-if-changed=cpp/aot.cpp");
         println!("cargo:rerun-if-changed=cpp/aot");
@@ -533,8 +536,9 @@ const ICU_ROOT_LIB: &str = "redjs_icudata_root";
 /// The JavaScriptCore archive of `no-jit`, in the directory `REDJS_NO_JIT_DIR` names.
 const NO_JIT_LIB: &str = "JavaScriptCoreNoJIT";
 
-/// `no-jit`: the archive scripts/aot/no-jit.ts made for this engine. Its receipt names the engine
-/// and the symbol every JIT reference now points at, which aot_support.cpp defines.
+/// `no-jit`: the archive scripts/aot/no-jit.ts made for this engine. Its receipt names the engine,
+/// what it leaves out (the JIT, and WebAssembly exactly when `no-wasm` is on) and the symbols their
+/// references now point at, which aot_support.cpp defines.
 fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
     println!("cargo:rerun-if-env-changed=REDJS_NO_JIT_DIR");
     assert!(platform == "windows-amd64", "the no-jit feature is Windows x64 only");
@@ -549,11 +553,30 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
         .unwrap_or_else(|e| panic!("\n\n{}: {e}\n{fix}\n", receipt_path.display()));
     let field = |key: &str| receipt.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('='));
     assert!(
-        receipt.starts_with("redjs.no-jit.v1\n")
-            && field("webkit") == Some(pin(pins, "webkit.version"))
-            && field("entry") == Some("redjs_removed_jit_entry"),
+        receipt.starts_with("redjs.no-jit.v2\n") && field("webkit") == Some(pin(pins, "webkit.version")),
         "\n\n{} was made for another engine than pins.txt names.\n{fix}\n",
         dir.display()
+    );
+    let no_wasm = env::var_os("CARGO_FEATURE_NO_WASM").is_some();
+    let (removed, stubs): (&str, &[(&str, &str)]) = if no_wasm {
+        (
+            "JIT,WebAssembly",
+            &[
+                ("entry.JIT", "redjs_removed_jit_entry"),
+                ("entry.WebAssembly", "redjs_removed_wasm_entry"),
+                ("host-function.WebAssembly", "redjs_removed_wasm_host_function"),
+                ("skip.WebAssembly", "redjs_removed_wasm_skip"),
+            ],
+        )
+    } else {
+        ("JIT", &[("entry.JIT", "redjs_removed_jit_entry")])
+    };
+    assert!(
+        field("removed") == Some(removed) && stubs.iter().all(|(key, symbol)| field(key) == Some(symbol)),
+        "\n\n{} leaves out {}, and this build leaves out {removed}.\n{fix}{}\n",
+        dir.display(),
+        field("removed").unwrap_or("nothing it names"),
+        if no_wasm { "" } else { " Pass --remove JIT for an archive that keeps WebAssembly." }
     );
     let archive = dir.join(format!("{NO_JIT_LIB}.lib"));
     assert!(archive.is_file(), "\n\n{} is missing.\n{fix}\n", archive.display());

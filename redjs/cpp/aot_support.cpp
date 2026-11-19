@@ -1,7 +1,8 @@
 // The AOT-era JSC archive delegates trimming policy to its embedder. redjs
 // declares removed what its link leaves out: the image compiler unless the
-// aot-compiler feature asks for it, and the JIT with no-jit. Nothing is cut
-// out of the binary by address range, so isTrimmed stays 0.
+// aot-compiler feature asks for it, the JIT with no-jit, and WebAssembly with
+// no-wasm. Nothing is cut out of the binary by address range, so isTrimmed
+// stays 0.
 #include "config.h"
 #include <JavaScriptCore/AOTRemovableFeature.h>
 #include <JavaScriptCore/Error.h>
@@ -33,6 +34,9 @@ static consteval RemovableFeatureState removableFeatureState()
 #endif
 #if REDJS_NO_JIT
     remove(RemovableFeature::JIT);
+#endif
+#if REDJS_NO_WASM
+    remove(RemovableFeature::WebAssembly);
 #endif
     (void)remove;
     return state;
@@ -66,6 +70,24 @@ extern "C" [[noreturn]] void redjs_removed_jit_entry()
 {
     std::fputs("redjs: this engine was built without the JIT and reached JIT code\n", stderr);
     std::abort();
+}
+#endif
+
+#if REDJS_NO_WASM
+extern "C" [[noreturn]] void redjs_removed_wasm_entry()
+{
+    std::fputs("redjs: this engine was built without WebAssembly and reached WebAssembly code\n", stderr);
+    std::abort();
+}
+
+// What the void functions the engine skips once WebAssembly is removed (ReturnDefault) run instead:
+// LLInt::initialize still calls installWebAssemblyInterpreter while isTrimmed is 0.
+extern "C" void redjs_removed_wasm_skip() { }
+
+// What WebAssembly's constructors and functions run instead: the engine marks them Throw.
+extern "C" EncodedJSValue JSC_HOST_CALL_ATTRIBUTES redjs_removed_wasm_host_function(JSGlobalObject* global, CallFrame*)
+{
+    return Bun__throwForRemovedFeature(global, static_cast<uint16_t>(RemovableFeature::WebAssembly));
 }
 #endif
 
