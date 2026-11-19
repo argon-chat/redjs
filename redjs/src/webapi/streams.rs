@@ -660,7 +660,7 @@ pub unsafe fn install(g: *mut c_void) {
 }
 
 pub unsafe fn install_surface(g: *mut c_void) {
-    let cx = binding::Env::new(g);
+    let cx = binding::env(g);
     strategy::install(cx);
     readable::install(cx);
     writable::install(cx);
@@ -670,7 +670,7 @@ pub unsafe fn install_surface(g: *mut c_void) {
 
 pub(super) unsafe fn install_websocket(g: *mut c_void, socket: &Class) {
     if registry().lock().unwrap().contains_key(&(g as usize)) {
-        socket::install(binding::Env::new(g), socket);
+        socket::install(binding::env(g), socket);
     }
 }
 

@@ -1,7 +1,6 @@
 //! `MediaStream` / `MediaStreamTrack` (Media Capture and Streams), audio only:
 //! the sources, the tracks that carry them, and the consumers that read them.
-//! The JS classes are `mediastream.js`, built over the natives at the bottom
-//! of this file. The two Web Audio nodes that meet a stream are in `audio.rs`
+//! The native classes share the capture backend with the two Web Audio nodes in `audio.rs`
 //! (`MediaStreamAudioSourceNode` reads a track, `MediaStreamAudioDestinationNode`
 //! is one).
 //!
@@ -98,6 +97,9 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use super::permissions::{self, Capability, PermissionState};
 use super::util::*;
 use crate::glue;
+
+#[path = "mediastream/surface.rs"]
+mod surface;
 
 /// A consumer of a track's frames: `(interleaved, channels, sample_rate)`.
 pub type Consumer = Box<dyn FnMut(&[f32], usize, u32) + Send>;
@@ -893,19 +895,15 @@ pub fn remote_source(label: &str, channels: u32, rate: u32) -> Arc<Source> {
 
 /// A new track of `source`, owned by context `g`'s page, as a
 /// `MediaStreamTrack` object; `undefined` when the context has no
-/// `MediaStreamTrack` (mediastream.js did not install).
+/// `MediaStreamTrack` has not been installed.
 ///
 /// # Safety
 /// `g` is a live context, on its thread.
 pub unsafe fn js_track(g: *mut c_void, source: &Arc<Source>) -> u64 {
-    let Some(st) = state_of(g) else { return UNDEF };
-    let wrap = get(g, st.hooks, "wrap");
-    if !is_cell(wrap) {
-        return UNDEF;
-    }
+    if state_of(g).is_none() { return UNDEF; }
     let id = new_track(source, owner_of(g));
     let h = new_handle(g, id);
-    match call(g, wrap, st.hooks, &[h]) {
+    match surface::wrap(g, h) {
         Ok(v) => v,
         Err(e) => {
             report(g, e);
@@ -1549,8 +1547,10 @@ impl Drop for TrackHandle {
 
 struct MsState {
     handle_cls: crate::capi::JSClassRef,
-    /// `{ settle(token, handle, name, message), ended(id) }` from the script.
-    hooks: u64,
+    slot: *mut c_void,
+    interfaces: u64,
+    weak_tracks: *mut c_void,
+    next_token: AtomicU32,
 }
 
 unsafe impl Send for MsState {}
@@ -1668,111 +1668,12 @@ pub fn stop_all(g: *mut c_void) -> usize {
     ids.len()
 }
 
-unsafe fn arg_bool(cf: *mut c_void, i: u32) -> bool {
-    truthy_flag(cf_arg(cf, i))
-}
-
-unsafe fn pair(g: *mut c_void, name: &str, msg: &str) -> u64 {
-    let arr = new_array(g);
-    set_i(g, arr, 0, js_string(g, name));
-    set_i(g, arr, 1, js_string(g, msg));
-    arr
-}
-
-/// `open(token, deviceId, exact, ec, ns, agc)` → `undefined` (the result comes
-/// through `settle`, after the host's prompt when it asks one), or
-/// `[name, message]` when the gate refuses.
-#[crate::host_fn]
-unsafe fn n_open(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let token = read_number(g, cf_arg(cf, 0)) as u32;
-    let gate = gate_for(g as usize);
-    if let Some((name, msg)) = refusal(gate) {
-        return pair(g, name, &msg);
-    }
-    let dev = cf_arg(cf, 1);
-    let req = AudioRequest {
-        device_id: if is_cell(dev) { read_string(g, dev) } else { None },
-        exact: arg_bool(cf, 2),
-        settings: Settings {
-            echo_cancellation: arg_bool(cf, 3),
-            noise_suppression: arg_bool(cf, 4),
-            auto_gain_control: arg_bool(cf, 5),
-        },
-    };
-    if gate == Gate::Ask {
-        ask_then_open(g as usize, token, req);
-    } else {
-        open_microphone(g as usize, token, req);
-    }
-    UNDEF
-}
-
-#[crate::host_fn]
-unsafe fn n_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
-    match handle_id(g, cf_arg(cf, 0)).and_then(clone_track) {
-        Some(id) => new_handle(g, id),
-        None => NULL,
-    }
-}
-
-#[crate::host_fn]
-unsafe fn n_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
-    if let Some(id) = handle_id(g, cf_arg(cf, 0)) {
-        stop(id);
-    }
-    UNDEF
-}
-
-#[crate::host_fn]
-unsafe fn n_set_enabled(g: *mut c_void, cf: *mut c_void) -> u64 {
-    if let Some(id) = handle_id(g, cf_arg(cf, 0)) {
-        set_enabled(id, arg_bool(cf, 1));
-    }
-    UNDEF
-}
-
-/// `info(handle)` → `{ id, kind, label, deviceId, channelCount, sampleRate,
-/// echoCancellation, noiseSuppression, autoGainControl, canProcess, ended }`,
-/// or `null`. The three switches are what runs, not what was asked.
-#[crate::host_fn]
-unsafe fn n_info(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(t) = handle_id(g, cf_arg(cf, 0)).and_then(track) else { return NULL };
-    let o = new_object(g, UNDEF);
-    define(g, o, "id", enc_f64(t.id as f64), 0);
-    let (kind, device) = match &t.source.kind {
-        SourceKind::Microphone { device_id } => ("microphone", device_id.as_str()),
-        SourceKind::Graph => ("graph", ""),
-        SourceKind::Remote => ("remote", ""),
-    };
-    define(g, o, "kind", js_string(g, kind), 0);
-    define(g, o, "label", js_string(g, &t.source.label), 0);
-    define(g, o, "deviceId", js_string(g, device), 0);
-    define(g, o, "channelCount", enc_f64(t.source.channels() as f64), 0);
-    define(g, o, "sampleRate", enc_f64(t.source.sample_rate() as f64), 0);
-    let s = &t.source.settings;
-    define(g, o, "echoCancellation", enc_bool(s.echo_cancellation), 0);
-    define(g, o, "noiseSuppression", enc_bool(s.noise_suppression), 0);
-    define(g, o, "autoGainControl", enc_bool(s.auto_gain_control), 0);
-    define(g, o, "canProcess", enc_bool(can_process()), 0);
-    define(g, o, "ended", enc_bool(t.ended()), 0);
-    o
-}
-
 /// A one-shot advisory on stderr (each text once per process).
 fn advise_once(text: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     if SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock().unwrap().insert(text.to_string()) {
         eprintln!("[redjs] advisory: {text}");
     }
-}
-
-/// `advise(text)`: [`advise_once`].
-#[crate::host_fn]
-unsafe fn n_advise(g: *mut c_void, cf: *mut c_void) -> u64 {
-    if let Some(text) = read_string(g, cf_arg(cf, 0)) {
-        advise_once(&text);
-    }
-    UNDEF
 }
 
 /// [`capture_processing_available`], or a test's own factory.
@@ -1784,12 +1685,6 @@ fn can_process() -> bool {
     capture_processing_available()
 }
 
-/// `canProcess()`: [`can_process`].
-#[crate::host_fn]
-unsafe fn n_can_process(_g: *mut c_void, _cf: *mut c_void) -> u64 {
-    enc_bool(can_process())
-}
-
 /// Deliver finished opens and self-ended tracks, after starting the opens a
 /// prompt has just allowed. A relaxed load or two when idle.
 pub unsafe fn pump(g: *mut c_void) {
@@ -1797,7 +1692,7 @@ pub unsafe fn pump(g: *mut c_void) {
     if !WORK.load(Ordering::Acquire) {
         return;
     }
-    let Some(st) = state_of(g) else { return };
+    if state_of(g).is_none() { return; }
     WORK.store(false, Ordering::Release);
     let opened = drain_opened(g as usize);
     let ended = drain_ended(g as usize);
@@ -1806,21 +1701,11 @@ pub unsafe fn pump(g: *mut c_void) {
     if others {
         WORK.store(true, Ordering::Release);
     }
-    let settle = get(g, st.hooks, "settle");
-    for (token, r) in opened {
-        let args = match r {
-            OpenResult::Ok(id) => [enc_f64(token as f64), new_handle(g, id), UNDEF, UNDEF],
-            OpenResult::Err(name, msg) => [enc_f64(token as f64), NULL, js_string(g, name), js_string(g, &msg)],
-        };
-        if let Err(e) = call(g, settle, st.hooks, &args) {
-            report(g, e);
-        }
+    for (token, result) in opened {
+        surface::settle(g, token, result);
     }
-    let on_ended = get(g, st.hooks, "ended");
     for id in ended {
-        if let Err(e) = call(g, on_ended, st.hooks, &[enc_f64(id as f64)]) {
-            report(g, e);
-        }
+        surface::ended(g, id);
     }
 }
 
@@ -1830,47 +1715,8 @@ unsafe fn report(g: *mut c_void, e: u64) {
     eprintln!("[redjs] mediastream: {}", read_string(g, msg).unwrap_or_default());
 }
 
-const MS_JS: &str = include_str!("mediastream.js");
-
-/// After `audio::install` and `mediadevices::install`: the script extends
-/// `AudioContext.prototype` and replaces `MediaDevices.prototype.getUserMedia`.
 pub unsafe fn install(g: *mut c_void) {
-    let handle_cls = make_host_class::<TrackHandle>("MediaStreamTrackHandle");
-    let natives = new_object(g, UNDEF);
-    let fns: &[(&str, u32, HostFn)] = &[
-        ("open", 6, n_open),
-        ("clone", 1, n_clone),
-        ("stop", 1, n_stop),
-        ("setEnabled", 2, n_set_enabled),
-        ("info", 1, n_info),
-        ("advise", 1, n_advise),
-        ("canProcess", 0, n_can_process),
-        ("sourceNode", 3, super::audio::ms_source_node),
-        ("destNode", 3, super::audio::ms_dest_node),
-    ];
-    for (name, arity, f) in fns {
-        define(g, natives, name, make_fn(g, name, *arity, *f), 0);
-    }
-    // The handle class must be reachable before the script runs.
-    let pending: &'static MsState = Box::leak(Box::new(MsState { handle_cls, hooks: UNDEF }));
-    states().lock().unwrap().insert(g as usize, pending);
-
-    let mut factory = 0u64;
-    let name = "redjs/mediastream.js";
-    let rc = glue::rjs_eval8(g, MS_JS.as_ptr(), MS_JS.len(), name.as_ptr(), name.len(), &mut factory);
-    if rc == 1 {
-        report(g, factory);
-        return;
-    }
-    match call(g, factory, UNDEF, &[glue::rjs_global(g), natives]) {
-        Ok(hooks) if is_cell(hooks) => {
-            crate::ffi::redjs_protect(g, hooks);
-            let st: &'static MsState = Box::leak(Box::new(MsState { handle_cls, hooks }));
-            states().lock().unwrap().insert(g as usize, st);
-        }
-        Ok(_) => eprintln!("[redjs] mediastream.js returned no hooks"),
-        Err(e) => report(g, e),
-    }
+    surface::install(g);
 }
 
 #[cfg(test)]
@@ -2202,6 +2048,38 @@ mod jsc_tests {
         assert!(throws(&c, "new MediaStreamTrack()").contains("Illegal constructor"));
         ok(&c, "new OverconstrainedError('deviceId', 'm').constraint === 'deviceId'");
         ok(&c, "new OverconstrainedError('x') instanceof DOMException && new OverconstrainedError('x').name === 'OverconstrainedError'");
+    }
+
+    #[test]
+    fn media_handler_attributes_keep_their_place_and_fire_once() {
+        let c = ctx();
+        ok(&c, "(() => {
+            const stream = new MediaStream(), seen = [];
+            const handler = () => seen.push('handler');
+            stream.addEventListener('addtrack', () => seen.push('first'));
+            stream.onaddtrack = () => seen.push('old');
+            stream.addEventListener('addtrack', () => seen.push('last'));
+            stream.onaddtrack = handler;
+            stream.removeEventListener('addtrack', handler);
+            stream.dispatchEvent(new Event('addtrack'));
+            stream.onaddtrack = null;
+            stream.dispatchEvent(new Event('addtrack'));
+            return seen.join() === 'first,handler,last,first,last';
+        })()");
+    }
+
+    #[test]
+    fn inherited_capture_constraints_survive_cloning_and_throwing_getters_reject() {
+        let c = ctx();
+        let src = remote_source("Remote", 1, 48_000);
+        hand_over(&c, &src, "__track");
+        assert_eq!(run(&c, "const values = Object.create({ sampleRate: 44100 });
+            await __track.applyConstraints(values);
+            const copy = __track.clone();
+            const reason = new Error('read');
+            try { await __track.applyConstraints({ get deviceId() { throw reason; } }); }
+            catch (e) { return [e === reason, copy.getConstraints().sampleRate, __track.getConstraints().sampleRate].join(); }
+            return 'resolved';"), "true,44100,44100");
     }
 
     #[test]

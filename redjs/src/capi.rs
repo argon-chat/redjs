@@ -161,6 +161,14 @@ extern "C" {
     pub fn JSClassCreate(definition: *const JSClassDefinition) -> JSClassRef;
     pub fn JSClassRelease(js_class: JSClassRef);
     pub fn JSObjectMake(ctx: JSContextRef, js_class: JSClassRef, data: *mut c_void) -> JSObjectRef;
+    #[cfg(feature = "audio")]
+    pub fn JSWeakObjectMapCreate(ctx: JSContextRef, data: *mut c_void, destroyed: unsafe extern "C" fn(*mut c_void, *mut c_void)) -> *mut c_void;
+    #[cfg(feature = "audio")]
+    pub fn JSWeakObjectMapSet(ctx: JSContextRef, map: *mut c_void, key: *mut c_void, object: JSObjectRef);
+    #[cfg(feature = "audio")]
+    pub fn JSWeakObjectMapGet(ctx: JSContextRef, map: *mut c_void, key: *mut c_void) -> JSObjectRef;
+    #[cfg(feature = "audio")]
+    pub fn JSWeakObjectMapRemove(ctx: JSContextRef, map: *mut c_void, key: *mut c_void);
     pub fn JSObjectGetPrivate(object: JSObjectRef) -> *mut c_void;
     pub fn JSObjectSetPrivate(object: JSObjectRef, data: *mut c_void) -> bool;
     pub fn JSObjectSetPrototype(ctx: JSContextRef, object: JSObjectRef, value: JSValueRef);

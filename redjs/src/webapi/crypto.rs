@@ -82,6 +82,10 @@ unsafe fn random_uuid(g: *mut c_void, cf: *mut c_void) -> u64 {
     if crypto_bag(g, cf_this(cf)).is_none() {
         return throw_type_error(g, "Illegal invocation");
     }
+    new_uuid(g)
+}
+
+pub(super) unsafe fn new_uuid(g: *mut c_void) -> u64 {
     let mut b = [0u8; 16];
     let _ = getrandom::fill(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40; // version 4

@@ -169,6 +169,11 @@ pub unsafe fn create(g: *mut c_void, name: &str, msg: &str) -> u64 {
     make(g, c, c.dom.proto, js_string(g, name), js_string(g, msg), None)
 }
 
+#[cfg(feature = "audio")]
+pub(super) unsafe fn create_for_subclass(g: *mut c_void, proto: u64, name: &str, message: u64) -> u64 {
+    make(g, classes(g).unwrap(), proto, js_string(g, name), message, None)
+}
+
 /// A new `QuotaExceededError` instance (the derived interface, not a
 /// DOMException merely *named* that).
 pub unsafe fn create_quota_exceeded(g: *mut c_void, msg: &str, quota: Option<f64>, requested: Option<f64>) -> u64 {

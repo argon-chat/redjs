@@ -27,7 +27,7 @@ unsafe fn poll_drain(cx: Env, state: u64) {
         cx.g,
         4.,
         Box::new(move |g| {
-            let cx = Env::new(g);
+            let cx = env(g);
             if above_high_water(cx, state) {
                 poll_drain(cx, state);
             } else {
@@ -133,17 +133,7 @@ stream_fn!(construct(cx, cf) throws {
     let args = [cf_arg(cf, 0), protocols];
     let state = cx.record();
     let instance = cx.instance(CLASS, cf_new_target(cf), state)?;
-    let mut socket = UNDEF;
-    if glue::rjs_construct(
-        cx.g,
-        cx.field(methods(cx), "socket"),
-        args.as_ptr(),
-        2,
-        &mut socket,
-    ) != 0
-    {
-        return Err(socket);
-    }
+    let socket = cx.construct(cx.field(methods(cx), "socket"), &args)?;
     cx.put(state, "socket", socket);
     cx.put(state, "url", cx.prop(socket, "url")?);
     cx.put(state, "opened", cx.pending());

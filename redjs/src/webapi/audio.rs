@@ -1838,7 +1838,7 @@ unsafe fn this_engine_handle(g: *mut c_void, cf: *mut c_void) -> Option<u64> {
 
 /// The JSClass a node with prototype `proto` is made with: a child of
 /// `node_cls` named after the node's interface (the tag its prototype chain
-/// carries: `GainNode`, or mediastream.js's `MediaStreamAudioSourceNode`).
+/// carries, such as `GainNode` or `MediaStreamAudioSourceNode`).
 ///
 /// JSC answers an API object's `Symbol.toStringTag` with its JSClass's name
 /// BEFORE it looks at the prototype chain (JSCallbackObject's
@@ -3750,7 +3750,7 @@ unsafe fn engine_of(g: *mut c_void, v: u64) -> Option<u64> {
     host_data::<CtxHandle>(g, classes(g).ctx_cls, v).map(|h| h.0)
 }
 
-/// mediastream.js: `sourceNode(context, trackHandle, proto)` → the native
+/// `sourceNode(context, trackHandle, proto)` → the native
 /// node of a `MediaStreamAudioSourceNode`: a streaming-PCM node at the track's
 /// rate, at most stereo, fed by the track (`mediastream::pipe`). The pcm
 /// channel resamples to this graph's rate, so a 44.1 kHz microphone plays into
@@ -3811,7 +3811,7 @@ pub(crate) fn reaches_destination(start: u64) -> bool {
     false
 }
 
-/// mediastream.js: `destNode(context, proto, channelCount)` → `[node,
+/// `destNode(context, proto, channelCount)` → `[node,
 /// trackHandle]`: a `MediaStreamAudioDestinationNode` and the track it feeds.
 #[crate::host_fn]
 pub(crate) unsafe fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {

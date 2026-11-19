@@ -257,7 +257,7 @@ unsafe fn pipe(cx: Env, r: u64, w: u64, opts: u64) -> JsResult {
 
 #[crate::host_fn]
 pub(super) unsafe fn pipe_to(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let cx = Env::new(g);
+    let cx = env(g);
     cx.promises((|| {
         pipe(
             cx,
@@ -269,7 +269,7 @@ pub(super) unsafe fn pipe_to(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 #[crate::host_fn]
 pub(super) unsafe fn pipe_through(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let cx = Env::new(g);
+    let cx = env(g);
     cx.throws((|| {
         let r = readable::state_of(cx, cf_this(cf))?;
         let pair = cf_arg(cf, 0);

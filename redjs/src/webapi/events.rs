@@ -107,6 +107,7 @@ const L_ONCE: i32 = 1;
 const L_CAPTURE: i32 = 2;
 const L_PASSIVE: i32 = 4;
 const L_REMOVED: i32 = 8;
+const L_ATTRIBUTE: i32 = 16;
 
 const KIND_OBJECT_MIN: u32 = 8; // rjs_kind: 8 object … 13 promise are all objects
 const KIND_FUNCTION: u32 = 9;
@@ -559,7 +560,7 @@ unsafe fn find_entry(g: *mut c_void, list: u64, ty: u64, cb: u64, capture: bool)
     let st = state(g);
     for i in 0..array_len(g, list) {
         let e = get_i(g, list, i);
-        if get_a(g, e, st.a_cb) == cb
+        if entry_flags(g, e) & L_ATTRIBUTE == 0 && get_a(g, e, st.a_cb) == cb
             && ((entry_flags(g, e) & L_CAPTURE) != 0) == capture
             && glue::rjs_strict_equals(g, get_a(g, e, st.a_type), ty) != 0
         {
@@ -567,6 +568,46 @@ unsafe fn find_entry(g: *mut c_void, list: u64, ty: u64, cb: u64, capture: bool)
         }
     }
     None
+}
+
+unsafe fn handler_entry(g: *mut c_void, target: u64, ty: &str) -> u64 {
+    let bag = glue::rjs_private_slot(g, target, state(g).s_handler_entries);
+    if bag == UNDEF { UNDEF } else { get(g, bag, ty) }
+}
+
+#[cfg(feature = "audio")]
+pub(super) unsafe fn ordered_handler(g: *mut c_void, target: u64, ty: &str) -> u64 {
+    let entry = handler_entry(g, target, ty);
+    if entry == UNDEF { NULL } else { get_a(g, entry, state(g).a_cb) }
+}
+
+#[cfg(feature = "audio")]
+pub(super) unsafe fn set_ordered_handler(g: *mut c_void, target: u64, ty: &str, cb: u64) {
+    let st = state(g);
+    let mut bag = glue::rjs_private_slot(g, target, st.s_handler_entries);
+    let entry = if bag == UNDEF { UNDEF } else { get(g, bag, ty) };
+    if !is_callable(g, cb) {
+        if entry != UNDEF {
+            remove_entry(g, target, entry);
+            define(g, bag, ty, UNDEF, 0);
+        }
+        return;
+    }
+    if entry != UNDEF {
+        glue::rjs_define(g, entry, st.a_cb, cb, 0);
+        return;
+    }
+    if bag == UNDEF {
+        bag = new_object(g, NULL);
+        glue::rjs_define(g, target, st.s_handler_entries, bag, 0);
+    }
+    let entry = new_object(g, NULL);
+    glue::rjs_define(g, entry, st.a_type, js_string(g, ty), 0);
+    glue::rjs_define(g, entry, st.a_cb, cb, 0);
+    glue::rjs_define(g, entry, st.a_flags, enc_i32(L_ATTRIBUTE), 0);
+    define(g, bag, ty, entry, 0);
+    let list = listeners_of(g, target, true);
+    glue::rjs_define_index(g, list, array_len(g, list), entry);
 }
 
 #[crate::host_fn]
@@ -770,9 +811,13 @@ unsafe fn invoke(
             if passive {
                 define(g, s, "inPassive", TRUE, 0);
             }
-            if let Err(exc) = call_listener(g, cb, this, event) {
-                crate::errors::report(g, exc, crate::errors::ErrKind::Listener);
-                out.listener_threw = true;
+            match call_listener(g, cb, this, event) {
+                Ok(FALSE) if flags & L_ATTRIBUTE != 0 => set_canceled(g, s),
+                Err(exc) => {
+                    crate::errors::report(g, exc, crate::errors::ErrKind::Listener);
+                    out.listener_threw = true;
+                }
+                _ => {}
             }
             if passive {
                 define(g, s, "inPassive", FALSE, 0);
@@ -788,7 +833,7 @@ unsafe fn invoke(
     // The event handler IDL attribute — a non-capture listener of its own.
     if pass == Pass::Bubbling && !truthy_flag(get(g, s, "stopImmediate")) {
         let handler = get(g, node, &format!("on{type_str}"));
-        if is_callable(g, handler) {
+        if is_callable(g, handler) && handler_entry(g, node, type_str) == UNDEF {
             match call(g, handler, this, &[event]) {
                 // HTML "process return value": `false` cancels (a cancelable event).
                 Ok(rv) if rv == FALSE => set_canceled(g, s),

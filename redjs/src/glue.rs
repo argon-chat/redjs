@@ -284,6 +284,8 @@ extern "C" {
     pub fn rjs_array_length(g: *mut c_void, v: u64, out: *mut u32) -> i32;
     /// Own enumerable string keys as a JS array of strings.
     pub fn rjs_own_keys(g: *mut c_void, obj: u64, out: *mut u64) -> i32;
+    #[cfg(feature = "audio")]
+    pub fn rjs_enumerable_keys(g: *mut c_void, obj: u64, out: *mut u64) -> i32;
     pub fn rjs_function_create(g: *mut c_void, name: *const u16, name_len: usize, arity: u32, sysv_fn: *const c_void, out: *mut u64) -> i32;
     /// Constructable function: `ctor_fn` runs for `new F()`. Inside it the
     /// CallFrame's THIS slot holds new.target (JSC C++-constructor convention).

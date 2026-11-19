@@ -31,7 +31,7 @@ pub(super) unsafe fn tee_impl(cx: Env, obj: u64) -> JsResult {
 }
 #[crate::host_fn]
 pub(super) unsafe fn tee(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let cx = Env::new(g);
+    let cx = env(g);
     cx.throws(tee_impl(cx, cf_this(cf)))
 }
 unsafe fn read(cx: Env, t: u64) {

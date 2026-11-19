@@ -1333,7 +1333,7 @@ extern "C" int32_t rjs_queue_microtask(void* g, uint64_t fn)
 
 // Own enumerable string-keyed property names of an object, as a JS array of
 // strings (the structured serializer / object walking).
-extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
+static int32_t enumerableKeys(void* g, uint64_t obj, bool inherited, uint64_t* out)
 {
     JSGlobalObject* go = G(g);
     VM& vm = go->vm();
@@ -1344,7 +1344,10 @@ extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
     JSObject* o = asObject(base);
     // The Bun fork replaced PropertyNameArray construction with a builder.
     PropertyNameArrayBuilder names(vm, PropertyNameMode::Strings, PrivateSymbolMode::Exclude);
-    o->methodTable()->getOwnPropertyNames(o, go, names, DontEnumPropertiesMode::Exclude);
+    if (inherited)
+        o->getPropertyNames(go, names, DontEnumPropertiesMode::Exclude);
+    else
+        o->methodTable()->getOwnPropertyNames(o, go, names, DontEnumPropertiesMode::Exclude);
     if (takeException(vm, out))
         return RJS_EXCEPTION;
     JSArray* arr = constructEmptyArray(go, nullptr, 0);
@@ -1356,6 +1359,16 @@ extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
     }
     *out = JSValue::encode(JSValue(arr));
     return RJS_OK;
+}
+
+extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
+{
+    return enumerableKeys(g, obj, false, out);
+}
+
+extern "C" int32_t rjs_enumerable_keys(void* g, uint64_t obj, uint64_t* out)
+{
+    return enumerableKeys(g, obj, true, out);
 }
 
 // ---------------------------------------------------------------------------

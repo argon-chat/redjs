@@ -273,23 +273,8 @@ stream_fn!(ctl_terminate(cx, cf) throws {
 });
 
 unsafe fn codec(cx: Env, cf: *mut c_void, decompress: bool) -> JsResult {
-    let format = cf_arg(cf, 0);
-    let mut text = UNDEF;
-    if glue::rjs_to_string(cx.g, format, &mut text) != 0 {
-        return Err(text);
-    }
-    let args = [text, enc_bool(decompress)];
-    let mut zip = UNDEF;
-    if glue::rjs_construct(
-        cx.g,
-        super::super::compression::constructor(cx.g),
-        args.as_ptr(),
-        2,
-        &mut zip,
-    ) != 0
-    {
-        return Err(zip);
-    }
+    let args = [cx.string(cf_arg(cf, 0))?, enc_bool(decompress)];
+    let zip = cx.construct(super::super::compression::constructor(cx.g), &args)?;
     let t = cx.record();
     cx.put(t, "transform", cx.callback(zip_chunk, zip));
     cx.put(t, "flush", cx.callback(zip_flush, zip));

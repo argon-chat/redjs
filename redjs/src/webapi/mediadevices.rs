@@ -435,7 +435,7 @@ unsafe fn info_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// `getCapabilities()` (mediacapture-main §9.2.2): what the audio track of
 /// `getUserMedia({ audio: { deviceId } })` would report from its own
-/// `getCapabilities()`, in the shape and order mediastream.js builds there,
+/// `getCapabilities()`, in the same shape and order as the corresponding track,
 /// from the format a capture of this device runs at. `{}` for the anonymous
 /// entry listed while capture is not allowed (no id: nothing to describe), and
 /// only the ids when the device is gone.
@@ -456,6 +456,11 @@ unsafe fn input_get_capabilities(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((rate, channels)) = super::mediastream::input_format(g as usize, &id) else {
         return out;
     };
+    fill_capabilities(g, out, rate, channels, super::mediastream::capture_processing_available());
+    out
+}
+
+pub(super) unsafe fn fill_capabilities(g: *mut c_void, out: u64, rate: u32, channels: u32, can: bool) {
     let range = |name: &str, min: f64, max: f64| {
         let r = new_object(g, UNDEF);
         define(g, r, "min", enc_f64(min), 0);
@@ -468,7 +473,6 @@ unsafe fn input_get_capabilities(g: *mut c_void, cf: *mut c_void) -> u64 {
     range("latency", 0.01, 0.01);
     // Each switch can be on only when the embedder installed processing
     // (mediastream.rs, "Processing"); Chrome lists `[true, false]`.
-    let can = super::mediastream::capture_processing_available();
     for name in ["echoCancellation", "noiseSuppression", "autoGainControl"] {
         let a = new_array(g);
         if can {
@@ -479,7 +483,6 @@ unsafe fn input_get_capabilities(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         define(g, out, name, a, 0);
     }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -534,15 +537,13 @@ unsafe fn md_enumerate_devices(g: *mut c_void, _cf: *mut c_void) -> u64 {
     resolved_promise(g, arr)
 }
 
-/// Replaced by mediastream.js. Left as the answer if that script ever fails to
-/// install, so the failure is named rather than `undefined is not a function`.
+/// For embedders that install MediaDevices without the audio capture classes.
 #[crate::host_fn]
 unsafe fn md_get_user_media(g: *mut c_void, _cf: *mut c_void) -> u64 {
     super::domexception::rejected(
         g,
         "NotSupportedError",
-        "navigator.mediaDevices.getUserMedia is unavailable: the MediaStream surface \
-         (redjs/mediastream.js) failed to install. See the log for its error.",
+        "navigator.mediaDevices.getUserMedia requires the MediaStream capture classes.",
     )
 }
 

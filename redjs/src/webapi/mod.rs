@@ -45,6 +45,8 @@
 //! `streams::install_surface` must follow both `streams::install` and
 //! `compression::install`, because `CompressionStream` wraps `RedZip`.
 
+#[macro_use]
+mod class_binding;
 pub mod abort;
 #[cfg(feature = "audio")]
 pub mod audio;
@@ -263,6 +265,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let s_crypto = atom_priv(g, "redjs#crypto");
     let s_subtle_crypto = atom_priv(g, "redjs#subtleCrypto");
     let s_listeners = atom_priv(g, "redjs#listeners");
+    let s_handler_entries = atom_priv(g, "redjs#handlerEntries");
     let s_event = atom_priv(g, "redjs#event");
     let s_image = atom_priv(g, "redjs#imageBitmap");
     let s_image_request = atom_priv(g, "redjs#imageRequest");
@@ -297,6 +300,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         s_crypto,
         s_subtle_crypto,
         s_listeners,
+        s_handler_entries,
         s_event,
         s_image,
         s_image_request,
@@ -405,8 +409,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         // After audio: `navigator.mediaDevices` only ever hands out ids that
         // `AudioContext.setSinkId` can select, so the two belong together.
         mediadevices::install(g, et_proto);
-        // After both: `MediaStream`, `getUserMedia` and the two MediaStream
-        // nodes, as a script over `AudioContext` and `MediaDevices`.
+        // MediaStream attaches its nodes to AudioContext and capture to MediaDevices.
         mediastream::install(g);
     }
     // `navigator.permissions` answers from whatever `PermissionHost` the
