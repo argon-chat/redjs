@@ -226,6 +226,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
                 let mut cleanup = cleanup;
                 let result = (|| {
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    let mut pause = std::time::Duration::ZERO;
                     loop {
                         if cb.mapping.lock().unwrap().epoch != epoch {
                             return Err("Buffer mapping was aborted".into());
@@ -237,10 +238,7 @@ unsafe fn map_async(g: *mut c_void, cf: *mut c_void) -> u64 {
                         if std::time::Instant::now() >= deadline {
                             return Err("GPU buffer mapping timed out".into());
                         }
-                        let _ = cc.context.device.poll(wgpu::PollType::Wait {
-                            submission_index: None,
-                            timeout: Some(std::time::Duration::from_millis(10)),
-                        });
+                        let _ = crate::backend::pump(&cc.context.device, &mut pause);
                         cc.check()?;
                     }
                 })();

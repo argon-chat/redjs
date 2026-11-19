@@ -254,14 +254,13 @@ impl Reader {
                 return Ok(false);
             };
             let buffer = lease.allocate(client, layout.bytes)?;
-            let submission = submit_copy(client, &texture, &buffer, layout)?;
+            submit_copy(client, &texture, &buffer, layout)?;
             let job = Job {
                 client: client.clone(),
                 _texture: texture,
                 _service: service.clone(),
                 lease,
                 layout,
-                submission,
                 done: Some(done),
             };
             // Pool reservations bound the channel to at most three jobs even
@@ -285,18 +284,12 @@ struct Job {
     _service: Arc<Service>,
     lease: Lease,
     layout: Layout,
-    submission: wgpu::SubmissionIndex,
     done: Option<Completion>,
 }
 fn worker(receiver: mpsc::Receiver<Job>) {
     for mut job in receiver {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            map_frame(
-                &job.client,
-                job.lease.buffer.as_ref().unwrap(),
-                job.layout,
-                job.submission.clone(),
-            )
+            map_frame(&job.client, job.lease.buffer.as_ref().unwrap(), job.layout)
         }))
         .unwrap_or_else(|_| Err("Native canvas readback failed".into()));
         if result.is_err() {
@@ -356,7 +349,7 @@ fn submit_copy(
     texture: &wgpu::Texture,
     buffer: &wgpu::Buffer,
     layout: Layout,
-) -> Result<wgpu::SubmissionIndex, String> {
+) -> Result<(), String> {
     client.check()?;
     gpu(client, || {
         let mut encoder =
@@ -382,7 +375,7 @@ fn submit_copy(
                 depth_or_array_layers: 1,
             },
         );
-        client.context.queue.submit([encoder.finish()])
+        client.context.queue.submit([encoder.finish()]);
     })
 }
 
@@ -411,7 +404,6 @@ fn map_frame(
     client: &Arc<Client>,
     buffer: &Arc<wgpu::Buffer>,
     layout: Layout,
-    submission: wgpu::SubmissionIndex,
 ) -> Result<Frame, String> {
     client.check()?;
     let mut unmap = Unmap {
@@ -426,6 +418,7 @@ fn map_frame(
         })
     })?;
     let deadline = Instant::now() + TIMEOUT;
+    let mut pause = Duration::ZERO;
     loop {
         client.check()?;
         match receiver.try_recv() {
@@ -441,12 +434,8 @@ fn map_frame(
         if Instant::now() >= deadline {
             return Err("Canvas readback timed out".into());
         }
-        match client.context.device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission.clone()),
-            timeout: Some(Duration::from_millis(10)),
-        }) {
-            Ok(_) | Err(wgpu::PollError::Timeout) => (),
-            Err(error) => return Err(error.to_string()),
+        if let Err(error) = super::backend::pump(&client.context.device, &mut pause) {
+            return Err(error.to_string());
         }
     }
     let view = buffer
@@ -504,8 +493,8 @@ pub(super) fn snapshot_sync(
     catch_unwind(AssertUnwindSafe(|| {
         let layout = Layout::new(client, &texture, format, width, height, opaque)?;
         let buffer = staging(client, layout.bytes)?;
-        let submission = submit_copy(client, &texture, &buffer, layout)?;
-        map_frame(client, &buffer, layout, submission)
+        submit_copy(client, &texture, &buffer, layout)?;
+        map_frame(client, &buffer, layout)
     }))
     .unwrap_or_else(|_| Err("Native canvas snapshot failed".into()))
 }

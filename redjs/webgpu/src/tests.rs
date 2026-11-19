@@ -902,3 +902,6 @@ mod external_tests;
 
 #[path = "command_tests.rs"]
 mod command_tests;
+
+#[path = "poll_tests.rs"]
+mod poll_tests;

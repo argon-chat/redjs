@@ -1229,16 +1229,21 @@ unsafe fn on_submitted_work_done(g: *mut c_void, cf: *mut c_void) -> u64 {
             g,
             vec![cf_this(cf)],
             async move {
-                context
-                    .device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: None,
-                        timeout: Some(Duration::from_secs(30)),
-                    })
-                    .map_err(|e| e.to_string())?;
-                rx.recv_timeout(Duration::from_secs(30))
-                    .map_err(|e| e.to_string())?;
-                Ok(())
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                let mut pause = Duration::ZERO;
+                loop {
+                    match rx.try_recv() {
+                        Ok(()) => return Ok(()),
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            return Err("The work-done callback was lost".into())
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err("Waiting for submitted work timed out".into());
+                    }
+                    backend::pump(&context.device, &mut pause).map_err(|e| e.to_string())?;
+                }
             },
             |_g, ()| UNDEF,
         ))

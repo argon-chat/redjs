@@ -293,6 +293,21 @@ pub fn scoped<T>(device: &wgpu::Device, operation: impl FnOnce() -> T) -> (T, Op
     (result, error)
 }
 
+/// One step of waiting for `device`'s callbacks: a pause, growing from none to 1 ms, then a
+/// non-blocking poll. Never a timed `PollType::Wait`: wgpu-core panics when such a wait times
+/// out and another thread's poll meanwhile retires every submission in flight.
+pub(crate) fn pump(
+    device: &wgpu::Device,
+    pause: &mut std::time::Duration,
+) -> Result<wgpu::PollStatus, wgpu::PollError> {
+    std::thread::sleep(*pause);
+    *pause = (*pause * 2).clamp(
+        std::time::Duration::from_micros(50),
+        std::time::Duration::from_millis(1),
+    );
+    device.poll(wgpu::PollType::Poll)
+}
+
 #[derive(Clone, Debug)]
 pub struct GpuError {
     /// WebGPU filter spelling: validation / out-of-memory / internal.
