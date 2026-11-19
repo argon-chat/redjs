@@ -305,6 +305,9 @@ fn main() {
         if env::var_os("CARGO_FEATURE_NO_WASM").is_some() {
             glue.define("REDJS_NO_WASM", "1");
         }
+        if env::var_os("CARGO_FEATURE_NO_INTERPRETER").is_some() {
+            glue.define("REDJS_NO_INTERPRETER", "1");
+        }
         println!("cargo:rerun-if-changed=cpp/aot_support.cpp");
         println!("cargo:rerun-if-changed=cpp/aot.cpp");
         println!("cargo:rerun-if-changed=cpp/aot");
@@ -537,12 +540,31 @@ const ICU_ROOT_LIB: &str = "redjs_icudata_root";
 const NO_JIT_LIB: &str = "JavaScriptCoreNoJIT";
 
 /// `no-jit`: the archive scripts/aot/no-jit.ts made for this engine. Its receipt names the engine,
-/// what it leaves out (the JIT, and WebAssembly exactly when `no-wasm` is on) and the symbols their
+/// exactly what the Cargo features leave out and the symbols their
 /// references now point at, which aot_support.cpp defines.
 fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
     println!("cargo:rerun-if-env-changed=REDJS_NO_JIT_DIR");
     assert!(platform == "windows-amd64", "the no-jit feature is Windows x64 only");
-    let fix = "Make one with `bun scripts/aot/no-jit.ts --out <dir>` in a Skathi checkout and set REDJS_NO_JIT_DIR to it.";
+    let mut removed = vec!["JIT"];
+    let mut stubs = vec![("entry.JIT", "redjs_removed_jit_entry")];
+    if env::var_os("CARGO_FEATURE_NO_WASM").is_some() {
+        removed.push("WebAssembly");
+        stubs.extend([
+            ("entry.WebAssembly", "redjs_removed_wasm_entry"),
+            ("host-function.WebAssembly", "redjs_removed_wasm_host_function"),
+            ("skip.WebAssembly", "redjs_removed_wasm_skip"),
+        ]);
+    }
+    if env::var_os("CARGO_FEATURE_NO_INTERPRETER").is_some() {
+        removed.push("Interpreter");
+        stubs.extend([
+            ("entry.Interpreter", "redjs_removed_interpreter_entry"),
+            ("host-function.Interpreter", "redjs_removed_interpreter_host_function"),
+            ("skip.Interpreter", "redjs_removed_interpreter_skip"),
+        ]);
+    }
+    let removed = removed.join(",");
+    let fix = format!("Make one with `bun scripts/aot/no-jit.ts --out <dir> --remove {removed}` in a Skathi checkout and set REDJS_NO_JIT_DIR to it.");
     let dir = PathBuf::from(
         env::var_os("REDJS_NO_JIT_DIR")
             .unwrap_or_else(|| panic!("\n\nthe no-jit feature needs REDJS_NO_JIT_DIR: the JIT-free JavaScriptCore archive.\n{fix}\n")),
@@ -557,26 +579,11 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
         "\n\n{} was made for another engine than pins.txt names.\n{fix}\n",
         dir.display()
     );
-    let no_wasm = env::var_os("CARGO_FEATURE_NO_WASM").is_some();
-    let (removed, stubs): (&str, &[(&str, &str)]) = if no_wasm {
-        (
-            "JIT,WebAssembly",
-            &[
-                ("entry.JIT", "redjs_removed_jit_entry"),
-                ("entry.WebAssembly", "redjs_removed_wasm_entry"),
-                ("host-function.WebAssembly", "redjs_removed_wasm_host_function"),
-                ("skip.WebAssembly", "redjs_removed_wasm_skip"),
-            ],
-        )
-    } else {
-        ("JIT", &[("entry.JIT", "redjs_removed_jit_entry")])
-    };
     assert!(
-        field("removed") == Some(removed) && stubs.iter().all(|(key, symbol)| field(key) == Some(symbol)),
-        "\n\n{} leaves out {}, and this build leaves out {removed}.\n{fix}{}\n",
+        field("removed") == Some(removed.as_str()) && stubs.iter().all(|(key, symbol)| field(key) == Some(symbol)),
+        "\n\n{} leaves out {}, and this build leaves out {removed}.\n{fix}\n",
         dir.display(),
-        field("removed").unwrap_or("nothing it names"),
-        if no_wasm { "" } else { " Pass --remove JIT for an archive that keeps WebAssembly." }
+        field("removed").unwrap_or("nothing it names")
     );
     let archive = dir.join(format!("{NO_JIT_LIB}.lib"));
     assert!(archive.is_file(), "\n\n{} is missing.\n{fix}\n", archive.display());

@@ -1,8 +1,7 @@
 // The AOT-era JSC archive delegates trimming policy to its embedder. redjs
 // declares removed what its link leaves out: the image compiler unless the
-// aot-compiler feature asks for it, the JIT with no-jit, and WebAssembly with
-// no-wasm. Nothing is cut out of the binary by address range, so isTrimmed
-// stays 0.
+// aot-compiler feature asks for it, the JIT with no-jit, WebAssembly with
+// no-wasm, and the bytecode interpreter with no-interpreter.
 #include "config.h"
 #include <JavaScriptCore/AOTRemovableFeature.h>
 #include <JavaScriptCore/Error.h>
@@ -37,6 +36,11 @@ static consteval RemovableFeatureState removableFeatureState()
 #endif
 #if REDJS_NO_WASM
     remove(RemovableFeature::WebAssembly);
+#endif
+#if REDJS_NO_INTERPRETER
+    // LLInt initializes only the opcode maps of the interpreters the executable still carries.
+    state.isTrimmed = 1;
+    remove(RemovableFeature::Interpreter);
 #endif
     (void)remove;
     return state;
@@ -88,6 +92,20 @@ extern "C" void redjs_removed_wasm_skip() { }
 extern "C" EncodedJSValue JSC_HOST_CALL_ATTRIBUTES redjs_removed_wasm_host_function(JSGlobalObject* global, CallFrame*)
 {
     return Bun__throwForRemovedFeature(global, static_cast<uint16_t>(RemovableFeature::WebAssembly));
+}
+#endif
+
+#if REDJS_NO_INTERPRETER
+extern "C" [[noreturn]] void redjs_removed_interpreter_entry()
+{
+    Bun__abortForRemovedFeature(static_cast<uint16_t>(RemovableFeature::Interpreter));
+}
+
+extern "C" void redjs_removed_interpreter_skip() { }
+
+extern "C" EncodedJSValue JSC_HOST_CALL_ATTRIBUTES redjs_removed_interpreter_host_function(JSGlobalObject* global, CallFrame*)
+{
+    return Bun__throwForRemovedFeature(global, static_cast<uint16_t>(RemovableFeature::Interpreter));
 }
 #endif
 

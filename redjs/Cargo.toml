@@ -136,6 +136,8 @@ no-jit = []
 # With no-jit: no WebAssembly either. The engine starts with WebAssembly off, so `WebAssembly` is
 # undefined; the archive's WebAssembly entry points abort and its built-ins throw.
 no-wasm = ["no-jit"]
+# Experimental Windows x64 image runtime. Executing JS source reaches a removed entry point.
+no-interpreter = ["native-aot", "no-wasm"]
 # Links only the root locale of ICU's data (icu-root.txt, ~3 MB instead of ~11.5 MB) on Windows
 # and Linux; the full package is written beside the binaries as icudt<NN>l.dat for the embedder to
 # ship and hand over with `icu::set_common_data`. No effect on macOS, which uses the system ICU.
