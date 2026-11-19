@@ -89,6 +89,19 @@ unsafe extern "C" {
         profile: u32,
     ) -> u32;
     fn rjs_aot_load_handle_with_profile(file: isize, identity: *const u8, profile: u32) -> u32;
+    fn rjs_aot_load_handle_at_with_profile(
+        file: isize,
+        offset: u64,
+        length: u64,
+        identity: *const u8,
+        profile: u32,
+    ) -> u32;
+    fn rjs_aot_load_mapped_with_profile(
+        bytes: *const u8,
+        length: usize,
+        identity: *const u8,
+        profile: u32,
+    ) -> u32;
     fn rjs_aot_memory_settings(
         structure_heap_kb: *mut u64,
         cell_cage_mb: *mut u64,
@@ -252,6 +265,10 @@ pub unsafe fn load_image_file_with_profile(
     let descriptor = file.as_raw_fd() as isize;
     let verdict =
         unsafe { rjs_aot_load_handle_with_profile(descriptor, identity.as_ptr(), profile as u32) };
+    verdict_result(verdict, profile)
+}
+
+fn verdict_result(verdict: u32, profile: MemoryProfile) -> Result<(), String> {
     if verdict == 1 {
         Ok(())
     } else {
@@ -259,6 +276,62 @@ pub unsafe fn load_image_file_with_profile(
             "native AOT image rejected (verdict {verdict}, memory profile {profile:?})"
         ))
     }
+}
+
+/// Like [`load_image_file_with_profile`] for an image stored inside a larger file, such as a
+/// section of a container: `length` bytes at `offset`, both multiples of the page size.
+///
+/// # Safety
+/// The requirements of [`load_image_file_with_profile`] apply to that range of the file.
+pub unsafe fn load_image_file_range_with_profile(
+    file: &std::fs::File,
+    offset: u64,
+    length: u64,
+    identity: [u8; 16],
+    profile: MemoryProfile,
+) -> Result<(), String> {
+    anchor_icu();
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
+    #[cfg(windows)]
+    use std::os::windows::io::AsRawHandle;
+    #[cfg(windows)]
+    let descriptor = file.as_raw_handle() as isize;
+    #[cfg(unix)]
+    let descriptor = file.as_raw_fd() as isize;
+    let verdict = unsafe {
+        rjs_aot_load_handle_at_with_profile(
+            descriptor,
+            offset,
+            length,
+            identity.as_ptr(),
+            profile as u32,
+        )
+    };
+    verdict_result(verdict, profile)
+}
+
+/// Uses an image the OS loader already mapped as read-only and executable sections of the
+/// running executable, in place. The engine refuses one that lies anywhere else.
+///
+/// # Safety
+/// The native-code trust and ABI requirements of [`load_image`] apply; check the bytes against
+/// the trusted manifest first. They stay mapped and unchanged for the life of the process.
+pub unsafe fn load_mapped_image_with_profile(
+    bytes: &'static [u8],
+    identity: [u8; 16],
+    profile: MemoryProfile,
+) -> Result<(), String> {
+    anchor_icu();
+    let verdict = unsafe {
+        rjs_aot_load_mapped_with_profile(
+            bytes.as_ptr(),
+            bytes.len(),
+            identity.as_ptr(),
+            profile as u32,
+        )
+    };
+    verdict_result(verdict, profile)
 }
 
 /// Read-only diagnostics for the image on this VM thread; no initialization.
@@ -424,5 +497,27 @@ mod tests {
             10
         );
         assert!(memory_settings().is_none());
+    }
+    #[test]
+    fn image_ranges_outside_their_file_are_refused_before_initialization() {
+        let path = std::env::temp_dir().join(format!("redjs-aot-range-{}", std::process::id()));
+        std::fs::write(&path, [0u8; 4096]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        for (offset, length) in [(4096, 4096), (0, 8192), (0, 0)] {
+            let error = unsafe {
+                load_image_file_range_with_profile(
+                    &file,
+                    offset,
+                    length,
+                    [0; 16],
+                    MemoryProfile::Default,
+                )
+            }
+            .unwrap_err();
+            assert!(error.contains("verdict 4"), "{offset}+{length}: {error}");
+        }
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        assert!(!is_active());
     }
 }
