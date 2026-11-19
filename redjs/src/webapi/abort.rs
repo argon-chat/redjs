@@ -38,14 +38,14 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 }
 
 unsafe fn slots_of(g: *mut c_void, obj: u64) -> u64 {
-    get_a(g, obj, classes(g).s_abort)
+    glue::rjs_private_slot(g, obj, classes(g).s_abort)
 }
 
 /// Creates a signal object (proto → AbortSignal.prototype → EventTarget).
-unsafe fn new_signal(g: *mut c_void, aborted: bool, reason: u64) -> u64 {
+pub(super) unsafe fn new_signal(g: *mut c_void, aborted: bool, reason: u64) -> u64 {
     let c = classes(g);
     let sig = new_object(g, c.signal.proto);
-    let slots = new_object(g, UNDEF);
+    let slots = new_object(g, NULL);
     define(g, slots, "aborted", enc_bool(aborted), 0);
     define(g, slots, "reason", reason, 0);
     glue::rjs_define(g, sig, c.s_abort, slots, 0);
@@ -84,9 +84,7 @@ pub unsafe fn abort_signal(g: *mut c_void, sig: u64, reason: u64) {
 }
 
 unsafe fn run_abort_steps(g: *mut c_void, sig: u64, slots: u64) {
-    // DOM "signal abort" step: the abort algorithms run BEFORE `abort` fires,
-    // and the list is emptied. Today's only algorithm: remove an event
-    // listener that was added with `{ signal }`.
+    // DOM abort algorithms run before the signal dispatches its event.
     let removals = get(g, slots, "removals");
     if is_cell(removals) {
         define(g, slots, "removals", UNDEF, 0);
@@ -95,6 +93,18 @@ unsafe fn run_abort_steps(g: *mut c_void, sig: u64, slots: u64) {
         while i + 1 < n {
             events::remove_entry(g, get_i(g, removals, i), get_i(g, removals, i + 1));
             i += 2;
+        }
+    }
+    let algorithms = get(g, slots, "algorithms");
+    if algorithms != UNDEF {
+        let reason = get(g, slots, "reason");
+        define(g, slots, "algorithms", UNDEF, 0);
+        for i in 0..array_len(g, algorithms) {
+            let entry = get_i(g, algorithms, i);
+            let callback = get(g, entry, "callback");
+            if callback != UNDEF {
+                let _ = call(g, callback, UNDEF, &[reason]);
+            }
         }
     }
     let ev = events::new_trusted_event(g, "abort");
@@ -132,6 +142,38 @@ pub unsafe fn on_abort_remove_listener(g: *mut c_void, sig: u64, target: u64, en
     let n = array_len(g, removals);
     set_i(g, removals, n, target);
     set_i(g, removals, n + 1, entry);
+}
+
+pub(super) unsafe fn reason(g: *mut c_void, signal: u64) -> u64 {
+    get(g, slots_of(g, signal), "reason")
+}
+
+pub(super) unsafe fn add_algorithm(g: *mut c_void, sig: u64, callback: u64) -> u64 {
+    let slots = slots_of(g, sig);
+    let mut list = get(g, slots, "algorithms");
+    if list == UNDEF {
+        list = new_array(g);
+        define(g, slots, "algorithms", list, 0);
+    }
+    let entry = new_object(g, NULL);
+    define(g, entry, "callback", callback, 0);
+    glue::rjs_define_index(g, list, array_len(g, list), entry);
+    entry
+}
+
+pub(super) unsafe fn remove_algorithm(g: *mut c_void, sig: u64, entry: u64) {
+    define(g, entry, "callback", UNDEF, 0);
+    let list = get(g, slots_of(g, sig), "algorithms");
+    if list == UNDEF {
+        return;
+    }
+    let n = array_len(g, list);
+    if let Some(i) = (0..n).find(|&i| get_i(g, list, i) == entry) {
+        for j in i + 1..n {
+            glue::rjs_define_index(g, list, j - 1, get_i(g, list, j));
+        }
+        glue::rjs_set(g, list, key(g, "length"), enc_f64((n - 1) as f64));
+    }
 }
 
 /// Spec: "a new `AbortError` / `TimeoutError` DOMException".
@@ -255,7 +297,7 @@ unsafe fn sig_static_timeout(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn ctrl_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let obj = ordinary_create(g, cf_new_target(cf), c.controller.proto);
-    let slots = new_object(g, UNDEF);
+    let slots = new_object(g, NULL);
     define(g, slots, "signal", new_signal(g, false, UNDEF), 0);
     glue::rjs_define(g, obj, c.s_abort, slots, 0);
     obj

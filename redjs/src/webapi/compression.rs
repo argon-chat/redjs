@@ -368,6 +368,10 @@ unsafe fn this_zip<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut ZipDat
     host_data::<ZipData>(g, classes(g).cls, cf_this(cf))
 }
 
+pub(super) unsafe fn constructor(g: *mut c_void) -> u64 {
+    classes(g).class.ctor
+}
+
 #[crate::host_fn]
 unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);

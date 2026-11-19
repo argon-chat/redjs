@@ -177,6 +177,7 @@ extern "C" {
     pub fn rjs_get_v(g: *mut c_void, obj: u64, key: u64, out: *mut u64) -> i32;
     pub fn rjs_has_own_v(g: *mut c_void, obj: u64, key: u64, exc: *mut u64) -> i32;
     pub fn rjs_define_v(g: *mut c_void, obj: u64, key: u64, val: u64) -> i32;
+    pub fn rjs_private_slot(g: *mut c_void, obj: u64, atom: *mut c_void) -> u64;
     pub fn rjs_get_own_data(g: *mut c_void, obj: u64, atom: *mut c_void, out: *mut u64) -> i32;
     pub fn rjs_string_latin1(g: *mut c_void, p: *const u8, len: usize, out: *mut u64) -> i32;
     pub fn rjs_view_buffer(g: *mut c_void, v: u64, out: *mut u64) -> i32;
@@ -301,5 +302,10 @@ extern "C" {
     pub fn rjs_arraybuffer_info(g: *mut c_void, v: u64, out: *mut RjsAbInfo) -> i32;
     pub fn rjs_arraybuffer_detach(g: *mut c_void, v: u64) -> i32;
 
+    pub fn rjs_async_iterator_prototype(g: *mut c_void) -> u64;
+    pub fn rjs_promise_pending(g: *mut c_void) -> u64;
+    pub fn rjs_promise_settle(g: *mut c_void, promise: u64, value: u64, rejected: bool);
+    pub fn rjs_promise_mark_handled(g: *mut c_void, promise: u64);
+    pub fn rjs_promise_chain(g: *mut c_void, value: u64, fulfilled: u64, rejected: u64) -> u64;
     pub fn rjs_promise_info(g: *mut c_void, v: u64, status_out: *mut u32, result_out: *mut u64) -> i32;
 }

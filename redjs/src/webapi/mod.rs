@@ -27,7 +27,7 @@
 //! `navigator` (a real Navigator whose `userAgent` and `onLine` the embedder
 //! sets, see [`navigator`]), DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, `structuredClone`
 //! over a byte-level structured serializer (see [`serialize`]), the
-//! Streams queueing cores and the gzip/deflate codec, and the alert / confirm /
+//! Streams classes and the gzip/deflate codec, and the alert / confirm /
 //! prompt host hooks. Console formatting and host element brands are native. Embedders
 //! built without the canvas feature get the pixel-copy fallback from `bootstrap.js`.
 //!
@@ -39,11 +39,6 @@
 //! `sessionStorage` / `StorageEvent` (`storages`, see [`storage`]) and
 //! `navigator.clipboard` (`clipboard`, see [`clipboard`]). Both read through a
 //! host trait declared here, exactly as [`permissions`] does.
-//!
-//! One more embedded script, `streams.js`, is NOT a stub: it is the
-//! promise-shaped surface of the Streams classes over the Rust state machine in
-//! [`streams`]. See that module's header for what is in Rust, what stayed in JS,
-//! and why.
 //!
 //! Install order: `web::install` (timers/rAF/performance) must come first —
 //! image loading and bootstrap use the scheduler. Within this function
@@ -381,15 +376,10 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     path2d::install(g);
     xmlser::install(g);
     dialogs::install(g);
+    abort::install(g, et_proto);
     streams::install(g);
     compression::install(g);
-    // Needs RedReadableCore/RedWritableCore AND RedZip to exist first. Fatal
-    // like bootstrap.js: a context without ReadableStream is not the shape
-    // anything downstream is written against, and a half-installed environment
-    // fails later and further away than the install does.
-    if streams::install_surface(g) != 0 {
-        return 1;
-    }
+    streams::install_surface(g);
     // `Blob.prototype.stream` builds on the ReadableStream that just appeared.
     blob::install_stream(g);
     uievents::install(g, ev_proto);
@@ -419,7 +409,6 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         // nodes, as a script over `AudioContext` and `MediaDevices`.
         mediastream::install(g);
     }
-    abort::install(g, et_proto);
     // `navigator.permissions` answers from whatever `PermissionHost` the
     // embedder installed (possibly none, possibly not yet) — the hook is read
     // per call, so install order here is free.

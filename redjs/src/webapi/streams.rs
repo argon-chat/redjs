@@ -1,40 +1,4 @@
-//! The WHATWG Streams queueing and backpressure state machine, in Rust
-//! (`RedReadableCore` / `RedWritableCore`), plus the queue-with-sizes it rests
-//! on (Streams Standard §8.1).
-//!
-//! # The split, and why it is where it is
-//!
-//! Streams is the one API on the list where the division is not obvious, so
-//! here is the reasoning and the cost.
-//!
-//! The user-facing protocol is promises over **user callbacks**: `pull`,
-//! `write`, `transform` and `size` are functions the author supplies, and every
-//! method hands back a promise. None of that can leave JS — a promise is a JS
-//! object, and a chunk is an arbitrary JS value.
-//!
-//! What *can* leave JS, and does here, is everything that decides: the queue
-//! and its running total, the readable/writable state machines, the
-//! close/error/in-flight bookkeeping, and the backpressure computation. Those
-//! are the parts with genuinely tricky invariants — and they are testable
-//! without a JS context at all, which the tests below do.
-//!
-//! **The cost.** The obvious objection is per-chunk boundary crossings, which
-//! this repo has measured as the dominant cost elsewhere. That measurement is
-//! from the UI layout seam, which goes JS↔wasm with allocation on both sides.
-//! It does not apply here: these are `extern "sysv64"` host functions called
-//! directly by JSC, ~2 ns each (`src/web.rs`), so a chunk costs a handful of
-//! nanoseconds of decision-making. Chunk VALUES never cross at all — they stay
-//! in a JS array held by a private slot on the controller, so there is no
-//! marshalling and no GC protect/unprotect per chunk either.
-//!
-//! **What was NOT moved, and why.** The promise sequencing itself stays in JS
-//! (`src/streams.js`). Doing it from Rust means creating promises, storing
-//! resolve/reject pairs, and attaching reaction handlers through JSC by hand
-//! for `pipeTo`, `tee` and the writable in-flight-request dance. That is several
-//! times more unsafe Rust for identical observable behaviour, in the part of the
-//! repo the ground rules single out as hard to verify. The state that can be
-//! got wrong silently is in Rust; the plumbing that fails loudly if it is wrong
-//! is in JS.
+//! Native WHATWG Streams interfaces and their queueing and backpressure state machines.
 
 use core::ffi::c_void;
 use std::collections::{HashMap, VecDeque};
@@ -42,14 +6,21 @@ use std::sync::{Mutex, OnceLock};
 
 use super::util::*;
 use crate::capi;
+#[macro_use]
+mod binding;
+mod iter;
+mod pipe;
+mod readable;
+mod strategy;
+mod tee;
+mod transform;
+mod writable;
 
 // ---------------------------------------------------------------------------
 // Queue with sizes (spec §8.1)
 // ---------------------------------------------------------------------------
 
-/// Only the SIZES live here. The chunk values stay in a JS array on the
-/// controller, so a chunk never crosses the boundary and never needs a GC
-/// protect — the queue and the values are kept in lockstep by index.
+/// Sizes mirror the chunk queue. The corresponding values live in JSC's GC heap.
 #[derive(Default, Debug)]
 pub struct SizeQueue {
     sizes: VecDeque<f64>,
@@ -314,6 +285,8 @@ impl WritableCore {
 // ---------------------------------------------------------------------------
 
 struct StreamClasses {
+    slot: *mut c_void,
+    interfaces: u64,
     readable_cls: capi::JSClassRef,
     readable: Class,
     writable_cls: capi::JSClassRef,
@@ -677,35 +650,21 @@ pub unsafe fn install(g: *mut c_void) {
         ],
     });
 
+    let slot = atom_priv(g, "redjs#stream");
+    let interfaces = new_object(g, NULL);
+    crate::glue::rjs_define(g, crate::glue::rjs_global(g), slot, interfaces, 0);
     let boxed: &'static StreamClasses =
-        Box::leak(Box::new(StreamClasses { readable_cls, readable, writable_cls, writable }));
+        Box::leak(Box::new(StreamClasses { slot, interfaces, readable_cls, readable, writable_cls, writable }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 
-/// The promise-shaped surface over the cores above. Evaluated AFTER
-/// `compression::install` because `CompressionStream` wraps `RedZip`.
-const STREAMS_JS: &str = include_str!("../streams.js");
-
-pub unsafe fn install_surface(g: *mut c_void) -> i32 {
-    let mut out = 0u64;
-    let url = "redjs/streams.js";
-    let rc = crate::glue::rjs_eval8(
-        g,
-        STREAMS_JS.as_ptr(),
-        STREAMS_JS.len(),
-        url.as_ptr(),
-        url.len(),
-        &mut out,
-    );
-    if rc == 1 {
-        let (mut msg, mut stack) = (0u64, 0u64);
-        crate::glue::rjs_error_info(g, out, &mut msg, &mut stack);
-        let m = read_string(g, msg).unwrap_or_default();
-        let s = read_string(g, stack).unwrap_or_default();
-        eprintln!("[redjs] streams.js failed: {m}\n{s}");
-        return 1;
-    }
-    0
+pub unsafe fn install_surface(g: *mut c_void) {
+    let cx = binding::Env::new(g);
+    strategy::install(cx);
+    readable::install(cx);
+    writable::install(cx);
+    iter::install(cx);
+    transform::install(cx);
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +875,44 @@ mod jsc_tests {
         // meaningless — they all rest on `<pending>` being observable.
         let c = ctx();
         assert_eq!(run(&c, "await new Promise(() => {}); return 1;"), "<pending>");
+    }
+
+    #[test]
+    fn native_stream_slots_are_own_and_do_not_invoke_proxy_traps() {
+        let c = ctx();
+        ok(&c, "(() => {
+            const stream = new ReadableStream();
+            let traps = 0;
+            const proxy = new Proxy(stream, { getOwnPropertyDescriptor() { ++traps; } });
+            for (const receiver of [proxy, Object.create(stream)]) {
+                try { ReadableStream.prototype.getReader.call(receiver); return false; }
+                catch (error) { if (!(error instanceof TypeError)) return false; }
+            }
+            return !traps && !stream.locked && !Object.getOwnPropertySymbols(stream).length;
+        })()");
+    }
+
+    #[test]
+    fn internal_pipe_read_skips_inherited_then_on_read_results() {
+        let c = ctx();
+        expect(&c, "let observed = 0, received;
+            const source = new ReadableStream({ start(c) { c.enqueue(7); c.close(); } });
+            const dest = new WritableStream({ write(chunk) { received = chunk; } });
+            Object.defineProperty(Object.prototype, 'then', {
+                configurable: true, get() { ++observed; }
+            });
+            try { await source.pipeTo(dest); } finally { delete Object.prototype.then; }
+            return [received, observed, source.locked, dest.locked].join();", "7,0,false,false");
+    }
+
+    #[test]
+    fn piping_to_an_erroring_destination_preserves_the_sink_error() {
+        let c = ctx();
+        expect(&c, "const first = {}, second = {};
+            const src = new ReadableStream({ start(c) { c.error(first); } });
+            const dst = new WritableStream({ start(c) { c.error(second); } });
+            try { await src.pipeTo(dst); return false; }
+            catch (error) { return error === second && !src.locked && !dst.locked; }", "true");
     }
 
     #[test]

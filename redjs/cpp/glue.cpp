@@ -50,6 +50,7 @@
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/JSLock.h>
 #include <JavaScriptCore/JSPromise.h>
+#include <JavaScriptCore/AsyncIteratorPrototype.h>
 #include <JavaScriptCore/MicrotaskQueue.h>
 #include <JavaScriptCore/JSString.h>
 #include <JavaScriptCore/ObjectConstructor.h>
@@ -1194,6 +1195,54 @@ extern "C" int32_t rjs_arraybuffer_detach(void* g, uint64_t v)
 // Promises
 // ---------------------------------------------------------------------------
 
+extern "C" uint64_t rjs_promise_pending(void* g)
+{
+    auto* global = G(g);
+    auto& vm = global->vm();
+    RjsLock lock(vm);
+    return JSValue::encode(JSPromise::create(vm, global->promiseStructure()));
+}
+
+extern "C" uint64_t rjs_async_iterator_prototype(void* g)
+{
+    auto* global = G(g);
+    RjsLock lock(global->vm());
+    return JSValue::encode(global->asyncIteratorPrototype());
+}
+
+extern "C" void rjs_promise_settle(void* g, uint64_t promise, uint64_t value, bool rejected)
+{
+    auto* global = G(g);
+    auto& vm = global->vm();
+    RjsLock lock(vm);
+    auto* p = uncheckedDowncast<JSPromise>(JSValue::decode(promise));
+    if (rejected)
+        p->reject(vm, JSValue::decode(value));
+    else
+        p->resolve(global, vm, JSValue::decode(value));
+}
+
+extern "C" void rjs_promise_mark_handled(void* g, uint64_t promise)
+{
+    RjsLock lock(G(g)->vm());
+    uncheckedDowncast<JSPromise>(JSValue::decode(promise))->markAsHandled();
+}
+
+// WebIDL's promise reactions use the realm intrinsics, even when the app patches Promise.prototype.
+extern "C" uint64_t rjs_promise_chain(void* g, uint64_t value, uint64_t fulfilled, uint64_t rejected)
+{
+    auto* global = G(g);
+    auto& vm = global->vm();
+    RjsLock lock(vm);
+    auto* parent = JSPromise::resolvedPromise(global, JSValue::decode(value));
+    uint64_t error;
+    if (takeException(vm, &error))
+        parent = JSPromise::rejectedPromise(global, JSValue::decode(error));
+    auto* next = JSPromise::create(vm, global->promiseStructure());
+    parent->performPromiseThenExported(vm, global, JSValue::decode(fulfilled), JSValue::decode(rejected), next);
+    return JSValue::encode(next);
+}
+
 extern "C" int32_t rjs_promise_info(void* g, uint64_t v, uint32_t* statusOut, uint64_t* resultOut)
 {
     JSGlobalObject* go = G(g);
@@ -1588,6 +1637,16 @@ extern "C" int32_t rjs_define_v(void* g, uint64_t obj, uint64_t key, uint64_t va
     if (takeException(vm, nullptr))
         return RJS_EXCEPTION;
     return RJS_OK;
+}
+
+// Internal slots ignore Proxy traps and the prototype chain.
+extern "C" uint64_t rjs_private_slot(void* g, uint64_t obj, void* atom)
+{
+    VM& vm = G(g)->vm();
+    RjsLock lock(vm);
+    JSValue base = JSValue::decode(obj);
+    JSValue value = base.isObject() ? asObject(base)->getDirect(vm, *static_cast<Identifier*>(atom)) : JSValue();
+    return JSValue::encode(value ? value : jsUndefined());
 }
 
 // An OWN DATA property: 1 (+ value), 0 absent or an accessor, -1 exception.
