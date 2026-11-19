@@ -11,6 +11,7 @@ mod binding;
 mod iter;
 mod pipe;
 mod readable;
+mod socket;
 mod strategy;
 mod tee;
 mod transform;
@@ -665,6 +666,12 @@ pub unsafe fn install_surface(g: *mut c_void) {
     writable::install(cx);
     iter::install(cx);
     transform::install(cx);
+}
+
+pub(super) unsafe fn install_websocket(g: *mut c_void, socket: &Class) {
+    if registry().lock().unwrap().contains_key(&(g as usize)) {
+        socket::install(binding::Env::new(g), socket);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1613,22 +1613,22 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64, event_target_proto: u64)
     }));
     classes_reg().lock().unwrap().insert(g as usize, c);
 
-    // `WebSocketStream` composes the class above with the Streams cores, both
-    // of which exist by now (`streams::install_surface` runs earlier in
-    // `webapi::install`). See the script's own header for why it is not
-    // optional: the RPC layer this whole module was written for feature-detects
-    // `WebSocketStream` and refuses to open a call without it.
-    let mut out = 0u64;
-    let name = "redjs/websocketstream.js";
-    let rc = glue::rjs_eval8(g, WSS_JS.as_ptr(), WSS_JS.len(), name.as_ptr(), name.len(), &mut out);
-    if rc == 1 {
-        let (mut msg, mut stack) = (0u64, 0u64);
-        glue::rjs_error_info(g, out, &mut msg, &mut stack);
-        eprintln!("[redjs] websocketstream.js failed: {}", read_string(g, msg).unwrap_or_default());
+    super::streams::install_websocket(g, &c.socket);
+}
+
+pub(super) unsafe fn bind_stream(g: *mut c_void, socket: u64, open: u64, message: u64, close: u64) {
+    let data = host_data::<WsData>(g, classes(g).socket_class, socket).unwrap();
+    data.binary_type = BinaryType::ArrayBuffer;
+    let handlers = handler_bag(g, socket, true);
+    for (name, callback) in [("onopen", open), ("onmessage", message), ("onclose", close)] {
+        define(g, handlers, name, callback, 0);
     }
 }
 
-const WSS_JS: &str = include_str!("websocketstream.js");
+pub(super) unsafe fn stream_send_state(g: *mut c_void, socket: u64) -> (bool, u64) {
+    let shared = host_data::<WsData>(g, classes(g).socket_class, socket).and_then(|data| shared_of(data.id));
+    shared.map_or((false, 0), |s| (s.ready_state() == OPEN, s.buffered.load(Ordering::SeqCst)))
+}
 
 // ---------------------------------------------------------------------------
 // Tests — the protocol, with no JS context and (mostly) no socket
@@ -2816,6 +2816,26 @@ mod jsc_tests {
             ),
         );
         assert_eq!(out, "4010|bye");
+    }
+
+    #[test]
+    fn websocketstream_drains_large_writes_and_forwards_close_validation() {
+        let port = serve(Cfg::default());
+        let c = ws_ctx();
+        let out = run(&c, &format!(
+            "const socket = new WebSocketStream('ws://127.0.0.1:{port}/');
+             const pair = await socket.opened;
+             let invalid;
+             try {{ socket.close({{ closeCode: 2999 }}); }}
+             catch (error) {{ invalid = error.name; }}
+             const writer = pair.writable.getWriter(), reader = pair.readable.getReader();
+             const count = 1024 * 1024 + 1;
+             await writer.write(new Uint8Array(count));
+             const {{ value }} = await reader.read();
+             await writer.close();
+             return [invalid, value.byteLength, (await socket.closed).closeCode].join();"
+        ));
+        assert_eq!(out, "InvalidAccessError,1048577,1000");
     }
 
     #[test]
