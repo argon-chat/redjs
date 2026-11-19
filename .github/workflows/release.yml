@@ -45,6 +45,8 @@ jobs:
         run: |
           $llvm = Join-Path $env:ProgramFiles 'LLVM/bin'
           if (Test-Path -LiteralPath $llvm) { Add-Content -LiteralPath $env:GITHUB_PATH -Value $llvm }
+          # The image's MSVC STL can require a newer Clang than the image's LLVM.
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value 'CXXFLAGS=-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH'
           rustup toolchain install 1.97.1 --profile minimal --target x86_64-pc-windows-msvc
           rustup default 1.97.1
       - uses: actions/cache@v4
