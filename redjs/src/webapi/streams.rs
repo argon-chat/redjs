@@ -55,15 +55,12 @@ impl SizeQueue {
         Ok(())
     }
 
-    /// Spec §8.1 DequeueValue: the total is FORCED to 0 when the queue empties.
-    /// Without that, repeated enqueue/dequeue of fractional sizes leaves a
-    /// residue that drifts the desired size away from the high-water mark
-    /// forever — a stream that quietly stops asking for data.
+    /// DequeueValue preserves positive rounding residue in the running total.
     pub fn dequeue(&mut self) -> bool {
         match self.sizes.pop_front() {
             Some(size) => {
                 self.total -= size;
-                if self.sizes.is_empty() || self.total < 0.0 {
+                if self.total < 0.0 {
                     self.total = 0.0;
                 }
                 true
@@ -683,16 +680,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_running_total_is_forced_to_zero_when_the_queue_empties() {
-        // Fractional sizes leave a residue otherwise, and the residue only ever
-        // grows: desiredSize drifts below the high-water mark and the stream
-        // stops asking for data with nothing to show for it.
+    fn dequeue_preserves_positive_rounding_residue_and_clamps_negative_totals() {
         let mut q = SizeQueue::default();
-        for _ in 0..1000 {
-            q.enqueue(0.1).unwrap();
-            q.dequeue();
+        for (sizes, expected) in [
+            ([1e-16, 1.0, 2e-16], 2.2044604925031312e-17),
+            ([1e-16, 1.0, 0.0], 0.0),
+        ] {
+            q.reset();
+            for size in sizes {
+                q.enqueue(size).unwrap();
+            }
+            while q.dequeue() {}
+            assert_eq!(q.total(), expected);
         }
-        assert_eq!(q.total(), 0.0, "residue after 1000 round trips");
     }
 
     #[test]

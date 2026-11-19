@@ -115,9 +115,18 @@ unsafe fn finish(cx: Env, t: u64, action: Finish, reason: u64) -> JsResult {
         Finish::Abort => ("cancel", reason, aborted, abort_failed),
         Finish::Cancel => ("cancel", reason, canceled, cancel_failed),
     };
-    let result = cx.invoke(cx.field(t, key), cx.field(t, "transformer"), &[arg]);
+    let callback = cx.field(t, key);
+    let result = if callback == UNDEF {
+        UNDEF
+    } else {
+        // Web IDL adopts the callback result into a fresh promise, even for a native Promise.
+        match cx.invoke(callback, cx.field(t, "transformer"), &[arg]) {
+            Ok(value) => cx.resolved(value),
+            Err(reason) => cx.rejected(reason),
+        }
+    };
     clear(cx, t);
-    cx.then(cx.promises(result), t, Some(ok), Some(err));
+    cx.then(result, t, Some(ok), Some(err));
     Ok(p)
 }
 unsafe fn finish_readable(cx: Env, t: u64, flush: bool, result: JsResult) {
