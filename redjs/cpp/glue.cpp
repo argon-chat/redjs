@@ -1328,7 +1328,7 @@ extern "C" int32_t rjs_own_keys(void* g, uint64_t obj, uint64_t* out)
 #include <JavaScriptCore/SymbolObject.h>
 #include <JavaScriptCore/YarrFlags.h>
 
-// Well-known symbols as atoms: 0 iterator, 1 toStringTag, 2 asyncIterator.
+// Well-known symbols as atoms: 0 iterator, 1 toStringTag, 2 asyncIterator, 3 hasInstance.
 extern "C" void* rjs_atom_wellknown(void* g, uint32_t which)
 {
     VM& vm = G(g)->vm();
@@ -1337,6 +1337,7 @@ extern "C" void* rjs_atom_wellknown(void* g, uint32_t which)
     case 0: return new Identifier(vm.propertyNames->iteratorSymbol);
     case 1: return new Identifier(vm.propertyNames->toStringTagSymbol);
     case 2: return new Identifier(vm.propertyNames->asyncIteratorSymbol);
+    case 3: return new Identifier(vm.propertyNames->hasInstanceSymbol);
     default: return nullptr;
     }
 }

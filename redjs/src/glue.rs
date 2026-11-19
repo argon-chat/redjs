@@ -168,7 +168,7 @@ extern "C" {
     ) -> i32;
 
     // -- structured serialization support (glue.cpp, same section name) --------
-    /// Well-known symbol atom: 0 iterator, 1 toStringTag, 2 asyncIterator.
+    /// Well-known symbol atom: 0 iterator, 1 toStringTag, 2 asyncIterator, 3 hasInstance.
     pub fn rjs_atom_wellknown(g: *mut c_void, which: u32) -> *mut c_void;
     /// The engine's own type of `v` (`BRAND_*`), plus what the serializer needs.
     pub fn rjs_brand(g: *mut c_void, v: u64, out: *mut RjsBrandInfo) -> u32;

@@ -249,7 +249,7 @@ unsafe fn is_canvas(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_bool(glue::rjs_strict_equals(g, brand, js_string(g, "HTMLCanvasElement")) == 1)
 }
 
-unsafe fn element(g: *mut c_void, global: u64, canvas: bool) -> JsResult {
+unsafe fn element(g: *mut c_void, canvas: bool) -> JsResult {
     let (name, function_name, call_hook): (_, _, HostFn) = if canvas {
         ("HTMLCanvasElement", "fn", noop)
     } else {
@@ -271,10 +271,13 @@ unsafe fn element(g: *mut c_void, global: u64, canvas: bool) -> JsResult {
     define(g, proto, "constructor", ctor, 2);
     define(g, ctor, "prototype", proto, if canvas { 2 | 4 } else { 1 | 2 | 4 });
     if canvas {
-        let symbol = property(g, property(g, global, "Symbol")?, "hasInstance")?;
-        let descriptor = new_object(g, NULL);
-        define(g, descriptor, "value", make_fn(g, "value", 1, is_canvas), 0);
-        invoke(g, property(g, global, "Object")?, "defineProperty", &[ctor, symbol, descriptor])?;
+        let symbol = glue::rjs_atom_wellknown(g, 3); // Symbol.hasInstance
+        let method = make_fn(g, "value", 1, is_canvas);
+        let rc = glue::rjs_define(g, ctor, symbol, method, 1 | 2 | 4);
+        glue::rjs_atom_free(g, symbol);
+        if rc != 0 {
+            return Err(js_string(g, "Cannot install HTMLCanvasElement[Symbol.hasInstance]"));
+        }
     }
     Ok(ctor)
 }
@@ -293,9 +296,9 @@ unsafe fn publish(g: *mut c_void, name: &str, value: u64) -> Result<(), u64> {
 pub(super) unsafe fn install(g: *mut c_void) -> Result<(), u64> {
     let global = state(g).global_proxy;
     publish(g, "console", console(g, global)?)?;
-    publish(g, "HTMLCanvasElement", element(g, global, true)?)?;
+    publish(g, "HTMLCanvasElement", element(g, true)?)?;
     if glue::rjs_kind(g, property(g, global, "HTMLVideoElement")?) != 9 {
-        publish(g, "HTMLVideoElement", element(g, global, false)?)?;
+        publish(g, "HTMLVideoElement", element(g, false)?)?;
     }
     if property(g, global, "location")? == UNDEF {
         let location = new_object(g, UNDEF);
