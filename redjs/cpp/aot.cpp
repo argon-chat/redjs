@@ -8,6 +8,11 @@
 #include <JavaScriptCore/AOTCompileOptionWords.h>
 #include <JavaScriptCore/AOTHost.h>
 #include <JavaScriptCore/AOTImageLoading.h>
+#include <JavaScriptCore/AOTFaultTable.h>
+#include <JavaScriptCore/AOTImage.h>
+#include <JavaScriptCore/WasmCodeInImage.h>
+#include <wtf/AccessibleAddress.h>
+#include <wtf/threads/Signals.h>
 #include <JavaScriptCore/AOTModuleHost.h>
 #include <JavaScriptCore/AOTRealmStartup.h>
 #include <JavaScriptCore/AOTWireDiagnosticColumns.h>
@@ -274,8 +279,84 @@ AOT::Wire::ImageVerdict initializeForImage(uint32_t rawProfile)
     std::call_once(nativeHelpersInitialized, registerEmbeddingHost);
     return ImageVerdict::Accepted;
 }
-// Without a file, the image must already lie in the sections of the executable's own module.
-AOT::Wire::ImageVerdict useImageAt(std::span<const uint8_t> imageBytes, std::optional<AOT::ImageFile> file, const uint8_t* identity, uint32_t rawProfile)
+#if defined(_WIN32)
+// What AOT::useImage does for an image in the executable's own sections, for one in the sections of
+// another module the loader mapped (a container DLL): the engine looks for such images in the
+// executable only. Windows images are position independent and their code needs no mapping of its
+// own, so this is the check, the low pages, the protections, then create and publish.
+const uint8_t* moduleBaseOf(const void* address)
+{
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCWSTR>(address), &module))
+        return nullptr;
+    return reinterpret_cast<const uint8_t*>(module);
+}
+bool liesInOneSectionOf(const uint8_t* base, std::span<const uint8_t> range, bool executed)
+{
+    if (range.empty())
+        return !executed;
+    auto* headers = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    const IMAGE_SECTION_HEADER* sections = IMAGE_FIRST_SECTION(headers);
+    for (unsigned index = 0; index < headers->FileHeader.NumberOfSections; ++index) {
+        const IMAGE_SECTION_HEADER& section = sections[index];
+        const uint8_t* start = base + section.VirtualAddress;
+        if (range.data() < start || static_cast<uint64_t>(range.data() - start) >= section.Misc.VirtualSize)
+            continue;
+        if (range.size() > section.Misc.VirtualSize - static_cast<uint64_t>(range.data() - start) || (section.Characteristics & IMAGE_SCN_MEM_WRITE))
+            return false;
+        // As in the engine: on Windows the parts that are not executed may lie in an executable section.
+        return !!(section.Characteristics & IMAGE_SCN_MEM_EXECUTE) == executed || !executed;
+    }
+    return false;
+}
+bool isExecuteRead(std::span<const uint8_t> code)
+{
+    MEMORY_BASIC_INFORMATION region;
+    return VirtualQuery(code.data(), &region, sizeof(region)) && region.Protect == PAGE_EXECUTE_READ
+        && static_cast<const uint8_t*>(region.BaseAddress) + region.RegionSize >= code.data() + code.size();
+}
+AOT::Wire::ImageVerdict useImageInModule(std::span<const uint8_t> bytes, const std::array<uint8_t, 16>& identity)
+{
+    using AOT::Wire::ImageVerdict;
+    static Lock lock;
+    Locker locker { lock };
+    if (const auto* image = AOT::Image::find(bytes)) {
+        AOT::Image::setCurrentOfThread(image);
+        return ImageVerdict::Accepted;
+    }
+    if (auto verdict = AOT::Image::check(bytes, identity); verdict != ImageVerdict::Accepted)
+        return verdict;
+    const auto& header = *reinterpret_cast<const AOT::ImageHeader*>(bytes.data());
+    size_t page = WTF::pageSize();
+    if (reinterpret_cast<uintptr_t>(bytes.data()) % page || header.codeOffset % page || header.size % page)
+        return ImageVerdict::Misaligned;
+    const uint8_t* base = moduleBaseOf(bytes.data());
+    size_t endOfExecutedPart = header.codeOffset + header.executableSize;
+    std::span<const uint8_t> executed = bytes.subspan(header.codeOffset, header.executableSize);
+    if (!base || base == reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr))
+        || moduleBaseOf(bytes.data() + header.size - 1) != base
+        || !liesInOneSectionOf(base, bytes.first(header.codeOffset), false)
+        || !liesInOneSectionOf(base, executed, true)
+        || !liesInOneSectionOf(base, bytes.subspan(endOfExecutedPart, header.size - endOfExecutedPart), false))
+        return ImageVerdict::OutsideItsSegments;
+    if (header.sections[static_cast<size_t>(AOT::ImageSection::FaultSites)].size && lowestAccessibleAddress() < AOT::FaultSite::reach)
+        return ImageVerdict::LowPagesAccessible;
+    if (!isExecuteRead(executed))
+        return ImageVerdict::CannotMapCode;
+    AOT::Image::publish(AOT::Image::create(bytes, executed.data()));
+    const AOT::Image& image = *AOT::Image::current();
+#if ENABLE(WEBASSEMBLY_OMGJIT)
+    Wasm::CodeInImage::addImage(image.section<uint8_t>(AOT::ImageSection::WebAssemblyDirectory), image.webAssemblyCode());
+#else
+    UNUSED_PARAM(image);
+#endif
+    activateSignalHandlersFor(Signal::AccessFault);
+    return ImageVerdict::Accepted;
+}
+#endif
+// Without a file, the image must already lie in the sections of the executable's own module, or
+// with `inModule` in those of a module the host loaded.
+AOT::Wire::ImageVerdict useImageAt(std::span<const uint8_t> imageBytes, std::optional<AOT::ImageFile> file, const uint8_t* identity, uint32_t rawProfile, bool inModule = false)
 {
     using AOT::Wire::ImageVerdict;
     auto initialized = initializeForImage(rawProfile);
@@ -290,7 +371,13 @@ AOT::Wire::ImageVerdict useImageAt(std::span<const uint8_t> imageBytes, std::opt
     const auto& header = *reinterpret_cast<const AOT::ImageHeader*>(imageBytes.data());
     if (!header.options.useWideReferences() && !MarkedBlockCage::require())
         return ImageVerdict::NeedsCellCage;
+#if defined(_WIN32)
+    auto verdict = inModule ? useImageInModule(imageBytes, expected) : AOT::useImage(imageBytes, file, expected);
+#else
+    if (inModule)
+        return ImageVerdict::Unsupported;
     auto verdict = AOT::useImage(imageBytes, file, expected);
+#endif
     if (verdict != ImageVerdict::Accepted)
         return verdict;
     imageMemoryProfile = static_cast<MemoryProfile>(rawProfile);
@@ -421,6 +508,20 @@ extern "C" uint32_t rjs_aot_load_mapped_with_profile(const uint8_t* bytes, size_
     if (!bytes || !length || !identity)
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
     verdict = useImageAt({ bytes, length }, std::nullopt, identity, rawProfile);
+    if (verdict == AOT::Wire::ImageVerdict::Accepted)
+        initialImageView = bytes;
+    return static_cast<uint32_t>(verdict);
+}
+
+// An image the OS loader mapped as sections of a module the host loaded, such as a container DLL.
+extern "C" uint32_t rjs_aot_load_module_with_profile(const uint8_t* bytes, size_t length, const uint8_t* identity, uint32_t rawProfile)
+{
+    auto verdict = checkLoad(rawProfile);
+    if (verdict != AOT::Wire::ImageVerdict::Accepted)
+        return static_cast<uint32_t>(verdict);
+    if (!bytes || !length || !identity)
+        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
+    verdict = useImageAt({ bytes, length }, std::nullopt, identity, rawProfile, true);
     if (verdict == AOT::Wire::ImageVerdict::Accepted)
         initialImageView = bytes;
     return static_cast<uint32_t>(verdict);

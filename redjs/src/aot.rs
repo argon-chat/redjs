@@ -102,6 +102,12 @@ unsafe extern "C" {
         identity: *const u8,
         profile: u32,
     ) -> u32;
+    fn rjs_aot_load_module_with_profile(
+        bytes: *const u8,
+        length: usize,
+        identity: *const u8,
+        profile: u32,
+    ) -> u32;
     fn rjs_aot_memory_settings(
         structure_heap_kb: *mut u64,
         cell_cage_mb: *mut u64,
@@ -325,6 +331,28 @@ pub unsafe fn load_mapped_image_with_profile(
     anchor_icu();
     let verdict = unsafe {
         rjs_aot_load_mapped_with_profile(
+            bytes.as_ptr(),
+            bytes.len(),
+            identity.as_ptr(),
+            profile as u32,
+        )
+    };
+    verdict_result(verdict, profile)
+}
+
+/// Uses an image the OS loader mapped as read-only and executable sections of a module the host
+/// loaded (Windows: a DLL from `LoadLibraryExW`), in place. The module must stay loaded.
+///
+/// # Safety
+/// As for [`load_mapped_image_with_profile`].
+pub unsafe fn load_module_image_with_profile(
+    bytes: &'static [u8],
+    identity: [u8; 16],
+    profile: MemoryProfile,
+) -> Result<(), String> {
+    anchor_icu();
+    let verdict = unsafe {
+        rjs_aot_load_module_with_profile(
             bytes.as_ptr(),
             bytes.len(),
             identity.as_ptr(),
