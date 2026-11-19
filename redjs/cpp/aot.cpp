@@ -386,8 +386,7 @@ AOT::Wire::ImageVerdict useImageAt(std::span<const uint8_t> imageBytes, std::opt
     imageActive = true;
     return verdict;
 }
-// `length` 0: from `offset` to the end of the file.
-uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, uint64_t offset, uint64_t length, const uint8_t* identity, uint32_t rawProfile)
+uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, const uint8_t* identity, uint32_t rawProfile)
 {
     using AOT::Wire::ImageVerdict;
     OwnedHandle file(owned);
@@ -400,34 +399,19 @@ uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, uint64_t offset, uint
     LARGE_INTEGER size;
     if (!GetFileSizeEx(file.value, &size) || size.QuadPart <= 0)
         return static_cast<uint32_t>(ImageVerdict::Truncated);
-    auto fileSize = static_cast<uint64_t>(size.QuadPart);
-    SYSTEM_INFO system;
-    GetSystemInfo(&system);
-    uint64_t granularity = system.dwAllocationGranularity;
-#else
-    struct stat metadata;
-    if (fstat(file.value, &metadata) || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0)
-        return static_cast<uint32_t>(ImageVerdict::Truncated);
-    auto fileSize = static_cast<uint64_t>(metadata.st_size);
-    uint64_t granularity = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
-#endif
-    if (offset >= fileSize || length > fileSize - offset)
-        return static_cast<uint32_t>(ImageVerdict::Truncated);
-    if (!length)
-        length = fileSize - offset;
-    uint64_t start = offset - offset % granularity;
-    uint64_t skipped = offset - start;
-    if (skipped + length > SIZE_MAX)
-        return static_cast<uint32_t>(ImageVerdict::Truncated);
-    size_t viewSize = static_cast<size_t>(skipped + length);
-#if defined(_WIN32)
     // Immutable metadata/input view; the engine maps executable regions and
     // writable private clones separately through this exact retained file.
     OwnedHandle mapping(CreateFileMappingW(file.value, nullptr, PAGE_READONLY, 0, 0, nullptr));
-    OwnedView view(mapping.value ? MapViewOfFile(mapping.value, FILE_MAP_READ, static_cast<DWORD>(start >> 32), static_cast<DWORD>(start), viewSize) : nullptr, viewSize);
+    auto fileSize = static_cast<size_t>(size.QuadPart);
+    OwnedView view(mapping.value ? MapViewOfFile(mapping.value, FILE_MAP_READ, 0, 0, 0) : nullptr, fileSize);
 #else
-    auto* mapped = mmap(nullptr, viewSize, PROT_READ, MAP_PRIVATE, file.value, static_cast<off_t>(start));
-    OwnedView view(mapped == MAP_FAILED ? nullptr : mapped, viewSize);
+    struct stat metadata;
+    if (fstat(file.value, &metadata) || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0
+        || static_cast<uint64_t>(metadata.st_size) > SIZE_MAX)
+        return static_cast<uint32_t>(ImageVerdict::Truncated);
+    auto fileSize = static_cast<size_t>(metadata.st_size);
+    auto* mapped = mmap(nullptr, fileSize, PROT_READ, MAP_PRIVATE, file.value, 0);
+    OwnedView view(mapped == MAP_FAILED ? nullptr : mapped, fileSize);
 #endif
     if (!view.value)
         return static_cast<uint32_t>(ImageVerdict::CannotMapCode);
@@ -436,11 +420,11 @@ uint32_t loadOwnedFile(decltype(OwnedHandle::value) owned, uint64_t offset, uint
 #else
     auto descriptor = static_cast<intptr_t>(file.value);
 #endif
-    std::span<const uint8_t> imageBytes { static_cast<const uint8_t*>(view.value) + skipped, static_cast<size_t>(length) };
-    auto verdict = useImageAt(imageBytes, AOT::ImageFile { descriptor, static_cast<int64_t>(offset) }, identity, rawProfile);
+    std::span<const uint8_t> imageBytes { static_cast<const uint8_t*>(view.value), fileSize };
+    auto verdict = useImageAt(imageBytes, AOT::ImageFile { descriptor, 0 }, identity, rawProfile);
     if (verdict != ImageVerdict::Accepted)
         return static_cast<uint32_t>(verdict);
-    initialImageView = static_cast<const uint8_t*>(view.release()) + skipped;
+    initialImageView = view.release();
     file.release();
     return static_cast<uint32_t>(verdict);
 }
@@ -469,34 +453,7 @@ extern "C" uint32_t rjs_aot_load_file_with_profile(const char16_t* path, size_t 
     if (file < 0)
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
 #endif
-    return loadOwnedFile(file, 0, 0, identity, rawProfile);
-}
-
-// The image is `length` bytes at `offset` of the file, both multiples of the page size.
-extern "C" uint32_t rjs_aot_load_handle_at_with_profile(intptr_t rawFile, uint64_t offset, uint64_t length, const uint8_t* identity, uint32_t rawProfile)
-{
-    if (!length || offset > INT64_MAX)
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::Truncated);
-    auto verdict = checkLoad(rawProfile);
-    if (verdict != AOT::Wire::ImageVerdict::Accepted)
-        return static_cast<uint32_t>(verdict);
-    if (!identity)
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
-#if defined(_WIN32)
-    HANDLE original = reinterpret_cast<HANDLE>(rawFile);
-    if (!original || original == INVALID_HANDLE_VALUE)
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
-    HANDLE duplicate = INVALID_HANDLE_VALUE;
-    if (!DuplicateHandle(GetCurrentProcess(), original, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
-#else
-    if (rawFile < 0 || rawFile > INT_MAX)
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
-    int duplicate = fcntl(static_cast<int>(rawFile), F_DUPFD_CLOEXEC, 0);
-    if (duplicate < 0)
-        return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
-#endif
-    return loadOwnedFile(duplicate, offset, length, identity, rawProfile);
+    return loadOwnedFile(file, identity, rawProfile);
 }
 
 // An image the OS loader mapped as sections of the executable itself: used in place, never copied.
@@ -548,7 +505,7 @@ extern "C" uint32_t rjs_aot_load_handle_with_profile(intptr_t rawFile, const uin
     if (duplicate < 0)
         return static_cast<uint32_t>(AOT::Wire::ImageVerdict::CannotReadExecutable);
 #endif
-    return loadOwnedFile(duplicate, 0, 0, identity, rawProfile);
+    return loadOwnedFile(duplicate, identity, rawProfile);
 }
 
 // Retain the original C loader ABI and its engine-default capacity policy.
