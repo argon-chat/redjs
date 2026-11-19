@@ -51,9 +51,8 @@
 //! changes only what `body` is fed from.
 
 use core::ffi::c_void;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use super::headers;
@@ -285,21 +284,16 @@ unsafe fn resp_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn resp_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
-    let slot = atom_priv(g, "redjs#bodyStream");
+    let Some(data) = this_resp(g, cf) else {
+        return throw_type_error(g, "Response.body on a non-Response");
+    };
+    let (bytes, has_body) = (Arc::clone(&data.bytes), data.has_body);
+    let slot = state(g).s_response_body;
     let cached = get_a(g, this, slot);
     if is_cell(cached) {
-        glue::rjs_atom_free(g, slot);
         return cached;
     }
-    let (bytes, has_body) = match this_resp(g, cf) {
-        Some(d) => (Arc::clone(&d.bytes), d.has_body),
-        None => {
-            glue::rjs_atom_free(g, slot);
-            return throw_type_error(g, "Response.body on a non-Response");
-        }
-    };
     if !has_body {
-        glue::rjs_atom_free(g, slot);
         return NULL;
     }
     let stream = make_body_stream(g, &bytes);
@@ -310,53 +304,34 @@ unsafe fn resp_body(g: *mut c_void, cf: *mut c_void) -> u64 {
             d.body_used = true;
         }
     }
-    glue::rjs_atom_free(g, slot);
     stream
 }
 
-/// Lazily-built `bytes => ReadableStream` factory.
-///
-/// Lazy because `fetch::install` runs before `streams::install_surface` (the
-/// install order in `webapi::install` is load-bearing), so `ReadableStream` does
-/// not exist yet at install time. Held as a protected function value rather than
-/// a global, so nothing is added to `globalThis`.
-fn stream_factories() -> &'static Mutex<HashMap<usize, u64>> {
-    static F: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
-    F.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// The factory was protected in the gone context; that heap is gone with it.
-pub(crate) fn forget(gone: crate::context::Gone) {
-    stream_factories().lock().unwrap().remove(&gone.key);
-    super::request::forget(gone);
+#[crate::host_fn]
+unsafe fn start_body(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let callee = crate::api::HostArgs::new(cf).callee().0;
+    let bytes = get_a(g, callee, state(g).s_response_body);
+    let controller = cf_arg(cf, 0);
+    for (name, args) in [("enqueue", &[bytes][..]), ("close", &[][..])] {
+        let Ok(method) = try_get(g, controller, name) else { return UNDEF };
+        if let Err(exception) = call(g, method, controller, args) {
+            glue::rjs_throw(g, exception);
+            return UNDEF;
+        }
+    }
+    UNDEF
 }
 
 unsafe fn make_body_stream(g: *mut c_void, bytes: &[u8]) -> u64 {
-    let factory = {
-        let mut map = stream_factories().lock().unwrap();
-        match map.get(&(g as usize)) {
-            Some(&f) => f,
-            None => {
-                const SRC: &str = "(bytes => new ReadableStream({ \
-                     start(c) { c.enqueue(bytes); c.close(); } \
-                   }))";
-                let url = "redjs/fetch-body-stream";
-                let mut out = 0u64;
-                let rc = glue::rjs_eval8(g, SRC.as_ptr(), SRC.len(), url.as_ptr(), url.len(), &mut out);
-                if rc != 0 || !is_cell(out) {
-                    return UNDEF;
-                }
-                crate::ffi::redjs_protect(g, out);
-                map.insert(g as usize, out);
-                out
-            }
-        }
-    };
-    let u8v = make_u8(g, bytes);
-    match call(g, factory, UNDEF, &[u8v]) {
-        Ok(v) => v,
-        Err(_) => UNDEF,
-    }
+    let start = make_fn(g, "start", 1, start_body);
+    // The function owns the bytes through a JSC-traced property, even if a
+    // custom stream saves just the callback and later invokes it unbound.
+    glue::rjs_define(g, start, state(g).s_response_body, make_u8(g, bytes), 0);
+    let source = new_object(g, UNDEF);
+    define(g, source, "start", start, 0);
+    let ctor = get(g, glue::rjs_global(g), "ReadableStream");
+    let mut stream = UNDEF;
+    if glue::rjs_construct(g, ctor, &source, 1, &mut stream) == 0 { stream } else { UNDEF }
 }
 
 #[crate::host_fn]
@@ -1456,6 +1431,19 @@ mod jsc_tests {
             ),
         );
         assert_eq!(out, "hello world");
+    }
+
+    #[test]
+    fn the_cached_body_and_a_detached_start_callback_survive_collection() {
+        let c = fetch_ctx();
+        assert_eq!(s(&c, "globalThis.ReadableStream = class { constructor(source) { globalThis.savedStart = source.start; } }; \
+            const response = new Response('abc'); String(response.body === response.body)"), "true");
+        assert!(throws(&c, "Object.getOwnPropertyDescriptor(Response.prototype, 'body').get.call(savedStart)")
+            .contains("non-Response"));
+        c.gc();
+        assert_eq!(s(&c, "const calls = []; savedStart.call(null, { \
+            enqueue(bytes) { calls.push(new TextDecoder().decode(bytes)); }, close() { calls.push('close'); } \
+        }); calls.join(',')"), "abc,close");
     }
 
     #[test]

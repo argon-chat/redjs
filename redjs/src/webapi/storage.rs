@@ -61,10 +61,8 @@
 //!
 //! `localStorage.token = "x"`, `delete localStorage.token`,
 //! `Object.keys(localStorage)` and `JSON.stringify(localStorage)` are all part
-//! of Web Storage, and JSC's C class API as redjs binds it has no
-//! named-property hooks. So the native [`Storage`](install) object — six real
-//! members on a real prototype — is wrapped in a `Proxy` whose traps forward to
-//! `getItem`/`setItem`/`removeItem`/`key`/`length`. Builtins win over stored
+//! of Web Storage. A native handler on a Proxy implements this surface while keeping
+//! the writable, enumerable, configurable descriptors of storage keys. Builtins win over stored
 //! keys, which is what WebIDL says for an interface without
 //! `[LegacyOverrideBuiltIns]`: a key literally named `getItem` is reachable
 //! through `getItem("getItem")` and not through `localStorage.getItem`, exactly
@@ -547,64 +545,109 @@ fn listener_added(ty: &str) {
 // The named-property surface
 // ---------------------------------------------------------------------------
 
-/// Wraps the two native Storage objects in the `Proxy` that gives Web Storage
-/// its named properties (module header). Evaluated once at install, with the
-/// raw objects already published under their final names.
-const STORAGE_JS: &str = r#"(() => {
-  const proto = Storage.prototype;
-  // Spec: no [LegacyOverrideBuiltIns], so `length`/`getItem`/… shadow a stored
-  // key of the same name. `Reflect.has(proto, p)` IS that rule.
-  const builtin = (p) => Reflect.has(proto, p);
-  const wrap = (store) => new Proxy(store, {
-    get(t, p) {
-      if (typeof p === "symbol" || builtin(p)) return Reflect.get(t, p, t);
-      const v = t.getItem(p);
-      return v === null ? undefined : v;
-    },
-    set(t, p, v) {
-      if (typeof p === "symbol") return Reflect.set(t, p, v, t);
-      t.setItem(p, v);
-      return true;
-    },
-    has(t, p) {
-      if (typeof p === "symbol") return Reflect.has(t, p);
-      return builtin(p) || t.getItem(p) !== null;
-    },
-    deleteProperty(t, p) {
-      if (typeof p === "symbol") return Reflect.deleteProperty(t, p);
-      t.removeItem(p);
-      return true;
-    },
-    ownKeys(t) {
-      const n = t.length;
-      const out = new Array(n);
-      for (let i = 0; i < n; i++) out[i] = t.key(i);
-      return out;
-    },
-    getOwnPropertyDescriptor(t, p) {
-      if (typeof p === "symbol") return Reflect.getOwnPropertyDescriptor(t, p);
-      const v = t.getItem(p);
-      if (v === null) return undefined;
-      return { value: v, writable: true, enumerable: true, configurable: true };
-    },
-    defineProperty(t, p, d) {
-      if (typeof p === "symbol") return Reflect.defineProperty(t, p, d);
-      if (!("value" in d)) return false;
-      t.setItem(p, d.value);
-      return true;
-    },
-  });
-  // `Object.prototype.toString.call(localStorage)` is "[object Storage]" in a
-  // browser; without this it would be "[object Object]".
-  Object.defineProperty(proto, Symbol.toStringTag, {
-    value: "Storage", writable: false, enumerable: false, configurable: true,
-  });
-  for (const name of ["localStorage", "sessionStorage"]) {
-    Object.defineProperty(globalThis, name, {
-      value: wrap(globalThis[name]), writable: false, enumerable: true, configurable: true,
-    });
-  }
-})();"#;
+unsafe fn invoke(g: *mut c_void, obj: u64, name: &str, args: &[u64]) -> Result<u64, ()> {
+    let f = try_get(g, obj, name)?;
+    call(g, f, obj, args).map_err(|exception| { glue::rjs_throw(g, exception); })
+}
+
+unsafe fn reflect(g: *mut c_void, name: &str, args: &[u64]) -> Result<u64, ()> {
+    let object = try_get(g, glue::rjs_global(g), "Reflect")?;
+    invoke(g, object, name, args)
+}
+
+unsafe fn is_symbol(g: *mut c_void, value: u64) -> bool {
+    glue::rjs_kind(g, value) == 6
+}
+
+unsafe fn builtin(g: *mut c_void, key: u64) -> Result<bool, ()> {
+    Ok(to_bool(g, reflect(g, "has", &[classes(g).storage.proto, key])?))
+}
+
+#[crate::host_fn]
+unsafe fn named_get(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let (obj, key) = (cf_arg(cf, 0), cf_arg(cf, 1));
+    let result = (|| {
+        if is_symbol(g, key) || builtin(g, key)? {
+            return reflect(g, "get", &[obj, key, obj]);
+        }
+        let item = invoke(g, obj, "getItem", &[key])?;
+        Ok(if item == NULL { UNDEF } else { item })
+    })();
+    result.unwrap_or(UNDEF)
+}
+
+#[crate::host_fn]
+unsafe fn named_set(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let (obj, key, value) = (cf_arg(cf, 0), cf_arg(cf, 1), cf_arg(cf, 2));
+    if is_symbol(g, key) {
+        return reflect(g, "set", &[obj, key, value, obj]).unwrap_or(UNDEF);
+    }
+    invoke(g, obj, "setItem", &[key, value]).map_or(UNDEF, |_| TRUE)
+}
+
+#[crate::host_fn]
+unsafe fn named_has(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let (obj, key) = (cf_arg(cf, 0), cf_arg(cf, 1));
+    if is_symbol(g, key) {
+        return reflect(g, "has", &[obj, key]).unwrap_or(UNDEF);
+    }
+    match builtin(g, key) {
+        Ok(true) => TRUE,
+        Ok(false) => invoke(g, obj, "getItem", &[key]).map_or(UNDEF, |v| enc_bool(v != NULL)),
+        Err(()) => UNDEF,
+    }
+}
+
+#[crate::host_fn]
+unsafe fn named_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let (obj, key) = (cf_arg(cf, 0), cf_arg(cf, 1));
+    if is_symbol(g, key) {
+        return reflect(g, "deleteProperty", &[obj, key]).unwrap_or(UNDEF);
+    }
+    invoke(g, obj, "removeItem", &[key]).map_or(UNDEF, |_| TRUE)
+}
+
+#[crate::host_fn]
+unsafe fn named_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let obj = cf_arg(cf, 0);
+    let Ok(length) = try_get(g, obj, "length") else { return UNDEF };
+    let Ok(ctor) = try_get(g, glue::rjs_global(g), "Array") else { return UNDEF };
+    let mut out = UNDEF;
+    if glue::rjs_construct(g, ctor, &length, 1, &mut out) != 0 {
+        glue::rjs_throw(g, out);
+        return UNDEF;
+    }
+    let Ok(count) = to_number(g, length) else { return UNDEF };
+    for i in 0..count.ceil() as u32 {
+        let Ok(key) = invoke(g, obj, "key", &[enc_f64(i as f64)]) else { return UNDEF };
+        set_i(g, out, i, key);
+    }
+    out
+}
+
+#[crate::host_fn]
+unsafe fn named_descriptor(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let (obj, key) = (cf_arg(cf, 0), cf_arg(cf, 1));
+    if is_symbol(g, key) {
+        return reflect(g, "getOwnPropertyDescriptor", &[obj, key]).unwrap_or(UNDEF);
+    }
+    let Ok(v) = invoke(g, obj, "getItem", &[key]) else { return UNDEF };
+    if v == NULL { return UNDEF; }
+    let out = new_object(g, UNDEF);
+    define_many(g, out, &["value", "writable", "enumerable", "configurable"], &[v, TRUE, TRUE, TRUE], 0);
+    out
+}
+
+#[crate::host_fn]
+unsafe fn named_define(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let (obj, key, desc) = (cf_arg(cf, 0), cf_arg(cf, 1), cf_arg(cf, 2));
+    if is_symbol(g, key) {
+        return reflect(g, "defineProperty", &[obj, key, desc]).unwrap_or(UNDEF);
+    }
+    if glue::rjs_has(g, desc, super::util::key(g, "value")) != 1 { return FALSE; }
+    let Ok(value) = try_get(g, desc, "value") else { return UNDEF };
+    invoke(g, obj, "setItem", &[key, value]).map_or(UNDEF, |_| TRUE)
+}
 
 // ---------------------------------------------------------------------------
 // Install
@@ -650,51 +693,28 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) -> i32 {
     classes_reg().lock().unwrap().insert(g as usize, boxed);
 
     let global = glue::rjs_global(g);
-    for (name, local) in [("localStorage", true), ("sessionStorage", false)] {
-        let obj = host_create(
-            g,
-            storage_class,
-            boxed.storage.proto,
-            StorageData { local, g: g as usize },
-        );
-        crate::ffi::redjs_protect(g, obj);
-        // Enumerable, like every `Window` interface attribute; the `Proxy` that
-        // replaces it below keeps the same shape.
-        define(g, global, name, obj, 0);
+    let proxy = get(g, global, "Proxy");
+    let handler = new_object(g, UNDEF);
+    let traps: &[(&str, u32, HostFn)] = &[
+        ("get", 3, named_get), ("set", 4, named_set), ("has", 2, named_has),
+        ("deleteProperty", 2, named_delete), ("ownKeys", 1, named_keys),
+        ("getOwnPropertyDescriptor", 2, named_descriptor), ("defineProperty", 3, named_define),
+    ];
+    for &(name, arity, hook) in traps {
+        define(g, handler, name, make_fn(g, name, arity, hook), 0);
     }
-
-    events::on_listener_added(listener_added);
-
-    let url_name = "redjs/storage.js";
-    let mut out = 0u64;
-    if glue::rjs_eval8(
-        g,
-        STORAGE_JS.as_ptr(),
-        STORAGE_JS.len(),
-        url_name.as_ptr(),
-        url_name.len(),
-        &mut out,
-    ) == 1
-    {
-        let (mut msg, mut stack) = (0u64, 0u64);
-        glue::rjs_error_info(g, out, &mut msg, &mut stack);
-        eprintln!("[redjs] storage.js failed: {}", read_string(g, msg).unwrap_or_default());
-        return 1;
-    }
-
-    // The two objects JS now holds are the Proxies, not the natives. Register
-    // them as legitimate receivers (see `proxies`) and protect them: from here
-    // on they are what `localStorage` means.
-    let global_proxy = state(g).global_proxy;
     for (name, local) in [("localStorage", true), ("sessionStorage", false)] {
-        let p = get(g, global_proxy, name);
-        if !is_cell(p) {
-            eprintln!("[redjs] storage.js did not publish {name}");
+        let target = host_create(g, storage_class, boxed.storage.proto, StorageData { local, g: g as usize });
+        let args = [target, handler];
+        let mut wrapped = UNDEF;
+        if glue::rjs_construct(g, proxy, args.as_ptr(), 2, &mut wrapped) != 0 {
             return 1;
         }
-        crate::ffi::redjs_protect(g, p);
-        proxies().lock().unwrap().insert((g as usize, p), local);
+        crate::ffi::redjs_protect(g, wrapped);
+        proxies().lock().unwrap().insert((g as usize, wrapped), local);
+        define(g, global, name, wrapped, 1);
     }
+    events::on_listener_added(listener_added);
     0
 }
 
@@ -908,6 +928,20 @@ mod jsc_tests {
         s(&c, "delete localStorage.token");
         assert_eq!(s(&c, "localStorage.length"), "1");
         ok(&c, "!('token' in localStorage)");
+    }
+
+    #[test]
+    fn named_descriptors_symbols_and_key_overrides_are_preserved() {
+        let (c, _guard) = fresh();
+        let result = s(&c, "const store = sessionStorage, symbol = Symbol(); \
+            const global = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage'); \
+            Object.defineProperty(store, 'first', { value: 3, configurable: true }); \
+            const key = Object.getOwnPropertyDescriptor(store, 'first'); \
+            store[symbol] = 7; const value = store[symbol]; delete store[symbol]; \
+            Storage.prototype.key = () => 'overridden'; \
+            [global.enumerable, global.writable, global.configurable, key.value, key.enumerable, \
+             key.writable, key.configurable, value, symbol in store, Reflect.ownKeys(store)[0]].join(',')");
+        assert_eq!(result, "true,false,true,3,true,true,true,7,false,overridden");
     }
 
     #[test]

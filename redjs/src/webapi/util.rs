@@ -922,6 +922,7 @@ pub struct WebState {
 
     // Private-name internal slots.
     pub s_performance: *mut c_void,
+    pub s_response_body: *mut c_void,
     pub s_crypto: *mut c_void,
     pub s_subtle_crypto: *mut c_void,
     pub s_listeners: *mut c_void, // EventTarget [[listeners]] → JS Array

@@ -650,22 +650,11 @@ pub(crate) fn sync_read_failed(consumer: &str, e: ReadError) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Per-context state: the originals `stream()` reads through
+// Per-context ReadableStream constructor, captured before user code can replace it.
 // ---------------------------------------------------------------------------
 
-struct BlobState {
-    /// `Blob.prototype.bytes` and `.slice` as installed — `stream()` reads
-    /// through these, so a page that patches the prototype later cannot reach
-    /// into a stream.
-    bytes_fn: u64,
-    slice_fn: u64,
-    /// `(blob, bytes, slice, size, oneRead) => ReadableStream`, made once the
-    /// Streams surface exists ([`install_stream`]).
-    stream_factory: u64,
-}
-
-fn registry() -> &'static Mutex<HashMap<usize, BlobState>> {
-    static R: OnceLock<Mutex<HashMap<usize, BlobState>>> = OnceLock::new();
+fn stream_constructors() -> &'static Mutex<HashMap<usize, u64>> {
+    static R: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -673,7 +662,7 @@ fn registry() -> &'static Mutex<HashMap<usize, BlobState>> {
 /// context's inbox is retired too: a read that finishes later drops its
 /// result instead of parking it (and its bytes) where nothing will run it.
 pub(crate) fn forget(gone: crate::context::Gone) {
-    registry().lock().unwrap().remove(&gone.key);
+    stream_constructors().lock().unwrap().remove(&gone.key);
     let inbox = inboxes().lock().unwrap().remove(&gone.key);
     if let Some(i) = inbox {
         retire(&i);
@@ -1075,17 +1064,132 @@ unsafe fn slice(g: *mut c_void, cf: *mut c_void) -> u64 {
     host_create(g, st.blob_class, st.blob.proto, data)
 }
 
+const STREAM_CHUNK: u64 = 65536;
+
+struct StreamSource {
+    remaining: Option<Range>,
+    // A file is read once at first demand. Later pulls can deliver directly from that snapshot.
+    has_snapshot: bool,
+}
+
+fn stream_source_class() -> crate::capi::JSClassRef {
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    *CLASS.get_or_init(|| unsafe { make_host_class::<StreamSource>("BlobStreamSource") as usize })
+        as crate::capi::JSClassRef
+}
+
+unsafe fn controller_method(g: *mut c_void, controller: u64, name: &str, args: &[u64]) -> Result<u64, u64> {
+    let mut method = UNDEF;
+    if glue::rjs_get(g, controller, key(g, name), &mut method) != 0 {
+        return Err(method);
+    }
+    call(g, method, controller, args)
+}
+
+unsafe fn deliver_chunk(g: *mut c_void, source: u64, controller: u64) -> Result<u64, u64> {
+    let state = host_data::<StreamSource>(g, stream_source_class(), source).unwrap();
+    let Some(range) = &mut state.remaining else { return Ok(UNDEF) }; // cancelled during the read
+    if range.len != 0 {
+        let mut chunk = range.clone();
+        chunk.len = chunk.len.min(STREAM_CHUNK);
+        range.offset += chunk.len;
+        range.len -= chunk.len;
+        let last = range.len == 0;
+        if last {
+            state.remaining = None;
+        }
+        let bytes = chunk.read_in_place().map_err(|e| e.to_js(g))?;
+        let value = convert(g, As::Bytes, bytes)?;
+        controller_method(g, controller, "enqueue", &[value])?;
+        if !last {
+            return Ok(UNDEF);
+        }
+    } else {
+        state.remaining = None;
+    }
+    controller_method(g, controller, "close", &[])?;
+    Ok(UNDEF)
+}
+
+#[crate::host_fn]
+unsafe fn finish_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let job = crate::api::HostArgs::new(cf).callee().0;
+    let source = get(g, job, "source");
+    let controller = get(g, job, "controller");
+    let (settle, value) = match deliver_chunk(g, source, controller) {
+        Ok(v) => (get(g, job, "resolve"), v),
+        Err(e) => (get(g, job, "reject"), e),
+    };
+    let _ = call(g, settle, UNDEF, &[value]);
+    UNDEF
+}
+
+#[crate::host_fn]
+unsafe fn stream_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let source = cf_this(cf);
+    let controller = cf_arg(cf, 0);
+    let Some(cursor) = host_data::<StreamSource>(g, stream_source_class(), source) else {
+        return throw_type_error(g, "Illegal invocation of Blob stream pull");
+    };
+    let Some(range) = cursor.remaining.clone() else { return resolved_promise(g, UNDEF) };
+    if range.len == 0 || cursor.has_snapshot {
+        return match deliver_chunk(g, source, controller) {
+            Ok(v) => resolved_promise(g, v),
+            Err(e) => super::domexception::rejected_with(g, e),
+        };
+    }
+
+    let (mut resolve, mut reject, mut promise) = (UNDEF, UNDEF, UNDEF);
+    if crate::ffi::redjs_promise_create(g, &mut resolve, &mut reject, &mut promise) != 0 {
+        return UNDEF;
+    }
+    // The job is internal to the microtask queue. Its own properties keep the JS
+    // objects alive through the asynchronous read and the subsequent checkpoint.
+    let job = make_fn(g, "", 0, finish_pull);
+    define_many(g, job, &["source", "controller", "resolve", "reject"], &[source, controller, resolve, reject], 0);
+    if matches!(range.source, Source::Disk(_)) {
+        crate::ffi::redjs_protect(g, job);
+        read_async(g, range, Box::new(move |g, result| unsafe {
+            let source = get(g, job, "source");
+            let cursor = host_data::<StreamSource>(g, stream_source_class(), source).unwrap();
+            if let Some(remaining) = &mut cursor.remaining {
+                match result {
+                    Ok(bytes) => {
+                        *remaining = Range { offset: 0, len: bytes.len() as u64, source: Source::Memory(Arc::new(bytes)) };
+                        cursor.has_snapshot = true;
+                    }
+                    Err(e) => remaining.source = Source::Unreadable(e),
+                }
+            }
+            glue::rjs_queue_microtask(g, job);
+            crate::ffi::redjs_unprotect(g, job);
+        }));
+    } else {
+        // Awaiting a memory read still yields once before delivering the chunk.
+        glue::rjs_queue_microtask(g, job);
+    }
+    promise
+}
+
+#[crate::host_fn]
+unsafe fn stream_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if let Some(cursor) = host_data::<StreamSource>(g, stream_source_class(), cf_this(cf)) {
+        cursor.remaining = None;
+    }
+    UNDEF
+}
+
 /// `stream()`: a `ReadableStream` of `Uint8Array` chunks of at most 64 KiB.
 /// A memory Blob is read a chunk at a time; a path-backed one is read once,
 /// off the JS thread, and then chunked — the true pull source is the m16
 /// "native byte source" seam, phase 2 (A-F2 past 64 MiB says so).
 #[crate::host_fn]
 unsafe fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let this = cf_this(cf);
     let Some(b) = this_blob(g, cf) else {
         return throw_type_error(g, "Blob.prototype.stream called on a non-Blob");
     };
-    let (len, one_read) = (b.len, !matches!(b.source, Source::Memory(_)));
+    let len = b.len;
+    let range = b.range();
     if matches!(b.source, Source::Disk(_)) && len > STREAM_ADVISORY_BYTES {
         advise(
             "A-F2:stream",
@@ -1097,17 +1201,22 @@ unsafe fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
             ),
         );
     }
-    let fns = registry().lock().unwrap().get(&(g as usize)).map(|s| (s.stream_factory, s.bytes_fn, s.slice_fn));
-    let Some((factory, bytes, slice)) = fns.filter(|f| is_cell(f.0)) else {
+    let ctor = stream_constructors().lock().unwrap().get(&(g as usize)).copied();
+    let Some(ctor) = ctor else {
         return throw_type_error(g, "Blob.prototype.stream: this context has no ReadableStream");
     };
-    match call(g, factory, UNDEF, &[this, bytes, slice, enc_f64(len as f64), enc_bool(one_read)]) {
-        Ok(v) => v,
-        Err(e) => {
-            glue::rjs_throw(g, e);
-            UNDEF
-        }
+    let source = host_create(g, stream_source_class(), UNDEF, StreamSource { remaining: Some(range), has_snapshot: false });
+    define(g, source, "pull", make_fn(g, "pull", 1, stream_pull), 0);
+    define(g, source, "cancel", make_fn(g, "cancel", 0, stream_cancel), 0);
+    let strategy = new_object(g, UNDEF);
+    define(g, strategy, "highWaterMark", enc_i32(0), 0);
+    let args = [source, strategy];
+    let mut stream = UNDEF;
+    if glue::rjs_construct(g, ctor, args.as_ptr(), 2, &mut stream) != 0 {
+        glue::rjs_throw(g, stream);
+        return UNDEF;
     }
+    stream
 }
 
 
@@ -1128,60 +1237,16 @@ pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class) {
         getters: &[("size", get_size), ("type", get_type)],
         accessors: &[],
     });
-    let keep = |v: u64| {
-        crate::ffi::redjs_protect(g, v);
-        v
-    };
-    let bytes_fn = keep(get(g, class.proto, "bytes"));
-    let slice_fn = keep(get(g, class.proto, "slice"));
-    registry().lock().unwrap().insert(g as usize, BlobState { bytes_fn, slice_fn, stream_factory: UNDEF });
     crate::web::register_pump_source(crate::web::PumpSource { inflight: src_inflight, ready: src_ready, drain: src_drain });
     (cls, class)
 }
 
-/// The `stream()` factory, made once `ReadableStream` exists (after
-/// `streams::install_surface`, before any user script — so a page that later
-/// replaces `ReadableStream` cannot change what `stream()` returns).
-///
-/// `highWaterMark: 0`: nothing is read until a reader asks, as for a
-/// browser's blob stream.
+/// Capture the realm's ReadableStream after its installation and before user code.
 pub(crate) unsafe fn install_stream(g: *mut c_void) {
-    // Everything the stream touches is captured here, at install: a page that
-    // patches `Uint8Array.prototype.slice` or `Reflect.apply` later reaches
-    // nothing inside a stream.
-    const SRC: &str = "(() => {\n\
-        const RS = ReadableStream, apply = Reflect.apply, u8slice = Uint8Array.prototype.slice;\n\
-        const CHUNK = 65536;\n\
-        return function (blob, bytes, slice, size, oneRead) {\n\
-          let at = 0, all = null;\n\
-          return new RS({\n\
-            async pull(c) {\n\
-              if (at >= size) { c.close(); return; }\n\
-              const end = at + CHUNK < size ? at + CHUNK : size;\n\
-              let part;\n\
-              if (oneRead) {\n\
-                if (all === null) all = await apply(bytes, blob, []);\n\
-                part = apply(u8slice, all, [at, end]);\n\
-              } else {\n\
-                part = await apply(bytes, apply(slice, blob, [at, end]), []);\n\
-              }\n\
-              at = end;\n\
-              c.enqueue(part);\n\
-              if (at >= size) { all = null; c.close(); }\n\
-            },\n\
-            cancel() { all = null; at = size; },\n\
-          }, { highWaterMark: 0 });\n\
-        };\n\
-      })()";
-    let url = "redjs/blob-stream";
-    let mut out = 0u64;
-    let rc = glue::rjs_eval8(g, SRC.as_ptr(), SRC.len(), url.as_ptr(), url.len(), &mut out);
-    if rc != 0 || !is_cell(out) {
-        return;
-    }
-    crate::ffi::redjs_protect(g, out);
-    if let Some(s) = registry().lock().unwrap().get_mut(&(g as usize)) {
-        s.stream_factory = out;
+    let ctor = get(g, glue::rjs_global(g), "ReadableStream");
+    if is_cell(ctor) {
+        crate::ffi::redjs_protect(g, ctor);
+        stream_constructors().lock().unwrap().insert(g as usize, ctor);
     }
 }
 
@@ -1326,6 +1391,27 @@ mod tests {
 mod jsc_tests {
     use crate::webapi::file::testing::*;
     use crate::webapi::testing::*;
+
+    #[test]
+    fn disk_streams_defer_the_read_and_forward_errors_through_the_reader() {
+        let c = file_ctx();
+        let file = TempFile::new("stream-error.bin", b"0123456789");
+        file.expose(&c, "picked");
+        s(&c, "globalThis.stream = picked.slice(2, 5).stream(); 0");
+        drop(file);
+        assert_eq!(run(&c, "try { await stream.getReader().read(); } catch (error) { return error.name; }"), "NotFoundError");
+    }
+
+    #[test]
+    fn cancelling_an_inflight_pull_settles_the_reader_without_delivering_the_chunk() {
+        let c = file_ctx();
+        let file = TempFile::new("stream-cancel.bin", &[9; 150_000]);
+        file.expose(&c, "picked");
+        assert_eq!(run(&c, "const reader = picked.stream().getReader(); await Promise.resolve(); \
+            const pending = reader.read(); await reader.cancel(); \
+            return [(await pending).done, (await reader.read()).done].join(',');"), "true,true");
+        // Retire the realm while an outstanding file read may still be in its inbox.
+    }
 
     /// `range_of` hands a host the window a Blob value names: a slice of a
     /// picked File is the file's range, a script Blob is its memory, and

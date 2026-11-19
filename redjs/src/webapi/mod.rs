@@ -213,7 +213,7 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     dialogs::forget(gone);
     event_interfaces::forget(gone);
     eventsource::forget(gone);
-    fetch::forget(gone);
+    request::forget(gone);
     formdata::forget(gone);
     fsutil::forget(gone);
     geometry::forget(gone);
@@ -263,6 +263,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
 
     // Private-name internal slots + hot atoms.
     let s_performance = atom_priv(g, "redjs#performance");
+    let s_response_body = atom_priv(g, "redjs#responseBody");
     let s_crypto = atom_priv(g, "redjs#crypto");
     let s_subtle_crypto = atom_priv(g, "redjs#subtleCrypto");
     let s_listeners = atom_priv(g, "redjs#listeners");
@@ -295,6 +296,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         g,
         global_proxy,
         s_performance,
+        s_response_body,
         s_crypto,
         s_subtle_crypto,
         s_listeners,
@@ -438,9 +440,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     clipboard::install(g, et_proto);
     // `localStorage` / `sessionStorage` + `StorageEvent`, over whatever
     // `StorageHost` the embedder installed. Needs `Event.prototype`
-    // (StorageEvent subclasses it) and evaluates its own small script, so it is
-    // fatal like `streams::install_surface`: a context whose `localStorage` is
-    // the raw un-proxied object would silently lose named-property access.
+    // (StorageEvent subclasses it). Both Storage proxies must be usable.
     #[cfg(feature = "storages")]
     if storage::install(g, ev_proto) != 0 {
         return 1;

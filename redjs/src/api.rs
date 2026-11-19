@@ -524,6 +524,12 @@ impl HostArgs {
         Value(unsafe { *((self.cf as usize + l.cf_this_offset as usize) as *const u64) })
     }
 
+    /// The host function being invoked, including when it was called with a different receiver.
+    pub(crate) fn callee(&self) -> Value {
+        let l = layout();
+        Value(unsafe { *((self.cf as usize + l.cf_callee_offset as usize) as *const u64) })
+    }
+
     /// `undefined` when out of range (JS semantics).
     pub fn arg(&self, i: u32) -> Value {
         if i >= self.argc() {
