@@ -457,6 +457,13 @@ extern "C" int32_t rjs_aot_admits_host_files()
     return imageActive && imageAdmitsHostFiles ? 1 : 0;
 }
 
+extern "C" int32_t rjs_aot_has_closed_library()
+{
+    const auto* image = imageActive ? AOT::Image::current() : nullptr;
+    return image && image->isBuiltWithLibrary() && !image->allowsLibrarySource()
+        && !image->admitsUnknownJavaScript() && !image->loadsCodeOutsideImage();
+}
+
 extern "C" void rjs_aot_forget_context(void* context)
 {
     startedRealms.erase(static_cast<JSGlobalObject*>(context));

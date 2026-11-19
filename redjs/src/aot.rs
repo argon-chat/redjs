@@ -98,6 +98,7 @@ unsafe extern "C" {
     fn rjs_aot_run(context: *mut c_void, module: u32, result: *mut u64) -> i32;
     fn rjs_aot_is_active() -> i32;
     fn rjs_aot_admits_host_files() -> i32;
+    fn rjs_aot_has_closed_library() -> i32;
     fn rjs_aot_forget_context(context: *mut c_void);
 }
 
@@ -290,6 +291,11 @@ pub fn is_active() -> bool {
 /// The selected image was compiled for a host that runs code of its own before the entry: preludes, native globals.
 pub fn admits_host_files() -> bool {
     unsafe { rjs_aot_admits_host_files() != 0 }
+}
+
+/// The image provides its own compiled library and admits no external JavaScript.
+pub fn has_closed_library() -> bool {
+    unsafe { rjs_aot_has_closed_library() != 0 }
 }
 
 pub(crate) unsafe fn forget_context(context: *mut c_void) {
