@@ -28,9 +28,8 @@
 //! sets, see [`navigator`]), DOMPoint / DOMMatrix, Path2D, FormData, XMLSerializer, `structuredClone`
 //! over a byte-level structured serializer (see [`serialize`]), the
 //! Streams queueing cores and the gzip/deflate codec, and the alert / confirm /
-//! prompt host hooks. Only genuinely dumb stubs remain in the embedded
-//! `bootstrap.js` (console fmt, atob/btoa, crypto, OffscreenCanvas-2D over
-//! native pixels, silent Web Audio, misc instanceof brands).
+//! prompt host hooks. Console formatting and host element brands are native. Embedders
+//! built without the canvas feature get the pixel-copy fallback from `bootstrap.js`.
 //!
 //! IndexedDB (`indexeddb`, on by default) is its own subtree — see
 //! [`indexeddb`] for its client/server shape.
@@ -59,6 +58,7 @@ mod audio_worklet;
 #[cfg(feature = "battery")]
 pub mod battery;
 pub mod blob;
+mod bootstrap;
 #[cfg(feature = "canvas")]
 pub mod canvas2d;
 #[cfg(feature = "clipboard")]
@@ -121,7 +121,8 @@ use core::ffi::c_void;
 
 use util::*;
 
-const BOOTSTRAP_JS: &str = include_str!("../bootstrap.js");
+#[cfg(not(feature = "canvas"))]
+const CANVAS_FALLBACK_JS: &str = include_str!("../bootstrap.js");
 
 /// Shared harness for the web-API tests: a real JSC context with the whole
 /// native layer installed — the same thing an embedder runs. Every assertion in
@@ -297,6 +298,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
         global_proxy,
         s_performance,
         s_response_body,
+        s_console: atom_priv(g, "redjs#console"),
         s_crypto,
         s_subtle_crypto,
         s_listeners,
@@ -459,28 +461,28 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     #[cfg(feature = "canvas")]
     canvas2d::install(g, et_proto);
 
-    // The dumb-stub remainder.
-    let mut out = 0u64;
-    let url_name = "redjs/bootstrap.js";
-    let rc = crate::glue::rjs_eval8(
-        g,
-        BOOTSTRAP_JS.as_ptr(),
-        BOOTSTRAP_JS.len(),
-        url_name.as_ptr(),
-        url_name.len(),
-        &mut out,
-    );
-    if rc == 1 {
-        let (mut msg, mut stack) = (0u64, 0u64);
-        crate::glue::rjs_error_info(g, out, &mut msg, &mut stack);
-        let m = read_string(g, msg).unwrap_or_default();
-        eprintln!("[redjs] bootstrap.js failed: {m}");
+    if let Err(exception) = bootstrap::install(g) {
+        let (mut msg, mut stack) = (UNDEF, UNDEF);
+        crate::glue::rjs_error_info(g, exception, &mut msg, &mut stack);
+        eprintln!("[redjs] bootstrap failed: {}", read_string(g, msg).unwrap_or_default());
         return 1;
+    }
+    #[cfg(not(feature = "canvas"))]
+    if crate::glue::rjs_kind(g, get(g, st.global_proxy, "OffscreenCanvas")) != 9 {
+        let url = "redjs/bootstrap.js";
+        let mut out = UNDEF;
+        if crate::glue::rjs_eval8(g, CANVAS_FALLBACK_JS.as_ptr(), CANVAS_FALLBACK_JS.len(),
+                                  url.as_ptr(), url.len(), &mut out) != 0 {
+            let (mut msg, mut stack) = (UNDEF, UNDEF);
+            crate::glue::rjs_error_info(g, out, &mut msg, &mut stack);
+            eprintln!("[redjs] canvas fallback failed: {}", read_string(g, msg).unwrap_or_default());
+            return 1;
+        }
     }
     0
 }
 
-/// The console as stderr gets it (bootstrap.js): the Console Standard's
+/// The console as stderr gets it: the Console Standard's
 /// formatter, and errors that say what they are.
 #[cfg(test)]
 mod console_tests {
