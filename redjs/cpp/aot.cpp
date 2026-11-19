@@ -105,6 +105,7 @@ const GlobalObjectMethodTable methodTable {
 };
 }
 
+#if REDJS_AOT_COMPILER
 extern "C" void* rjs_aot_compile(const uint8_t* program, size_t length, const uint8_t* identity)
 {
     if ((!program && length) || !identity || imageActive || contextWasCreated.load(std::memory_order_acquire))
@@ -190,6 +191,7 @@ extern "C" void rjs_aot_compilation_free(void* handle)
 {
     delete static_cast<RjsAotCompilation*>(handle);
 }
+#endif
 
 namespace {
 // Both entry points transfer an owned file here. Only Accepted releases it

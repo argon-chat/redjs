@@ -1,7 +1,8 @@
 # Native image probes (Windows x64)
 
 These use Bun frontend `237bba51e98a8b3d5b62d2d6c33853c2e83820a7` and
-WebKit `3bc94211496460feda299ef85eef710eb67fafb3`. `native-aot` is opt-in.
+WebKit `3bc94211496460feda299ef85eef710eb67fafb3`. `native-aot` (the loader)
+is opt-in; `aot-compiler` adds the image compiler, which `compile` needs.
 Generate the full matching builtin table with the embedder's pinned generator
 (skathi: `scripts/aot/generate-table.ts`), then point
 `REDJS_AOT_BUILTIN_TABLE_DIR` at it. An engine-only table cannot consume the
@@ -23,8 +24,8 @@ $env:REDJS_AOT_BUILTIN_TABLE_DIR = "$out/table"
 $env:APPDATA = "$out/appdata"
 $env:SK_DATA_DIR = "$out/profile"
 & $frontend compile examples/aot/web.ts --no-builtin-modules "--aot-out=$out/web.ir" --aot-threads=1 --aot-testing=NoExecutable --outfile "$out/unused.exe"
-cargo run --example aot-image --no-default-features --features native-aot -- compile "$out/web.ir" "$out/web.image"
-cargo run --example aot-image --no-default-features --features native-aot -- run-web "$out/web.image"
+cargo run --example aot-image --no-default-features --features aot-compiler -- compile "$out/web.ir" "$out/web.image"
+cargo run --example aot-image --no-default-features --features aot-compiler -- run-web "$out/web.image"
 ```
 
 Compile and load run in separate processes. The loader checks entry bounds,
@@ -53,10 +54,10 @@ An unrelated indirect-eval refusal cannot satisfy this test.
 
 ```powershell
 & $frontend compile examples/aot/host-startup.js --no-builtin-modules "--aot-out=$out/host.ir" --aot-threads=1 --aot-testing=NoExecutable --outfile "$out/unused.exe"
-cargo run --example aot-image --no-default-features --features native-aot -- compile "$out/host.ir" "$out/host.image"
-cargo run --example aot-image --no-default-features --features native-aot -- run-web-host-startup "$out/host.image" compact
-cargo run --example aot-image --no-default-features --features native-aot -- run-web-host-startup "$out/host.image" default
-cargo run --example aot-image --no-default-features --features native-aot -- run-web-host-startup-jit examples/aot/host-startup.js
+cargo run --example aot-image --no-default-features --features aot-compiler -- compile "$out/host.ir" "$out/host.image"
+cargo run --example aot-image --no-default-features --features aot-compiler -- run-web-host-startup "$out/host.image" compact
+cargo run --example aot-image --no-default-features --features aot-compiler -- run-web-host-startup "$out/host.image" default
+cargo run --example aot-image --no-default-features --features aot-compiler -- run-web-host-startup-jit examples/aot/host-startup.js
 ```
 
 Install the native scheduling clock with `redjs_web_install` before calling

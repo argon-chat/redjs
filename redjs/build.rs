@@ -156,6 +156,7 @@ fn main() {
     let lib = webkit.join("lib");
     let inc = webkit.join("include");
     check_prebuilt(&webkit, &pins);
+    let no_jit = env::var_os("CARGO_FEATURE_NO_JIT").map(|_| no_jit_archive(platform, &pins));
     println!("cargo:webkit_dir={}", webkit.display());
     let mimalloc = fetch::mimalloc(&manifest, &pins);
 
@@ -295,9 +296,17 @@ fn main() {
             println!("cargo:rerun-if-changed={}", source.display());
             glue.file(source);
         }
+        if env::var_os("CARGO_FEATURE_AOT_COMPILER").is_some() {
+            glue.define("REDJS_AOT_COMPILER", "1");
+        }
+        if no_jit.is_some() {
+            glue.define("REDJS_NO_JIT", "1");
+        }
         println!("cargo:rerun-if-changed=cpp/aot_support.cpp");
         println!("cargo:rerun-if-changed=cpp/aot.cpp");
         println!("cargo:rerun-if-changed=cpp/aot");
+    } else if no_jit.is_some() {
+        panic!("the no-jit feature needs an AOT-enabled prebuilt (webkit.aot = 1), which declares its JIT entry points");
     }
     if engine_dll.is_some() {
         // Into the DLL, not the Rust link.
@@ -405,8 +414,11 @@ fn main() {
         .then(|| link_icu_root(&manifest, &out_dir, &lib, windows, &target_arch, platform, &pins));
 
     if let Some(name) = &engine_dll {
-        link_engine_dll(&manifest, &out_dir, &lib, name, icu_root.as_deref());
+        link_engine_dll(&manifest, &out_dir, &lib, name, icu_root.as_deref(), no_jit.as_deref());
     } else {
+        if let Some(archive) = &no_jit {
+            println!("cargo:rustc-link-search=native={}", archive.parent().unwrap().display());
+        }
         if windows {
             if let Some(stripped) = webkit_without_debug_info(&out_dir, &lib) {
                 println!("cargo:rustc-link-search=native={}", stripped.display());
@@ -448,6 +460,7 @@ fn main() {
     for l in libraries {
         let l = match *l {
             "sicudt" | "redjs_icudata" if icu_root.is_some() => ICU_ROOT_LIB,
+            "JavaScriptCore" if no_jit.is_some() => NO_JIT_LIB,
             l => l,
         };
         println!("cargo:rustc-link-lib=static:-bundle={l}");
@@ -516,6 +529,36 @@ fn main() {
 }
 
 const ICU_ROOT_LIB: &str = "redjs_icudata_root";
+
+/// The JavaScriptCore archive of `no-jit`, in the directory `REDJS_NO_JIT_DIR` names.
+const NO_JIT_LIB: &str = "JavaScriptCoreNoJIT";
+
+/// `no-jit`: the archive scripts/aot/no-jit.ts made for this engine. Its receipt names the engine
+/// and the symbol every JIT reference now points at, which aot_support.cpp defines.
+fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
+    println!("cargo:rerun-if-env-changed=REDJS_NO_JIT_DIR");
+    assert!(platform == "windows-amd64", "the no-jit feature is Windows x64 only");
+    let fix = "Make one with `bun scripts/aot/no-jit.ts --out <dir>` in a Skathi checkout and set REDJS_NO_JIT_DIR to it.";
+    let dir = PathBuf::from(
+        env::var_os("REDJS_NO_JIT_DIR")
+            .unwrap_or_else(|| panic!("\n\nthe no-jit feature needs REDJS_NO_JIT_DIR: the JIT-free JavaScriptCore archive.\n{fix}\n")),
+    );
+    let receipt_path = dir.join(".redjs-no-jit");
+    println!("cargo:rerun-if-changed={}", receipt_path.display());
+    let receipt = fs::read_to_string(&receipt_path)
+        .unwrap_or_else(|e| panic!("\n\n{}: {e}\n{fix}\n", receipt_path.display()));
+    let field = |key: &str| receipt.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('='));
+    assert!(
+        receipt.starts_with("redjs.no-jit.v1\n")
+            && field("webkit") == Some(pin(pins, "webkit.version"))
+            && field("entry") == Some("redjs_removed_jit_entry"),
+        "\n\n{} was made for another engine than pins.txt names.\n{fix}\n",
+        dir.display()
+    );
+    let archive = dir.join(format!("{NO_JIT_LIB}.lib"));
+    assert!(archive.is_file(), "\n\n{} is missing.\n{fix}\n", archive.display());
+    archive
+}
 
 /// `icu-root`: archives the root-only ICU data as `ICU_ROOT_LIB` in OUT_DIR, held to its pin, and
 /// writes the full package beside the binaries. Returns the archive.
@@ -612,7 +655,14 @@ fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBu
 ///   so the same inputs give the same DLL.
 /// - It lands in OUT_DIR and is copied beside the images of this profile
 ///   (`target/<triple>/<profile>/` and its `deps/`), where they load it from.
-fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &str, icu_root: Option<&Path>) {
+fn link_engine_dll(
+    manifest: &Path,
+    out_dir: &Path,
+    webkit_lib: &Path,
+    name: &str,
+    icu_root: Option<&Path>,
+    no_jit: Option<&Path>,
+) {
     let target = env::var("TARGET").unwrap();
     let tool = |name: &str| {
         cc::windows_registry::find_tool(&target, "link.exe")
@@ -620,8 +670,9 @@ fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &st
             .to_command()
     };
     let mut libraries: Vec<PathBuf> = ["redjs_glue.lib", "redjs_mimalloc.lib"].iter().map(|l| out_dir.join(l)).collect();
-    libraries.extend(WINDOWS_WEBKIT_LIBS.iter().map(|l| match icu_root {
-        Some(root) if *l == "sicudt" => root.to_path_buf(),
+    libraries.extend(WINDOWS_WEBKIT_LIBS.iter().map(|l| match (*l, icu_root, no_jit) {
+        ("sicudt", Some(root), _) => root.to_path_buf(),
+        ("JavaScriptCore", _, Some(archive)) => archive.to_path_buf(),
         _ => webkit_lib.join(format!("{l}.lib")),
     }));
 
@@ -660,6 +711,11 @@ fn link_engine_dll(manifest: &Path, out_dir: &Path, webkit_lib: &Path, name: &st
     for required in ["rjs_init", "rjs_set_icu_decompress", "rjs_icu_zstd_dict", "JSGlobalContextCreate"] {
         assert!(exports.contains(required), "the engine DLL would not export {required}");
     }
+    let compiler = env::var_os("CARGO_FEATURE_AOT_COMPILER").is_some();
+    assert!(
+        compiler || !exports.iter().any(|e| e.starts_with("rjs_aot_compil")),
+        "the engine DLL would export the image compiler without the aot-compiler feature"
+    );
 
     let stem = name.trim_end_matches(".dll");
     let def = out_dir.join(format!("{stem}.def"));

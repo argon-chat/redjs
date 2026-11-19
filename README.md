@@ -150,8 +150,13 @@ Console.WriteLine(js.Eval("6 * 7").AsNumber); // 42
 The [C# smoke project](csharp/RedJs.Smoke/RedJs.Smoke.csproj) includes both DLL
 loading and static linking for .NET NativeAOT. NativeAOT here compiles the
 .NET host; JavaScript still uses JSC's normal execution path. Compiling
-JavaScript to native images is a separate, experimental
-[`native-aot` feature](redjs/examples/aot/README.md).
+JavaScript to native images is separate and experimental: the
+[`native-aot` feature](redjs/examples/aot/README.md) loads images and
+`aot-compiler` also compiles them. Without `aot-compiler` the engine leaves out
+JavaScriptCore's image compiler, about 24 MiB of the `REDJS_ENGINE_DLL` build.
+With `no-jit` (Windows x64), the engine links an archive without the JIT that
+`bun scripts/aot/no-jit.ts --out <dir>` in Skathi produces, found through
+`REDJS_NO_JIT_DIR`; it can only run native images.
 
 **Other languages:** the [`redjs_*` C ABI](redjs/src/ffi.rs) exposes the same
 engine operations, with per-function documentation in the source.

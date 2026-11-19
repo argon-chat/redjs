@@ -1,6 +1,7 @@
-// The AOT-era JSC archive delegates trimming policy to its embedder.
-// redjs ships the complete engine, so every feature is Present. Unexpected
-// removed-feature entries must diagnose/throw rather than silently succeed.
+// The AOT-era JSC archive delegates trimming policy to its embedder. redjs
+// declares removed what its link leaves out: the image compiler unless the
+// aot-compiler feature asks for it, and the JIT with no-jit. Nothing is cut
+// out of the binary by address range, so isTrimmed stays 0.
 #include "config.h"
 #include <JavaScriptCore/AOTRemovableFeature.h>
 #include <JavaScriptCore/Error.h>
@@ -21,13 +22,23 @@ using namespace WTF;
 
 namespace JSC {
 
-extern "C" const RemovableFeatureState Bun__removableFeatureState = {
-    .magic = { 'B', 'U', 'N', 'F', 'E', 'A', 'T', 0 },
-    .isTrimmed = 0,
-    .removedRangeCount = 0,
-    .removedRangesOffset = 0,
-    .removal = { },
-};
+static consteval RemovableFeatureState removableFeatureState()
+{
+    RemovableFeatureState state { .magic = { 'B', 'U', 'N', 'F', 'E', 'A', 'T', 0 } };
+    auto remove = [&](RemovableFeature feature) {
+        state.removal[static_cast<unsigned>(feature)] = static_cast<uint8_t>(FeatureRemoval::Requested);
+    };
+#if !REDJS_AOT_COMPILER
+    remove(RemovableFeature::ImageCompiler);
+#endif
+#if REDJS_NO_JIT
+    remove(RemovableFeature::JIT);
+#endif
+    (void)remove;
+    return state;
+}
+
+extern "C" const RemovableFeatureState Bun__removableFeatureState = removableFeatureState();
 
 extern "C" const char* Bun__removableFeatureName(uint16_t feature)
 {
@@ -43,17 +54,27 @@ extern "C" const char* Bun__removableFeatureName(uint16_t feature)
 extern "C" [[noreturn]] void Bun__abortForRemovedFeature(uint16_t feature)
 {
     const char* name = Bun__removableFeatureName(feature);
-    std::fprintf(stderr, "redjs: unexpected removed-feature entry %u (%s) in an untrimmed engine\n",
+    std::fprintf(stderr, "redjs: reached removable feature %u (%s), which this engine build leaves out\n",
         static_cast<unsigned>(feature), name ? name : "unknown");
     std::abort();
 }
+
+#if REDJS_NO_JIT
+// scripts/aot/no-jit.ts points every reference to a JIT entry point here. Callers of any calling
+// convention arrive, so it takes no arguments and never returns.
+extern "C" [[noreturn]] void redjs_removed_jit_entry()
+{
+    std::fputs("redjs: this engine was built without the JIT and reached JIT code\n", stderr);
+    std::abort();
+}
+#endif
 
 static EncodedJSValue throwUnexpectedRemovedFeature(JSGlobalObject* global, uint16_t feature, const String& function)
 {
     auto scope = DECLARE_THROW_SCOPE(global->vm());
     const char* name = Bun__removableFeatureName(feature);
     String featureName = name ? String::fromUTF8(name) : String("unknown"_s);
-    auto message = makeString("Unexpected removed-feature entry in untrimmed redjs: "_s,
+    auto message = makeString("This engine build leaves out "_s,
         featureName, function.isEmpty() ? String() : makeString(" ("_s, function, ')'));
     throwException(global, scope, createError(global, message));
     return { };

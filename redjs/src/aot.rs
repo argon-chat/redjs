@@ -72,12 +72,16 @@ fn anchor_icu() {
     core::hint::black_box(crate::icu::bun_icu_maybe_decompress as *const ());
 }
 
+#[cfg(feature = "aot-compiler")]
 unsafe extern "C" {
     fn rjs_aot_compile(program: *const u8, length: usize, identity: *const u8) -> *mut c_void;
     fn rjs_aot_compilation_image(handle: *mut c_void, bytes: *mut *const u8) -> usize;
     fn rjs_aot_compilation_entries(handle: *mut c_void, entries: *mut *const u32) -> usize;
     fn rjs_aot_compilation_diagnostic(handle: *mut c_void, bytes: *mut *const u8) -> usize;
     fn rjs_aot_compilation_free(handle: *mut c_void);
+}
+
+unsafe extern "C" {
     fn rjs_aot_load_file_with_profile(
         path: *const u16,
         length: usize,
@@ -105,7 +109,9 @@ pub struct CompiledImage {
     pub diagnostics: String,
 }
 
+#[cfg(feature = "aot-compiler")]
 struct Compilation(*mut c_void);
+#[cfg(feature = "aot-compiler")]
 impl Drop for Compilation {
     fn drop(&mut self) {
         unsafe { rjs_aot_compilation_free(self.0) }
@@ -117,6 +123,7 @@ impl Drop for Compilation {
 /// # Safety
 /// The bytes must come from the exact pinned frontend/wire schema and be kept
 /// inside the build's trust boundary. Native compiler input is not user content.
+#[cfg(feature = "aot-compiler")]
 pub unsafe fn compile_ir(program: &[u8]) -> Result<CompiledImage, String> {
     anchor_icu();
     let mut hash = Sha256::new();

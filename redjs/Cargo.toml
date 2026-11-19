@@ -125,7 +125,14 @@ native-tls = { version = "0.2", features = ["alpn-accept"] }
 
 [features]
 # Experimental native images; never enabled by default. Requires the matching frontend table.
+# Loads and runs images; the engine's image compiler stays out of the build.
 native-aot = []
+# The image compiler too (`aot::compile_ir`), for the tool that makes images.
+aot-compiler = ["native-aot"]
+# Windows x64: no JIT in the engine. Links the JavaScriptCore archive `REDJS_NO_JIT_DIR` names (made
+# by Skathi's scripts/aot/no-jit.ts), whose JIT entry points abort; JavaScript runs in the interpreter
+# or from a native image.
+no-jit = []
 # Links only the root locale of ICU's data (icu-root.txt, ~3 MB instead of ~11.5 MB) on Windows
 # and Linux; the full package is written beside the binaries as icudt<NN>l.dat for the embedder to
 # ship and hand over with `icu::set_common_data`. No effect on macOS, which uses the system ICU.
@@ -279,7 +286,7 @@ required-features = ["audio"]
 
 [[example]]
 name = "aot-image"
-required-features = ["native-aot"]
+required-features = ["aot-compiler"]
 
 [build-dependencies]
 cc = "1"

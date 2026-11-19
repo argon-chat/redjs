@@ -29,7 +29,7 @@ if (-not $SkipNativeBuild) {
                 $env:REDJS_AOT_BUILTIN_TABLE_DIR = $BuiltinTable
                 cargo rustc --release --lib --crate-type 'rlib,cdylib,staticlib' --no-default-features --features native-aot --target x86_64-pc-windows-msvc --target-dir target/benchmarks-aot
                 if ($LASTEXITCODE -ne 0) { throw 'Native AOT redjs build failed' }
-                cargo build --release --example aot-image --no-default-features --features native-aot --target x86_64-pc-windows-msvc --target-dir target/benchmarks-aot
+                cargo build --release --example aot-image --no-default-features --features aot-compiler --target x86_64-pc-windows-msvc --target-dir target/benchmarks-aot
                 if ($LASTEXITCODE -ne 0) { throw 'Native AOT probe build failed' }
             }
             finally { $env:REDJS_AOT_BUILTIN_TABLE_DIR = $previousTable }
