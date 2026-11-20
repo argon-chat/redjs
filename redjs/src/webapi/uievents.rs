@@ -213,6 +213,7 @@ struct UiClasses {
     mouse: Class,
     keyboard: Class,
     wheel: Class,
+    gesture: Class,
     focus: Class,
     input: Class,
     pointer: Class,
@@ -385,6 +386,14 @@ unsafe fn init_keyboard_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
 }
 
 const WHEEL: &[&str] = &["deltaX", "deltaY", "deltaZ", "deltaMode"];
+
+unsafe fn init_gesture_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
+    let slots = init_mouse_event(g, obj, ty, init);
+    let names = &["scale", "rotation"];
+    let mut fields = [UNDEF; 2];
+    get_many(g, init, names, &mut fields);
+    define_many(g, slots, names, &[num(g, fields[0], 1.0), num(g, fields[1], 0.0)], 0);
+}
 
 unsafe fn init_wheel_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     let s = init_mouse_event(g, obj, ty, init);
@@ -604,6 +613,8 @@ slot_getters! {
     w_delta_y, "deltaY", "WheelEvent.deltaY";
     w_delta_z, "deltaZ", "WheelEvent.deltaZ";
     w_delta_mode, "deltaMode", "WheelEvent.deltaMode";
+    g_scale, "scale", "GestureEvent.scale";
+    g_rotation, "rotation", "GestureEvent.rotation";
     f_related, "relatedTarget", "FocusEvent.relatedTarget";
     i_data, "data", "InputEvent.data";
     i_input_type, "inputType", "InputEvent.inputType";
@@ -718,6 +729,7 @@ event_ctor!(ui_construct, ui_event, init_ui_event, "UIEvent");
 event_ctor!(mouse_construct, mouse, init_mouse, "MouseEvent");
 event_ctor!(keyboard_construct, keyboard, init_keyboard_event, "KeyboardEvent");
 event_ctor!(wheel_construct, wheel, init_wheel_event, "WheelEvent");
+event_ctor!(gesture_construct, gesture, init_gesture_event, "GestureEvent");
 event_ctor!(focus_construct, focus, init_focus_event, "FocusEvent");
 event_ctor!(input_construct, input, init_input_event, "InputEvent");
 #[crate::host_fn]
@@ -1563,6 +1575,22 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     });
     define_constants(g, &wheel, DELTA_MODES);
 
+    let gesture = define_class(g, &ClassSpec {
+        name: "GestureEvent",
+        arity: 1,
+        construct: Some(gesture_construct),
+        parent_proto: ui_event.proto,
+        methods: &[],
+        getters: &[
+            ("scale", g_scale), ("rotation", g_rotation),
+            ("clientX", m_client_x), ("clientY", m_client_y),
+            ("pageX", m_page_x), ("pageY", m_page_y),
+            ("screenX", m_screen_x), ("screenY", m_screen_y),
+            ("ctrlKey", m_ctrl), ("shiftKey", m_shift), ("altKey", m_alt), ("metaKey", m_meta),
+        ],
+        accessors: &[],
+    });
+
     let focus = define_class(g, &ClassSpec {
         name: "FocusEvent",
         arity: 1,
@@ -1675,6 +1703,7 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
         mouse,
         keyboard,
         wheel,
+        gesture,
         focus,
         input,
         pointer,
@@ -2110,6 +2139,13 @@ mod jsc_tests {
             "(() => { const t = new EventTarget(); t.addEventListener('keydown', e => e.preventDefault()); \
               return t.dispatchEvent(new KeyboardEvent('keydown', { cancelable: true })) === false; })()",
         );
+    }
+
+    #[test]
+    fn gesture_event_exposes_scale_rotation_coordinates_and_modifiers() {
+        let c = ctx();
+        ok(&c, "(e => e instanceof UIEvent && e.scale === 1 && e.rotation === 0)(new GestureEvent('gesturestart'))");
+        ok(&c, "(e => e.scale === 1.5 && e.rotation === -12 && e.clientX === 18 && e.altKey && !e.ctrlKey)(new GestureEvent('gesturechange', {scale: 1.5, rotation: -12, clientX: 18, altKey: true}))");
     }
 
     // -- WheelEvent ---------------------------------------------------------
