@@ -268,6 +268,10 @@ pub unsafe fn is_file(g: *mut c_void, v: u64) -> bool {
     file_data(g, v).is_some()
 }
 
+pub(crate) unsafe fn native_name(g: *mut c_void, v: u64) -> Option<String> {
+    file_data(g, v).map(|(_, m)| m.name.clone())
+}
+
 /// The path behind a File the HOST made from disk — what Electron's
 /// `webUtils.getPathForFile` answers. `None` for a script-made File, even one
 /// that shares a picked file's bytes, as in Electron.

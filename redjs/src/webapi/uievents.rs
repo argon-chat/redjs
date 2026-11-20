@@ -1009,8 +1009,71 @@ unsafe fn dt_set_effect(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 #[crate::host_fn]
-unsafe fn dt_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
+unsafe fn dt_set_image(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let Some(d) = this_dt(g, cf) else { return throw_type_error(g, "Illegal invocation of setDragImage") };
+    if d.mode != DragDataMode::ReadWrite { return UNDEF; }
+    let image = cf_arg(cf, 0);
+    if !super::blob::is_object(g, image) { return throw_type_error(g, "setDragImage expects an element"); }
+    let x = read_number(g, cf_arg(cf, 1)) as i32;
+    let y = read_number(g, cf_arg(cf, 2)) as i32;
+    let b = bag(g, cf_this(cf));
+    define_many(g, b, &["image", "imageX", "imageY"], &[image, enc_i32(x), enc_i32(y)], 0);
     UNDEF
+}
+
+/// A promised file carries its range without reading it, including for script-created files.
+pub struct DragExportFile {
+    pub name: String,
+    pub path: Option<std::path::PathBuf>,
+    pub directory: bool,
+    pub range: super::blob::Range,
+}
+
+pub struct DragExport {
+    pub strings: Vec<(String, String)>,
+    pub files: Vec<DragExportFile>,
+    pub effects: String,
+    pub image: Option<(u64, i32, i32)>,
+}
+
+/// Takes a native source snapshot at dragstart. Returning a disk path requires a genuine
+/// host-created File and cannot be requested by passing an object with a path property.
+pub unsafe fn export_drag(g: *mut c_void, store: u64) -> Option<DragExport> {
+    let d = dt_of(g, store)?;
+    if d.mode != DragDataMode::ReadWrite { return None; }
+    let items = d.items.clone();
+    let effects = d.effect_allowed.clone();
+    let b = bag(g, store);
+    let image = get(g, b, "image");
+    let image = is_cell(image).then(|| (image, read_number(g,get(g,b,"imageX")) as i32, read_number(g,get(g,b,"imageY")) as i32));
+    let map = get(g, b, "files");
+    let mut result = DragExport { strings: Vec::new(), files: Vec::new(), effects, image };
+    for item in items {
+        match item.kind {
+            ItemKind::Text(value) => result.strings.push((item.mime, value)),
+            ItemKind::File { is_dir, .. } => {
+                let value = get(g, map, &item.id.to_string());
+                if let Some(range) = super::blob::range_of(g, value) {
+                    let path = super::file::path_of(g, value);
+                    let name = super::file::native_name(g, value)?;
+                    result.files.push(DragExportFile { name, path, directory: is_dir, range });
+                }
+            }
+        }
+    }
+    Some(result)
+}
+
+/// Gives a new target event its own access mode and the original in-process file objects.
+pub unsafe fn transfer_for_target(g: *mut c_void, source: u64, mode: DragDataMode) -> Option<u64> {
+    let d = dt_of(g, source)?;
+    let data = DataTransferData { items:d.items.clone(), drop_effect:"none".into(), effect_allowed:d.effect_allowed.clone(), mode, next_id:d.next_id };
+    let ids: Vec<_> = data.items.iter().filter(|i| matches!(i.kind,ItemKind::File{..})).map(|i| i.id).collect();
+    let target = make_dt(g, classes(g).dt.proto, data);
+    let from = get(g, bag(g,source), "files");
+    let to = get(g,bag(g,target), "files");
+    for id in ids { let key = id.to_string(); define(g,to,&key,get(g,from,&key),0); }
+    Some(target)
 }
 
 // ---- DataTransferItemList ---------------------------------------------------
@@ -1554,7 +1617,7 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
             // Spec: sets the drag feedback image. There is no drag feedback
             // surface here, and the call is advisory — a no-op is the whole
             // behaviour, not a placeholder for one.
-            ("setDragImage", 3, dt_noop),
+            ("setDragImage", 3, dt_set_image),
         ],
         getters: &[("types", dt_types), ("files", dt_files), ("items", dt_items)],
         accessors: &[
@@ -1680,6 +1743,33 @@ mod tests {
 #[cfg(test)]
 mod jsc_tests {
     use crate::webapi::testing::*;
+
+    #[test]
+    fn source_export_and_target_modes_preserve_files_and_private_items() {
+        use super::{export_drag, transfer_for_target, set_drag_data_mode, DragDataMode};
+        use crate::webapi::file::testing::file_ctx;
+        use crate::webapi::util::define;
+        let c = file_ctx();
+        let store = c.eval("globalThis.dt = new DataTransfer(); globalThis.original = new File(['abc'], 'drawing.png'); globalThis.image = {}; dt.effectAllowed = 'copyMove'; dt.items.add(original); dt.setData('app/private','exact'); dt.setDragImage(image,7,9); dt").unwrap().0;
+        let g = c.raw();
+        unsafe {
+            let out = export_drag(g, store).unwrap();
+            assert_eq!(out.effects, "copyMove");
+            assert_eq!(out.strings, vec![("app/private".into(), "exact".into())]);
+            assert_eq!(out.files[0].name, "drawing.png");
+            assert!(out.files[0].path.is_none());
+            assert_eq!(out.files[0].range.in_memory().unwrap(), b"abc");
+            assert_eq!(out.image, Some((c.eval("image").unwrap().0, 7, 9)));
+            set_drag_data_mode(g, store, DragDataMode::Protected);
+            assert!(export_drag(g, store).is_none());
+            let global = crate::glue::rjs_global(g);
+            define(g, global, "over", transfer_for_target(g, store, DragDataMode::Protected).unwrap(), 0);
+            define(g, global, "dropStore", transfer_for_target(g, store, DragDataMode::ReadOnly).unwrap(), 0);
+            ok(&c, "over.files.length===0 && over.getData('app/private')==='' && over.types.includes('app/private')");
+            ok(&c, "dropStore.files[0]===original && dropStore.getData('app/private')==='exact'");
+            ok(&c, "(() => { dropStore.clearData(); return dropStore.items.length === 2; })()");
+        }
+    }
 
     #[test]
     fn the_inheritance_chain_reaches_event() {
