@@ -1150,6 +1150,29 @@ unsafe fn this_item(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<Optio
     Ok(d.visible().iter().find(|i| i.id == id).cloned().map(|i| (dt, d.mode, i)))
 }
 
+/// The readable drop that owns a file item. The store lets an embedder share a virtual
+/// filesystem across its entries. The list is inaccessible in protected or disabled mode.
+pub unsafe fn dropped_entry(g: *mut c_void, item: u64) -> Option<(u64, std::path::PathBuf, bool)> {
+    let id = host_data::<DtItemData>(g, classes(g).item_cls, item)?.id;
+    let (store, d) = owner(g, item)?;
+    if !d.mode.readable() { return None; }
+    let entry = d.items.iter().find(|i| i.id == id)?;
+    match &entry.kind {
+        ItemKind::File { path: Some(path), is_dir } => Some((store, path.clone(), *is_dir)),
+        _ => None,
+    }
+}
+
+/// All disk entries in a readable store, in item order, without opening their paths.
+pub unsafe fn dropped_roots(g: *mut c_void, store: u64) -> Vec<(std::path::PathBuf, bool)> {
+    let Some(d) = host_data::<DataTransferData>(g, classes(g).dt_cls, store) else { return Vec::new() };
+    if !d.mode.readable() { return Vec::new(); }
+    d.items.iter().filter_map(|i| match &i.kind {
+        ItemKind::File { path: Some(path), is_dir } => Some((path.clone(), *is_dir)),
+        _ => None,
+    }).collect()
+}
+
 #[crate::host_fn]
 unsafe fn item_kind(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "kind") {
@@ -1313,6 +1336,50 @@ pub unsafe fn create_drag_data(g: *mut c_void, entries: &[DropEntry], mode: Drag
         let Some(d) = dt_of(g, dt) else { break };
         let id = d.push(ItemKind::File { path: Some(e.path.clone()), is_dir: e.is_dir }, mime);
         define(g, files_map, &id.to_string(), f, 0);
+    }
+    resync(g, dt);
+    dt
+}
+
+/// Creates one external drag event's data store. Hover only exposes MIME metadata.
+/// A drop snapshots the files that still exist and reports unavailable paths to the host.
+///
+/// # Safety
+/// As [`create_drag_data`].
+pub unsafe fn external_drag_data(
+    g: *mut c_void,
+    paths: &[std::path::PathBuf],
+    strings: &[(String, String)],
+    mode: DragDataMode,
+    allowed: &str,
+    mut unreadable: impl FnMut(&std::path::Path),
+) -> u64 {
+    let dt = if mode == DragDataMode::ReadOnly {
+        let entries: Vec<_> = paths.iter().filter_map(|path| {
+            let m = std::fs::metadata(path).ok();
+            match m {
+                Some(m) if m.is_file() || m.is_dir() => Some(DropEntry {
+                    path: path.clone(), is_dir: m.is_dir(),
+                    stat: m.modified().ok().map(|mtime| (m.len(), mtime)),
+                }),
+                _ => { unreadable(path); None }
+            }
+        }).collect();
+        create_drag_data(g, &entries, mode)
+    } else {
+        let c = classes(g);
+        let mut data = DataTransferData { mode: DragDataMode::Protected, ..Default::default() };
+        for path in paths {
+            let mime = path.file_name().and_then(|n| n.to_str()).and_then(super::mime::type_for_name).unwrap_or("");
+            data.push(ItemKind::File { path: None, is_dir: false }, mime.into());
+        }
+        make_dt(g, c.dt.proto, data)
+    };
+    if let Some(data) = dt_of(g, dt) {
+        data.effect_allowed = allowed.to_owned();
+        for (kind, text) in strings {
+            data.set(kind, text);
+        }
     }
     resync(g, dt);
     dt
