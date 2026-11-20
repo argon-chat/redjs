@@ -597,9 +597,7 @@ unsafe fn src_drain(g: *mut c_void) -> usize {
 
 /// Above this, a synchronous read of a path-backed Blob says so (A-F2).
 pub const SYNC_READ_ADVISORY_BYTES: u64 = 16 << 20;
-/// Above this, `stream()` of a path-backed Blob says that v1 reads it in one
-/// piece before the first chunk (A-F2).
-pub const STREAM_ADVISORY_BYTES: u64 = 64 << 20;
+
 
 fn advised() -> &'static Mutex<(HashSet<String>, Vec<String>)> {
     static A: OnceLock<Mutex<(HashSet<String>, Vec<String>)>> = OnceLock::new();
@@ -1064,12 +1062,14 @@ unsafe fn slice(g: *mut c_void, cf: *mut c_void) -> u64 {
     host_create(g, st.blob_class, st.blob.proto, data)
 }
 
-const STREAM_CHUNK: u64 = 65536;
+const STREAM_CHUNK: u64 = 64 << 10;
+const STREAM_DISK_BLOCK: u64 = 1 << 20;
 
 struct StreamSource {
+    // Unread bytes of the Blob's original range. None means cancelled or closed.
     remaining: Option<Range>,
-    // A file is read once at first demand. Later pulls can deliver directly from that snapshot.
-    has_snapshot: bool,
+    // At most one disk read per reader. Keep the last block only while serving its chunks.
+    buffered: Option<Range>,
 }
 
 fn stream_source_class() -> crate::capi::JSClassRef {
@@ -1088,13 +1088,17 @@ unsafe fn controller_method(g: *mut c_void, controller: u64, name: &str, args: &
 
 unsafe fn deliver_chunk(g: *mut c_void, source: u64, controller: u64) -> Result<u64, u64> {
     let state = host_data::<StreamSource>(g, stream_source_class(), source).unwrap();
-    let Some(range) = &mut state.remaining else { return Ok(UNDEF) }; // cancelled during the read
+    let Some(remaining) = &mut state.remaining else { return Ok(UNDEF) }; // cancelled during the read
+    let range = state.buffered.as_mut().unwrap_or(remaining);
     if range.len != 0 {
         let mut chunk = range.clone();
         chunk.len = chunk.len.min(STREAM_CHUNK);
         range.offset += chunk.len;
         range.len -= chunk.len;
-        let last = range.len == 0;
+        if range.len == 0 {
+            state.buffered = None;
+        }
+        let last = state.buffered.is_none() && state.remaining.as_ref().unwrap().len == 0;
         if last {
             state.remaining = None;
         }
@@ -1131,8 +1135,8 @@ unsafe fn stream_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(cursor) = host_data::<StreamSource>(g, stream_source_class(), source) else {
         return throw_type_error(g, "Illegal invocation of Blob stream pull");
     };
-    let Some(range) = cursor.remaining.clone() else { return resolved_promise(g, UNDEF) };
-    if range.len == 0 || cursor.has_snapshot {
+    let Some(mut range) = cursor.remaining.clone() else { return resolved_promise(g, UNDEF) };
+    if range.len == 0 || cursor.buffered.is_some() {
         return match deliver_chunk(g, source, controller) {
             Ok(v) => resolved_promise(g, v),
             Err(e) => super::domexception::rejected_with(g, e),
@@ -1148,6 +1152,7 @@ unsafe fn stream_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     let job = make_fn(g, "", 0, finish_pull);
     define_many(g, job, &["source", "controller", "resolve", "reject"], &[source, controller, resolve, reject], 0);
     if matches!(range.source, Source::Disk(_)) {
+        range.len = range.len.min(STREAM_DISK_BLOCK);
         crate::ffi::redjs_protect(g, job);
         read_async(g, range, Box::new(move |g, result| unsafe {
             let source = get(g, job, "source");
@@ -1155,8 +1160,10 @@ unsafe fn stream_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
             if let Some(remaining) = &mut cursor.remaining {
                 match result {
                     Ok(bytes) => {
-                        *remaining = Range { offset: 0, len: bytes.len() as u64, source: Source::Memory(Arc::new(bytes)) };
-                        cursor.has_snapshot = true;
+                        let len = bytes.len() as u64;
+                        remaining.offset += len;
+                        remaining.len -= len;
+                        cursor.buffered = Some(Range { offset: 0, len, source: Source::Memory(Arc::new(bytes)) });
                     }
                     Err(e) => remaining.source = Source::Unreadable(e),
                 }
@@ -1175,37 +1182,24 @@ unsafe fn stream_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn stream_cancel(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some(cursor) = host_data::<StreamSource>(g, stream_source_class(), cf_this(cf)) {
         cursor.remaining = None;
+        cursor.buffered = None;
     }
     UNDEF
 }
 
-/// `stream()`: a `ReadableStream` of `Uint8Array` chunks of at most 64 KiB.
-/// A memory Blob is read a chunk at a time; a path-backed one is read once,
-/// off the JS thread, and then chunked — the true pull source is the m16
-/// "native byte source" seam, phase 2 (A-F2 past 64 MiB says so).
+/// A pull-driven stream of at most 64 KiB per chunk. A path-backed Blob reads
+/// one bounded block off the JS thread only once the previous block is exhausted.
 #[crate::host_fn]
 unsafe fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(b) = this_blob(g, cf) else {
         return throw_type_error(g, "Blob.prototype.stream called on a non-Blob");
     };
-    let len = b.len;
     let range = b.range();
-    if matches!(b.source, Source::Disk(_)) && len > STREAM_ADVISORY_BYTES {
-        advise(
-            "A-F2:stream",
-            format!(
-                "File (A-F2): stream() of a {} MiB File reads it in one piece before the first chunk in this \
-                 runtime (a browser reads it as you pull). For a file this size, read it in slices instead: \
-                 file.slice(i, i + n).arrayBuffer().",
-                len >> 20
-            ),
-        );
-    }
     let ctor = stream_constructors().lock().unwrap().get(&(g as usize)).copied();
     let Some(ctor) = ctor else {
         return throw_type_error(g, "Blob.prototype.stream: this context has no ReadableStream");
     };
-    let source = host_create(g, stream_source_class(), UNDEF, StreamSource { remaining: Some(range), has_snapshot: false });
+    let source = host_create(g, stream_source_class(), UNDEF, StreamSource { remaining: Some(range), buffered: None });
     define(g, source, "pull", make_fn(g, "pull", 1, stream_pull), 0);
     define(g, source, "cancel", make_fn(g, "cancel", 0, stream_cancel), 0);
     let strategy = new_object(g, UNDEF);
@@ -1400,6 +1394,18 @@ mod jsc_tests {
         s(&c, "globalThis.stream = picked.slice(2, 5).stream(); 0");
         drop(file);
         assert_eq!(run(&c, "try { await stream.getReader().read(); } catch (error) { return error.name; }"), "NotFoundError");
+    }
+
+    #[test]
+    fn disk_stream_does_not_read_the_next_block_until_demand() {
+        let c = file_ctx();
+        let size = super::STREAM_DISK_BLOCK as usize + 1;
+        let file = TempFile::new("stream-blocks.bin", &vec![3; size]);
+        file.expose(&c, "picked");
+        assert_eq!(run(&c, "globalThis.reader = picked.stream().getReader(); return (await reader.read()).value.length;"), "65536");
+        drop(file);
+        assert_eq!(run(&c, "let bytes = 65536; try { for (;;) { const c = await reader.read(); if (c.done) break; bytes += c.value.length; } } \
+            catch (e) { return [bytes, e.name].join(','); }"), format!("{},NotFoundError", super::STREAM_DISK_BLOCK));
     }
 
     #[test]
