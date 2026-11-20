@@ -1,6 +1,6 @@
 [package]
 name = "redjs-webgpu"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Native WebGPU for redjs over wgpu. A crate of its own so that redjs and wgpu compile in parallel."
@@ -9,7 +9,7 @@ homepage = "https://skathi.land"
 exclude = ["/examples", "src/tests.rs", "src/*_tests.rs"]
 
 [dependencies]
-redjs = { path = "..", version = "0.4.0", default-features = false, features = ["canvas"] }
+redjs = { path = "..", version = "0.5.0", default-features = false, features = ["canvas"] }
 # The wgpu gpui builds on; a host can inject its existing Device/Queue without a second GPU backend.
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "wgsl", "dx12", "metal", "vulkan"] }
 pollster = "0.4"
