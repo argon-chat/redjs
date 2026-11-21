@@ -416,7 +416,9 @@ AOT::Wire::ImageVerdict useImageInModule(std::span<const uint8_t> bytes, const s
         || !liesInOneSectionOf(base, bytes.subspan(endOfExecutedPart, header.size - endOfExecutedPart), false))
         return ImageVerdict::OutsideItsSegments;
 #else
-    static_assert(ENABLE(AOT_POSITION_INDEPENDENT_IMAGE));
+#if !ENABLE(AOT_POSITION_INDEPENDENT_IMAGE)
+#error "Mach-O image loading requires a position-independent AOT engine"
+#endif
     auto mapped = mappedMachOImage(bytes.data());
     if (mapped.data() != bytes.data() || mapped.size() != bytes.size())
         return ImageVerdict::OutsideItsSegments;
