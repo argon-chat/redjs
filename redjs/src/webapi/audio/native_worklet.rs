@@ -1,5 +1,5 @@
-//! Explicit native DSP factories. These nodes execute Rust compiled into the host,
-//! not JavaScript on a second VM. The receiving port is an EventTarget, not a
+//! Explicit native DSP factories. These nodes execute Rust compiled into the host;
+//! JavaScript processors are `worklet_node`'s. The receiving port is an EventTarget, not a
 //! transferable MessagePort; only the latest state crosses into each VM pump.
 use super::super::events;
 use super::*;
@@ -210,6 +210,20 @@ unsafe fn validate(g: *mut c_void, options: u64) -> Result<bool, ()> {
     }
 }
 
+/// A parameter's first value: `parameterData`'s, or its default. `Err` has thrown.
+unsafe fn initial(g: *mut c_void, data: u64, name: &str, default: f64) -> Result<f64, ()> {
+    let value = option(g, data, name)?;
+    if value == UNDEF {
+        return Ok(default);
+    }
+    let value = to_number(g, value)?;
+    if !value.is_finite() {
+        throw_type_error(g, "Native audio parameters must be finite");
+        return Err(());
+    }
+    Ok(value)
+}
+
 #[crate::host_fn]
 pub(super) unsafe fn load(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(engine) = this_engine_handle(g, cf) else {
@@ -221,66 +235,73 @@ pub(super) unsafe fn load(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Ok(name) = to_string(g, cf_arg(cf, 0)) else {
         return UNDEF;
     };
-    let Some(kind) = NativeKind::from_name(&name) else {
-        return super::super::domexception::throw(g, "NotSupportedError", "Unknown native audio processor; available: peak-meter-stereo, peak-meter-mono, stereo-to-mono, input-gate");
+    let kind = NativeKind::from_name(&name);
+    let custom = match kind {
+        Some(_) => None,
+        None => super::super::audio_worklet::processor(&name),
     };
+    if kind.is_none() && custom.is_none() {
+        return super::super::domexception::throw(
+            g,
+            "NotSupportedError",
+            &format!("No native audio processor is named '{name}'. Built in: peak-meter-stereo, peak-meter-mono, stereo-to-mono, input-gate; the host application registers its own."),
+        );
+    }
     let options = cf_arg(cf, 1);
     let Ok(discrete) = validate(g, options) else {
         return UNDEF;
-    };
-    let shared = ArcGc::new(NativeShared::new(kind));
-    let jsparams: &[(&str, u8, f64)] = match kind {
-        NativeKind::StereoToMono => &[("enabled", P_NATIVE_ENABLED, 1.0)],
-        NativeKind::InputGate => &[
-            ("enabled", P_NATIVE_ENABLED, 0.0),
-            ("threshold", P_NATIVE_THRESHOLD, -40.0),
-        ],
-        _ => &[],
     };
     let Ok(data) = option(g, options, "parameterData") else {
         return UNDEF;
     };
     let _data_root = is_cell(data).then(|| Root::new(g, data));
-    let mut values = Vec::with_capacity(jsparams.len());
-    for &(name, param, initial) in jsparams {
-        let Ok(value) = option(g, data, name) else {
-            return UNDEF;
+    let c = classes(g);
+    let mut values: Vec<(&str, u8, f64)> = Vec::new();
+    let params = if let Some(kind) = kind {
+        let shared = ArcGc::new(NativeShared::new(kind));
+        let declared: &[(&str, u8, f64)] = match kind {
+            NativeKind::StereoToMono => &[("enabled", P_NATIVE_ENABLED, 1.0)],
+            NativeKind::InputGate => &[
+                ("enabled", P_NATIVE_ENABLED, 0.0),
+                ("threshold", P_NATIVE_THRESHOLD, -40.0),
+            ],
+            _ => &[],
         };
-        let number = if value == UNDEF {
-            initial
-        } else {
-            let Ok(value) = to_number(g, value) else {
+        for &(param, id, default) in declared {
+            let Ok(number) = initial(g, data, param, default) else {
                 return UNDEF;
             };
-            if !value.is_finite() {
-                return throw_type_error(g, "Native audio parameters must be finite");
-            }
-            value
-        };
-        let number = if param == P_NATIVE_ENABLED {
-            number.clamp(0.0, 1.0)
-        } else {
-            number.clamp(-100.0, 0.0)
-        };
-        if param == P_NATIVE_ENABLED {
-            shared.set_enabled(number as f32);
-        } else {
-            shared.set_threshold(number as f32);
+            let number = if id == P_NATIVE_ENABLED {
+                shared.set_enabled(number.clamp(0.0, 1.0) as f32);
+                number.clamp(0.0, 1.0)
+            } else {
+                shared.set_threshold(number.clamp(-100.0, 0.0) as f32);
+                number.clamp(-100.0, 0.0)
+            };
+            values.push((param, id, number));
         }
-        values.push((name, param, number));
-    }
-    let c = classes(g);
-    let object = create_node_on(
-        g,
-        engine,
         Params::Native {
             kind,
             shared,
             discrete,
-        },
-        c.worklet.proto,
-        &values,
-    );
+        }
+    } else {
+        let spec = custom.as_ref().unwrap();
+        let shared = ArcGc::new(ProcessorShared::new());
+        for (i, (param, default, min, max)) in spec.params().enumerate() {
+            let Ok(number) = initial(g, data, param, default as f64) else {
+                return UNDEF;
+            };
+            let number = (number as f32).clamp(min, max);
+            shared.set_param(i, number);
+            values.push((param, P_WORKLET + i as u8, number as f64));
+        }
+        Params::Custom {
+            spec: Arc::clone(spec),
+            shared,
+        }
+    };
+    let object = create_node_on(g, engine, params, c.worklet.proto, &values);
     if !is_cell(object) {
         return object;
     }
@@ -298,7 +319,7 @@ pub(super) unsafe fn load(g: *mut c_void, cf: *mut c_void) -> u64 {
     glue::rjs_define(g, port, c.s_audio, owner, 0);
     define(g, owner, "owner", object, 0);
     define(g, port, "onmessage", NULL, 0);
-    define(g, slots, "processorName", js_string(g, kind.name()), 0);
+    define(g, slots, "processorName", js_string(g, &name), 0);
     define(
         g,
         slots,
@@ -334,7 +355,13 @@ pub(super) unsafe fn load(g: *mut c_void, cf: *mut c_void) -> u64 {
     object
 }
 
-pub(super) unsafe fn dispatch_message(g: *mut c_void, object: u64, message: NativeMessage) {
+pub(super) enum Message {
+    BuiltIn(NativeMessage),
+    /// An embedder's processor: the numbers it posted.
+    Values(Vec<f32>),
+}
+
+pub(super) unsafe fn dispatch_message(g: *mut c_void, object: u64, message: Message) {
     let c = classes(g);
     let Some(handle) = host_data::<NodeHandle>(g, c.node_cls, object) else {
         return;
@@ -357,7 +384,18 @@ pub(super) unsafe fn dispatch_message(g: *mut c_void, object: u64, message: Nati
     let event = events::new_trusted_event(g, "message");
     let _event_root = Root::new(g, event);
     let value = match message {
-        NativeMessage::Stereo(levels) => {
+        Message::Values(values) => {
+            let mut array = UNDEF;
+            if crate::ffi::redjs_typedarray_create(g, 8 /* f32 */, values.len(), &mut array) != 0 {
+                return;
+            }
+            define(g, event, "data", array, 0);
+            for (i, value) in values.iter().enumerate() {
+                set_i(g, array, i as u32, enc_f64(*value as f64));
+            }
+            array
+        }
+        Message::BuiltIn(NativeMessage::Stereo(levels)) => {
             let mut array = UNDEF;
             if crate::ffi::redjs_typedarray_create(g, 8 /* f32 */, 2, &mut array) != 0 {
                 return;
@@ -368,8 +406,8 @@ pub(super) unsafe fn dispatch_message(g: *mut c_void, object: u64, message: Nati
             set_i(g, array, 1, enc_f64(levels[1] as f64));
             array
         }
-        NativeMessage::Mono(level) => enc_f64(level as f64),
-        NativeMessage::Gate(is_open) => {
+        Message::BuiltIn(NativeMessage::Mono(level)) => enc_f64(level as f64),
+        Message::BuiltIn(NativeMessage::Gate(is_open)) => {
             let data = new_object(g, UNDEF);
             define(g, event, "data", data, 0);
             define(g, data, "isOpen", enc_bool(is_open), 0);
@@ -397,8 +435,7 @@ mod tests {
             n.parameters.get('enabled') instanceof AudioParam && n.parameters.get('enabled').value === 1 &&
             n.parameters.get('threshold').value === -25 && s.parameters.get('enabled').value === 1 &&
             n.numberOfInputs === 1 && n.numberOfOutputs === 1 && n.processorName === 'input-gate' &&
-            n.channelCount === 2 && n.channelCountMode === 'explicit' && n.channelInterpretation === 'speakers' &&
-            typeof a.audioWorklet === 'undefined' && typeof AudioWorkletNode === 'undefined';
+            n.channelCount === 2 && n.channelCountMode === 'explicit' && n.channelInterpretation === 'speakers';
           let errors = 0;
           for (const f of [() => a.loadNativeAudioWorklet('unknown'),
             () => a.loadNativeAudioWorklet('input-gate',{outputChannelCount:[1]}),
@@ -431,8 +468,16 @@ mod tests {
         let first = c.eval("__n").unwrap().0;
         let second = c.eval("__second").unwrap().0;
         unsafe {
-            super::dispatch_message(c.raw(), first, super::NativeMessage::Stereo([0.25, 0.75]));
-            super::dispatch_message(c.raw(), second, super::NativeMessage::Mono(1.0));
+            super::dispatch_message(
+                c.raw(),
+                first,
+                super::Message::BuiltIn(super::NativeMessage::Stereo([0.25, 0.75])),
+            );
+            super::dispatch_message(
+                c.raw(),
+                second,
+                super::Message::BuiltIn(super::NativeMessage::Mono(1.0)),
+            );
         }
         c.gc();
         ok(&c, "__seen.length===1 && __seen[0] instanceof Event && __seen[0].data instanceof Float32Array && __seen[0].data[0]===0.25 && __seen[0].data[1]===0.75 && __seen[0].target===__n.port");
@@ -443,12 +488,20 @@ mod tests {
         s(&c, "globalThis.__ctx=new AudioContext();globalThis.__n=__ctx.loadNativeAudioWorklet('input-gate');globalThis.__count=0;__n.port.onmessage=()=>__count++;'ok'");
         let object = c.eval("__n").unwrap().0;
         unsafe {
-            super::dispatch_message(c.raw(), object, super::NativeMessage::Gate(true));
+            super::dispatch_message(
+                c.raw(),
+                object,
+                super::Message::BuiltIn(super::NativeMessage::Gate(true)),
+            );
         }
         ok(&c, "__count===1");
         s(&c, "__n.port.close();__n.port.onmessage=()=>__count++;'ok'");
         unsafe {
-            super::dispatch_message(c.raw(), object, super::NativeMessage::Gate(false));
+            super::dispatch_message(
+                c.raw(),
+                object,
+                super::Message::BuiltIn(super::NativeMessage::Gate(false)),
+            );
         }
         ok(&c, "__count===1");
         s(&c, "__ctx.close();'ok'");
@@ -572,5 +625,60 @@ mod tests {
           try { a.loadNativeAudioWorklet('input-gate',{get parameterData(){throw marker;}}); }
           catch(e) {caught=e===marker;} a.close();return caught; })()"#,
         );
+    }
+
+    struct Halve {
+        blocks: u32,
+    }
+    impl crate::webapi::audio::AudioProcessor for Halve {
+        fn process(&mut self, io: &mut crate::webapi::audio::ProcessIo<'_>) {
+            let amount = io.params[0];
+            for (output, input) in io.outputs.iter_mut().zip(io.inputs) {
+                for (to, from) in output.iter_mut().zip(input) {
+                    *to = from * amount;
+                }
+            }
+            self.blocks += 1;
+            io.post(&[amount, io.sample_rate as f32]);
+        }
+    }
+
+    #[test]
+    fn a_registered_processor_is_loaded_by_name_and_shapes_the_sound() {
+        use crate::webapi::audio::{register_processor, ProcessorSpec};
+        let spec = || {
+            ProcessorSpec::new(|_rate| Box::new(Halve { blocks: 0 })).param("amount", 0.5, 0.0, 1.0)
+        };
+        register_processor("test-halve", spec());
+        assert!(!register_processor("test-halve", spec()));
+        assert!(!register_processor("input-gate", spec()));
+        let c = ctx();
+        s(
+            &c,
+            r#"globalThis.__ctx = new AudioContext();
+          globalThis.__k = new ConstantSourceNode(__ctx, { offset: 0.8 });
+          globalThis.__h = __ctx.loadNativeAudioWorklet('test-halve', { parameterData: { amount: 0.25 } });
+          globalThis.__an = __ctx.createAnalyser(); __an.fftSize = 1024;
+          globalThis.__got = []; __h.port.onmessage = (e) => __got.push(Array.from(e.data));
+          __k.connect(__h).connect(__an); __k.start(); 'ok'"#,
+        );
+        ok(
+            &c,
+            "{ const amount = __h.parameters.get('amount'); amount.value = 9;
+               const clamped = amount.value === 1; amount.value = 0.25;
+               clamped && __h instanceof NativeAudioWorkletNode && __h.processorName === 'test-halve' }",
+        );
+        if super::super::jsc_tests::pump_for(&c, 150) {
+            use super::super::jsc_tests::{analyser_rms, pump_until_rendered};
+            let now: f64 = s(&c, "__ctx.currentTime").parse().unwrap();
+            assert!(pump_until_rendered(&c, now + 0.3, 3000));
+            let rms = analyser_rms(&c, "__an");
+            assert!(
+                (rms - 0.2).abs() < 1e-3,
+                "0.8 at a quarter came out as {rms}"
+            );
+            ok(&c, "__got.length > 0 && __got.at(-1)[0] === 0.25 && __got.at(-1)[1] === __ctx.sampleRate");
+        }
+        s(&c, "__k.stop(); __ctx.close(); 'ok'");
     }
 }

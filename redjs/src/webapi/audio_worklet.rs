@@ -1,4 +1,5 @@
-//! Fixed native audio processors: no JavaScript runtime on the audio thread.
+//! Native audio processors: Rust in the audio callback, the built-in ones and those an
+//! embedder registers ([`register_processor`]).
 //!
 //! These are deliberately named DSP primitives, not a JavaScript AudioWorklet
 //! interpreter. The callback performs no allocation, locking, VM calls or message
@@ -396,6 +397,262 @@ fn input_sample(inputs: &[&[f32]], silent: [bool; 2], channel: usize, frame: usi
         value
     } else {
         0.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Processors an embedder registers
+// ---------------------------------------------------------------------------
+
+/// The most parameters one processor declares, and the most values one message carries.
+pub const MAX_PROCESSOR_PARAMS: usize = 32;
+pub const MAX_MESSAGE_VALUES: usize = 16;
+
+/// One block of stereo audio for [`AudioProcessor::process`].
+pub struct ProcessIo<'a> {
+    pub inputs: [&'a [f32]; 2],
+    pub outputs: [&'a mut [f32]; 2],
+    /// The parameters' values for this block, in the order they were declared.
+    pub params: &'a [f32],
+    pub sample_rate: u32,
+    mailbox: &'a Mailbox,
+}
+
+impl ProcessIo<'_> {
+    pub fn frames(&self) -> usize {
+        self.outputs[0].len()
+    }
+
+    /// Leaves up to [`MAX_MESSAGE_VALUES`] numbers for the node's port, which gets them as a
+    /// `Float32Array` in a `message` event. Only the latest message is kept until the page reads it.
+    pub fn post(&self, values: &[f32]) {
+        self.mailbox.post(values);
+    }
+}
+
+/// DSP written in Rust that runs in the audio callback: it must not allocate, lock or block.
+pub trait AudioProcessor: Send + 'static {
+    fn process(&mut self, io: &mut ProcessIo<'_>);
+}
+
+struct ProcessorParam {
+    name: String,
+    default: f32,
+    min: f32,
+    max: f32,
+}
+
+type Factory = dyn Fn(u32) -> Box<dyn AudioProcessor> + Send + Sync;
+
+/// What `loadNativeAudioWorklet(name)` makes: a processor for each node, and the node's
+/// `AudioParam`s.
+pub struct ProcessorSpec {
+    params: Vec<ProcessorParam>,
+    create: Box<Factory>,
+}
+
+impl ProcessorSpec {
+    /// `create` is given the sample rate and is called once for each node, off the audio thread.
+    pub fn new(create: impl Fn(u32) -> Box<dyn AudioProcessor> + Send + Sync + 'static) -> Self {
+        Self {
+            params: Vec::new(),
+            create: Box::new(create),
+        }
+    }
+
+    pub fn param(mut self, name: &str, default: f32, min: f32, max: f32) -> Self {
+        self.params.push(ProcessorParam {
+            name: name.into(),
+            default: default.clamp(min, max),
+            min,
+            max,
+        });
+        self
+    }
+
+    /// Name, default, minimum and maximum of each parameter.
+    pub(crate) fn params(&self) -> impl Iterator<Item = (&str, f32, f32, f32)> {
+        self.params
+            .iter()
+            .map(|p| (p.name.as_str(), p.default, p.min, p.max))
+    }
+}
+
+fn processors(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<ProcessorSpec>>> {
+    static ALL: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<ProcessorSpec>>>,
+    > = std::sync::OnceLock::new();
+    ALL.get_or_init(Default::default)
+}
+
+/// Makes `name` loadable with `audioContext.loadNativeAudioWorklet(name)` in every context of
+/// the process. False when the name is taken or the spec has too many parameters.
+pub fn register_processor(name: &str, spec: ProcessorSpec) -> bool {
+    if NativeKind::from_name(name).is_some() || spec.params.len() > MAX_PROCESSOR_PARAMS {
+        return false;
+    }
+    let mut all = processors().lock().unwrap();
+    if all.contains_key(name) {
+        return false;
+    }
+    all.insert(name.into(), std::sync::Arc::new(spec));
+    true
+}
+
+pub(crate) fn processor(name: &str) -> Option<std::sync::Arc<ProcessorSpec>> {
+    processors().lock().unwrap().get(name).cloned()
+}
+
+/// The latest message of a processor: written in the callback without waiting, read by the page.
+struct Mailbox {
+    sequence: AtomicU32,
+    length: AtomicU32,
+    values: [AtomicU32; MAX_MESSAGE_VALUES],
+    pending: std::sync::atomic::AtomicBool,
+}
+
+impl Mailbox {
+    fn post(&self, values: &[f32]) {
+        let n = values.len().min(MAX_MESSAGE_VALUES);
+        self.sequence.fetch_add(1, Ordering::AcqRel);
+        for (cell, value) in self.values.iter().zip(&values[..n]) {
+            cell.store(value.to_bits(), Ordering::Relaxed);
+        }
+        self.length.store(n as u32, Ordering::Relaxed);
+        self.sequence.fetch_add(1, Ordering::Release);
+        self.pending.store(true, Ordering::Release);
+    }
+
+    fn take(&self) -> Option<Vec<f32>> {
+        if !self.pending.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        loop {
+            let before = self.sequence.load(Ordering::Acquire);
+            if before % 2 == 1 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let n = (self.length.load(Ordering::Relaxed) as usize).min(MAX_MESSAGE_VALUES);
+            let values = self.values[..n]
+                .iter()
+                .map(|cell| f32::from_bits(cell.load(Ordering::Relaxed)))
+                .collect();
+            if self.sequence.load(Ordering::Acquire) == before {
+                return Some(values);
+            }
+        }
+    }
+}
+
+/// What a custom processor's node and the page share.
+pub struct ProcessorShared {
+    params: [AtomicU32; MAX_PROCESSOR_PARAMS],
+    mailbox: Mailbox,
+}
+
+impl ProcessorShared {
+    pub(crate) fn new() -> Self {
+        Self {
+            params: core::array::from_fn(|_| AtomicU32::new(0)),
+            mailbox: Mailbox {
+                sequence: AtomicU32::new(0),
+                length: AtomicU32::new(0),
+                values: core::array::from_fn(|_| AtomicU32::new(0)),
+                pending: std::sync::atomic::AtomicBool::new(false),
+            },
+        }
+    }
+
+    pub(crate) fn param(&self, index: usize) -> f32 {
+        f32::from_bits(self.params[index].load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn set_param(&self, index: usize, value: f32) {
+        if let Some(cell) = self.params.get(index) {
+            cell.store(value.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn take_message(&self) -> Option<Vec<f32>> {
+        self.mailbox.take()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CustomNode {
+    pub spec: std::sync::Arc<ProcessorSpec>,
+    pub shared: ArcGc<ProcessorShared>,
+}
+
+impl AudioNode for CustomNode {
+    type Configuration = firewheel::node::EmptyConfig;
+
+    fn info(&self, _config: &Self::Configuration) -> AudioNodeInfo {
+        AudioNodeInfo::new()
+            .debug_name("webaudio_native_processor")
+            .channel_config(ChannelConfig {
+                num_inputs: ChannelCount::STEREO,
+                num_outputs: ChannelCount::STEREO,
+            })
+    }
+
+    fn construct_processor(
+        &self,
+        _config: &Self::Configuration,
+        cx: ConstructProcessorContext,
+    ) -> impl AudioNodeProcessor {
+        let sample_rate = cx.stream_info.sample_rate.get();
+        CustomProcessor {
+            shared: ArcGc::clone(&self.shared),
+            processor: (self.spec.create)(sample_rate),
+            params: [0.0; MAX_PROCESSOR_PARAMS],
+            count: self.spec.params.len(),
+            sample_rate,
+        }
+    }
+}
+
+struct CustomProcessor {
+    shared: ArcGc<ProcessorShared>,
+    processor: Box<dyn AudioProcessor>,
+    params: [f32; MAX_PROCESSOR_PARAMS],
+    count: usize,
+    sample_rate: u32,
+}
+
+impl AudioNodeProcessor for CustomProcessor {
+    fn process(
+        &mut self,
+        info: &ProcInfo,
+        buffers: ProcBuffers,
+        _events: &mut firewheel::event::ProcEvents,
+        _extra: &mut ProcExtra,
+    ) -> ProcessStatus {
+        let n = info.frames;
+        let ([in_left, in_right], [out_left, out_right]) = (buffers.inputs, buffers.outputs) else {
+            return ProcessStatus::ClearAllOutputs;
+        };
+        for (i, value) in self.params[..self.count].iter_mut().enumerate() {
+            *value = self.shared.param(i);
+        }
+        self.processor.process(&mut ProcessIo {
+            inputs: [&in_left[..n], &in_right[..n]],
+            outputs: [&mut out_left[..n], &mut out_right[..n]],
+            params: &self.params[..self.count],
+            sample_rate: self.sample_rate,
+            mailbox: &self.shared.mailbox,
+        });
+        ProcessStatus::OutputsModified
+    }
+
+    fn new_stream(
+        &mut self,
+        info: &firewheel::StreamInfo,
+        _context: &mut firewheel::node::ProcStreamCtx,
+    ) {
+        self.sample_rate = info.sample_rate.get();
     }
 }
 

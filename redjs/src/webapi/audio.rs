@@ -58,8 +58,6 @@
 //!   falls back to cpal.
 //! - `loadNativeAudioWorklet` selects precompiled Rust DSP; it does not execute
 //!   arbitrary JavaScript worklet modules (see `audio/native_worklet.rs`).
-//! - No `OfflineAudioContext` or JavaScript `AudioWorklet`. Each is absent
-//!   rather than stubbed, so `'audioWorklet' in ctx` tells the truth.
 //! - `createMediaElementSource` is a silent pass-through that says so — see
 //!   `ctx_create_media_element_source`.
 
@@ -90,7 +88,13 @@ use firewheel::nodes::stream::{
     ResamplingChannelConfig,
 };
 
-use super::audio_worklet::{NativeKind, NativeMessage, NativeNode, NativeShared};
+pub use super::audio_worklet::{
+    register_processor, AudioProcessor, ProcessIo, ProcessorSpec, MAX_MESSAGE_VALUES,
+    MAX_PROCESSOR_PARAMS,
+};
+use super::audio_worklet::{
+    CustomNode, NativeKind, NativeMessage, NativeNode, NativeShared, ProcessorShared,
+};
 use super::hrtf::{HrtfDatabase, PannerRoute, WebPannerConfig, WebPannerNode};
 use super::mediadevices;
 use super::osc::{OscNode, OscShared, Wave, WaveTable};
@@ -110,6 +114,10 @@ mod more_nodes;
 mod native_worklet;
 mod offline;
 pub mod output;
+mod worklet_bridge;
+mod worklet_codec;
+mod worklet_node;
+mod worklet_scope;
 
 pub use mixing::speaker;
 use mixing::{CountMode, Interp};
@@ -146,6 +154,8 @@ const P_ATTACK: u8 = 18;
 const P_RELEASE: u8 = 19;
 const P_NATIVE_ENABLED: u8 = 20;
 const P_NATIVE_THRESHOLD: u8 = 21;
+/// AudioWorkletNode parameters: this and the next `worklet_bridge::MAX_PARAMS` kinds.
+const P_WORKLET: u8 = 32;
 const P_L_POS_X: u8 = 100; // AudioListener.positionX (param.node = engine handle)
 const P_L_POS_Y: u8 = 101;
 const P_L_POS_Z: u8 = 102;
@@ -1065,6 +1075,17 @@ enum Params {
     Compressor(ArcGc<effects::CompShared>),
     Convolver(ArcGc<effects::ConvShared>),
     Iir(ArcGc<effects::IirShared>),
+    /// A processor the embedder registered (`register_processor`).
+    Custom {
+        spec: Arc<super::audio_worklet::ProcessorSpec>,
+        shared: ArcGc<ProcessorShared>,
+    },
+    /// AudioWorkletNode: the processor is JavaScript on the worklet's thread.
+    Worklet {
+        bridge: ArcGc<worklet_bridge::Bridge>,
+        /// Each parameter's minValue and maxValue.
+        ranges: Vec<(f64, f64)>,
+    },
 }
 
 /// One Web Audio connection, kept so `disconnect(…)` can find it again.
@@ -1175,6 +1196,10 @@ impl NodeRec {
                     Interp::Speakers
                 },
             ),
+            // A processor is given two channels, whatever feeds it.
+            Params::Custom { .. } | Params::Worklet { .. } => {
+                (2, CountMode::Explicit, Interp::Speakers)
+            }
             Params::Splitter(n) => (*n, CountMode::Explicit, Interp::Discrete),
             Params::Merger { discrete, .. } => (
                 1,
@@ -1302,6 +1327,7 @@ struct Engine {
     wrapper: u64,
     /// An `OfflineAudioContext`'s rendering.
     offline: Option<offline::Offline>,
+    worklet: Option<worklet_node::Host>,
 }
 
 impl Engine {
@@ -1595,6 +1621,7 @@ pub struct AudioClasses {
     fx: effect_nodes::Classes,
     more: more_nodes::Classes,
     offline: Class,
+    js_worklet: worklet_node::Classes,
 }
 
 unsafe impl Send for AudioClasses {}
@@ -1690,6 +1717,13 @@ pub fn busy(g: *mut c_void) -> bool {
         .engines
         .values()
         .any(|e| e.g == g as usize && e.offline.as_ref().is_some_and(|o| o.rendering))
+    {
+        return true;
+    }
+    if gl
+        .engines
+        .values()
+        .any(|e| e.g == g as usize && e.worklet.as_ref().is_some_and(|w| w.waiting()))
     {
         return true;
     }
@@ -1991,6 +2025,18 @@ fn set_param(
             // and readable back by `param_current` for `.value`.
             (Params::Native { shared, .. }, P_NATIVE_ENABLED) => {
                 shared.set_enabled(v.clamp(0.0, 1.0) as f32)
+            }
+            (Params::Custom { spec, shared }, kind) if kind >= P_WORKLET => {
+                let i = (kind - P_WORKLET) as usize;
+                if let Some((_, _, min, max)) = spec.params().nth(i) {
+                    shared.set_param(i, (v as f32).clamp(min, max));
+                }
+            }
+            (Params::Worklet { bridge, ranges }, kind) if kind >= P_WORKLET => {
+                let i = (kind - P_WORKLET) as usize;
+                if let Some(&(min, max)) = ranges.get(i) {
+                    bridge.set_param(i, v.clamp(min, max) as f32);
+                }
             }
             (Params::Native { shared, .. }, P_NATIVE_THRESHOLD) => {
                 shared.set_threshold(v.clamp(-100.0, 0.0) as f32)
@@ -2358,6 +2404,19 @@ fn alloc_node(gl: &mut Glob, engine: u64, mut params: Params) -> Option<u64> {
         Params::Osc(sh) => eng.fw.add_node(
             OscNode {
                 shared: ArcGc::clone(sh),
+            },
+            None,
+        ),
+        Params::Custom { spec, shared } => eng.fw.add_node(
+            CustomNode {
+                spec: Arc::clone(spec),
+                shared: ArcGc::clone(shared),
+            },
+            None,
+        ),
+        Params::Worklet { bridge, .. } => eng.fw.add_node(
+            worklet_bridge::WorkletNode {
+                bridge: ArcGc::clone(bridge),
             },
             None,
         ),
@@ -2736,6 +2795,16 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
         (Params::Svf(p), P_Q) => p.q_factor as f64,
         (Params::Sampler(s), P_RATE) => s.speed,
         (Params::Native { shared, .. }, P_NATIVE_ENABLED) => shared.enabled() as f64,
+        (Params::Custom { spec, shared }, kind)
+            if kind >= P_WORKLET && ((kind - P_WORKLET) as usize) < spec.params().count() =>
+        {
+            shared.param((kind - P_WORKLET) as usize) as f64
+        }
+        (Params::Worklet { bridge, ranges }, kind)
+            if kind >= P_WORKLET && ((kind - P_WORKLET) as usize) < ranges.len() =>
+        {
+            bridge.param((kind - P_WORKLET) as usize) as f64
+        }
         (Params::Native { shared, .. }, P_NATIVE_THRESHOLD) => shared.threshold() as f64,
         (Params::Osc(sh), P_FREQ) => sh.frequency() as f64,
         (Params::Osc(sh), P_DETUNE) => sh.detune() as f64,
@@ -3894,6 +3963,7 @@ unsafe fn construct_context(
         clock_offset: 0.0,
         wrapper: UNDEF,
         offline,
+        worklet: None,
     };
     if let Err(e) = open_output(&mut eng, None, true) {
         eprintln!("[audio] AudioContext: output stream failed ({e}) — graph runs silent");
@@ -4852,6 +4922,8 @@ fn host_channel_limit(rec: &NodeRec) -> u32 {
         | Params::Spatial(_)
         | Params::MediaDest(_)
         | Params::Native { .. }
+        | Params::Custom { .. }
+        | Params::Worklet { .. }
         | Params::Compressor(_)
         | Params::Convolver(_)
         | Params::Iir(_) => 2,
@@ -5335,7 +5407,9 @@ pub unsafe fn pump(g: *mut c_void) {
 
     let mut ended: Vec<u64> = Vec::new();
     let mut rendered: Vec<u64> = Vec::new();
-    let mut worklet_messages: Vec<(u64, NativeMessage)> = Vec::new();
+    let mut worklet_messages: Vec<(u64, native_worklet::Message)> = Vec::new();
+    let mut worklet_replies = Vec::new();
+    let mut worklets_done: Vec<u64> = Vec::new();
     {
         let mut gl = glob().lock().unwrap();
         let gl = &mut *gl;
@@ -5345,6 +5419,9 @@ pub unsafe fn pump(g: *mut c_void) {
         for h in dead_list {
             if let Some(mut eng) = gl.engines.remove(&h) {
                 eng.fw.stop_stream();
+                if let Some(host) = eng.worklet.take() {
+                    worklet_node::close(g, host);
+                }
                 // Retire this context's streaming-PCM producers BEFORE the node
                 // records go, or a native pusher keeps a handle whose graph
                 // side no longer exists.
@@ -5365,6 +5442,9 @@ pub unsafe fn pump(g: *mut c_void) {
                     pcm::unregister(h);
                 }
                 if let Some(eng) = gl.engines.get_mut(&rec.engine) {
+                    if let (Params::Worklet { .. }, Some(host)) = (&rec.params, &eng.worklet) {
+                        host.forget(h);
+                    }
                     graph::unwire(eng, &mut rec);
                     if !matches!(rec.params, Params::Dest) {
                         let _ = eng.fw.remove_node(rec.id);
@@ -5393,6 +5473,24 @@ pub unsafe fn pump(g: *mut c_void) {
             timelines,
             ..
         } = gl;
+
+        for (&eh, eng) in engines.iter_mut().filter(|(_, e)| e.g == g as usize) {
+            if eng.state == ST_CLOSED {
+                if let Some(host) = eng.worklet.take() {
+                    worklet_node::close(g, host);
+                    for rec in nodes.values_mut().filter(|r| r.engine == eh) {
+                        if matches!(rec.params, Params::Worklet { .. }) && rec.js_obj != 0 {
+                            worklets_done.push(core::mem::take(&mut rec.js_obj));
+                        }
+                    }
+                }
+            } else if let Some(host) = &eng.worklet {
+                let replies = host.take_replies();
+                if !replies.is_empty() {
+                    worklet_replies.push((eh, replies));
+                }
+            }
+        }
 
         let handles: Vec<u64> = engines
             .iter()
@@ -5454,12 +5552,24 @@ pub unsafe fn pump(g: *mut c_void) {
                 // Scheduled starts/stops + ended detection.
                 let eng = engines.get_mut(&eh).unwrap();
                 for rec in nodes.values_mut().filter(|r| r.engine == eh) {
-                    if let Params::Native { shared, .. } = &rec.params {
-                        if rec.worklet_obj != 0 {
-                            if let Some(message) = shared.take_message() {
-                                crate::ffi::redjs_protect(g, rec.worklet_obj);
-                                worklet_messages.push((rec.worklet_obj, message));
+                    if let Params::Worklet { bridge, .. } = &rec.params {
+                        if rec.js_obj != 0 && !bridge.active.load(Ordering::Relaxed) {
+                            worklets_done.push(core::mem::take(&mut rec.js_obj));
+                        }
+                    }
+                    if rec.worklet_obj != 0 {
+                        let message = match &rec.params {
+                            Params::Native { shared, .. } => {
+                                shared.take_message().map(native_worklet::Message::BuiltIn)
                             }
+                            Params::Custom { shared, .. } => {
+                                shared.take_message().map(native_worklet::Message::Values)
+                            }
+                            _ => None,
+                        };
+                        if let Some(message) = message {
+                            crate::ffi::redjs_protect(g, rec.worklet_obj);
+                            worklet_messages.push((rec.worklet_obj, message));
                         }
                     }
                     if let Some((when, offset, duration)) = rec.pending_start {
@@ -5575,6 +5685,12 @@ pub unsafe fn pump(g: *mut c_void) {
     for (obj, message) in worklet_messages {
         native_worklet::dispatch_message(g, obj, message);
         crate::ffi::redjs_unprotect(g, obj);
+    }
+    for (engine, replies) in worklet_replies {
+        worklet_node::deliver(g, engine, replies);
+    }
+    for object in worklets_done {
+        crate::ffi::redjs_unprotect(g, object);
     }
     for obj in ended {
         super::events::dispatch(g, obj, super::events::new_trusted_event(g, "ended"));
@@ -5999,6 +6115,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
             getters: &[
                 ("currentTime", ctx_get_current_time),
                 ("sampleRate", ctx_get_sample_rate),
+                ("audioWorklet", worklet_node::ctx_get_audio_worklet),
                 ("state", ctx_get_state),
                 ("sinkId", ctx_get_sink_id),
                 ("destination", get_slot_destination),
@@ -6013,6 +6130,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     );
 
     let offline = offline::install(g, ctx.proto);
+    let js_worklet = worklet_node::install(g, node_base.proto);
 
     // webkitAudioContext alias (older engine feature-detection paths).
     let ctor = ctx.ctor;
@@ -6047,6 +6165,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         fx,
         more,
         offline,
+        js_worklet,
     }));
     class_registry().lock().unwrap().insert(g as usize, boxed);
 }

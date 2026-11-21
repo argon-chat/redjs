@@ -131,6 +131,8 @@ fn cap(rec: &NodeRec) -> u32 {
         Params::Pan(_)
         | Params::Spatial(_)
         | Params::Native { .. }
+        | Params::Custom { .. }
+        | Params::Worklet { .. }
         | Params::MediaDest(_)
         | Params::Compressor(_)
         | Params::Convolver(_)
@@ -208,7 +210,12 @@ fn out_width(
         Params::Osc(_) | Params::Splitter(_) => 1,
         Params::PcmStream(cfg) => cfg.channels.max(1),
         Params::Merger { n, .. } => *n,
-        Params::Pan(_) | Params::Spatial(_) | Params::Native { .. } | Params::Passthrough => 2,
+        Params::Pan(_)
+        | Params::Spatial(_)
+        | Params::Native { .. }
+        | Params::Custom { .. }
+        | Params::Worklet { .. }
+        | Params::Passthrough => 2,
     };
     stack.pop();
     memo.insert(h, w);
