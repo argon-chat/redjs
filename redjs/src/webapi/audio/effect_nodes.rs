@@ -34,7 +34,7 @@ const COMPRESSOR_PARAMS: [(&str, u8, f64, f64, f64); 5] = [
     ("threshold", P_THRESHOLD, -24.0, -100.0, 0.0),
 ];
 
-unsafe fn proto_for(g: *mut c_void, cf: *mut c_void, fallback: u64) -> u64 {
+pub(super) unsafe fn proto_for(g: *mut c_void, cf: *mut c_void, fallback: u64) -> u64 {
     let nt = cf_new_target(cf);
     let proto = if is_cell(nt) {
         get(g, nt, "prototype")
@@ -49,7 +49,7 @@ unsafe fn proto_for(g: *mut c_void, cf: *mut c_void, fallback: u64) -> u64 {
 }
 
 /// A constructor's first argument. `Err` has thrown.
-unsafe fn context_arg(g: *mut c_void, cf: *mut c_void, iface: &str) -> Result<u64, ()> {
+pub(super) unsafe fn context_arg(g: *mut c_void, cf: *mut c_void, iface: &str) -> Result<u64, ()> {
     engine_of(g, cf_arg(cf, 0)).ok_or_else(|| {
         throw_type_error(
             g,
@@ -61,7 +61,11 @@ unsafe fn context_arg(g: *mut c_void, cf: *mut c_void, iface: &str) -> Result<u6
 }
 
 /// A constructor's options dictionary: `None` for `undefined` and `null`.
-unsafe fn options_arg(g: *mut c_void, cf: *mut c_void, iface: &str) -> Result<Option<u64>, ()> {
+pub(super) unsafe fn options_arg(
+    g: *mut c_void,
+    cf: *mut c_void,
+    iface: &str,
+) -> Result<Option<u64>, ()> {
     let v = cf_arg(cf, 1);
     if v == UNDEF || v == NULL {
         return Ok(None);
@@ -76,7 +80,7 @@ unsafe fn options_arg(g: *mut c_void, cf: *mut c_void, iface: &str) -> Result<Op
     Ok(Some(v))
 }
 
-unsafe fn member(g: *mut c_void, dict: Option<u64>, name: &str) -> Result<u64, ()> {
+pub(super) unsafe fn member(g: *mut c_void, dict: Option<u64>, name: &str) -> Result<u64, ()> {
     match dict {
         Some(d) => try_get(g, d, name),
         None => Ok(UNDEF),
@@ -143,7 +147,7 @@ unsafe fn float32_array(g: *mut c_void, data: &[f32]) -> u64 {
 }
 
 /// The `AudioNodeOptions` of a constructor, applied to the node just made.
-unsafe fn apply_node_options(
+pub(super) unsafe fn apply_node_options(
     g: *mut c_void,
     node: u64,
     dict: Option<u64>,

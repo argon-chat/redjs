@@ -100,6 +100,7 @@ use crate::glue;
 
 #[cfg(test)]
 mod channel_tests;
+mod constructors;
 mod effect_nodes;
 mod effects;
 pub(super) mod fft;
@@ -4125,41 +4126,51 @@ unsafe fn create_node_on(
     wrap_node(g, proto, handle, jsparams)
 }
 
-#[crate::host_fn]
-unsafe fn ctx_create_gain(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let c = classes(g);
-    ctx_create_node(
+unsafe fn make_gain(g: *mut c_void, engine: u64, proto: u64) -> u64 {
+    create_node_on(
         g,
-        cf,
+        engine,
         Params::Gain(VolumeNode::default()),
-        c.gain.proto,
+        proto,
         &[("gain", P_GAIN, 1.0)],
     )
 }
 
 #[crate::host_fn]
-unsafe fn ctx_create_stereo_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let c = classes(g);
-    ctx_create_node(
+unsafe fn ctx_create_gain(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_engine_handle(g, cf) {
+        Some(engine) => make_gain(g, engine, classes(g).gain.proto),
+        None => throw_type_error(g, "AudioContext factory called on wrong this"),
+    }
+}
+
+unsafe fn make_stereo_panner(g: *mut c_void, engine: u64, proto: u64) -> u64 {
+    create_node_on(
         g,
-        cf,
+        engine,
         Params::Pan(VolumePanNode::default()),
-        c.stereo.proto,
+        proto,
         &[("pan", P_PAN, 0.0)],
     )
 }
 
 #[crate::host_fn]
-unsafe fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let c = classes(g);
+unsafe fn ctx_create_stereo_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_engine_handle(g, cf) {
+        Some(engine) => make_stereo_panner(g, engine, classes(g).stereo.proto),
+        None => throw_type_error(g, "AudioContext factory called on wrong this"),
+    }
+}
+
+unsafe fn make_panner(g: *mut c_void, engine: u64, proto: u64) -> u64 {
     // WebPannerNode (webapi/hrtf.rs): equal-power by default per spec, real
     // HRTF when panningModel='HRTF'. Distance/cone params live in NodeRec with
     // Web Audio defaults and are baked into the node's gain on the pump side.
-    ctx_create_node(
+    create_node_on(
         g,
-        cf,
+        engine,
         Params::Spatial(WebPannerNode::default()),
-        c.panner.proto,
+        proto,
         &[
             ("positionX", P_POS_X, 0.0),
             ("positionY", P_POS_Y, 0.0),
@@ -4172,17 +4183,23 @@ unsafe fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 #[crate::host_fn]
-unsafe fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let c = classes(g);
+unsafe fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_engine_handle(g, cf) {
+        Some(engine) => make_panner(g, engine, classes(g).panner.proto),
+        None => throw_type_error(g, "AudioContext factory called on wrong this"),
+    }
+}
+
+unsafe fn make_biquad(g: *mut c_void, engine: u64, proto: u64) -> u64 {
     let svf = SvfNode::<2> {
         cutoff_hz: 350.0,
         ..Default::default()
     };
-    ctx_create_node(
+    create_node_on(
         g,
-        cf,
+        engine,
         Params::Svf(Box::new(svf)),
-        c.biquad.proto,
+        proto,
         &[
             ("frequency", P_FREQ, 350.0),
             ("Q", P_Q, 1.0),
@@ -4193,13 +4210,27 @@ unsafe fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 #[crate::host_fn]
-unsafe fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let c = classes(g);
+unsafe fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_engine_handle(g, cf) {
+        Some(engine) => make_biquad(g, engine, classes(g).biquad.proto),
+        None => throw_type_error(g, "AudioContext factory called on wrong this"),
+    }
+}
+
+unsafe fn make_analyser(g: *mut c_void, engine: u64, proto: u64) -> u64 {
     let params = Params::Analyser {
         ring: ArcGc::new(MonitorRing::new()),
         smooth: Vec::new(),
     };
-    ctx_create_node(g, cf, params, c.analyser.proto, &[])
+    create_node_on(g, engine, params, proto, &[])
+}
+
+#[crate::host_fn]
+unsafe fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_engine_handle(g, cf) {
+        Some(engine) => make_analyser(g, engine, classes(g).analyser.proto),
+        None => throw_type_error(g, "AudioContext factory called on wrong this"),
+    }
 }
 
 /// `createMediaElementSource` — a SILENT pass-through, and it says so.
@@ -4234,21 +4265,27 @@ unsafe fn ctx_create_media_element_source(g: *mut c_void, cf: *mut c_void) -> u6
 }
 
 /// `createOscillator()` — the spec's tone generator (webapi/osc.rs).
-#[crate::host_fn]
-unsafe fn ctx_create_oscillator(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let c = classes(g);
+unsafe fn make_oscillator(g: *mut c_void, engine: u64, proto: u64) -> u64 {
     let shared = ArcGc::new(OscShared::default());
-    let obj = ctx_create_node(
+    let obj = create_node_on(
         g,
-        cf,
+        engine,
         Params::Osc(shared),
-        c.osc.proto,
+        proto,
         &[("frequency", P_FREQ, 440.0), ("detune", P_DETUNE, 0.0)],
     );
     if is_cell(obj) {
         define(g, slots_of(g, obj), "onended", NULL, 0);
     }
     obj
+}
+
+#[crate::host_fn]
+unsafe fn ctx_create_oscillator(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_engine_handle(g, cf) {
+        Some(engine) => make_oscillator(g, engine, classes(g).osc.proto),
+        None => throw_type_error(g, "AudioContext factory called on wrong this"),
+    }
 }
 
 /// `createRedStreamSource(options)` — NOT a browser API, and named so you can
@@ -4420,14 +4457,12 @@ pub(crate) unsafe fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     out
 }
 
-#[crate::host_fn]
-unsafe fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let c = classes(g);
-    let obj = ctx_create_node(
+unsafe fn make_buffer_source(g: *mut c_void, engine: u64, proto: u64) -> u64 {
+    let obj = create_node_on(
         g,
-        cf,
+        engine,
         Params::Sampler(Box::new(SamplerNode::default())),
-        c.source.proto,
+        proto,
         &[("playbackRate", P_RATE, 1.0), ("detune", P_INERT, 0.0)],
     );
     if is_cell(obj) {
@@ -4436,6 +4471,14 @@ unsafe fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_void) -> u64 {
         define(g, slots, "onended", NULL, 0);
     }
     obj
+}
+
+#[crate::host_fn]
+unsafe fn ctx_create_buffer_source(g: *mut c_void, cf: *mut c_void) -> u64 {
+    match this_engine_handle(g, cf) {
+        Some(engine) => make_buffer_source(g, engine, classes(g).source.proto),
+        None => throw_type_error(g, "AudioContext factory called on wrong this"),
+    }
 }
 
 #[crate::host_fn]
@@ -5518,8 +5561,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "AudioBuffer",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::buffer_construct),
             parent_proto: 0,
             methods: &[
                 ("getChannelData", 1, buf_get_channel_data),
@@ -5575,8 +5618,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "GainNode",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::gain_construct),
             parent_proto: node_base.proto,
             methods: &[],
             getters: &[("gain", get_slot_gain)],
@@ -5588,8 +5631,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "StereoPannerNode",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::stereo_panner_construct),
             parent_proto: node_base.proto,
             methods: &[],
             getters: &[("pan", get_slot_pan)],
@@ -5601,8 +5644,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "PannerNode",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::panner_construct),
             parent_proto: node_base.proto,
             methods: &[],
             getters: &[
@@ -5646,8 +5689,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "BiquadFilterNode",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::biquad_construct),
             parent_proto: node_base.proto,
             methods: &[],
             getters: &[
@@ -5664,8 +5707,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "AnalyserNode",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::analyser_construct),
             parent_proto: node_base.proto,
             methods: &[
                 ("getByteFrequencyData", 1, analyser_byte_freq),
@@ -5691,8 +5734,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "AudioBufferSourceNode",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::buffer_source_construct),
             parent_proto: node_base.proto,
             methods: &[("start", 0, src_start), ("stop", 0, src_stop)],
             getters: &[
@@ -5716,8 +5759,8 @@ pub unsafe fn install(g: *mut c_void) {
         g,
         &ClassSpec {
             name: "OscillatorNode",
-            arity: 0,
-            construct: None,
+            arity: 1,
+            construct: Some(constructors::oscillator_construct),
             parent_proto: node_base.proto,
             methods: &[
                 ("start", 1, src_start),
@@ -6964,6 +7007,50 @@ mod jsc_tests {
                    catch (e) {{ return e instanceof DOMException && e.name === '{name}'; }} }})()"
             ),
         );
+    }
+
+    #[test]
+    fn nodes_are_constructed_with_their_options() {
+        let c = ctx();
+        assert_eq!(
+            s(
+                &c,
+                "{ const a = new AudioContext();
+                   class Mine extends GainNode {}
+                   const buffer = new AudioBuffer({ length: 8, sampleRate: 44100, numberOfChannels: 2 });
+                   const source = new AudioBufferSourceNode(a, { buffer, loop: true, playbackRate: 2 });
+                   const osc = new OscillatorNode(a, { type: 'square', frequency: 220 });
+                   const filter = new BiquadFilterNode(a, { type: 'highpass', Q: 3, channelCount: 1 });
+                   const mine = new Mine(a, { gain: 0.25 });
+                   const r = JSON.stringify([
+                     new GainNode(a).gain.value, mine.gain.value, mine instanceof Mine, mine.context === a,
+                     new StereoPannerNode(a, { pan: -1 }).pan.value,
+                     new PannerNode(a, { panningModel: 'HRTF', positionX: 2 }).positionX.value,
+                     filter.type, filter.Q.value, filter.channelCount,
+                     new AnalyserNode(a, { fftSize: 512 }).frequencyBinCount,
+                     source.buffer === buffer, source.loop, source.playbackRate.value,
+                     osc.type, osc.frequency.value,
+                     buffer.length, buffer.sampleRate, buffer.numberOfChannels]);
+                   a.close(); r }"
+            ),
+            r#"[1,0.25,true,true,-1,2,"highpass",3,1,256,true,true,2,"square",220,8,44100,2]"#
+        );
+        for refused in [
+            "new GainNode()",
+            "new GainNode({})",
+            "new AnalyserNode(__a, { fftSize: 100 })",
+            "new OscillatorNode(__a, { type: 'custom' })",
+            "new AudioBuffer({ length: 8 })",
+            "new AudioBuffer({ length: 0, sampleRate: 44100 })",
+        ] {
+            ok(
+                &c,
+                &format!(
+                    "{{ globalThis.__a = new AudioContext(); let threw = false;
+                        try {{ {refused} }} catch {{ threw = true }} __a.close(); threw }}"
+                ),
+            );
+        }
     }
 
     #[test]
