@@ -598,7 +598,7 @@ unsafe fn deliver(g: *mut c_void, instance: &Instance, data: &[u8]) {
 }
 
 unsafe fn run(commands: Receiver<Command>, replies: Arc<Mutex<Vec<Reply>>>, sample_rate: u32) {
-    let g = crate::ffi::context_create_plain();
+    let g = crate::ffi::redjs_context_create();
     if g.is_null() {
         return;
     }

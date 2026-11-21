@@ -216,18 +216,6 @@ pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
     g
 }
 
-/// A context that is never an AOT image's: a VM of its own, for a thread of its own.
-#[cfg(feature = "audio")]
-pub(crate) unsafe fn context_create_plain() -> *mut c_void {
-    glue::init(core::ptr::null());
-    let g = capi::JSGlobalContextCreate(null_mut());
-    if !g.is_null() {
-        crate::context::register(g);
-        crate::errors::install_rejection(g);
-    }
-    g
-}
-
 /// Releases the context. ⚠ Known issue: this Bun WebKit prebuilt fastfail-
 /// crashes in VM teardown (`JSGlobalContextRelease`). Prefer leaking contexts
 /// (create once, keep for process lifetime). Kept for API completeness.
