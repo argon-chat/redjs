@@ -14,7 +14,11 @@
 //! | `BiquadFilterNode`       | `SvfNode<2>`                                 |
 //! | `AudioBufferSourceNode`  | `SamplerNode` reading a `SourceSample` view (offset, duration, loop region) |
 //! | `AudioBuffer`            | planar `f32` `SampleResource`                |
-//! | `OscillatorNode`         | `OscNode` (webapi/osc.rs): PolyBLEP-limited  |
+//! | `OscillatorNode`         | `OscNode` (webapi/osc.rs): PolyBLEP-limited, or a `PeriodicWave`'s tables |
+//! | `DelayNode`              | `DelayIn` + `DelayOut` around one delay line (audio/effects.rs) |
+//! | `WaveShaperNode`         | `ShaperNode` (audio/effects.rs)              |
+//! | `DynamicsCompressorNode` | `CompNode` (audio/effects.rs)                |
+//! | `ConvolverNode`          | `ConvNode` (audio/effects.rs): direct head + partitioned FFT |
 //! | `ChannelSplitterNode`    | `SplitterNode` (ours): output k = port k     |
 //! | `ChannelMergerNode`      | `MergerNode` (ours): input j = ports 2j, 2j+1 |
 //! | `RedStreamSourceNode`    | `StreamWriterNode` (webapi/pcm.rs) — ours     |
@@ -31,9 +35,10 @@
 //! fire `onended`.
 //!
 //! Known deviations (documented, deliberate for v1):
-//! - `createView`-style object identity rules aside, `suspend()` mutes the
-//!   master bus instead of pausing the stream, so `currentTime` keeps
-//!   advancing while suspended.
+//! - `suspend()` stops rendering and `currentTime` with it; the output stream
+//!   stays open and plays silence (`output::Gate`).
+//! - A cycle is rendered when a `DelayNode` is in it, and that delay is then at
+//!   least 1024 frames (the graph's block) where the spec says 128.
 //! - `AnalyserNode` is REAL: a bypass monitor node captures the
 //!   last `MONITOR_WINDOW` mono-mixed samples into a lock-free ring; the
 //!   getters serve true time-domain data and a Blackman-windowed radix-2 FFT
@@ -53,10 +58,8 @@
 //!   falls back to cpal.
 //! - `loadNativeAudioWorklet` selects precompiled Rust DSP; it does not execute
 //!   arbitrary JavaScript worklet modules (see `audio/native_worklet.rs`).
-//! - No `OfflineAudioContext`, JavaScript `AudioWorklet`, `ConvolverNode`, `DelayNode`,
-//!   `WaveShaperNode`, `DynamicsCompressorNode`, or `PeriodicWave`. Each is
-//!   absent rather than stubbed, so `typeof ctx.createDelay === 'function'`
-//!   tells the truth.
+//! - No `OfflineAudioContext` or JavaScript `AudioWorklet`. Each is absent
+//!   rather than stubbed, so `'audioWorklet' in ctx` tells the truth.
 //! - `createMediaElementSource` is a silent pass-through that says so — see
 //!   `ctx_create_media_element_source`.
 
@@ -90,13 +93,16 @@ use firewheel::nodes::stream::{
 use super::audio_worklet::{NativeKind, NativeMessage, NativeNode, NativeShared};
 use super::hrtf::{HrtfDatabase, PannerRoute, WebPannerConfig, WebPannerNode};
 use super::mediadevices;
-use super::osc::{OscNode, OscShared, Wave};
+use super::osc::{OscNode, OscShared, Wave, WaveTable};
 use super::pcm::{self, PcmStreamConfig};
 use super::util::*;
 use crate::glue;
 
 #[cfg(test)]
 mod channel_tests;
+mod effect_nodes;
+mod effects;
+pub(super) mod fft;
 mod graph;
 mod mixing;
 mod native_worklet;
@@ -129,6 +135,12 @@ const P_ORIENT_X: u8 = 10; // PannerNode.orientationX (cone direction)
 const P_ORIENT_Y: u8 = 11;
 const P_ORIENT_Z: u8 = 12;
 const P_DETUNE: u8 = 13; // OscillatorNode.detune (cents) — a REAL detune, unlike P_INERT
+const P_DELAY: u8 = 14; // DelayNode.delayTime
+const P_THRESHOLD: u8 = 15; // DynamicsCompressorNode.threshold … release
+const P_KNEE: u8 = 16;
+const P_RATIO: u8 = 17;
+const P_ATTACK: u8 = 18;
+const P_RELEASE: u8 = 19;
 const P_NATIVE_ENABLED: u8 = 20;
 const P_NATIVE_THRESHOLD: u8 = 21;
 const P_L_POS_X: u8 = 100; // AudioListener.positionX (param.node = engine handle)
@@ -1041,6 +1053,14 @@ enum Params {
     Passthrough,
     /// MediaStreamAudioDestinationNode: a sink feeding its track (see [`TapNode`]).
     MediaDest(Arc<super::mediastream::Source>),
+    /// DelayNode: `NodeRec::id` is the reading half, `writer` the half connections come into.
+    Delay {
+        shared: ArcGc<effects::DelayShared>,
+        writer: NodeID,
+    },
+    Shaper(ArcGc<effects::ShaperShared>),
+    Compressor(ArcGc<effects::CompShared>),
+    Convolver(ArcGc<effects::ConvShared>),
 }
 
 /// One Web Audio connection, kept so `disconnect(…)` can find it again.
@@ -1103,7 +1123,10 @@ struct NodeRec {
     /// GainNode `gain` as the page set it. Its VolumeNode carries the
     /// magnitude through [`gain_volume`].
     gain: f32,
+    /// A DelayNode outside a cycle: its writer is wired to run before its reader.
+    ordered: bool,
     // -- sampler bookkeeping --
+    /// The source's buffer, or a ConvolverNode's impulse response.
     buffer: Option<Arc<PlanarBuffer>>,
     /// `loop` / `loopStart` / `loopEnd`, shared with the playing [`SourceSample`].
     src: Arc<SourceCtl>,
@@ -1136,7 +1159,9 @@ impl NodeRec {
         };
         let (ch_count, ch_mode, ch_interp) = match &params {
             Params::Dest | Params::MediaDest(_) => (2, CountMode::Explicit, Interp::Speakers),
-            Params::Pan(_) | Params::Spatial(_) => (2, CountMode::ClampedMax, Interp::Speakers),
+            Params::Pan(_) | Params::Spatial(_) | Params::Compressor(_) | Params::Convolver(_) => {
+                (2, CountMode::ClampedMax, Interp::Speakers)
+            }
             Params::Native { discrete, .. } => (
                 2,
                 CountMode::Explicit,
@@ -1180,6 +1205,7 @@ impl NodeRec {
             dist_model: DistModel::Inverse,
             dist: [1.0, 10_000.0, 1.0], // Web Audio defaults: ref, max, rolloff
             gain: 1.0,
+            ordered: false,
             buffer: None,
             src: Arc::new(SourceCtl::default()),
             started: false,
@@ -1189,6 +1215,14 @@ impl NodeRec {
             worklet_obj: 0,
             pending_start: None,
             pending_stop: None,
+        }
+    }
+
+    /// The Firewheel node connections into this node end at.
+    fn sink_id(&self) -> NodeID {
+        match &self.params {
+            Params::Delay { writer, .. } => *writer,
+            _ => self.id,
         }
     }
 
@@ -1253,11 +1287,35 @@ struct Engine {
     refused: Option<String>,
     /// When to try again to open an output that stopped.
     retry_at: Option<std::time::Instant>,
+    /// Read by the output's callback: render nothing (`output::Gate`).
+    suspended: Arc<AtomicBool>,
+    /// `currentTime` while suspended.
+    held: Option<f64>,
+    /// What the stream's clock ran on while the context was suspended, in all.
+    clock_offset: f64,
 }
 
 impl Engine {
     fn now(&self) -> f64 {
-        self.fw.audio_clock().seconds.0
+        self.held
+            .unwrap_or_else(|| self.fw.audio_clock().seconds.0 - self.clock_offset)
+    }
+
+    /// `suspend()` and `resume()`. The callback renders one more block, faded out, after the
+    /// flag is set; `clock_offset` takes that block out of `currentTime` again.
+    fn set_suspended(&mut self, suspended: bool) {
+        if suspended && self.state == ST_RUNNING {
+            self.held = Some(self.now());
+            self.state = ST_SUSPENDED;
+        } else if !suspended && self.state == ST_SUSPENDED {
+            if let Some(at) = self.held.take() {
+                self.clock_offset = self.fw.audio_clock().seconds.0 - at;
+            }
+            self.state = ST_RUNNING;
+        } else {
+            return;
+        }
+        self.suspended.store(suspended, Ordering::Release);
     }
 
     fn running_rate(&self) -> Option<u32> {
@@ -1320,6 +1378,7 @@ fn open_output(
         sample_rate: eng.running_rate(),
         fallback,
         objects: eng.wants_objects,
+        suspended: Arc::clone(&eng.suspended),
     };
     match eng.fw.start_stream(cfg) {
         Ok(()) => {
@@ -1504,6 +1563,7 @@ pub struct AudioClasses {
     listener: Class,
     param: Class,
     buffer: Class,
+    fx: effect_nodes::Classes,
 }
 
 unsafe impl Send for AudioClasses {}
@@ -1891,6 +1951,12 @@ fn set_param(
             }
             (Params::Osc(sh), P_FREQ) => sh.set_frequency(v as f32),
             (Params::Osc(sh), P_DETUNE) => sh.set_detune(v as f32),
+            (Params::Delay { shared, .. }, P_DELAY) => shared.set_seconds(v as f32),
+            (Params::Compressor(sh), P_THRESHOLD) => sh.threshold.set(v.clamp(-100.0, 0.0) as f32),
+            (Params::Compressor(sh), P_KNEE) => sh.knee.set(v.clamp(0.0, 40.0) as f32),
+            (Params::Compressor(sh), P_RATIO) => sh.ratio.set(v.clamp(1.0, 20.0) as f32),
+            (Params::Compressor(sh), P_ATTACK) => sh.attack.set(v.clamp(0.0, 1.0) as f32),
+            (Params::Compressor(sh), P_RELEASE) => sh.release.set(v.clamp(0.0, 1.0) as f32),
             (Params::Spatial(_), P_POS_X..=P_POS_Z) => {
                 rec.pos[(kind - P_POS_X) as usize] = v as f32;
                 update_spatial(eng, rec);
@@ -2173,7 +2239,7 @@ fn open_pcm_channel(eng: &mut Engine, id: NodeID, handle: u64, cfg: PcmStreamCon
 }
 
 /// Allocates a node in the graph + registry. Returns the new handle.
-fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
+fn alloc_node(gl: &mut Glob, engine: u64, mut params: Params) -> Option<u64> {
     let eng = gl.engines.get_mut(&engine)?;
     if eng.state == ST_CLOSED {
         return None;
@@ -2183,7 +2249,31 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
     // side as `streamId`.
     let handle = gl.next;
     gl.next += 1;
-    let id = match &params {
+    let id = match &mut params {
+        Params::Delay { shared, writer } => {
+            let (w, r) = graph::add_delay(&mut eng.fw, shared, 2);
+            *writer = w;
+            r
+        }
+        Params::Shaper(sh) => eng.fw.add_node(
+            effects::ShaperNode {
+                shared: ArcGc::clone(sh),
+                channels: 2,
+            },
+            None,
+        ),
+        Params::Compressor(sh) => eng.fw.add_node(
+            effects::CompNode {
+                shared: ArcGc::clone(sh),
+            },
+            None,
+        ),
+        Params::Convolver(sh) => eng.fw.add_node(
+            effects::ConvNode {
+                shared: ArcGc::clone(sh),
+            },
+            None,
+        ),
         Params::Gain(p) => eng.fw.add_node(*p, None),
         Params::Pan(p) => eng.fw.add_node(*p, None),
         // The HRIR database loads once per stream rate (~136 KB flac decode);
@@ -2589,6 +2679,12 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
         (Params::Native { shared, .. }, P_NATIVE_THRESHOLD) => shared.threshold() as f64,
         (Params::Osc(sh), P_FREQ) => sh.frequency() as f64,
         (Params::Osc(sh), P_DETUNE) => sh.detune() as f64,
+        (Params::Delay { shared, .. }, P_DELAY) => shared.seconds() as f64,
+        (Params::Compressor(sh), P_THRESHOLD) => sh.threshold.get() as f64,
+        (Params::Compressor(sh), P_KNEE) => sh.knee.get() as f64,
+        (Params::Compressor(sh), P_RATIO) => sh.ratio.get() as f64,
+        (Params::Compressor(sh), P_ATTACK) => sh.attack.get() as f64,
+        (Params::Compressor(sh), P_RELEASE) => sh.release.get() as f64,
         (Params::Spatial(_), P_POS_X..=P_POS_Z) => rec.pos[(kind - P_POS_X) as usize] as f64,
         (Params::Spatial(_), P_ORIENT_X..=P_ORIENT_Z) => {
             rec.orient[(kind - P_ORIENT_X) as usize] as f64
@@ -3095,16 +3191,19 @@ unsafe fn osc_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "OscillatorNode.type on wrong this");
     };
+    if raw == "custom" {
+        return super::domexception::throw(
+            g,
+            "InvalidStateError",
+            "OscillatorNode.type cannot be set to 'custom'; setPeriodicWave() does that.",
+        );
+    }
     let Some(w) = Wave::from_name(&raw) else {
-        // Named, not silently coerced: a `'custom'` assignment that quietly
-        // kept playing a sine would be a sound bug, and there is no
-        // `createPeriodicWave` on this runtime to make it real.
         return throw_type_error(
             g,
             &format!(
                 "OscillatorNode.type: '{raw}' is not one of 'sine' | 'square' | 'sawtooth' | \
-                 'triangle'. 'custom' needs createPeriodicWave(), which this runtime does not \
-                 implement — synthesize the waveform into an AudioBuffer instead."
+                 'triangle'."
             ),
         );
     };
@@ -3703,6 +3802,9 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         objects: None,
         refused: None,
         retry_at: None,
+        suspended: Arc::new(AtomicBool::new(false)),
+        held: None,
+        clock_offset: 0.0,
     };
     if let Err(e) = open_output(&mut eng, None, true) {
         eprintln!("[audio] AudioContext: output stream failed ({e}) — graph runs silent");
@@ -3931,8 +4033,6 @@ unsafe fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-/// suspend() mutes the master bus / resume() restores it (the stream keeps
-/// running so `currentTime` keeps advancing — see module docs).
 unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return rejected_promise(g, 1, "AudioContext method on wrong this");
@@ -3944,11 +4044,7 @@ unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) ->
             // Spec: "reject promise with an InvalidStateError".
             return super::domexception::rejected(g, "InvalidStateError", "AudioContext is closed");
         }
-        eng.state = if suspended { ST_SUSPENDED } else { ST_RUNNING };
-        let old = eng.master_params;
-        eng.master_params.volume = Volume::Linear(if suspended { 0.0 } else { 1.0 });
-        let (id, new_params) = (eng.master, eng.master_params);
-        queue_diff(&mut eng.fw, id, &old, &new_params);
+        eng.set_suspended(suspended);
         graph::object_sends(eng, &mut gl.nodes, h);
     }
     drop(guard);
@@ -4602,7 +4698,12 @@ unsafe fn channel_write(
 /// The most channels a node of this kind takes on this host, below the spec's 32.
 fn host_channel_limit(rec: &NodeRec) -> u32 {
     match rec.params {
-        Params::Pan(_) | Params::Spatial(_) | Params::MediaDest(_) | Params::Native { .. } => 2,
+        Params::Pan(_)
+        | Params::Spatial(_)
+        | Params::MediaDest(_)
+        | Params::Native { .. }
+        | Params::Compressor(_)
+        | Params::Convolver(_) => 2,
         _ => mixing::MAX_CHANNELS,
     }
 }
@@ -4669,6 +4770,10 @@ unsafe fn node_set_channel_count_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
             Params::Pan(_) | Params::Spatial(_) if mode == CountMode::Max => Err((
                 "NotSupportedError",
                 "a panner's channelCountMode cannot be 'max'.".into(),
+            )),
+            Params::Compressor(_) | Params::Convolver(_) if mode == CountMode::Max => Err((
+                "NotSupportedError",
+                "this node's channelCountMode cannot be 'max'.".into(),
             )),
             _ => Ok(()),
         },
@@ -5117,6 +5222,9 @@ pub unsafe fn pump(g: *mut c_void) {
                     if !matches!(rec.params, Params::Dest) {
                         let _ = eng.fw.remove_node(rec.id);
                     }
+                    if let Params::Delay { writer, .. } = &rec.params {
+                        let _ = eng.fw.remove_node(*writer);
+                    }
                 }
                 for other in gl.nodes.values_mut().filter(|r| r.engine == rec.engine) {
                     other.outs.retain(|k| k.dst != h);
@@ -5280,6 +5388,11 @@ pub unsafe fn pump(g: *mut c_void) {
                 }
             }
 
+            // Nothing renders while suspended, so nothing would take the
+            // messages either: they ship with the first update after resume().
+            if eng.state == ST_SUSPENDED {
+                continue;
+            }
             // Ship: graph changes since the last frame, and every value set
             // above, in one go (see the top of this loop).
             match eng.fw.update() {
@@ -5589,7 +5702,11 @@ pub unsafe fn install(g: *mut c_void) {
             arity: 0,
             construct: None,
             parent_proto: node_base.proto,
-            methods: &[("start", 1, src_start), ("stop", 1, src_stop)],
+            methods: &[
+                ("start", 1, src_start),
+                ("stop", 1, src_stop),
+                ("setPeriodicWave", 1, effect_nodes::osc_set_periodic_wave),
+            ],
             getters: &[
                 ("frequency", get_slot_frequency),
                 ("detune", get_slot_detune),
@@ -5659,6 +5776,7 @@ pub unsafe fn install(g: *mut c_void) {
     );
 
     let (worklet, worklet_port, worklet_port_cls) = native_worklet::install(g, node_base.proto);
+    let fx = effect_nodes::install(g, node_base.proto);
 
     let ctx = define_class(
         g,
@@ -5678,6 +5796,15 @@ pub unsafe fn install(g: *mut c_void) {
                 ("createOscillator", 0, ctx_create_oscillator),
                 ("createChannelSplitter", 0, ctx_create_channel_splitter),
                 ("createChannelMerger", 0, ctx_create_channel_merger),
+                ("createDelay", 0, effect_nodes::create_delay),
+                ("createWaveShaper", 0, effect_nodes::create_wave_shaper),
+                (
+                    "createDynamicsCompressor",
+                    0,
+                    effect_nodes::create_dynamics_compressor,
+                ),
+                ("createConvolver", 0, effect_nodes::create_convolver),
+                ("createPeriodicWave", 2, effect_nodes::create_periodic_wave),
                 ("createBuffer", 3, ctx_create_buffer),
                 (
                     "createMediaElementSource",
@@ -5734,6 +5861,7 @@ pub unsafe fn install(g: *mut c_void) {
         listener,
         param,
         buffer,
+        fx,
     }));
     class_registry().lock().unwrap().insert(g as usize, boxed);
 }
@@ -6232,6 +6360,60 @@ mod jsc_tests {
     }
 
     #[test]
+    fn the_effect_nodes_take_their_options_and_refuse_what_the_spec_refuses() {
+        let c = ctx();
+        ok(
+            &c,
+            "{ const a = new AudioContext();
+               const d = new DelayNode(a, { maxDelayTime: 2, delayTime: 5, channelCount: 1 });
+               const w = new WaveShaperNode(a, { curve: [0, 1], oversample: '4x' });
+               const k = new DynamicsCompressorNode(a, { ratio: 4, threshold: -200 });
+               const v = a.createConvolver();
+               const p = new PeriodicWave(a, { real: [0, 1] });
+               const r = d.delayTime.value === 2 && d.channelCount === 1
+                 && w.curve instanceof Float32Array && w.curve.length === 2 && w.oversample === '4x'
+                 && k.ratio.value === 4 && k.threshold.value === -100 && k.reduction === 0
+                 && k.channelCountMode === 'clamped-max'
+                 && v.buffer === null && v.normalize === true && v instanceof ConvolverNode
+                 && p instanceof PeriodicWave && a.createDynamicsCompressor() instanceof AudioNode;
+               w.curve = null;
+               a.close(); r && w.curve === null }",
+        );
+        for (stmt, name) in [
+            ("a.createDelay(0)", "NotSupportedError"),
+            ("a.createDelay(180)", "NotSupportedError"),
+            (
+                "a.createWaveShaper().curve = new Float32Array(1)",
+                "InvalidStateError",
+            ),
+            (
+                "a.createConvolver().buffer = a.createBuffer(3, 8, a.sampleRate)",
+                "NotSupportedError",
+            ),
+            (
+                "a.createConvolver().buffer = a.createBuffer(1, 8, a.sampleRate / 2)",
+                "NotSupportedError",
+            ),
+            ("a.createConvolver().channelCount = 3", "NotSupportedError"),
+            (
+                "a.createDynamicsCompressor().channelCountMode = 'max'",
+                "NotSupportedError",
+            ),
+            ("a.createPeriodicWave([0, 1], [0, 1, 0])", "IndexSizeError"),
+            ("a.createPeriodicWave([0], [0])", "IndexSizeError"),
+        ] {
+            let got = s(
+                &c,
+                &format!(
+                    "(() => {{ const a = new AudioContext(); try {{ {stmt}; return 'no error'; }} \
+                     catch (e) {{ return e.name; }} finally {{ a.close(); }} }})()"
+                ),
+            );
+            assert_eq!(got, name, "{stmt}");
+        }
+    }
+
+    #[test]
     fn the_four_waveforms_round_trip_and_custom_is_refused_by_name() {
         let c = ctx();
         ok(
@@ -6241,16 +6423,20 @@ mod jsc_tests {
                for (const t of ['square','sawtooth','triangle','sine']) { o.type = t; r = r && o.type === t; }
                a.close(); r }",
         );
-        // 'custom' silently behaving as a sine would be an inaudible bug.
+        // 'custom' is what setPeriodicWave() makes the type, and cannot be assigned.
         let msg = throws(
             &c,
             "{ const a = new AudioContext(); const o = a.createOscillator();
                try { o.type = 'custom'; } finally { a.close(); } }",
         );
         assert!(msg.contains("custom"), "{msg}");
-        assert!(
-            msg.contains("createPeriodicWave"),
-            "the refusal must name what is missing: {msg}"
+        ok(
+            &c,
+            "{ const a = new AudioContext(); const o = a.createOscillator();
+               o.setPeriodicWave(a.createPeriodicWave([0, 0], [0, 1]));
+               const custom = o.type === 'custom';
+               o.type = 'square';
+               a.close(); custom && o.type === 'square' }",
         );
         let msg = throws(
             &c,

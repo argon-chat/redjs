@@ -543,7 +543,7 @@ fn the_gains_after_an_object_panner_reach_its_object_and_a_dead_end_silences_it(
     s(&c, "__g.gain.value = 0.1; 0");
     assert_eq!(gain(), Some(0.25));
     s(&c, "__a.suspend(); 0");
-    assert_eq!(gain(), Some(0.0), "a suspended context is silent");
+    assert_eq!(gain(), None, "a suspended context renders no object");
     s(
         &c,
         "__a.resume(); __p.disconnect(); __p.connect(__a.createAnalyser()); 0",
@@ -650,5 +650,190 @@ fn an_object_panner_on_a_7_1_4_bed_leaves_the_bed_to_the_other_sources_and_follo
         assert_eq!(placement.position, [x, 0.0, z]);
         assert!(close(placement.gain, 1.0), "no rolloff: {}", placement.gain);
     }
+    s(&c, "__a.close(); 0");
+}
+
+/// Ship the graph and render `blocks` blocks; channel 0 of all of them comes back.
+fn render_left(c: &Context, blocks: usize) -> Vec<f32> {
+    let mut left = Vec::with_capacity(blocks * BLOCK);
+    for _ in 0..blocks {
+        left.extend(render(c, 2, 1).chunks(2).map(|f| f[0]));
+    }
+    left
+}
+
+fn stereo() -> Context {
+    context(Plan::Accept {
+        channels: 2,
+        mask: 0,
+        objects: 0,
+    })
+}
+
+/// A source that plays one sample of 1 two thousand frames in, also straight to the destination.
+const CLICK: &str = "globalThis.__a = new AudioContext();
+    { const click = __a.createBuffer(1, 48000, 48000);
+      click.copyToChannel(new Float32Array(48000).fill(1, 2000, 2001), 0);
+      globalThis.__s = __a.createBufferSource(); __s.buffer = click; }
+    __s.connect(__a.destination);";
+
+fn click_at(out: &[f32]) -> usize {
+    out.iter()
+        .position(|v| *v > 0.5)
+        .expect("the source's click reached the destination")
+}
+
+#[test]
+fn a_delay_node_plays_its_input_the_delay_time_later() {
+    let c = stereo();
+    s(
+        &c,
+        &format!(
+            "{CLICK} globalThis.__d = new DelayNode(__a, {{ delayTime: 300 / 48000 }});
+             __s.connect(__d); __d.connect(__a.destination); __s.start(); 0"
+        ),
+    );
+    let out = render_left(&c, 40);
+    let at = click_at(&out);
+    assert!(
+        close(out[at], 1.0) && close(out[at + 300], 1.0),
+        "{:?}",
+        &out[at + 298..at + 303]
+    );
+    assert!(
+        out[at + 1..at + 300].iter().all(|v| v.abs() < 1e-4),
+        "nothing plays between the click and its delayed copy"
+    );
+    ok(
+        &c,
+        "__d.delayTime.value > 0.00624 && __d.delayTime.value < 0.00626 && __d instanceof DelayNode",
+    );
+    s(&c, "__a.close(); 0");
+}
+
+#[test]
+fn a_cycle_through_a_delay_node_feeds_back() {
+    let c = stereo();
+    s(
+        &c,
+        &format!(
+            "{CLICK} const d = __a.createDelay(); d.delayTime.value = 0.05;
+             const g = __a.createGain(); g.gain.value = 0.5;
+             __s.connect(d); d.connect(g); g.connect(d); d.connect(__a.destination); __s.start(); 0"
+        ),
+    );
+    let out = render_left(&c, 100);
+    let at = click_at(&out);
+    for (k, want) in [(1, 1.0), (2, 0.5), (3, 0.25)] {
+        let v = out[at + 2400 * k];
+        assert!((v - want).abs() < 1e-3, "echo {k} is {v}");
+    }
+    s(&c, "__a.close(); 0");
+}
+
+#[test]
+fn a_delay_shorter_than_a_block_is_exact_once_its_cycle_is_broken() {
+    let c = stereo();
+    s(
+        &c,
+        &format!(
+            "{CLICK} const d = __a.createDelay(); d.delayTime.value = 100 / 48000;
+             const g = __a.createGain(); g.gain.value = 0;
+             __s.connect(d); d.connect(g); g.connect(d); d.connect(__a.destination);
+             g.disconnect(d); __s.start(); 0"
+        ),
+    );
+    let out = render_left(&c, 40);
+    let at = click_at(&out);
+    assert!(close(out[at + 100], 1.0), "{:?}", &out[at + 98..at + 103]);
+    s(&c, "__a.close(); 0");
+}
+
+#[test]
+fn current_time_stands_still_while_suspended_and_goes_on_from_there() {
+    let c = stereo();
+    s(&c, LEVELS);
+    s(
+        &c,
+        "globalThis.__a = new AudioContext(); const m = levels(__a, 1);
+         m.connect(__a.destination); m.start(); 0",
+    );
+    let time = |c: &Context| s(c, "__a.currentTime").parse::<f64>().unwrap();
+    render(&c, 2, 6);
+    s(&c, "__a.suspend(); 0");
+    let held = time(&c);
+    assert!(held > 0.0);
+    let block = render(&c, 2, 10);
+    assert!(
+        block.iter().all(|v| *v == 0.0),
+        "a suspended context is silent"
+    );
+    assert_eq!(time(&c), held);
+    ok(&c, "__a.state === 'suspended'");
+
+    s(&c, "__a.resume(); 0");
+    assert_eq!(time(&c), held);
+    let block = render(&c, 2, 4);
+    assert!(close(block[block.len() - 1], 0.1), "it plays again");
+    let moved = time(&c) - held;
+    assert!(
+        (moved - 4.0 * BLOCK as f64 / RATE as f64).abs() < 1e-9,
+        "four blocks later currentTime moved by {moved}"
+    );
+    ok(&c, "__a.state === 'running'");
+    s(&c, "__a.close(); 0");
+}
+
+#[test]
+fn a_shaper_a_convolver_and_a_compressor_process_what_the_page_gives_them() {
+    let c = stereo();
+    s(&c, LEVELS);
+    s(
+        &c,
+        "globalThis.__a = new AudioContext();
+         const two = levels(__a, 2);
+         globalThis.__w = __a.createWaveShaper(); __w.curve = new Float32Array([-2, 0, 2]);
+         two.connect(__w); __w.connect(__a.destination); two.start(); 0",
+    );
+    let f = last_frame(&render(&c, 2, 8), 2);
+    assert!(
+        close(f[0], 0.2) && close(f[1], 0.4),
+        "the curve doubles: {f:?}"
+    );
+
+    s(
+        &c,
+        "__w.disconnect();
+         const ir = __a.createBuffer(2, 2, 48000);
+         ir.copyToChannel(new Float32Array([0.5, 0]), 0); ir.copyToChannel(new Float32Array([0, 0.25]), 1);
+         const one = levels(__a, 1);
+         globalThis.__v = new ConvolverNode(__a, { buffer: ir, disableNormalization: true });
+         one.connect(__v); __v.connect(__a.destination); one.start(); 0",
+    );
+    let f = last_frame(&render(&c, 2, 8), 2);
+    assert!(
+        close(f[0], 0.05) && close(f[1], 0.025),
+        "a mono input goes through both sides of a stereo response: {f:?}"
+    );
+
+    s(
+        &c,
+        "__v.disconnect();
+         const loud = __a.createBuffer(1, 48000, 48000);
+         loud.copyToChannel(new Float32Array(48000).map((_, i) => Math.sin(i * 0.05)), 0);
+         const src = __a.createBufferSource(); src.buffer = loud; src.loop = true;
+         globalThis.__c = __a.createDynamicsCompressor();
+         src.connect(__c); __c.connect(__a.destination); src.start(); 0",
+    );
+    let block = render(&c, 2, 60);
+    let peak = block.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(
+        peak > 0.2 && peak < 0.95,
+        "a full-scale sine comes out reduced: {peak}"
+    );
+    ok(
+        &c,
+        "__c.reduction < -3 && __c.threshold.value === -24 && __c.ratio.value === 12",
+    );
     s(&c, "__a.close(); 0");
 }

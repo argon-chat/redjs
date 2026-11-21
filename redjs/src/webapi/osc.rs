@@ -34,9 +34,8 @@
 //!
 //! ## Known deviations from the spec
 //!
-//! - `type = 'custom'` / `setPeriodicWave()` / `createPeriodicWave()` are not
-//!   implemented; assigning `'custom'` throws by name rather than silently
-//!   producing a sine (see `audio.rs`).
+//! - A `PeriodicWave` plays from wavetables of 2048 samples, one per octave of
+//!   harmonics ([`WaveTable`]), so it carries at most 1023 partials.
 //! - `frequency` and `detune` are applied at pump-tick granularity and then
 //!   smoothed over ~5 ms in the processor, so a ramp is a smooth glide rather
 //!   than a sample-accurate one. The same is true of every other `AudioParam`
@@ -46,7 +45,9 @@
 //!   pipeline to be sample-accurate.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 
+use super::audio::fft::Fft;
 use firewheel::{
     channel_config::{ChannelConfig, ChannelCount},
     collector::ArcGc,
@@ -64,10 +65,13 @@ pub enum Wave {
     Square = 1,
     Sawtooth = 2,
     Triangle = 3,
+    /// The table of `setPeriodicWave()`.
+    Custom = 4,
 }
 
 impl Wave {
-    /// The spec's `OscillatorType` strings. `'custom'` is deliberately absent.
+    /// The `OscillatorType` strings `type` can be assigned; `'custom'` is set by
+    /// `setPeriodicWave()` only.
     pub fn from_name(s: &str) -> Option<Wave> {
         match s {
             "sine" => Some(Wave::Sine),
@@ -84,6 +88,7 @@ impl Wave {
             Wave::Square => "square",
             Wave::Sawtooth => "sawtooth",
             Wave::Triangle => "triangle",
+            Wave::Custom => "custom",
         }
     }
 
@@ -92,8 +97,113 @@ impl Wave {
             1 => Wave::Square,
             2 => Wave::Sawtooth,
             3 => Wave::Triangle,
+            4 => Wave::Custom,
             _ => Wave::Sine,
         }
+    }
+}
+
+/// A value the page's thread replaces and the audio thread follows: the reader takes a clone
+/// when the value changed, without waiting on the writer.
+pub(crate) struct Latest<T: Send + Sync + 'static> {
+    slot: Mutex<Option<ArcGc<T>>>,
+    fresh: AtomicBool,
+}
+
+impl<T: Send + Sync + 'static> Latest<T> {
+    pub fn new(v: Option<ArcGc<T>>) -> Self {
+        Self {
+            slot: Mutex::new(v),
+            fresh: AtomicBool::new(false),
+        }
+    }
+
+    pub fn set(&self, v: Option<ArcGc<T>>) {
+        *self.slot.lock().unwrap() = v;
+        self.fresh.store(true, Ordering::Release);
+    }
+
+    pub fn get(&self) -> Option<ArcGc<T>> {
+        self.slot.lock().unwrap().clone()
+    }
+
+    /// On the audio thread: bring `cur` up to date.
+    pub fn follow(&self, cur: &mut Option<ArcGc<T>>) {
+        if !self.fresh.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        match self.slot.try_lock() {
+            Ok(v) => *cur = v.clone(),
+            Err(_) => self.fresh.store(true, Ordering::Release),
+        }
+    }
+}
+
+const TABLE_SIZE: usize = 2048;
+
+/// A `PeriodicWave`: one period per octave of harmonics, so the oscillator can play the table
+/// whose partials all stay under Nyquist at its frequency.
+pub struct WaveTable {
+    /// Each `TABLE_SIZE + 1` long (the first sample again at the end), most harmonics first.
+    levels: Vec<(u32, Vec<f32>)>,
+}
+
+impl WaveTable {
+    /// `real[k]` and `imag[k]` are the cosine and sine terms of partial `k`; index 0 is ignored.
+    pub fn new(real: &[f32], imag: &[f32], normalize: bool) -> Self {
+        let given = real.len().min(imag.len()).saturating_sub(1);
+        let top = given.clamp(1, TABLE_SIZE / 2 - 1);
+        let fft = Fft::new(TABLE_SIZE);
+        let mut levels = Vec::new();
+        let mut h = top;
+        loop {
+            let mut re = vec![0.0f32; TABLE_SIZE];
+            let mut im = vec![0.0f32; TABLE_SIZE];
+            let half = TABLE_SIZE as f32 / 2.0;
+            for k in 1..=h.min(given) {
+                let (a, b) = (real[k] * half, imag[k] * half);
+                re[k] = a;
+                im[k] = -b;
+                re[TABLE_SIZE - k] = a;
+                im[TABLE_SIZE - k] = b;
+            }
+            fft.inverse(&mut re, &mut im);
+            re.push(re[0]);
+            levels.push((h as u32, re));
+            if h <= 1 {
+                break;
+            }
+            h /= 2;
+        }
+        if normalize {
+            let peak = levels[0].1.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            if peak > 0.0 {
+                for (_, t) in &mut levels {
+                    for v in t.iter_mut() {
+                        *v /= peak;
+                    }
+                }
+            }
+        }
+        Self { levels }
+    }
+
+    /// The wave at normalized phase `t`, for a phase increment of `dt` per sample.
+    fn sample(&self, t: f32, dt: f32) -> f32 {
+        let fit = if dt > 0.0 {
+            (0.5 / dt) as u32
+        } else {
+            u32::MAX
+        };
+        let table = self
+            .levels
+            .iter()
+            .find(|(h, _)| *h <= fit)
+            .unwrap_or(&self.levels[self.levels.len() - 1]);
+        let pos = t * TABLE_SIZE as f32;
+        let i = (pos as usize).min(TABLE_SIZE - 1);
+        let frac = pos - i as f32;
+        table.1[i] + (table.1[i + 1] - table.1[i]) * frac
     }
 }
 
@@ -115,6 +225,8 @@ pub struct OscShared {
     /// The pump polls it to fire `onended` — the same shape as the sampler's
     /// `SamplerState::stopped()`.
     finished: AtomicBool,
+    /// The wave `Wave::Custom` plays.
+    custom: Latest<WaveTable>,
 }
 
 impl Default for OscShared {
@@ -125,11 +237,18 @@ impl Default for OscShared {
             wave: AtomicU32::new(Wave::Sine as u32),
             playing: AtomicBool::new(false),
             finished: AtomicBool::new(false),
+            custom: Latest::new(None),
         }
     }
 }
 
 impl OscShared {
+    /// `setPeriodicWave()`: the type becomes `custom`.
+    pub fn set_periodic_wave(&self, table: ArcGc<WaveTable>) {
+        self.custom.set(Some(table));
+        self.set_wave(Wave::Custom);
+    }
+
     pub fn frequency(&self) -> f32 {
         f32::from_bits(self.freq.load(Ordering::Relaxed))
     }
@@ -209,6 +328,7 @@ pub struct OscDsp {
     env: f32,
     /// Envelope step per sample.
     env_step: f32,
+    table: Option<ArcGc<WaveTable>>,
 }
 
 impl OscDsp {
@@ -222,7 +342,12 @@ impl OscDsp {
             freq_coeff: (-1.0 / (FREQ_SMOOTH_SECONDS * sr)).exp(),
             env: 0.0,
             env_step: 1.0 / (FADE_SECONDS * sr),
+            table: None,
         }
+    }
+
+    pub fn set_table(&mut self, table: Option<ArcGc<WaveTable>>) {
+        self.table = table;
     }
 
     /// Render `frames` samples into `out`, chasing `target_freq` (Hz).
@@ -247,10 +372,14 @@ impl OscDsp {
             };
 
             let dt = (self.freq / self.sample_rate).abs();
-            let v = if self.env > 0.0 {
-                sample(wave, self.phase, dt)
-            } else {
+            let v = if self.env <= 0.0 {
                 0.0
+            } else if wave == Wave::Custom {
+                self.table
+                    .as_ref()
+                    .map_or(0.0, |t| t.sample(self.phase, dt))
+            } else {
+                sample(wave, self.phase, dt)
             };
             *s = v * self.env;
 
@@ -284,6 +413,7 @@ fn sample(wave: Wave, t: f32, dt: f32) -> f32 {
             let x = t + 0.25;
             1.0 - 4.0 * ((x - x.floor()) - 0.5).abs()
         }
+        Wave::Custom => 0.0,
     }
 }
 
@@ -370,6 +500,7 @@ impl AudioNodeProcessor for OscProcessor {
             self.scratch.resize(info.frames, 0.0);
         }
         let mono = &mut self.scratch[..info.frames];
+        self.shared.custom.follow(&mut self.dsp.table);
         let finished = self.dsp.render(mono, self.shared.wave(), freq, gate);
 
         for out in buffers.outputs.iter_mut() {
@@ -554,6 +685,36 @@ mod tests {
         assert!(
             mag_at(&out, 880.0, rate) > 10.0 * mag_at(&out, 440.0, rate),
             "detuned tone is not an octave up"
+        );
+    }
+
+    #[test]
+    fn a_periodic_wave_plays_its_partials_and_drops_those_above_nyquist() {
+        let rate = 48_000u32;
+        let second = ArcGc::new(WaveTable::new(&[0.0; 3], &[0.0, 0.0, 1.0], true));
+        let mut dsp = OscDsp::new(rate, 500.0);
+        dsp.set_table(Some(second));
+        let mut warm = vec![0.0f32; rate as usize / 10];
+        dsp.render(&mut warm, Wave::Custom, 500.0, true);
+        let mut out = vec![0.0f32; 4800];
+        dsp.render(&mut out, Wave::Custom, 500.0, true);
+        assert!(mag_at(&out, 1000.0, rate) > 0.2, "the second partial plays");
+        assert!(mag_at(&out, 500.0, rate) < 0.01, "there is no fundamental");
+        assert!((rms(&out) - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.02);
+
+        let mut real = vec![0.0f32; 9];
+        let mut imag = vec![0.0f32; 9];
+        imag[1] = 1.0;
+        real[8] = 1.0;
+        let wave = ArcGc::new(WaveTable::new(&real, &imag, false));
+        let mut dsp = OscDsp::new(rate, 5000.0);
+        dsp.set_table(Some(wave));
+        dsp.render(&mut warm, Wave::Custom, 5000.0, true);
+        dsp.render(&mut out, Wave::Custom, 5000.0, true);
+        assert!(mag_at(&out, 5000.0, rate) > 0.2);
+        assert!(
+            mag_at(&out, 8000.0, rate) < 0.01,
+            "the 8th partial (40 kHz) folded to 8 kHz"
         );
     }
 

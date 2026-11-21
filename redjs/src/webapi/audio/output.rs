@@ -296,12 +296,54 @@ pub struct ObjectBlock<'a> {
 // Renderer
 // ---------------------------------------------------------------------------
 
+/// `suspend()` on the stream's thread: while the context's flag is set the graph is not
+/// rendered, so its clock stands still, and the output is silence. The block on either side of
+/// the change is faded.
+struct Gate {
+    suspended: Arc<AtomicBool>,
+    open: bool,
+}
+
+impl Gate {
+    fn new(suspended: Arc<AtomicBool>) -> Self {
+        let open = !suspended.load(Ordering::Acquire);
+        Self { suspended, open }
+    }
+
+    fn render(
+        &mut self,
+        p: &mut FirewheelProcessor<RedBackend>,
+        out: &mut [f32],
+        channels: usize,
+        info: BackendProcessInfo<RedBackend>,
+    ) {
+        let want = !self.suspended.load(Ordering::Acquire);
+        if !want && !self.open {
+            out.fill(0.0);
+            return;
+        }
+        p.process_interleaved(&[], out, info);
+        if want != self.open {
+            self.open = want;
+            let frames = (out.len() / channels.max(1)).max(1);
+            for (i, frame) in out.chunks_mut(channels.max(1)).enumerate() {
+                let up = (i + 1) as f32 / frames as f32;
+                let gain = if want { up } else { 1.0 - up };
+                for s in frame {
+                    *s *= gain;
+                }
+            }
+        }
+    }
+}
+
 /// The context's half of a backend stream: render the graph into the backend's blocks.
 pub struct Renderer {
     rx: mpsc::Receiver<FirewheelProcessor<RedBackend>>,
     processor: Option<FirewheelProcessor<RedBackend>>,
     bus: Arc<BusCell>,
     started: Instant,
+    gate: Gate,
 }
 
 impl Renderer {
@@ -326,9 +368,10 @@ impl Renderer {
             return;
         };
         let now = Instant::now();
-        p.process_interleaved(
-            &[],
+        self.gate.render(
+            p,
             head,
+            channels,
             BackendProcessInfo {
                 num_in_channels: 0,
                 num_out_channels: channels,
@@ -414,6 +457,8 @@ pub(crate) struct RedConfig {
     pub fallback: bool,
     /// A panner asked for the backend's object model.
     pub objects: bool,
+    /// The context's `suspend()` flag.
+    pub suspended: Arc<AtomicBool>,
 }
 
 pub(crate) struct CpalOut {
@@ -498,6 +543,7 @@ fn open_embedder(
         processor: None,
         bus: Arc::clone(&bus),
         started: Instant::now(),
+        gate: Gate::new(Arc::clone(&config.suspended)),
     };
     let request = OutputRequest {
         device_id: config.device.as_ref().map(|d| d.1.clone()),
@@ -598,6 +644,7 @@ fn open_cpal(config: &RedConfig) -> Result<(CpalOut, StreamInfo), OutputError> {
         started: Instant::now(),
         last: None,
         budget: Duration::ZERO,
+        gate: Gate::new(Arc::clone(&config.suspended)),
     };
     let stream = device
         .build_output_stream(
@@ -638,6 +685,7 @@ struct CpalCallback {
     started: Instant,
     last: Option<Instant>,
     budget: Duration,
+    gate: Gate,
 }
 
 impl CpalCallback {
@@ -659,9 +707,10 @@ impl CpalCallback {
             out.fill(0.0);
             return;
         };
-        p.process_interleaved(
-            &[],
+        self.gate.render(
+            p,
             out,
+            self.channels,
             BackendProcessInfo {
                 num_in_channels: 0,
                 num_out_channels: self.channels,

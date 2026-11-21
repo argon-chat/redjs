@@ -5,17 +5,19 @@
 //! and is at least 2 for the nodes Firewheel builds stereo, so a stereo graph is wired exactly as
 //! before multichannel: straight port pairs, no mixers, no rebuilds.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 
 use firewheel::channel_config::NonZeroChannelCount;
+use firewheel::collector::ArcGc;
 use firewheel::event::NodeEventType;
 use firewheel::node::NodeID;
 use firewheel::nodes::sampler::SamplerConfig;
 use firewheel::nodes::svf::SvfNode;
 use firewheel::nodes::volume::VolumeNodeConfig;
 
+use super::effects::{DelayIn, DelayOut, DelayShared, ShaperNode};
 use super::mixing::{self, web_mix, Interp, MixNode, Route};
 use super::output::{BusCell, RedBackend};
 use super::{
@@ -126,7 +128,12 @@ impl Objects {
 fn cap(rec: &NodeRec) -> u32 {
     match rec.params {
         Params::Svf(_) => 8,
-        Params::Pan(_) | Params::Spatial(_) | Params::Native { .. } | Params::MediaDest(_) => 2,
+        Params::Pan(_)
+        | Params::Spatial(_)
+        | Params::Native { .. }
+        | Params::MediaDest(_)
+        | Params::Compressor(_)
+        | Params::Convolver(_) => 2,
         Params::Splitter(n) => n,
         Params::Merger { .. } => 1,
         _ => mixing::MAX_CHANNELS,
@@ -174,8 +181,20 @@ fn out_width(
     stack.push(h);
     let rec = &nodes[&h];
     let w = match &rec.params {
-        Params::Gain(_) | Params::Svf(_) | Params::Analyser { .. } => {
-            in_width(h, nodes, incoming, memo, stack)
+        Params::Gain(_)
+        | Params::Svf(_)
+        | Params::Analyser { .. }
+        | Params::Delay { .. }
+        | Params::Shaper(_)
+        | Params::Compressor(_) => in_width(h, nodes, incoming, memo, stack),
+        // Mono only for a mono input through a mono response (or none).
+        Params::Convolver(_) => {
+            let response = rec.buffer.as_ref().map_or(1, |b| b.data.len());
+            if response > 1 {
+                2
+            } else {
+                in_width(h, nodes, incoming, memo, stack)
+            }
         }
         Params::Dest | Params::MediaDest(_) => 0,
         Params::Sampler(_) => rec
@@ -238,6 +257,57 @@ fn advise_once(flag: &'static OnceLock<()>, msg: &str) {
     flag.get_or_init(|| eprintln!("[audio] advisory: {msg}"));
 }
 
+/// The two Firewheel nodes of a `DelayNode`, `width` channels wide: (writer, reader).
+pub(super) fn add_delay(
+    fw: &mut FirewheelContext,
+    shared: &ArcGc<DelayShared>,
+    width: u32,
+) -> (NodeID, NodeID) {
+    let writer = fw.add_node(
+        DelayIn {
+            shared: ArcGc::clone(shared),
+            channels: width,
+        },
+        None,
+    );
+    let reader = fw.add_node(
+        DelayOut {
+            shared: ArcGc::clone(shared),
+            channels: width,
+        },
+        None,
+    );
+    (writer, reader)
+}
+
+/// The `DelayNode`s of `handles` that are in a cycle of connections.
+fn delays_in_cycles(nodes: &HashMap<u64, NodeRec>, handles: &[u64]) -> HashSet<u64> {
+    let mut found = HashSet::new();
+    for &h in handles {
+        if !matches!(nodes[&h].params, Params::Delay { .. }) {
+            continue;
+        }
+        let mut seen = HashSet::new();
+        let mut todo: Vec<u64> = nodes[&h].outs.iter().map(|c| c.dst).collect();
+        while let Some(n) = todo.pop() {
+            if n == h {
+                found.insert(h);
+                break;
+            }
+            if seen.insert(n) {
+                todo.extend(
+                    nodes
+                        .get(&n)
+                        .into_iter()
+                        .flat_map(|r| &r.outs)
+                        .map(|c| c.dst),
+                );
+            }
+        }
+    }
+    found
+}
+
 /// Rebuild `rec`'s Firewheel node `width` ports wide. Its edges go with the old node; `resync`
 /// wires it again.
 fn rebuild(eng: &mut Engine, rec: &mut NodeRec, width: u32) {
@@ -245,7 +315,32 @@ fn rebuild(eng: &mut Engine, rec: &mut NodeRec, width: u32) {
         return;
     };
     let old = rec.id;
+    if let Params::Delay { shared, writer } = &mut rec.params {
+        let wider = ArcGc::new(DelayShared::new(
+            width,
+            shared.max_seconds,
+            shared.seconds(),
+            eng.sample_rate,
+        ));
+        let (w, r) = add_delay(&mut eng.fw, &wider, width);
+        let _ = eng.fw.remove_node(old);
+        let _ = eng.fw.remove_node(*writer);
+        *shared = wider;
+        *writer = w;
+        rec.id = r;
+        rec.ordered = false;
+        rec.out_ch = width;
+        rec.in_ch = width;
+        return;
+    }
     let new = match &rec.params {
+        Params::Shaper(sh) => eng.fw.add_node(
+            ShaperNode {
+                shared: ArcGc::clone(sh),
+                channels: width,
+            },
+            None,
+        ),
         Params::Gain(p) => eng.fw.add_node(*p, Some(VolumeNodeConfig { channels })),
         Params::Dest => eng
             .fw
@@ -291,7 +386,11 @@ fn rebuild(eng: &mut Engine, rec: &mut NodeRec, width: u32) {
 
 fn needed_width(rec: &NodeRec) -> Option<u32> {
     match &rec.params {
-        Params::Gain(_) | Params::Analyser { .. } | Params::Dest => Some(rec.lin.max(2)),
+        Params::Gain(_)
+        | Params::Analyser { .. }
+        | Params::Dest
+        | Params::Delay { .. }
+        | Params::Shaper(_) => Some(rec.lin.max(2)),
         Params::Svf(_) => Some(if rec.lin > 2 { 8 } else { 2 }),
         Params::Sampler(_) => {
             let ch = rec
@@ -372,8 +471,21 @@ pub(super) fn resync(
                 rebuild(eng, rec, w);
             }
         }
-        if let Params::Analyser { ring, .. } = &rec.params {
-            ring.set_mix(&web_mix(rec.lin, 1, rec.ch_interp));
+        match &rec.params {
+            Params::Analyser { ring, .. } => ring.set_mix(&web_mix(rec.lin, 1, rec.ch_interp)),
+            Params::Convolver(sh) => sh.mono.store(rec.lin == 1, Ordering::Relaxed),
+            _ => {}
+        }
+    }
+
+    // A delay that is now in a cycle loses its writer → reader edge before the connection
+    // closing the cycle is built; one that left its cycle gets the edge back after.
+    let cyclic = delays_in_cycles(nodes, &handles);
+    for h in &cyclic {
+        let rec = nodes.get_mut(h).unwrap();
+        if let (true, Params::Delay { writer, .. }) = (rec.ordered, &rec.params) {
+            eng.fw.disconnect(*writer, rec.id, &[(0, 0)]);
+            rec.ordered = false;
         }
     }
 
@@ -382,7 +494,13 @@ pub(super) fn resync(
         let src = &nodes[&h];
         for c in &src.outs {
             if let Some(dst) = nodes.get(&c.dst) {
-                jobs.push((h, *c, src.id, dst.id, plan(src, c.output, dst, c.input)));
+                jobs.push((
+                    h,
+                    *c,
+                    src.id,
+                    dst.sink_id(),
+                    plan(src, c.output, dst, c.input),
+                ));
             }
         }
     }
@@ -396,6 +514,14 @@ pub(super) fn resync(
         }
         rec.wires
             .insert(conn, Wire::build(&mut eng.fw, sid, did, route));
+    }
+    for &h in &handles {
+        let rec = nodes.get_mut(&h).unwrap();
+        if let (false, Params::Delay { writer, .. }) = (rec.ordered, &rec.params) {
+            if !cyclic.contains(&h) {
+                rec.ordered = eng.fw.connect(*writer, rec.id, &[(0, 0)], true).is_ok();
+            }
+        }
     }
 
     let (c, interp) = handles
