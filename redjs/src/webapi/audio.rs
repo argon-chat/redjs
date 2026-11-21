@@ -1293,6 +1293,9 @@ struct Engine {
     held: Option<f64>,
     /// What the stream's clock ran on while the context was suspended, in all.
     clock_offset: f64,
+    /// The context's wrapper, unrooted: read only while a call has the context in hand (creating
+    /// one of its nodes), to give the node its `context`.
+    wrapper: u64,
 }
 
 impl Engine {
@@ -2110,6 +2113,14 @@ unsafe fn wrap_node(g: *mut c_void, proto: u64, handle: u64, params: &[(&str, u8
     let obj = host_create(g, node_class_for(g, proto), proto, NodeHandle(handle));
     let slots = new_object(g, UNDEF);
     glue::rjs_define(g, obj, c.s_audio, slots, 0);
+    let context = {
+        let gl = glob().lock().unwrap();
+        gl.nodes
+            .get(&handle)
+            .and_then(|node| gl.engines.get(&node.engine))
+            .map_or(UNDEF, |eng| eng.wrapper)
+    };
+    define(g, slots, "context", context, 0);
     for &(name, kind, initial) in params {
         let p = host_create(
             g,
@@ -3754,6 +3765,7 @@ slot_getter!(get_slot_up_x, "upX");
 slot_getter!(get_slot_up_y, "upY");
 slot_getter!(get_slot_up_z, "upZ");
 slot_getter!(get_slot_destination, "destination");
+slot_getter!(get_slot_context, "context");
 slot_getter!(get_slot_listener, "listener");
 slot_getter!(get_slot_stream_id, "streamId");
 slot_getter!(get_slot_stream_rate, "sampleRate");
@@ -3805,6 +3817,7 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         suspended: Arc::new(AtomicBool::new(false)),
         held: None,
         clock_offset: 0.0,
+        wrapper: UNDEF,
     };
     if let Err(e) = open_output(&mut eng, None, true) {
         eprintln!("[audio] AudioContext: output stream failed ({e}) — graph runs silent");
@@ -3840,6 +3853,9 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         proto = c.ctx.proto;
     }
     let obj = host_create(g, c.ctx_cls, proto, CtxHandle(engine_handle));
+    if let Some(eng) = glob().lock().unwrap().engines.get_mut(&engine_handle) {
+        eng.wrapper = obj;
+    }
 
     let slots = new_object(g, UNDEF);
     glue::rjs_define(g, obj, c.s_audio, slots, 0);
@@ -5455,6 +5471,7 @@ pub unsafe fn install(g: *mut c_void) {
                 ("disconnect", 0, node_disconnect),
             ],
             getters: &[
+                ("context", get_slot_context),
                 ("numberOfInputs", node_get_number_of_inputs),
                 ("numberOfOutputs", node_get_number_of_outputs),
             ],
@@ -6973,7 +6990,8 @@ mod jsc_tests {
             &c,
             "{ const a = new AudioContext();
                const g = a.createGain(), o = a.createOscillator(), an = a.createAnalyser(), b = a.createBufferSource();
-               const r = g.numberOfInputs === 1 && g.numberOfOutputs === 1
+               const r = g.context === a && a.destination.context === a && new ChannelMergerNode(a).context === a
+                      && g.numberOfInputs === 1 && g.numberOfOutputs === 1
                       && o.numberOfInputs === 0 && o.numberOfOutputs === 1
                       && b.numberOfInputs === 0 && an.numberOfInputs === 1
                       && a.destination.numberOfInputs === 1
