@@ -99,7 +99,8 @@ fn validate_commands(mut commands: &[u8], count: u32) -> Option<(u32, u32)> {
                 }
             }
             0xb => {
-                if word(command, 28)? != 0 || command.get(32..80)?.iter().any(|&byte| byte != 0) {
+                // Apple ld lists dyld_stub_binder as undefined even when nothing binds to it.
+                if command.get(32..80)?.iter().any(|&byte| byte != 0) {
                     return None;
                 }
             }
@@ -244,6 +245,40 @@ mod tests {
         }
         let objc = container(segment(b"__TEXT", b"__objc_methlist", 0));
         assert_eq!(validate_commands(&objc, 6), None);
+    }
+
+    #[test]
+    fn permits_the_unused_undefined_symbol_from_apple_ld() {
+        let mut commands = container(segment(b"__TEXT", b"__const", 0));
+        let start = commands.len();
+        let mut dy_symtab = [0; 80];
+        dy_symtab[0] = 0xb;
+        dy_symtab[4] = 80;
+        dy_symtab[20] = 1;
+        dy_symtab[24] = 1;
+        dy_symtab[28] = 1;
+        commands.extend_from_slice(&dy_symtab);
+        assert_eq!(validate_commands(&commands, 7), Some((512, 32)));
+
+        for offset in [56, 60, 64, 68, 72, 76] {
+            commands[start + offset] = 1;
+            assert_eq!(validate_commands(&commands, 7), None);
+            commands[start + offset] = 0;
+        }
+
+        let end = commands.len();
+        let mut dyld_info = [0; 48];
+        dyld_info[..4].copy_from_slice(&0x8000_0022u32.to_le_bytes());
+        dyld_info[4] = 48;
+        commands.extend_from_slice(&dyld_info);
+        for offset in [12, 20, 28, 36] {
+            commands[end + offset] = 1;
+            assert_eq!(validate_commands(&commands, 8), None);
+            commands[end + offset] = 0;
+        }
+        commands.truncate(end);
+        commands.extend_from_slice(&[0x34, 0, 0, 0x80, 16, 0, 0, 0, 0, 2, 0, 0, 32, 0, 0, 0]);
+        assert_eq!(validate_commands(&commands, 8), None);
     }
 
     #[test]
