@@ -95,7 +95,11 @@ const CONSTANTS: &[(&str, u16)] = &[
 
 /// The legacy code for `name`, or 0 (the `code` getter's steps).
 pub fn code_for(name: &str) -> u16 {
-    CODES.iter().find(|(n, _)| *n == name).map(|(_, c)| *c).unwrap_or(0)
+    CODES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, c)| *c)
+        .unwrap_or(0)
 }
 
 struct DomClasses {
@@ -133,10 +137,21 @@ pub struct Parts {
 /// The instance itself: a fresh `ErrorInstance` (so it has a `stack` and
 /// [[ErrorData]]) moved onto `proto`, with the slot bag attached. No own
 /// `message` — that is the prototype getter's job.
-unsafe fn make(g: *mut c_void, c: &DomClasses, proto: u64, name: u64, message: u64, quota: Option<(u64, u64)>) -> u64 {
+unsafe fn make(
+    g: *mut c_void,
+    c: &DomClasses,
+    proto: u64,
+    name: u64,
+    message: u64,
+    quota: Option<(u64, u64)>,
+) -> u64 {
     let mut err = UNDEF;
     glue::rjs_error_create(g, 0, core::ptr::null(), 0, &mut err);
-    capi::JSObjectSetPrototype(g, err as usize as capi::JSObjectRef, proto as usize as capi::JSValueRef);
+    capi::JSObjectSetPrototype(
+        g,
+        err as usize as capi::JSObjectRef,
+        proto as usize as capi::JSValueRef,
+    );
     let slots = new_object(g, NULL);
     define(g, slots, "name", name, 0);
     define(g, slots, "message", message, 0);
@@ -165,18 +180,44 @@ unsafe fn fallback(g: *mut c_void, name: &str, msg: &str) -> u64 {
 /// "throw an `X` DOMException". `name` is taken as given: the names table only
 /// decides `code`.
 pub unsafe fn create(g: *mut c_void, name: &str, msg: &str) -> u64 {
-    let Some(c) = classes(g) else { return fallback(g, name, msg) };
-    make(g, c, c.dom.proto, js_string(g, name), js_string(g, msg), None)
+    let Some(c) = classes(g) else {
+        return fallback(g, name, msg);
+    };
+    make(
+        g,
+        c,
+        c.dom.proto,
+        js_string(g, name),
+        js_string(g, msg),
+        None,
+    )
 }
 
 #[cfg(feature = "audio")]
-pub(super) unsafe fn create_for_subclass(g: *mut c_void, proto: u64, name: &str, message: u64) -> u64 {
-    make(g, classes(g).unwrap(), proto, js_string(g, name), message, None)
+pub(super) unsafe fn create_for_subclass(
+    g: *mut c_void,
+    proto: u64,
+    name: &str,
+    message: u64,
+) -> u64 {
+    make(
+        g,
+        classes(g).unwrap(),
+        proto,
+        js_string(g, name),
+        message,
+        None,
+    )
 }
 
 /// A new `QuotaExceededError` instance (the derived interface, not a
 /// DOMException merely *named* that).
-pub unsafe fn create_quota_exceeded(g: *mut c_void, msg: &str, quota: Option<f64>, requested: Option<f64>) -> u64 {
+pub unsafe fn create_quota_exceeded(
+    g: *mut c_void,
+    msg: &str,
+    quota: Option<f64>,
+    requested: Option<f64>,
+) -> u64 {
     let Some(c) = classes(g) else {
         let e = fallback(g, "QuotaExceededError", msg);
         define(g, e, "code", enc_i32(22), 2);
@@ -184,7 +225,14 @@ pub unsafe fn create_quota_exceeded(g: *mut c_void, msg: &str, quota: Option<f64
     };
     let num = |v: Option<f64>| v.map(enc_f64).unwrap_or(NULL);
     let name = js_string(g, "QuotaExceededError");
-    make(g, c, c.quota.proto, name, js_string(g, msg), Some((num(quota), num(requested))))
+    make(
+        g,
+        c,
+        c.quota.proto,
+        name,
+        js_string(g, msg),
+        Some((num(quota), num(requested))),
+    )
 }
 
 /// Throws a new DOMException; returns `undefined` for a host function's return.
@@ -222,7 +270,11 @@ pub unsafe fn parts(g: *mut c_void, v: u64) -> Option<Parts> {
     } else {
         None
     };
-    Some(Parts { name, message, quota })
+    Some(Parts {
+        name,
+        message,
+        quota,
+    })
 }
 
 /// Rebuilds an instance from [`Parts`].
@@ -240,16 +292,29 @@ pub unsafe fn from_parts(g: *mut c_void, p: &Parts) -> u64 {
 pub(crate) unsafe fn raw_parts(g: *mut c_void, v: u64) -> Option<(u64, u64, Option<(u64, u64)>)> {
     let c = classes(g)?;
     let slots = slot_of(g, c, v)?;
-    let quota = if is_quota(g, c, v) { Some((get(g, slots, "quota"), get(g, slots, "requested"))) } else { None };
+    let quota = if is_quota(g, c, v) {
+        Some((get(g, slots, "quota"), get(g, slots, "requested")))
+    } else {
+        None
+    };
     Some((get(g, slots, "name"), get(g, slots, "message"), quota))
 }
 
 /// The serializer's write: a DOMException (or, with `quota`, a
 /// QuotaExceededError) from JS strings and numbers-or-null. `None` before
 /// install.
-pub(crate) unsafe fn from_raw(g: *mut c_void, name: u64, message: u64, quota: Option<(u64, u64)>) -> Option<u64> {
+pub(crate) unsafe fn from_raw(
+    g: *mut c_void,
+    name: u64,
+    message: u64,
+    quota: Option<(u64, u64)>,
+) -> Option<u64> {
     let c = classes(g)?;
-    let proto = if quota.is_some() { c.quota.proto } else { c.dom.proto };
+    let proto = if quota.is_some() {
+        c.quota.proto
+    } else {
+        c.dom.proto
+    };
     Some(make(g, c, proto, name, message, quota))
 }
 
@@ -289,10 +354,18 @@ unsafe fn proto_from(g: *mut c_void, new_target: u64, fallback: u64) -> Result<u
 
 #[crate::host_fn]
 unsafe fn dom_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(c) = classes(g) else { return illegal_constructor(g, cf) };
-    let Ok(message) = arg_string(g, cf_arg(cf, 0), "") else { return UNDEF };
-    let Ok(name) = arg_string(g, cf_arg(cf, 1), "Error") else { return UNDEF };
-    let Ok(proto) = proto_from(g, cf_new_target(cf), c.dom.proto) else { return UNDEF };
+    let Some(c) = classes(g) else {
+        return illegal_constructor(g, cf);
+    };
+    let Ok(message) = arg_string(g, cf_arg(cf, 0), "") else {
+        return UNDEF;
+    };
+    let Ok(name) = arg_string(g, cf_arg(cf, 1), "Error") else {
+        return UNDEF;
+    };
+    let Ok(proto) = proto_from(g, cf_new_target(cf), c.dom.proto) else {
+        return UNDEF;
+    };
     make(g, c, proto, name, message, None)
 }
 
@@ -319,8 +392,12 @@ unsafe fn options_member(g: *mut c_void, options: u64, key: &str) -> Result<Opti
 
 #[crate::host_fn]
 unsafe fn quota_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(c) = classes(g) else { return illegal_constructor(g, cf) };
-    let Ok(message) = arg_string(g, cf_arg(cf, 0), "") else { return UNDEF };
+    let Some(c) = classes(g) else {
+        return illegal_constructor(g, cf);
+    };
+    let Ok(message) = arg_string(g, cf_arg(cf, 0), "") else {
+        return UNDEF;
+    };
     let options = cf_arg(cf, 1);
     if options != UNDEF && options != NULL && !is_cell(options) {
         return throw_type_error(
@@ -329,13 +406,25 @@ unsafe fn quota_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         );
     }
     // Dictionary members convert in lexicographic order: quota, requested.
-    let Ok(quota) = options_member(g, options, "quota") else { return UNDEF };
-    let Ok(requested) = options_member(g, options, "requested") else { return UNDEF };
+    let Ok(quota) = options_member(g, options, "quota") else {
+        return UNDEF;
+    };
+    let Ok(requested) = options_member(g, options, "requested") else {
+        return UNDEF;
+    };
     if quota.is_some_and(|q| q < 0.0) {
-        return throw_error(g, 2, "Failed to construct 'QuotaExceededError': quota must be at least 0.");
+        return throw_error(
+            g,
+            2,
+            "Failed to construct 'QuotaExceededError': quota must be at least 0.",
+        );
     }
     if requested.is_some_and(|r| r < 0.0) {
-        return throw_error(g, 2, "Failed to construct 'QuotaExceededError': requested must be at least 0.");
+        return throw_error(
+            g,
+            2,
+            "Failed to construct 'QuotaExceededError': requested must be at least 0.",
+        );
     }
     if let (Some(q), Some(r)) = (quota, requested) {
         if r < q {
@@ -346,10 +435,19 @@ unsafe fn quota_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
             );
         }
     }
-    let Ok(proto) = proto_from(g, cf_new_target(cf), c.quota.proto) else { return UNDEF };
+    let Ok(proto) = proto_from(g, cf_new_target(cf), c.quota.proto) else {
+        return UNDEF;
+    };
     let num = |v: Option<f64>| v.map(enc_f64).unwrap_or(NULL);
     let name = js_string(g, "QuotaExceededError");
-    make(g, c, proto, name, message, Some((num(quota), num(requested))))
+    make(
+        g,
+        c,
+        proto,
+        name,
+        message,
+        Some((num(quota), num(requested))),
+    )
 }
 
 macro_rules! slot_getter {
@@ -359,12 +457,21 @@ macro_rules! slot_getter {
             let this = cf_this(cf);
             let slots = classes(g).and_then(|c| slot_of(g, c, this));
             match slots {
-                Some(s) if $iface != "QuotaExceededError" || classes(g).is_some_and(|c| is_quota(g, c, this)) => {
+                Some(s)
+                    if $iface != "QuotaExceededError"
+                        || classes(g).is_some_and(|c| is_quota(g, c, this)) =>
+                {
                     get(g, s, $slot)
                 }
                 _ => throw_type_error(
                     g,
-                    concat!("'get ", $slot, "' called on an object that is not a valid instance of ", $iface, "."),
+                    concat!(
+                        "'get ",
+                        $slot,
+                        "' called on an object that is not a valid instance of ",
+                        $iface,
+                        "."
+                    ),
                 ),
             }
         }
@@ -387,21 +494,23 @@ unsafe fn attribute(g: *mut c_void, proto: u64, name: &str, f: HostFn) {
     glue::rjs_atom_free(g, a);
 }
 
-
 pub unsafe fn install(g: *mut c_void) {
     let s_dom = atom_priv(g, "redjs#domexception");
     let global = glue::rjs_global(g);
     let error_proto = get(g, get(g, global, "Error"), "prototype");
 
-    let dom = define_class(g, &ClassSpec {
-        name: "DOMException",
-        arity: 0,
-        construct: Some(dom_construct),
-        parent_proto: error_proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
+    let dom = define_class(
+        g,
+        &ClassSpec {
+            name: "DOMException",
+            arity: 0,
+            construct: Some(dom_construct),
+            parent_proto: error_proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     attribute(g, dom.proto, "name", get_name);
     attribute(g, dom.proto, "message", get_message);
     attribute(g, dom.proto, "code", get_code);
@@ -411,19 +520,26 @@ pub unsafe fn install(g: *mut c_void) {
         define(g, dom.proto, name, enc_i32(*value as i32), 1 | 4);
     }
 
-    let quota = define_class(g, &ClassSpec {
-        name: "QuotaExceededError",
-        arity: 0,
-        construct: Some(quota_construct),
-        parent_proto: dom.proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
+    let quota = define_class(
+        g,
+        &ClassSpec {
+            name: "QuotaExceededError",
+            arity: 0,
+            construct: Some(quota_construct),
+            parent_proto: dom.proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     attribute(g, quota.proto, "quota", get_quota);
     attribute(g, quota.proto, "requested", get_requested);
     // The interface object inherits from its parent's (WebIDL §3.7.1).
-    capi::JSObjectSetPrototype(g, quota.ctor as usize as capi::JSObjectRef, dom.ctor as usize as capi::JSValueRef);
+    capi::JSObjectSetPrototype(
+        g,
+        quota.ctor as usize as capi::JSObjectRef,
+        dom.ctor as usize as capi::JSValueRef,
+    );
 
     let boxed: &'static DomClasses = Box::leak(Box::new(DomClasses { dom, quota, s_dom }));
     registry().lock().unwrap().insert(g as usize, boxed);
@@ -442,7 +558,14 @@ mod tests {
         assert_eq!(super::code_for("QuotaExceededError"), 22);
         assert_eq!(super::code_for("DataCloneError"), 25);
         // Names without a legacy code.
-        for n in ["Error", "NotAllowedError", "DataError", "ConstraintError", "EncodingError", "VersionError"] {
+        for n in [
+            "Error",
+            "NotAllowedError",
+            "DataError",
+            "ConstraintError",
+            "EncodingError",
+            "VersionError",
+        ] {
             assert_eq!(super::code_for(n), 0, "{n}");
         }
     }
@@ -450,11 +573,20 @@ mod tests {
     #[test]
     fn construction_defaults_and_conversions() {
         let c = ctx();
-        ok(&c, "new DOMException().name === 'Error' && new DOMException().message === ''");
+        ok(
+            &c,
+            "new DOMException().name === 'Error' && new DOMException().message === ''",
+        );
         ok(&c, "new DOMException().code === 0");
         ok(&c, "new DOMException('m', 'NotFoundError').code === 8");
-        ok(&c, "new DOMException(undefined, undefined).name === 'Error'");
-        ok(&c, "new DOMException(1, 2).message === '1' && new DOMException(1, 2).name === '2'");
+        ok(
+            &c,
+            "new DOMException(undefined, undefined).name === 'Error'",
+        );
+        ok(
+            &c,
+            "new DOMException(1, 2).message === '1' && new DOMException(1, 2).name === '2'",
+        );
         ok(&c, "new DOMException(null).message === 'null'");
         // ToString throws propagate, message first.
         let m = throws(&c, "new DOMException(Symbol())");
@@ -462,33 +594,60 @@ mod tests {
         ok(&c, "(() => { try { new DOMException({ toString() { throw 7; } }); } catch (e) { return e === 7; } })()");
         // Constructor requires new.
         assert!(throws(&c, "DOMException()").contains("new"));
-        ok(&c, "DOMException.length === 0 && DOMException.name === 'DOMException'");
+        ok(
+            &c,
+            "DOMException.length === 0 && DOMException.name === 'DOMException'",
+        );
     }
 
     #[test]
     fn it_is_a_real_error_with_the_webidl_shape() {
         let c = ctx();
-        ok(&c, "Object.getPrototypeOf(DOMException.prototype) === Error.prototype");
+        ok(
+            &c,
+            "Object.getPrototypeOf(DOMException.prototype) === Error.prototype",
+        );
         ok(&c, "new DOMException('x', 'AbortError') instanceof Error");
-        ok(&c, "new DOMException('x', 'AbortError') instanceof DOMException");
-        ok(&c, "Object.prototype.toString.call(new DOMException()) === '[object DOMException]'");
-        ok(&c, "String(new DOMException('boom', 'AbortError')) === 'AbortError: boom'");
+        ok(
+            &c,
+            "new DOMException('x', 'AbortError') instanceof DOMException",
+        );
+        ok(
+            &c,
+            "Object.prototype.toString.call(new DOMException()) === '[object DOMException]'",
+        );
+        ok(
+            &c,
+            "String(new DOMException('boom', 'AbortError')) === 'AbortError: boom'",
+        );
         ok(&c, "typeof new DOMException('x').stack === 'string'");
         // No own name/message/code: they are the prototype's getters.
-        ok(&c, "!Object.prototype.hasOwnProperty.call(new DOMException('x', 'A'), 'message')");
+        ok(
+            &c,
+            "!Object.prototype.hasOwnProperty.call(new DOMException('x', 'A'), 'message')",
+        );
         ok(&c, "Object.keys(new DOMException('x', 'A')).length === 0");
         ok(&c, "(() => { const d = Object.getOwnPropertyDescriptor(DOMException.prototype, 'name'); \
                 return typeof d.get === 'function' && d.set === undefined && d.enumerable && d.configurable; })()");
-        ok(&c, "(() => { const d = Object.getOwnPropertyDescriptor(DOMException.prototype, 'code'); \
-                return d.enumerable && d.get.name === 'get code'; })()");
+        ok(
+            &c,
+            "(() => { const d = Object.getOwnPropertyDescriptor(DOMException.prototype, 'code'); \
+                return d.enumerable && d.get.name === 'get code'; })()",
+        );
         // Brand check.
         let m = throws(&c, "DOMException.prototype.name");
         assert!(m.contains("not a valid instance of DOMException"), "{m}");
-        let m = throws(&c, "Object.getOwnPropertyDescriptor(DOMException.prototype, 'code').get.call(new Error())");
+        let m = throws(
+            &c,
+            "Object.getOwnPropertyDescriptor(DOMException.prototype, 'code').get.call(new Error())",
+        );
         assert!(m.contains("DOMException"), "{m}");
         // Subclassing keeps the slots.
-        ok(&c, "(() => { class E extends DOMException {}; const e = new E('m', 'NotFoundError'); \
-                return e instanceof E && e.code === 8 && e.message === 'm'; })()");
+        ok(
+            &c,
+            "(() => { class E extends DOMException {}; const e = new E('m', 'NotFoundError'); \
+                return e instanceof E && e.code === 8 && e.message === 'm'; })()",
+        );
         // A DOMException can be thrown and caught like any error.
         ok(&c, "(() => { try { throw new DOMException('t', 'TimeoutError'); } catch (e) { return e.code === 23; } })()");
     }
@@ -496,24 +655,45 @@ mod tests {
     #[test]
     fn the_legacy_constants_are_on_both_objects() {
         let c = ctx();
-        ok(&c, "DOMException.INDEX_SIZE_ERR === 1 && DOMException.prototype.INDEX_SIZE_ERR === 1");
-        ok(&c, "DOMException.DATA_CLONE_ERR === 25 && new DOMException().DATA_CLONE_ERR === 25");
-        ok(&c, "DOMException.VALIDATION_ERR === 16 && DOMException.NO_DATA_ALLOWED_ERR === 6");
-        ok(&c, "(() => { const d = Object.getOwnPropertyDescriptor(DOMException, 'ABORT_ERR'); \
-                return d.value === 20 && !d.writable && d.enumerable && !d.configurable; })()");
+        ok(
+            &c,
+            "DOMException.INDEX_SIZE_ERR === 1 && DOMException.prototype.INDEX_SIZE_ERR === 1",
+        );
+        ok(
+            &c,
+            "DOMException.DATA_CLONE_ERR === 25 && new DOMException().DATA_CLONE_ERR === 25",
+        );
+        ok(
+            &c,
+            "DOMException.VALIDATION_ERR === 16 && DOMException.NO_DATA_ALLOWED_ERR === 6",
+        );
+        ok(
+            &c,
+            "(() => { const d = Object.getOwnPropertyDescriptor(DOMException, 'ABORT_ERR'); \
+                return d.value === 20 && !d.writable && d.enumerable && !d.configurable; })()",
+        );
         ok(&c, "Object.keys(DOMException).length === 25");
     }
 
     #[test]
     fn quota_exceeded_error_is_the_derived_interface() {
         let c = ctx();
-        ok(&c, "Object.getPrototypeOf(QuotaExceededError.prototype) === DOMException.prototype");
-        ok(&c, "Object.getPrototypeOf(QuotaExceededError) === DOMException");
+        ok(
+            &c,
+            "Object.getPrototypeOf(QuotaExceededError.prototype) === DOMException.prototype",
+        );
+        ok(
+            &c,
+            "Object.getPrototypeOf(QuotaExceededError) === DOMException",
+        );
         ok(&c, "(() => { const e = new QuotaExceededError('full', { quota: 10, requested: 12 }); \
                 return e instanceof DOMException && e.name === 'QuotaExceededError' && e.code === 22 \
                   && e.quota === 10 && e.requested === 12 && e.message === 'full'; })()");
         ok(&c, "(() => { const e = new QuotaExceededError(); return e.quota === null && e.requested === null && e.message === ''; })()");
-        ok(&c, "new QuotaExceededError('x', { quota: 5 }).requested === null");
+        ok(
+            &c,
+            "new QuotaExceededError('x', { quota: 5 }).requested === null",
+        );
         ok(&c, "Object.prototype.toString.call(new QuotaExceededError()) === '[object QuotaExceededError]'");
         // RangeError / TypeError per the IDL.
         ok(&c, "(() => { try { new QuotaExceededError('', { quota: -1 }); } catch (e) { return e instanceof RangeError; } })()");
@@ -545,6 +725,9 @@ mod tests {
             assert!(super::parts(g, crate::webapi::util::new_object(g, 0xa)).is_none());
         }
         ok(&c, "__e instanceof DOMException && __e.name === 'NotSupportedError' && __e.code === 9 && __e.message === 'nope'");
-        ok(&c, "__q instanceof QuotaExceededError && __q.quota === 1 && __q.requested === null");
+        ok(
+            &c,
+            "__q instanceof QuotaExceededError && __q.quota === 1 && __q.requested === null",
+        );
     }
 }

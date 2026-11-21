@@ -19,7 +19,8 @@ use firewheel::nodes::volume::VolumeNodeConfig;
 use super::mixing::{self, web_mix, Interp, MixNode, Route};
 use super::output::{BusCell, RedBackend};
 use super::{
-    update_spatial, Engine, FirewheelContext, MonitorNode, NodeRec, PannerRoute, Panning, Params, ST_SUSPENDED,
+    update_spatial, Engine, FirewheelContext, MonitorNode, NodeRec, PannerRoute, Panning, Params,
+    ST_SUSPENDED,
 };
 
 /// One connection as built in Firewheel.
@@ -36,7 +37,9 @@ impl Wire {
             Route::Ports(ports) => {
                 if let Err(e) = fw.connect(src, dst, ports, true) {
                     // Loud: a dropped edge sounds like silence in a graph wired correctly from JS.
-                    eprintln!("[audio] connect failed ({e:?}) — {src:?} → {dst:?} on ports {ports:?}");
+                    eprintln!(
+                        "[audio] connect failed ({e:?}) — {src:?} → {dst:?} on ports {ports:?}"
+                    );
                 }
                 None
             }
@@ -55,7 +58,11 @@ impl Wire {
                     },
                     None,
                 );
-                let ins: Vec<(u32, u32)> = from.iter().enumerate().map(|(k, &p)| (p, k as u32)).collect();
+                let ins: Vec<(u32, u32)> = from
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &p)| (p, k as u32))
+                    .collect();
                 let wired = fw
                     .connect(src, m, &ins, false)
                     .and_then(|_| fw.connect(m, dst, to, true));
@@ -65,7 +72,12 @@ impl Wire {
                 Some(m)
             }
         };
-        Wire { src, dst, route, mixer }
+        Wire {
+            src,
+            dst,
+            route,
+            mixer,
+        }
     }
 
     pub(super) fn tear(self, fw: &mut FirewheelContext) {
@@ -162,7 +174,9 @@ fn out_width(
     stack.push(h);
     let rec = &nodes[&h];
     let w = match &rec.params {
-        Params::Gain(_) | Params::Svf(_) | Params::Analyser { .. } => in_width(h, nodes, incoming, memo, stack),
+        Params::Gain(_) | Params::Svf(_) | Params::Analyser { .. } => {
+            in_width(h, nodes, incoming, memo, stack)
+        }
         Params::Dest | Params::MediaDest(_) => 0,
         Params::Sampler(_) => rec
             .buffer
@@ -201,7 +215,15 @@ pub(super) fn plan(src: &NodeRec, output: u32, dst: &NodeRec, input: u32) -> Rou
                 let both = vec![(0, 0, 1.0), (0, 1, 1.0)];
                 mixing::compose(&web_mix(n_in, 1, Interp::Speakers), &both)
             } else {
-                web_mix(n_in, 2, if discrete { Interp::Discrete } else { Interp::Speakers })
+                web_mix(
+                    n_in,
+                    2,
+                    if discrete {
+                        Interp::Discrete
+                    } else {
+                        Interp::Speakers
+                    },
+                )
             };
             mixing::route(m, n_in, 2, port, |o| vec![2 * input + o])
         }
@@ -225,7 +247,9 @@ fn rebuild(eng: &mut Engine, rec: &mut NodeRec, width: u32) {
     let old = rec.id;
     let new = match &rec.params {
         Params::Gain(p) => eng.fw.add_node(*p, Some(VolumeNodeConfig { channels })),
-        Params::Dest => eng.fw.add_node(eng.master_params, Some(VolumeNodeConfig { channels })),
+        Params::Dest => eng
+            .fw
+            .add_node(eng.master_params, Some(VolumeNodeConfig { channels })),
         Params::Analyser { ring, .. } => eng.fw.add_node(
             MonitorNode {
                 ring: firewheel::collector::ArcGc::clone(ring),
@@ -270,7 +294,12 @@ fn needed_width(rec: &NodeRec) -> Option<u32> {
         Params::Gain(_) | Params::Analyser { .. } | Params::Dest => Some(rec.lin.max(2)),
         Params::Svf(_) => Some(if rec.lin > 2 { 8 } else { 2 }),
         Params::Sampler(_) => {
-            let ch = rec.buffer.as_ref().map(|b| b.data.len() as u32).unwrap_or(1).max(2);
+            let ch = rec
+                .buffer
+                .as_ref()
+                .map(|b| b.data.len() as u32)
+                .unwrap_or(1)
+                .max(2);
             if rec.started && ch > rec.out_ch {
                 static WIDE: OnceLock<()> = OnceLock::new();
                 advise_once(
@@ -290,9 +319,19 @@ fn needed_width(rec: &NodeRec) -> Option<u32> {
 /// nodes that must carry more channels, rewire the connections whose route changed, and map the
 /// destination onto the output. Run after anything that changes channels: a connection, a channel
 /// attribute, a buffer, a node going, the output reopening.
-pub(super) fn resync(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRec>, eh: u64) {
-    let Some(eng) = engines.get_mut(&eh) else { return };
-    let mut handles: Vec<u64> = nodes.iter().filter(|(_, r)| r.engine == eh).map(|(&h, _)| h).collect();
+pub(super) fn resync(
+    engines: &mut HashMap<u64, Engine>,
+    nodes: &mut HashMap<u64, NodeRec>,
+    eh: u64,
+) {
+    let Some(eng) = engines.get_mut(&eh) else {
+        return;
+    };
+    let mut handles: Vec<u64> = nodes
+        .iter()
+        .filter(|(_, r)| r.engine == eh)
+        .map(|(&h, _)| h)
+        .collect();
     handles.sort_unstable();
 
     let mut incoming: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -307,7 +346,11 @@ pub(super) fn resync(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64
         .iter()
         .map(|&h| {
             let lout = out_width(h, nodes, &incoming, &mut memo, &mut stack);
-            (h, in_width(h, nodes, &incoming, &mut memo, &mut stack), lout)
+            (
+                h,
+                in_width(h, nodes, &incoming, &mut memo, &mut stack),
+                lout,
+            )
         })
         .collect();
 
@@ -351,7 +394,8 @@ pub(super) fn resync(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64
         if let Some(w) = rec.wires.remove(&conn) {
             w.tear(&mut eng.fw);
         }
-        rec.wires.insert(conn, Wire::build(&mut eng.fw, sid, did, route));
+        rec.wires
+            .insert(conn, Wire::build(&mut eng.fw, sid, did, route));
     }
 
     let (c, interp) = handles
@@ -370,7 +414,11 @@ pub(super) fn resync(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64
         |x| x,
         |o| vec![o],
     );
-    if !eng.out_wire.as_ref().is_some_and(|w| w.is(master, out, &route)) {
+    if !eng
+        .out_wire
+        .as_ref()
+        .is_some_and(|w| w.is(master, out, &route))
+    {
         if let Some(w) = eng.out_wire.take() {
             w.tear(&mut eng.fw);
         }
@@ -379,7 +427,11 @@ pub(super) fn resync(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64
     object_sends(eng, nodes, eh);
     if let Some(tap) = eng.ref_tap {
         let route = mixing::route(web_mix(c, 2, Interp::Speakers), c, 2, |x| x, |o| vec![o]);
-        if !eng.tap_wire.as_ref().is_some_and(|w| w.is(master, tap, &route)) {
+        if !eng
+            .tap_wire
+            .as_ref()
+            .is_some_and(|w| w.is(master, tap, &route))
+        {
             if let Some(w) = eng.tap_wire.take() {
                 w.tear(&mut eng.fw);
             }
@@ -477,16 +529,21 @@ pub(super) fn assign_objects(eng: &mut Engine, nodes: &mut HashMap<u64, NodeRec>
             }
         }
     }
-    let live = eng
-        .objects
-        .as_ref()
-        .and_then(|o| o.bus.clone().filter(|b| b.get().is_some()).map(|b| (b, o.owners.len())));
+    let live = eng.objects.as_ref().and_then(|o| {
+        o.bus
+            .clone()
+            .filter(|b| b.get().is_some())
+            .map(|b| (b, o.owners.len()))
+    });
     for &h in &handles {
         let rec = nodes.get_mut(&h).unwrap();
         let slot = rec.object as usize;
         let keep = slot != 0
             && rec.panning == Panning::Objects
-            && eng.objects.as_ref().is_some_and(|o| o.owners.get(slot - 1) == Some(&h));
+            && eng
+                .objects
+                .as_ref()
+                .is_some_and(|o| o.owners.get(slot - 1) == Some(&h));
         if slot != 0 && !keep {
             if let Some(o) = eng.objects.as_mut() {
                 if let Some(owner) = o.owners.get_mut(slot - 1).filter(|o| **o == h) {
@@ -565,7 +622,13 @@ pub(super) fn object_sends(eng: &mut Engine, nodes: &mut HashMap<u64, NodeRec>, 
     }
 }
 
-fn reach(nodes: &HashMap<u64, NodeRec>, h: u64, master: f32, memo: &mut HashMap<u64, f32>, path: &mut Vec<u64>) -> f32 {
+fn reach(
+    nodes: &HashMap<u64, NodeRec>,
+    h: u64,
+    master: f32,
+    memo: &mut HashMap<u64, f32>,
+    path: &mut Vec<u64>,
+) -> f32 {
     if let Some(&v) = memo.get(&h) {
         return v;
     }

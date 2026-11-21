@@ -12,8 +12,8 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use super::{events, fsutil, serialize, websocket};
 use super::util::*;
+use super::{events, fsutil, serialize, websocket};
 use crate::glue;
 
 struct PlatformClasses {
@@ -32,7 +32,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static PlatformClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static PlatformClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::platform not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::platform not installed")
 }
 
 /// Open channels per context: name → protected channel objects.
@@ -65,7 +70,11 @@ unsafe fn js_atob(g: *mut c_void, cf: *mut c_void) -> u64 {
             out
         }
         // HTML: "throw an InvalidCharacterError DOMException".
-        None => super::domexception::throw(g, "InvalidCharacterError", "atob: the string is not correctly encoded"),
+        None => super::domexception::throw(
+            g,
+            "InvalidCharacterError",
+            "atob: the string is not correctly encoded",
+        ),
     }
 }
 
@@ -99,7 +108,10 @@ unsafe fn imagedata_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         w = width.max(0.0) as usize;
         h = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0).max(0.0) as usize;
         if w == 0 || h == 0 {
-            return throw_type_error(g, "ImageData constructor: width and height must be non-zero");
+            return throw_type_error(
+                g,
+                "ImageData constructor: width and height must be non-zero",
+            );
         }
         let mut ta = UNDEF;
         if crate::ffi::redjs_typedarray_create(g, 3 /* u8 clamped */, w * h * 4, &mut ta) != 0 {
@@ -115,12 +127,18 @@ unsafe fn imagedata_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         let len = info.length as usize;
         w = dec_f64(cf_arg(cf, 1)).unwrap_or(0.0).max(0.0) as usize;
         if w == 0 || len % 4 != 0 || (len / 4) % w != 0 {
-            return throw_type_error(g, "ImageData constructor: invalid data length for the given width");
+            return throw_type_error(
+                g,
+                "ImageData constructor: invalid data length for the given width",
+            );
         }
         let h_arg = dec_f64(cf_arg(cf, 2));
         h = h_arg.map(|v| v.max(0.0) as usize).unwrap_or(len / 4 / w);
         if w * h * 4 != len {
-            return throw_type_error(g, "ImageData constructor: data length does not match dimensions");
+            return throw_type_error(
+                g,
+                "ImageData constructor: data length does not match dimensions",
+            );
         }
         data = a0;
     }
@@ -202,7 +220,14 @@ unsafe fn bc_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     glue::rjs_define(g, obj, c.s_plat, slots, 0);
 
     crate::ffi::redjs_protect(g, obj);
-    channels().lock().unwrap().entry(g as usize).or_default().entry(name).or_default().push(obj);
+    channels()
+        .lock()
+        .unwrap()
+        .entry(g as usize)
+        .or_default()
+        .entry(name)
+        .or_default()
+        .push(obj);
     obj
 }
 
@@ -224,12 +249,23 @@ unsafe fn bc_post_message(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     if get(g, slots, "closed") == 0x7 {
         // Spec: "If this's closed flag is true, then throw an InvalidStateError".
-        return super::domexception::throw(g, "InvalidStateError", "BroadcastChannel.postMessage: channel is closed");
+        return super::domexception::throw(
+            g,
+            "InvalidStateError",
+            "BroadcastChannel.postMessage: channel is closed",
+        );
     }
     let name = read_string(g, get(g, slots, "name")).unwrap_or_default();
     // "Let serialized be StructuredSerialize(message). Rethrow any exceptions."
     // Once — every destination deserializes its own copy from these bytes.
-    let serialized = match serialize::serialize(g, cf_arg(cf, 0), &serialize::Options { for_storage: false, transfer: &[] }) {
+    let serialized = match serialize::serialize(
+        g,
+        cf_arg(cf, 0),
+        &serialize::Options {
+            for_storage: false,
+            transfer: &[],
+        },
+    ) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             glue::rjs_throw(g, e);
@@ -251,18 +287,22 @@ unsafe fn bc_post_message(g: *mut c_void, cf: *mut c_void) -> u64 {
         crate::ffi::redjs_protect(g, dest);
         let serialized = Arc::clone(&serialized);
         let origin = origin.clone();
-        crate::web::schedule_native(g, 0.0, Box::new(move |g| {
-            let slots = slots_of(g, dest);
-            if is_cell(slots) && get(g, slots, "closed") != TRUE {
-                // A deserialization that throws is a `messageerror`, not a throw.
-                let ev = match serialize::deserialize_ref(g, &serialized) {
-                    Ok(data) => websocket::new_message_event_of(g, "message", data, &origin),
-                    Err(_) => websocket::new_message_event_of(g, "messageerror", NULL, &origin),
-                };
-                events::dispatch(g, dest, ev);
-            }
-            crate::ffi::redjs_unprotect(g, dest);
-        }));
+        crate::web::schedule_native(
+            g,
+            0.0,
+            Box::new(move |g| {
+                let slots = slots_of(g, dest);
+                if is_cell(slots) && get(g, slots, "closed") != TRUE {
+                    // A deserialization that throws is a `messageerror`, not a throw.
+                    let ev = match serialize::deserialize_ref(g, &serialized) {
+                        Ok(data) => websocket::new_message_event_of(g, "message", data, &origin),
+                        Err(_) => websocket::new_message_event_of(g, "messageerror", NULL, &origin),
+                    };
+                    events::dispatch(g, dest, ev);
+                }
+                crate::ffi::redjs_unprotect(g, dest);
+            }),
+        );
     }
     UNDEF
 }
@@ -275,7 +315,11 @@ unsafe fn source_origin(g: *mut c_void) -> String {
         return String::new();
     }
     let o = get(g, loc, "origin");
-    if glue::rjs_kind(g, o) == 5 { read_string(g, o).unwrap_or_default() } else { String::new() }
+    if glue::rjs_kind(g, o) == 5 {
+        read_string(g, o).unwrap_or_default()
+    } else {
+        String::new()
+    }
 }
 
 #[crate::host_fn]
@@ -316,32 +360,42 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     define(g, global, "atob", make_fn(g, "atob", 1, js_atob), 2);
     define(g, global, "btoa", make_fn(g, "btoa", 1, js_btoa), 2);
 
-    let imagedata = define_class(g, &ClassSpec {
-        name: "ImageData",
-        arity: 2,
-        construct: Some(imagedata_construct),
-        parent_proto: 0,
-        methods: &[],
-        getters: &[
-            ("data", imagedata_get_data),
-            ("width", imagedata_get_width),
-            ("height", imagedata_get_height),
-            ("colorSpace", imagedata_get_colorspace),
-        ],
-        accessors: &[],
-    });
+    let imagedata = define_class(
+        g,
+        &ClassSpec {
+            name: "ImageData",
+            arity: 2,
+            construct: Some(imagedata_construct),
+            parent_proto: 0,
+            methods: &[],
+            getters: &[
+                ("data", imagedata_get_data),
+                ("width", imagedata_get_width),
+                ("height", imagedata_get_height),
+                ("colorSpace", imagedata_get_colorspace),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let bc = define_class(g, &ClassSpec {
-        name: "BroadcastChannel",
-        arity: 1,
-        construct: Some(bc_construct),
-        parent_proto: event_target_proto,
-        methods: &[("postMessage", 1, bc_post_message), ("close", 0, bc_close)],
-        getters: &[("name", bc_get_name)],
-        accessors: &[],
-    });
+    let bc = define_class(
+        g,
+        &ClassSpec {
+            name: "BroadcastChannel",
+            arity: 1,
+            construct: Some(bc_construct),
+            parent_proto: event_target_proto,
+            methods: &[("postMessage", 1, bc_post_message), ("close", 0, bc_close)],
+            getters: &[("name", bc_get_name)],
+            accessors: &[],
+        },
+    );
 
-    let boxed: &'static PlatformClasses = Box::leak(Box::new(PlatformClasses { imagedata, bc, s_plat }));
+    let boxed: &'static PlatformClasses = Box::leak(Box::new(PlatformClasses {
+        imagedata,
+        bc,
+        s_plat,
+    }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 

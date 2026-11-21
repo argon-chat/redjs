@@ -190,7 +190,9 @@ pub enum Gate {
     NotEnabled,
     /// The host says no: the OS's own settings (`system`), or the user's
     /// answer to the host's prompt.
-    Denied { system: bool },
+    Denied {
+        system: bool,
+    },
     /// Nobody has decided: ask the host, open on a grant.
     Ask,
 }
@@ -374,11 +376,19 @@ thread_local! {
 /// in effect (all off for the raw signal).
 fn processing_for(owner: usize, rate: u32, wanted: &Settings) -> (Option<Chunker>, Settings) {
     #[cfg(test)]
-    let factory = TEST_PROCESSING.with(|t| t.get()).or_else(|| PROCESSING.get().copied());
+    let factory = TEST_PROCESSING
+        .with(|t| t.get())
+        .or_else(|| PROCESSING.get().copied());
     #[cfg(not(test))]
     let factory = PROCESSING.get().copied();
-    let Some(factory) = factory.filter(|_| wanted.any()) else { return (None, Settings::default()) };
-    match factory(&ProcessingRequest { owner, rate, wanted: wanted.clone() }) {
+    let Some(factory) = factory.filter(|_| wanted.any()) else {
+        return (None, Settings::default());
+    };
+    match factory(&ProcessingRequest {
+        owner,
+        rate,
+        wanted: wanted.clone(),
+    }) {
         Some((p, s)) => (Some(Chunker::new(p, rate)), s),
         None => (None, Settings::default()),
     }
@@ -397,13 +407,20 @@ pub(crate) struct Chunker {
 impl Chunker {
     fn new(proc: Box<dyn CaptureProcessor>, rate: u32) -> Chunker {
         let block = (rate as usize / 100).max(1);
-        Chunker { proc, block, pending: Vec::with_capacity(block * 8) }
+        Chunker {
+            proc,
+            block,
+            pending: Vec::with_capacity(block * 8),
+        }
     }
 
     fn feed(&mut self, data: &[f32], channels: usize, mut out: impl FnMut(&[f32])) {
         let channels = channels.max(1);
         let scale = 1.0 / channels as f32;
-        self.pending.extend(data.chunks_exact(channels).map(|f| f.iter().sum::<f32>() * scale));
+        self.pending.extend(
+            data.chunks_exact(channels)
+                .map(|f| f.iter().sum::<f32>() * scale),
+        );
         let mut at = 0;
         while self.pending.len() - at >= self.block {
             let b = &mut self.pending[at..at + self.block];
@@ -426,7 +443,9 @@ struct Feeder {
 
 impl Feeder {
     fn push(&mut self, data: &[f32]) {
-        let Some(s) = self.source.upgrade() else { return };
+        let Some(s) = self.source.upgrade() else {
+            return;
+        };
         match &mut self.chunker {
             Some(c) => c.feed(data, self.channels, |b| s.deliver(b, 1, self.rate)),
             None => s.deliver(data, self.channels, self.rate),
@@ -448,7 +467,13 @@ pub struct Source {
 }
 
 impl Source {
-    pub fn new(kind: SourceKind, label: String, channels: u32, rate: u32, settings: Settings) -> Arc<Source> {
+    pub fn new(
+        kind: SourceKind,
+        label: String,
+        channels: u32,
+        rate: u32,
+        settings: Settings,
+    ) -> Arc<Source> {
         Arc::new(Source {
             kind,
             label,
@@ -483,7 +508,9 @@ impl Source {
     /// here can be the last strong reference to a track; its `Drop` takes no
     /// lock this function holds.
     pub fn deliver(&self, data: &[f32], channels: usize, rate: u32) {
-        let Ok(tracks) = self.tracks.try_lock() else { return };
+        let Ok(tracks) = self.tracks.try_lock() else {
+            return;
+        };
         for w in tracks.iter() {
             if let Some(t) = w.upgrade() {
                 t.deliver(data, channels, rate);
@@ -496,7 +523,13 @@ impl Source {
         if self.failed.swap(true, Ordering::AcqRel) {
             return;
         }
-        let tracks: Vec<Arc<TrackCore>> = self.tracks.lock().unwrap().iter().filter_map(|w| w.upgrade()).collect();
+        let tracks: Vec<Arc<TrackCore>> = self
+            .tracks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .collect();
         for t in &tracks {
             if !t.ended.swap(true, Ordering::AcqRel) {
                 ended_queue().lock().unwrap().push((t.owner, t.id));
@@ -577,7 +610,9 @@ impl TrackCore {
         if self.ended() {
             return;
         }
-        let Ok(mut consumers) = self.consumers.try_lock() else { return };
+        let Ok(mut consumers) = self.consumers.try_lock() else {
+            return;
+        };
         if consumers.is_empty() {
             return;
         }
@@ -643,7 +678,11 @@ static WORK: AtomicBool = AtomicBool::new(false);
 
 /// The track with this id, if it is alive.
 pub fn track(id: u64) -> Option<Arc<TrackCore>> {
-    let t = registry().lock().unwrap().get(&id).and_then(|w| w.upgrade());
+    let t = registry()
+        .lock()
+        .unwrap()
+        .get(&id)
+        .and_then(|w| w.upgrade());
     t
 }
 
@@ -722,7 +761,11 @@ impl Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        self.track.consumers.lock().unwrap().retain(|(id, _)| *id != self.id);
+        self.track
+            .consumers
+            .lock()
+            .unwrap()
+            .retain(|(id, _)| *id != self.id);
         self.track.unhold();
     }
 }
@@ -779,7 +822,9 @@ fn pipes() -> &'static Mutex<HashMap<u64, Subscription>> {
 /// stereo: a wider device keeps channels 0 and 1, and a mono one fills a
 /// stereo node on both sides.
 pub fn pipe(node: u64, track_id: u64) -> bool {
-    let Some(sink) = super::pcm::sink(node) else { return false };
+    let Some(sink) = super::pcm::sink(node) else {
+        return false;
+    };
     let want = sink.channels() as usize;
     let node_rate = sink.sample_rate();
     let mut fit: Vec<f32> = Vec::new();
@@ -829,7 +874,14 @@ impl Rerate {
     fn run(&mut self, data: &[f32], channels: usize, from: u32, to: u32) -> &[f32] {
         let channels = channels.max(1);
         if (from, to, channels) != (self.from, self.to, self.channels) {
-            *self = Rerate { from, to, channels, pos: 0.0, last: vec![0.0; channels], out: std::mem::take(&mut self.out) };
+            *self = Rerate {
+                from,
+                to,
+                channels,
+                pos: 0.0,
+                last: vec![0.0; channels],
+                out: std::mem::take(&mut self.out),
+            };
         }
         self.out.clear();
         let frames = data.len() / channels;
@@ -837,7 +889,13 @@ impl Rerate {
             return &self.out;
         }
         let step = from as f64 / to as f64;
-        let frame = |i: isize, c: usize| if i < 0 { self.last[c] } else { data[i as usize * channels + c] };
+        let frame = |i: isize, c: usize| {
+            if i < 0 {
+                self.last[c]
+            } else {
+                data[i as usize * channels + c]
+            }
+        };
         while self.pos <= (frames - 1) as f64 {
             let i = self.pos.floor() as isize;
             let k = (self.pos - i as f64) as f32;
@@ -849,7 +907,8 @@ impl Rerate {
             self.pos += step;
         }
         self.pos -= frames as f64;
-        self.last.copy_from_slice(&data[(frames - 1) * channels..frames * channels]);
+        self.last
+            .copy_from_slice(&data[(frames - 1) * channels..frames * channels]);
         &self.out
     }
 }
@@ -890,7 +949,13 @@ pub fn unpipe(node: u64) {
 
 /// A source whose frames the embedder delivers.
 pub fn remote_source(label: &str, channels: u32, rate: u32) -> Arc<Source> {
-    Source::new(SourceKind::Remote, label.to_string(), channels, rate, Settings::default())
+    Source::new(
+        SourceKind::Remote,
+        label.to_string(),
+        channels,
+        rate,
+        Settings::default(),
+    )
 }
 
 /// A new track of `source`, owned by context `g`'s page, as a
@@ -900,7 +965,9 @@ pub fn remote_source(label: &str, channels: u32, rate: u32) -> Arc<Source> {
 /// # Safety
 /// `g` is a live context, on its thread.
 pub unsafe fn js_track(g: *mut c_void, source: &Arc<Source>) -> u64 {
-    if state_of(g).is_none() { return UNDEF; }
+    if state_of(g).is_none() {
+        return UNDEF;
+    }
     let id = new_track(source, owner_of(g));
     let h = new_handle(g, id);
     match surface::wrap(g, h) {
@@ -1013,18 +1080,31 @@ fn start_open(owner: usize, token: u32, req: AudioRequest) {
     #[cfg(test)]
     {
         // `cargo test` never opens a device, whatever a test forgot to set.
-        finish(owner, token, OpenResult::Err("NotAllowedError", "Tests never open a real device.".into()));
+        finish(
+            owner,
+            token,
+            OpenResult::Err("NotAllowedError", "Tests never open a real device.".into()),
+        );
     }
     #[cfg(not(test))]
     {
-        let spawned = std::thread::Builder::new().name("redjs-mic".into()).spawn(move || {
-            let (result, park) = capture::open(owner, req);
-            finish(owner, token, result);
-            // Holds the stream until every track has ended or been collected.
-            park();
-        });
+        let spawned = std::thread::Builder::new()
+            .name("redjs-mic".into())
+            .spawn(move || {
+                let (result, park) = capture::open(owner, req);
+                finish(owner, token, result);
+                // Holds the stream until every track has ended or been collected.
+                park();
+            });
         if spawned.is_err() {
-            finish(owner, token, OpenResult::Err("NotReadableError", "Could not start the capture thread.".into()));
+            finish(
+                owner,
+                token,
+                OpenResult::Err(
+                    "NotReadableError",
+                    "Could not start the capture thread.".into(),
+                ),
+            );
         }
     }
 }
@@ -1059,7 +1139,12 @@ fn ask_then_open(owner: usize, token: u32, req: AudioRequest) {
     match permissions::request_for_runtime(Capability::Microphone) {
         permissions::RequestOutcome::Settled(state) => answered(owner, token, req, state),
         permissions::RequestOutcome::Pending(perm) => {
-            asking().lock().unwrap().push(Asking { perm, owner, token, req });
+            asking().lock().unwrap().push(Asking {
+                perm,
+                owner,
+                token,
+                req,
+            });
             ASKING.store(true, Ordering::Release);
         }
     }
@@ -1070,10 +1155,22 @@ fn answered(owner: usize, token: u32, req: AudioRequest, state: PermissionState)
     match state {
         PermissionState::Granted | PermissionState::Unsupported => start_open(owner, token, req),
         PermissionState::Denied => {
-            let system = permissions::host().is_none_or(|h| h.denied_by_system(Capability::Microphone));
-            finish(owner, token, OpenResult::Err("NotAllowedError", (if system { DENIED_BY_SYSTEM } else { DENIED }).into()));
+            let system =
+                permissions::host().is_none_or(|h| h.denied_by_system(Capability::Microphone));
+            finish(
+                owner,
+                token,
+                OpenResult::Err(
+                    "NotAllowedError",
+                    (if system { DENIED_BY_SYSTEM } else { DENIED }).into(),
+                ),
+            );
         }
-        PermissionState::Prompt => finish(owner, token, OpenResult::Err("NotAllowedError", DISMISSED.into())),
+        PermissionState::Prompt => finish(
+            owner,
+            token,
+            OpenResult::Err("NotAllowedError", DISMISSED.into()),
+        ),
     }
 }
 
@@ -1171,14 +1268,15 @@ mod capture {
     /// id, and its default input config.
     pub(super) fn format(device_id: &str) -> Option<(u32, u32)> {
         let host = cpal::default_host();
-        let device = if device_id.is_empty() || device_id == super::super::mediadevices::DEFAULT_SINK {
-            host.default_input_device()
-        } else {
-            <cpal::DeviceId as std::str::FromStr>::from_str(device_id)
-                .ok()
-                .and_then(|did| host.device_by_id(&did))
-                .filter(|d| d.supports_input())
-        }?;
+        let device =
+            if device_id.is_empty() || device_id == super::super::mediadevices::DEFAULT_SINK {
+                host.default_input_device()
+            } else {
+                <cpal::DeviceId as std::str::FromStr>::from_str(device_id)
+                    .ok()
+                    .and_then(|did| host.device_by_id(&did))
+                    .filter(|d| d.supports_input())
+            }?;
         let config = device.default_input_config().ok()?.config();
         Some((config.sample_rate, config.channels as u32))
     }
@@ -1210,7 +1308,10 @@ mod capture {
                 match found {
                     Some(d) => Some(d),
                     None if req.exact => {
-                        return fail("OverconstrainedError", format!("No audio input device has deviceId {id:?}."))
+                        return fail(
+                            "OverconstrainedError",
+                            format!("No audio input device has deviceId {id:?}."),
+                        )
                     }
                     None => host.default_input_device(),
                 }
@@ -1220,9 +1321,16 @@ mod capture {
         let Some(device) = device else {
             return fail("NotFoundError", "Requested device not found".into());
         };
-        let label = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "Microphone".into());
+        let label = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "Microphone".into());
         let following = wanted.is_none();
-        let device_id = if following { super::super::mediadevices::DEFAULT_SINK.to_string() } else { id_of(&device) };
+        let device_id = if following {
+            super::super::mediadevices::DEFAULT_SINK.to_string()
+        } else {
+            id_of(&device)
+        };
         let (config, sample) = match input_config(&device) {
             Ok(c) => c,
             Err(msg) => return fail("NotReadableError", msg),
@@ -1230,16 +1338,34 @@ mod capture {
         let rate = config.sample_rate;
         let (chunker, settings) = processing_for(owner, rate, &req.settings);
         let channels = track_channels(&config, &chunker);
-        let source = Source::new(SourceKind::Microphone { device_id }, label, channels, rate, settings);
+        let source = Source::new(
+            SourceKind::Microphone { device_id },
+            label,
+            channels,
+            rate,
+            settings,
+        );
         let lost = Arc::new(AtomicBool::new(false));
-        let feeder = Feeder { source: Arc::downgrade(&source), chunker, channels: config.channels as usize, rate };
-        let on_lost = if following { Lost::Flag(Arc::clone(&lost)) } else { Lost::Fail(Arc::downgrade(&source)) };
+        let feeder = Feeder {
+            source: Arc::downgrade(&source),
+            chunker,
+            channels: config.channels as usize,
+            rate,
+        };
+        let on_lost = if following {
+            Lost::Flag(Arc::clone(&lost))
+        } else {
+            Lost::Fail(Arc::downgrade(&source))
+        };
         let stream = match build(&device, &config, sample, feeder, on_lost) {
             Ok(s) => s,
             Err((name, msg)) => return fail(name, msg),
         };
         if let Err(e) = stream.play() {
-            return fail("NotReadableError", format!("The microphone could not be started: {e}"));
+            return fail(
+                "NotReadableError",
+                format!("The microphone could not be started: {e}"),
+            );
         }
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         source.set_stop(tx);
@@ -1259,7 +1385,9 @@ mod capture {
     }
 
     /// The device's own mix format, which a capture opens it with.
-    fn input_config(device: &cpal::Device) -> Result<(cpal::StreamConfig, cpal::SampleFormat), String> {
+    fn input_config(
+        device: &cpal::Device,
+    ) -> Result<(cpal::StreamConfig, cpal::SampleFormat), String> {
         match device.default_input_config() {
             Ok(c) => Ok((c.config(), c.sample_format())),
             Err(e) => Err(format!("The device has no usable input format: {e}")),
@@ -1351,13 +1479,20 @@ mod capture {
                     None,
                 )
             }
-            other => return Err(("NotReadableError", format!("Unsupported input sample format {other:?}."))),
+            other => {
+                return Err((
+                    "NotReadableError",
+                    format!("Unsupported input sample format {other:?}."),
+                ))
+            }
         };
         stream.map_err(|e| {
             // WASAPI's E_ACCESSDENIED is the privacy settings refusing
             // desktop apps the microphone.
             let text = e.to_string();
-            let name = if text.contains("0x80070005") || text.to_ascii_lowercase().contains("access is denied") {
+            let name = if text.contains("0x80070005")
+                || text.to_ascii_lowercase().contains("access is denied")
+            {
                 "NotAllowedError"
             } else {
                 "NotReadableError"
@@ -1397,7 +1532,9 @@ mod capture {
             let device = match (follow(&on, id.as_deref(), moved, gone), device) {
                 (Follow::Move, Some(d)) => d,
                 (Follow::End, _) => {
-                    eprintln!("[redjs] the microphone went away and no input is left: its tracks end");
+                    eprintln!(
+                        "[redjs] the microphone went away and no input is left: its tracks end"
+                    );
                     source.fail();
                     break;
                 }
@@ -1412,9 +1549,20 @@ mod capture {
                 let (chunker, _) = processing_for(owner, rate, wanted);
                 let channels = track_channels(&config, &chunker);
                 let flag = Arc::new(AtomicBool::new(false));
-                let feeder =
-                    Feeder { source: Arc::downgrade(source), chunker, channels: config.channels as usize, rate };
-                let s = build(&device, &config, sample, feeder, Lost::Flag(Arc::clone(&flag))).map_err(|(_, m)| m)?;
+                let feeder = Feeder {
+                    source: Arc::downgrade(source),
+                    chunker,
+                    channels: config.channels as usize,
+                    rate,
+                };
+                let s = build(
+                    &device,
+                    &config,
+                    sample,
+                    feeder,
+                    Lost::Flag(Arc::clone(&flag)),
+                )
+                .map_err(|(_, m)| m)?;
                 Ok::<_, String>((s, flag, channels, rate))
             })();
             match next {
@@ -1428,7 +1576,10 @@ mod capture {
                     }
                     lost = flag;
                     on = id.unwrap_or_default();
-                    let name = device.description().map(|d| d.name().to_string()).unwrap_or_default();
+                    let name = device
+                        .description()
+                        .map(|d| d.name().to_string())
+                        .unwrap_or_default();
                     eprintln!("[redjs] the microphone follows the system default to {name:?} ({rate} Hz x {channels})");
                 }
                 Err(e) => {
@@ -1484,47 +1635,81 @@ pub(crate) mod fake {
 
     #[cfg(test)]
     pub(crate) fn open_devices(g: *mut c_void) -> usize {
-        open_count().lock().unwrap().get(&(g as usize)).copied().unwrap_or(0)
+        open_count()
+            .lock()
+            .unwrap()
+            .get(&(g as usize))
+            .copied()
+            .unwrap_or(0)
     }
 
     pub(super) fn open(owner: usize, token: u32, req: AudioRequest) {
         if req.exact && req.device_id.as_deref().is_some_and(|d| d != DEVICE_ID) {
-            finish(owner, token, OpenResult::Err("OverconstrainedError", "No such device.".into()));
+            finish(
+                owner,
+                token,
+                OpenResult::Err("OverconstrainedError", "No such device.".into()),
+            );
             return;
         }
-        let device_id = if req.device_id.as_deref() == Some(DEVICE_ID) { DEVICE_ID } else { "default" };
+        let device_id = if req.device_id.as_deref() == Some(DEVICE_ID) {
+            DEVICE_ID
+        } else {
+            "default"
+        };
         // Processed like a device, so an automated run covers the processing.
         let (chunker, settings) = processing_for(owner, 48_000, &req.settings);
-        let source =
-            Source::new(SourceKind::Microphone { device_id: device_id.into() }, LABEL.into(), 1, 48_000, settings);
-        let mut feeder = Feeder { source: Arc::downgrade(&source), chunker, channels: 1, rate: 48_000 };
+        let source = Source::new(
+            SourceKind::Microphone {
+                device_id: device_id.into(),
+            },
+            LABEL.into(),
+            1,
+            48_000,
+            settings,
+        );
+        let mut feeder = Feeder {
+            source: Arc::downgrade(&source),
+            chunker,
+            channels: 1,
+            rate: 48_000,
+        };
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         source.set_stop(tx);
         let id = new_track(&source, owner);
         *open_count().lock().unwrap().entry(owner).or_default() += 1;
-        let spawned = std::thread::Builder::new().name("redjs-fake-mic".into()).spawn(move || {
-            const TAU: f32 = 2.0 * std::f32::consts::PI;
-            let mut phase = 0.0f32;
-            let mut block = vec![0.0f32; 480];
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
-                rx.recv_timeout(std::time::Duration::from_millis(10))
-            {
-                for s in block.iter_mut() {
-                    *s = 0.25 * phase.sin();
-                    // Kept in one turn: a phase that only grows loses its
-                    // precision within hours, and the tone with it.
-                    phase = (phase + TAU * 440.0 / 48_000.0) % TAU;
+        let spawned = std::thread::Builder::new()
+            .name("redjs-fake-mic".into())
+            .spawn(move || {
+                const TAU: f32 = 2.0 * std::f32::consts::PI;
+                let mut phase = 0.0f32;
+                let mut block = vec![0.0f32; 480];
+                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    rx.recv_timeout(std::time::Duration::from_millis(10))
+                {
+                    for s in block.iter_mut() {
+                        *s = 0.25 * phase.sin();
+                        // Kept in one turn: a phase that only grows loses its
+                        // precision within hours, and the tone with it.
+                        phase = (phase + TAU * 440.0 / 48_000.0) % TAU;
+                    }
+                    feeder.push(&block);
                 }
-                feeder.push(&block);
-            }
-            drop(source);
-            *open_count().lock().unwrap().entry(owner).or_default() -= 1;
-        });
+                drop(source);
+                *open_count().lock().unwrap().entry(owner).or_default() -= 1;
+            });
         if spawned.is_err() {
             *open_count().lock().unwrap().entry(owner).or_default() -= 1;
             stop(id);
             release(id);
-            finish(owner, token, OpenResult::Err("NotReadableError", "Could not start the capture thread.".into()));
+            finish(
+                owner,
+                token,
+                OpenResult::Err(
+                    "NotReadableError",
+                    "Could not start the capture thread.".into(),
+                ),
+            );
             return;
         }
         finish(owner, token, OpenResult::Ok(id));
@@ -1612,7 +1797,11 @@ pub(crate) fn forget(gone: crate::context::Gone) {
     };
     let tracks: Vec<Arc<TrackCore>> = {
         let mut h = held().lock().unwrap();
-        let ids: Vec<u64> = h.iter().filter(|(_, t)| t.owner == gone.key).map(|(&id, _)| id).collect();
+        let ids: Vec<u64> = h
+            .iter()
+            .filter(|(_, t)| t.owner == gone.key)
+            .map(|(&id, _)| id)
+            .collect();
         ids.into_iter().filter_map(|id| h.remove(&id)).collect()
     };
     for id in finished {
@@ -1623,7 +1812,10 @@ pub(crate) fn forget(gone: crate::context::Gone) {
         t.stop();
         t.unhold();
     }
-    ended_queue().lock().unwrap().retain(|(o, _)| *o != gone.key);
+    ended_queue()
+        .lock()
+        .unwrap()
+        .retain(|(o, _)| *o != gone.key);
 }
 
 /// Stop every track a page in `g` holds, as unloading a document does: for
@@ -1671,7 +1863,12 @@ pub fn stop_all(g: *mut c_void) -> usize {
 /// A one-shot advisory on stderr (each text once per process).
 fn advise_once(text: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    if SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock().unwrap().insert(text.to_string()) {
+    if SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap()
+        .insert(text.to_string())
+    {
         eprintln!("[redjs] advisory: {text}");
     }
 }
@@ -1692,12 +1889,15 @@ pub unsafe fn pump(g: *mut c_void) {
     if !WORK.load(Ordering::Acquire) {
         return;
     }
-    if state_of(g).is_none() { return; }
+    if state_of(g).is_none() {
+        return;
+    }
     WORK.store(false, Ordering::Release);
     let opened = drain_opened(g as usize);
     let ended = drain_ended(g as usize);
     // Another context's results stay queued: keep the flag up for its pump.
-    let others = !opens().lock().unwrap().done.is_empty() || !ended_queue().lock().unwrap().is_empty();
+    let others =
+        !opens().lock().unwrap().done.is_empty() || !ended_queue().lock().unwrap().is_empty();
     if others {
         WORK.store(true, Ordering::Release);
     }
@@ -1712,7 +1912,10 @@ pub unsafe fn pump(g: *mut c_void) {
 unsafe fn report(g: *mut c_void, e: u64) {
     let (mut msg, mut stack) = (0u64, 0u64);
     glue::rjs_error_info(g, e, &mut msg, &mut stack);
-    eprintln!("[redjs] mediastream: {}", read_string(g, msg).unwrap_or_default());
+    eprintln!(
+        "[redjs] mediastream: {}",
+        read_string(g, msg).unwrap_or_default()
+    );
 }
 
 pub unsafe fn install(g: *mut c_void) {
@@ -1724,36 +1927,87 @@ mod tests {
     use super::*;
 
     fn graph_source(ch: u32) -> Arc<Source> {
-        Source::new(SourceKind::Graph, "tap".into(), ch, 48_000, Settings::default())
+        Source::new(
+            SourceKind::Graph,
+            "tap".into(),
+            ch,
+            48_000,
+            Settings::default(),
+        )
     }
 
     fn collect(id: u64) -> (Subscription, Arc<Mutex<Vec<f32>>>) {
         let got = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&got);
-        let sub = subscribe(id, Box::new(move |d, _, _| sink.lock().unwrap().extend_from_slice(d))).unwrap();
+        let sub = subscribe(
+            id,
+            Box::new(move |d, _, _| sink.lock().unwrap().extend_from_slice(d)),
+        )
+        .unwrap();
         (sub, got)
     }
 
     #[test]
     fn the_gate_opens_asks_or_refuses_in_its_order() {
         use PermissionState::*;
-        assert_eq!(gate(false, true, None, true), Gate::Open, "no consent store: nothing to ask");
+        assert_eq!(
+            gate(false, true, None, true),
+            Gate::Open,
+            "no consent store: nothing to ask"
+        );
         assert_eq!(gate(false, true, Some(Granted), true), Gate::Open);
         assert_eq!(gate(false, true, Some(Unsupported), true), Gate::Open);
-        assert_eq!(gate(false, true, Some(Prompt), true), Gate::Ask, "nobody decided: the host asks");
-        assert_eq!(gate(false, true, Some(Denied), true), Gate::Denied { system: true });
-        assert_eq!(gate(false, true, Some(Denied), false), Gate::Denied { system: false });
-        assert_eq!(gate(false, false, Some(Granted), true), Gate::NotEnabled, "off unless the embedder says so");
-        assert_eq!(gate(false, false, Some(Prompt), true), Gate::NotEnabled, "and then nothing is asked");
-        assert_eq!(gate(true, true, Some(Granted), true), Gate::Forbidden, "the kill switch beats everything");
-        assert_eq!(gate(true, true, Some(Prompt), true), Gate::Forbidden, "including the prompt");
+        assert_eq!(
+            gate(false, true, Some(Prompt), true),
+            Gate::Ask,
+            "nobody decided: the host asks"
+        );
+        assert_eq!(
+            gate(false, true, Some(Denied), true),
+            Gate::Denied { system: true }
+        );
+        assert_eq!(
+            gate(false, true, Some(Denied), false),
+            Gate::Denied { system: false }
+        );
+        assert_eq!(
+            gate(false, false, Some(Granted), true),
+            Gate::NotEnabled,
+            "off unless the embedder says so"
+        );
+        assert_eq!(
+            gate(false, false, Some(Prompt), true),
+            Gate::NotEnabled,
+            "and then nothing is asked"
+        );
+        assert_eq!(
+            gate(true, true, Some(Granted), true),
+            Gate::Forbidden,
+            "the kill switch beats everything"
+        );
+        assert_eq!(
+            gate(true, true, Some(Prompt), true),
+            Gate::Forbidden,
+            "including the prompt"
+        );
         assert_eq!(gate(true, false, Some(Denied), true), Gate::Forbidden);
-        for g in [Gate::Forbidden, Gate::NotEnabled, Gate::Denied { system: true }, Gate::Denied { system: false }] {
+        for g in [
+            Gate::Forbidden,
+            Gate::NotEnabled,
+            Gate::Denied { system: true },
+            Gate::Denied { system: false },
+        ] {
             assert_eq!(refusal(g).unwrap().0, "NotAllowedError", "{g:?}");
         }
         // Chrome's words, which pages match on.
-        assert_eq!(refusal(Gate::Denied { system: false }).unwrap().1, "Permission denied");
-        assert_eq!(refusal(Gate::Denied { system: true }).unwrap().1, "Permission denied by system");
+        assert_eq!(
+            refusal(Gate::Denied { system: false }).unwrap().1,
+            "Permission denied"
+        );
+        assert_eq!(
+            refusal(Gate::Denied { system: true }).unwrap().1,
+            "Permission denied by system"
+        );
         assert!(refusal(Gate::Open).is_none());
         assert!(refusal(Gate::Ask).is_none(), "asking is not a refusal");
     }
@@ -1782,7 +2036,10 @@ mod tests {
         stop(id);
         src.deliver(&[1.0], 1, 48_000);
         assert_eq!(*got.lock().unwrap(), vec![0.0, 0.0]);
-        assert!(subscribe(id, Box::new(|_, _, _| {})).is_none(), "an ended track takes no consumer");
+        assert!(
+            subscribe(id, Box::new(|_, _, _| {})).is_none(),
+            "an ended track takes no consumer"
+        );
         release(id);
     }
 
@@ -1806,7 +2063,9 @@ mod tests {
     #[test]
     fn the_device_is_released_when_nothing_can_hear_it() {
         let src = Source::new(
-            SourceKind::Microphone { device_id: "default".into() },
+            SourceKind::Microphone {
+                device_id: "default".into(),
+            },
             "mic".into(),
             1,
             48_000,
@@ -1823,7 +2082,10 @@ mod tests {
         release(b);
         assert!(rx.try_recv().is_err(), "the subscriber still hears it");
         drop(sub);
-        assert!(rx.try_recv().is_ok(), "the last listener went: the device closes");
+        assert!(
+            rx.try_recv().is_ok(),
+            "the last listener went: the device closes"
+        );
         release(a);
     }
 
@@ -1841,7 +2103,15 @@ mod tests {
     #[test]
     fn a_failed_device_ends_its_tracks_once() {
         let owner = 0xF00D;
-        let src = Source::new(SourceKind::Microphone { device_id: "x".into() }, "mic".into(), 1, 48_000, Settings::default());
+        let src = Source::new(
+            SourceKind::Microphone {
+                device_id: "x".into(),
+            },
+            "mic".into(),
+            1,
+            48_000,
+            Settings::default(),
+        );
         let id = new_track(&src, owner);
         src.fail();
         src.fail();
@@ -1879,8 +2149,9 @@ mod tests {
         let mut out: Vec<f32> = Vec::new();
         // A ramp, 160 frames per 10 ms block, stereo: left = t, right = -t.
         for b in 0..10 {
-            let block: Vec<f32> =
-                (0..160).flat_map(|i| [(b * 160 + i) as f32, -((b * 160 + i) as f32)]).collect();
+            let block: Vec<f32> = (0..160)
+                .flat_map(|i| [(b * 160 + i) as f32, -((b * 160 + i) as f32)])
+                .collect();
             out.extend_from_slice(r.run(&block, 2, 16_000, 48_000));
         }
         // Three times the frames, give or take the one the phase holds back.
@@ -1890,7 +2161,10 @@ mod tests {
         // is a third of an input frame further on, on both channels.
         for (n, f) in out.chunks_exact(2).enumerate() {
             let t = n as f32 / 3.0;
-            assert!((f[0] - t).abs() < 1e-3 && (f[1] + t).abs() < 1e-3, "frame {n}: {f:?}, expected {t}");
+            assert!(
+                (f[0] - t).abs() < 1e-3 && (f[1] + t).abs() < 1e-3,
+                "frame {n}: {f:?}, expected {t}"
+            );
         }
         // Down again, 48 kHz to 16 kHz: a third of the frames.
         let mut d = Rerate::default();
@@ -1914,7 +2188,11 @@ mod tests {
         src.fail();
         assert_eq!(drain_ended(owner), vec![id]);
         src.deliver(&[0.5; 480], 1, 48_000);
-        assert_eq!(got.lock().unwrap().len(), 480, "an ended track delivers nothing");
+        assert_eq!(
+            got.lock().unwrap().len(),
+            480,
+            "an ended track delivers nothing"
+        );
         release(id);
     }
 
@@ -1926,7 +2204,10 @@ mod tests {
             out
         };
         assert_eq!(fit(&[0.1, 0.2], 1, 2), vec![0.1, 0.1, 0.2, 0.2]);
-        assert_eq!(fit(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2), vec![1.0, 2.0, 4.0, 5.0]);
+        assert_eq!(
+            fit(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2),
+            vec![1.0, 2.0, 4.0, 5.0]
+        );
     }
 
     #[test]
@@ -1937,7 +2218,10 @@ mod tests {
         // The context went away while the device was opening: no entry.
         finish(owner, 7, OpenResult::Ok(id));
         assert!(drain_opened(owner).is_empty());
-        assert!(track(id).is_none(), "the abandoned track is stopped and let go");
+        assert!(
+            track(id).is_none(),
+            "the abandoned track is stopped and let go"
+        );
     }
 
     /// Doubles its block and counts the blocks it saw.
@@ -1965,7 +2249,10 @@ mod tests {
         // 21 ms in: two whole blocks out, 1 ms waiting for the next.
         assert_eq!(*seen.lock().unwrap(), vec![480, 480]);
         assert_eq!(out.len(), 960);
-        assert!(out.iter().all(|&v| (v - 1.0).abs() < 1e-6), "averaged, then processed");
+        assert!(
+            out.iter().all(|&v| (v - 1.0).abs() < 1e-6),
+            "averaged, then processed"
+        );
         c.feed(&block, 2, |b| out.extend_from_slice(b));
         assert_eq!(*seen.lock().unwrap(), vec![480, 480], "28 ms: still two");
         c.feed(&block, 2, |b| out.extend_from_slice(b));
@@ -1989,7 +2276,11 @@ mod jsc_tests {
     /// allocates, and a collection started without the lock is a JSC crash.
     unsafe fn pump_locked(c: &Context) {
         glue::rjs_lock(c.raw());
-        crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+        crate::web::pump(
+            c.raw(),
+            crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+            core::ptr::null_mut(),
+        );
         glue::rjs_unlock(c.raw());
     }
 
@@ -2005,9 +2296,7 @@ mod jsc_tests {
             ),
         );
         for _ in 0..200 {
-            unsafe {
-                pump_locked(c)
-            };
+            unsafe { pump_locked(c) };
             if s(c, "globalThis.__out") != "<pending>" {
                 break;
             }
@@ -2021,9 +2310,7 @@ mod jsc_tests {
     fn pump_for(c: &Context, ms: u64) -> bool {
         let before = s(c, "globalThis.__ctx.currentTime");
         for _ in 0..(ms / 10).max(1) {
-            unsafe {
-                pump_locked(c)
-            };
+            unsafe { pump_locked(c) };
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let after = s(c, "globalThis.__ctx.currentTime");
@@ -2042,18 +2329,32 @@ mod jsc_tests {
         ] {
             ok(&c, &format!("typeof {name} === 'function' && Object.prototype.toString.call({name}.prototype) === '[object {name}]'"));
         }
-        ok(&c, "typeof AudioContext.prototype.createMediaStreamSource === 'function'");
-        ok(&c, "typeof AudioContext.prototype.createMediaStreamDestination === 'function'");
-        ok(&c, "MediaStreamAudioSourceNode.prototype instanceof AudioNode");
+        ok(
+            &c,
+            "typeof AudioContext.prototype.createMediaStreamSource === 'function'",
+        );
+        ok(
+            &c,
+            "typeof AudioContext.prototype.createMediaStreamDestination === 'function'",
+        );
+        ok(
+            &c,
+            "MediaStreamAudioSourceNode.prototype instanceof AudioNode",
+        );
         assert!(throws(&c, "new MediaStreamTrack()").contains("Illegal constructor"));
-        ok(&c, "new OverconstrainedError('deviceId', 'm').constraint === 'deviceId'");
+        ok(
+            &c,
+            "new OverconstrainedError('deviceId', 'm').constraint === 'deviceId'",
+        );
         ok(&c, "new OverconstrainedError('x') instanceof DOMException && new OverconstrainedError('x').name === 'OverconstrainedError'");
     }
 
     #[test]
     fn media_handler_attributes_keep_their_place_and_fire_once() {
         let c = ctx();
-        ok(&c, "(() => {
+        ok(
+            &c,
+            "(() => {
             const stream = new MediaStream(), seen = [];
             const handler = () => seen.push('handler');
             stream.addEventListener('addtrack', () => seen.push('first'));
@@ -2065,7 +2366,8 @@ mod jsc_tests {
             stream.onaddtrack = null;
             stream.dispatchEvent(new Event('addtrack'));
             return seen.join() === 'first,handler,last,first,last';
-        })()");
+        })()",
+        );
     }
 
     #[test]
@@ -2085,9 +2387,20 @@ mod jsc_tests {
     #[test]
     fn get_user_media_refuses_what_it_cannot_do_by_name() {
         let c = ctx();
-        assert!(run(&c, "await navigator.mediaDevices.getUserMedia({}); return 'resolved';").contains("TypeError"));
-        assert!(run(&c, "await navigator.mediaDevices.getUserMedia(); return 'resolved';").contains("TypeError"));
-        let video = run(&c, "await navigator.mediaDevices.getUserMedia({ video: true }); return 'resolved';");
+        assert!(run(
+            &c,
+            "await navigator.mediaDevices.getUserMedia({}); return 'resolved';"
+        )
+        .contains("TypeError"));
+        assert!(run(
+            &c,
+            "await navigator.mediaDevices.getUserMedia(); return 'resolved';"
+        )
+        .contains("TypeError"));
+        let video = run(
+            &c,
+            "await navigator.mediaDevices.getUserMedia({ video: true }); return 'resolved';",
+        );
         assert!(video.contains("NotSupportedError"), "{video}");
     }
 
@@ -2156,7 +2469,10 @@ mod jsc_tests {
     /// `getSettings()` has to report what runs rather than what was asked.
     fn no_agc(req: &ProcessingRequest) -> Option<(Box<dyn CaptureProcessor>, Settings)> {
         assert_eq!(req.rate, 48_000);
-        let s = Settings { auto_gain_control: false, ..req.wanted.clone() };
+        let s = Settings {
+            auto_gain_control: false,
+            ..req.wanted.clone()
+        };
         Some((Box::new(Counting), s))
     }
 
@@ -2182,9 +2498,20 @@ mod jsc_tests {
             out
         };
         let before = PROCESSED.load(Ordering::Relaxed);
-        assert_eq!(settings("true"), "true|true|false|1|true/false", "audio: true is all three asked");
-        assert!(PROCESSED.load(Ordering::Relaxed) > before, "the fake microphone ran through the processor");
-        assert_eq!(settings("{}"), "true|true|false|1|true/false", "unset means on");
+        assert_eq!(
+            settings("true"),
+            "true|true|false|1|true/false",
+            "audio: true is all three asked"
+        );
+        assert!(
+            PROCESSED.load(Ordering::Relaxed) > before,
+            "the fake microphone ran through the processor"
+        );
+        assert_eq!(
+            settings("{}"),
+            "true|true|false|1|true/false",
+            "unset means on"
+        );
         assert_eq!(
             settings("{ echoCancellation: false, noiseSuppression: { ideal: false } }"),
             "false|false|false|1|true/false",
@@ -2221,7 +2548,11 @@ mod jsc_tests {
             ),
             "ok"
         );
-        assert_eq!(fake::open_devices(c.raw()), 1, "the clone keeps the device open");
+        assert_eq!(
+            fake::open_devices(c.raw()),
+            1,
+            "the clone keeps the device open"
+        );
         s(&c, "__b.stop(); 0");
         let mut open = 1;
         for _ in 0..100 {
@@ -2343,7 +2674,10 @@ mod jsc_tests {
              globalThis.__an = __ctx.createAnalyser();
              __src.connect(__an); 0",
         );
-        assert!(!page_plays(&src), "an analyser that leads nowhere does not play it");
+        assert!(
+            !page_plays(&src),
+            "an analyser that leads nowhere does not play it"
+        );
         // ... into a gain the page mutes, then the destination: the page
         // plays it (silently: that is its deafen).
         s(&c, "globalThis.__g = __ctx.createGain(); __g.gain.value = 0; __an.connect(__g); __g.connect(__ctx.destination); 0");
@@ -2356,7 +2690,10 @@ mod jsc_tests {
         // A second, independent source is not mistaken for this one.
         assert!(!page_plays(&remote_source("Remote Carol", 1, 48_000)));
         // Unsubscribed while the graph is alive: `ended`, and no longer played.
-        s(&c, "globalThis.__ended = 0; __rt.addEventListener('ended', () => __ended++); 0");
+        s(
+            &c,
+            "globalThis.__ended = 0; __rt.addEventListener('ended', () => __ended++); 0",
+        );
         src.fail();
         unsafe { pump_locked(&c) };
         ok(&c, "__rt.readyState === 'ended' && __ended === 1");
@@ -2407,9 +2744,15 @@ mod jsc_tests {
     #[test]
     fn a_stream_without_audio_is_an_invalid_state() {
         let c = ctx();
-        let got = run(&c, "new AudioContext().createMediaStreamSource(new MediaStream()); return 'made';");
+        let got = run(
+            &c,
+            "new AudioContext().createMediaStreamSource(new MediaStream()); return 'made';",
+        );
         assert!(got.contains("InvalidStateError"), "{got}");
-        let got = run(&c, "new AudioContext().createMediaStreamSource({}); return 'made';");
+        let got = run(
+            &c,
+            "new AudioContext().createMediaStreamSource({}); return 'made';",
+        );
         assert!(got.contains("TypeError"), "{got}");
     }
 
@@ -2437,7 +2780,9 @@ mod jsc_tests {
             ),
             "true|0"
         );
-        let id: u64 = s(&c, "__rjs_mediaTrackId(__dest.stream.getAudioTracks()[0])").parse().unwrap();
+        let id: u64 = s(&c, "__rjs_mediaTrackId(__dest.stream.getAudioTracks()[0])")
+            .parse()
+            .unwrap();
         let energy = Arc::new(Mutex::new((0usize, 0.0f64)));
         let sink = Arc::clone(&energy);
         let sub = subscribe(
@@ -2491,7 +2836,10 @@ mod jsc_tests {
             "prompting"
         }
         fn status(&self, _: Capability) -> PermissionState {
-            self.decided.lock().unwrap().unwrap_or(PermissionState::Prompt)
+            self.decided
+                .lock()
+                .unwrap()
+                .unwrap_or(PermissionState::Prompt)
         }
         fn request(&self, _: Capability) -> permissions::RequestOutcome {
             self.asked.fetch_add(1, Ordering::SeqCst);
@@ -2503,12 +2851,19 @@ mod jsc_tests {
             permissions::RequestOutcome::Pending(token)
         }
         fn drain_settled(&self) -> Vec<(u32, PermissionState)> {
-            let Some(st) = self.answer.lock().unwrap().take() else { return Vec::new() };
+            let Some(st) = self.answer.lock().unwrap().take() else {
+                return Vec::new();
+            };
             if st != PermissionState::Prompt {
                 *self.decided.lock().unwrap() = Some(st);
             }
             let st = self.status(Capability::Microphone);
-            self.pending.lock().unwrap().drain(..).map(|t| (t, st)).collect()
+            self.pending
+                .lock()
+                .unwrap()
+                .drain(..)
+                .map(|t| (t, st))
+                .collect()
         }
         fn denied_by_system(&self, _: Capability) -> bool {
             false
@@ -2543,7 +2898,11 @@ mod jsc_tests {
             unsafe { pump_locked(&c) };
         }
         ok(&c, "__got.length === 0");
-        assert_eq!(host.asked.load(Ordering::SeqCst), 2, "each call asks; the host shows one prompt");
+        assert_eq!(
+            host.asked.load(Ordering::SeqCst),
+            2,
+            "each call asks; the host shows one prompt"
+        );
         host.answer(PermissionState::Granted);
         for _ in 0..200 {
             unsafe { pump_locked(&c) };
@@ -2552,15 +2911,25 @@ mod jsc_tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert_eq!(s(&c, "__got.join('|')"), "live:Fake Microphone|live:Fake Microphone");
+        assert_eq!(
+            s(&c, "__got.join('|')"),
+            "live:Fake Microphone|live:Fake Microphone"
+        );
         // Granted now: the next call opens without asking, and the inputs have names.
         assert_eq!(
             run(&c, "const ms = await navigator.mediaDevices.getUserMedia({ audio: true }); ms.getTracks()[0].stop(); return 'ok';"),
             "ok"
         );
         assert_eq!(host.asked.load(Ordering::SeqCst), 2);
-        assert!(inputs(&c).starts_with("default/"), "named once granted: {}", inputs(&c));
-        s(&c, "__ms0.getTracks()[0].stop(); __ms1.getTracks()[0].stop(); 0");
+        assert!(
+            inputs(&c).starts_with("default/"),
+            "named once granted: {}",
+            inputs(&c)
+        );
+        s(
+            &c,
+            "__ms0.getTracks()[0].stop(); __ms1.getTracks()[0].stop(); 0",
+        );
         permissions::set_thread_host(None);
     }
 
@@ -2595,13 +2964,26 @@ mod jsc_tests {
         host.answer(PermissionState::Prompt);
         assert_eq!(settle(&c), "NotAllowedError: Permission dismissed");
         ask(&c);
-        assert_eq!(host.asked.load(Ordering::SeqCst), 2, "a dismissal is asked again");
+        assert_eq!(
+            host.asked.load(Ordering::SeqCst),
+            2,
+            "a dismissal is asked again"
+        );
         // Block: stored, and from then on refused at once, without a prompt.
         host.answer(PermissionState::Denied);
         assert_eq!(settle(&c), "NotAllowedError: Permission denied");
-        assert_eq!(run(&c, "await navigator.mediaDevices.getUserMedia({ audio: true }); return 'opened';"),
-                   "ERROR: NotAllowedError: Permission denied");
-        assert_eq!(host.asked.load(Ordering::SeqCst), 2, "a block is never asked again by getUserMedia");
+        assert_eq!(
+            run(
+                &c,
+                "await navigator.mediaDevices.getUserMedia({ audio: true }); return 'opened';"
+            ),
+            "ERROR: NotAllowedError: Permission denied"
+        );
+        assert_eq!(
+            host.asked.load(Ordering::SeqCst),
+            2,
+            "a block is never asked again by getUserMedia"
+        );
         assert_eq!(inputs(&c), "/", "blocked: still anonymous");
         permissions::set_thread_host(None);
     }
@@ -2619,9 +3001,12 @@ mod jsc_tests {
         for _ in 0..20 {
             unsafe { pump_locked(&c) };
         }
-        assert_eq!(fake::open_devices(c.raw()), 0, "the answer opened no device for a page that is gone");
+        assert_eq!(
+            fake::open_devices(c.raw()),
+            0,
+            "the answer opened no device for a page that is gone"
+        );
         ok(&c, "__out === '<pending>'");
         permissions::set_thread_host(None);
     }
 }
-

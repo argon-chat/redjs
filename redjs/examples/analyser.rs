@@ -13,7 +13,14 @@ fn eval(g: *mut core::ffi::c_void, src: &str) -> String {
         let s16: Vec<u16> = src.encode_utf16().collect();
         let url: Vec<u16> = "analyser-probe.js".encode_utf16().collect();
         let mut out = 0u64;
-        let rc = redjs::glue::rjs_eval16(g, s16.as_ptr(), s16.len(), url.as_ptr(), url.len(), &mut out);
+        let rc = redjs::glue::rjs_eval16(
+            g,
+            s16.as_ptr(),
+            s16.len(),
+            url.as_ptr(),
+            url.len(),
+            &mut out,
+        );
         let mut info = redjs::ffi::RjsStr::default();
         let sv = if rc != 0 {
             let (mut m, mut st) = (0u64, 0u64);
@@ -25,9 +32,14 @@ fn eval(g: *mut core::ffi::c_void, src: &str) -> String {
         let msg = if redjs::glue::rjs_string_info(g, sv, &mut info) == 0 {
             if info.is8bit != 0 {
                 core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize)
-                    .iter().map(|&b| b as char).collect()
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect()
             } else {
-                String::from_utf16_lossy(core::slice::from_raw_parts(info.ptr as *const u16, info.len as usize))
+                String::from_utf16_lossy(core::slice::from_raw_parts(
+                    info.ptr as *const u16,
+                    info.len as usize,
+                ))
             }
         } else {
             String::from("<non-string>")
@@ -45,10 +57,24 @@ fn main() {
         let g = redjs::ffi::redjs_context_create();
         assert!(!g.is_null());
         assert_eq!(redjs::ffi::redjs_web_install(g), 0);
-        let root: Vec<u16> = std::env::temp_dir().to_string_lossy().encode_utf16().collect();
-        assert_eq!(redjs::ffi::redjs_webshim_install(g, root.as_ptr(), root.len(), root.as_ptr(), root.len()), 0);
+        let root: Vec<u16> = std::env::temp_dir()
+            .to_string_lossy()
+            .encode_utf16()
+            .collect();
+        assert_eq!(
+            redjs::ffi::redjs_webshim_install(
+                g,
+                root.as_ptr(),
+                root.len(),
+                root.as_ptr(),
+                root.len()
+            ),
+            0
+        );
 
-        eval(g, r#"
+        eval(
+            g,
+            r#"
             globalThis.ac = new AudioContext();
             const rate = ac.sampleRate;
             const buf = ac.createBuffer(1, rate, rate);
@@ -64,7 +90,8 @@ fn main() {
             src.connect(gain); gain.connect(an); an.connect(ac.destination);
             src.start();
             'started, state=' + ac.state
-        "#);
+        "#,
+        );
 
         // Let the stream run so the ring fills.
         for _ in 0..30 {
@@ -72,7 +99,9 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
-        let report = eval(g, r#"
+        let report = eval(
+            g,
+            r#"
             (() => {
                 const n = an.fftSize;
                 const time = new Float32Array(n);
@@ -101,7 +130,8 @@ fn main() {
                     bins: an.frequencyBinCount,
                 });
             })()
-        "#);
+        "#,
+        );
         println!("[analyser] {report}");
 
         // Assertions (skip when no audio device — the clock never advances).
@@ -112,10 +142,27 @@ fn main() {
         }
 
         let v: serde_free::Report = serde_free::parse(&report);
-        assert!(v.peak > 0.2 && v.peak < 0.4, "peak {} out of range (expected ~0.3)", v.peak);
-        assert!(v.rms > 0.15 && v.rms < 0.28, "rms {} out of range (expected ~0.21)", v.rms);
-        assert!((v.dom_hz - 660.0).abs() < 50.0, "dominant bin {} Hz (expected ~660)", v.dom_hz);
-        assert!(v.byte_max > 160 && v.byte_min < 96, "byte time-domain not oscillating: {}..{}", v.byte_min, v.byte_max);
+        assert!(
+            v.peak > 0.2 && v.peak < 0.4,
+            "peak {} out of range (expected ~0.3)",
+            v.peak
+        );
+        assert!(
+            v.rms > 0.15 && v.rms < 0.28,
+            "rms {} out of range (expected ~0.21)",
+            v.rms
+        );
+        assert!(
+            (v.dom_hz - 660.0).abs() < 50.0,
+            "dominant bin {} Hz (expected ~660)",
+            v.dom_hz
+        );
+        assert!(
+            v.byte_max > 160 && v.byte_min < 96,
+            "byte time-domain not oscillating: {}..{}",
+            v.byte_min,
+            v.byte_max
+        );
         println!("[analyser] OK — real time-domain + FFT verified");
     }
 }
@@ -132,7 +179,10 @@ mod serde_free {
 
     fn field(s: &str, name: &str) -> f64 {
         let key = format!("\"{name}\":");
-        let i = s.find(&key).unwrap_or_else(|| panic!("missing {name} in {s}")) + key.len();
+        let i = s
+            .find(&key)
+            .unwrap_or_else(|| panic!("missing {name} in {s}"))
+            + key.len();
         s[i..]
             .trim_start()
             .chars()

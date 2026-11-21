@@ -130,7 +130,11 @@ unsafe fn event_state(g: *mut c_void, this: u64) -> Option<u64> {
     }
     let st = state(g);
     let s = get_a(g, this, st.s_event);
-    if is_cell(s) { Some(s) } else { None }
+    if is_cell(s) {
+        Some(s)
+    } else {
+        None
+    }
 }
 
 /// The event's internal-slot bag, for modules that build Event subclasses.
@@ -144,7 +148,10 @@ macro_rules! event_getter {
         pub unsafe fn $fn_name(g: *mut c_void, cf: *mut c_void) -> u64 {
             match get_in(g, cf_this(cf), state(g).s_event, $field) {
                 Some(v) => v,
-                None => throw_type_error(g, concat!("Event.prototype.", $field, " called on a non-Event")),
+                None => throw_type_error(
+                    g,
+                    concat!("Event.prototype.", $field, " called on a non-Event"),
+                ),
             }
         }
     };
@@ -200,7 +207,10 @@ unsafe fn stop_immediate(g: *mut c_void, cf: *mut c_void) -> u64 {
             define(g, s, "stopImmediate", TRUE, 0);
             UNDEF
         }
-        None => throw_type_error(g, "Event.prototype.stopImmediatePropagation called on a non-Event"),
+        None => throw_type_error(
+            g,
+            "Event.prototype.stopImmediatePropagation called on a non-Event",
+        ),
     }
 }
 
@@ -267,9 +277,14 @@ unsafe fn init_event_legacy(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "Event.prototype.initEvent called on a non-Event");
     };
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to execute 'initEvent' on 'Event': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to execute 'initEvent' on 'Event': 1 argument required, but only 0 present.",
+        );
     }
-    let Ok(ty) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(ty) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     if truthy_flag(get(g, s, "dispatching")) {
         return UNDEF;
     }
@@ -280,8 +295,20 @@ unsafe fn init_event_legacy(g: *mut c_void, cf: *mut c_void) -> u64 {
     define(g, s, "isTrusted", FALSE, 0);
     define(g, s, "target", NULL, 0);
     define(g, s, "type", ty, 0);
-    define(g, s, "bubbles", enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 1)) != 0), 0);
-    define(g, s, "cancelable", enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 2)) != 0), 0);
+    define(
+        g,
+        s,
+        "bubbles",
+        enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 1)) != 0),
+        0,
+    );
+    define(
+        g,
+        s,
+        "cancelable",
+        enc_bool(glue::rjs_to_boolean(g, cf_arg(cf, 2)) != 0),
+        0,
+    );
     UNDEF
 }
 
@@ -296,36 +323,60 @@ impl EventInitRoots {
     unsafe fn new(global: *mut c_void, object: u64, ty: u64, init: u64) -> Self {
         let values = [object, ty, init, UNDEF];
         for value in values {
-            if is_cell(value) { crate::ffi::redjs_protect(global, value); }
+            if is_cell(value) {
+                crate::ffi::redjs_protect(global, value);
+            }
         }
         Self { global, values }
     }
     unsafe fn state(&mut self, value: u64) {
         self.values[3] = value;
-        if is_cell(value) { crate::ffi::redjs_protect(self.global, value); }
+        if is_cell(value) {
+            crate::ffi::redjs_protect(self.global, value);
+        }
     }
 }
 impl Drop for EventInitRoots {
     fn drop(&mut self) {
         for &value in self.values.iter().rev() {
-            if is_cell(value) { unsafe { crate::ffi::redjs_unprotect(self.global, value); } }
+            if is_cell(value) {
+                unsafe {
+                    crate::ffi::redjs_unprotect(self.global, value);
+                }
+            }
         }
     }
 }
 
 /// Shared init for Event/CustomEvent constructors. `this_obj` is the fresh
 /// ordinary object; fills the [[s_event]] slot from (type, initDict).
-pub unsafe fn init_event(g: *mut c_void, this_obj: u64, ty: u64, init: u64, detail_from_init: bool) {
+pub unsafe fn init_event(
+    g: *mut c_void,
+    this_obj: u64,
+    ty: u64,
+    init: u64,
+    detail_from_init: bool,
+) {
     init_event_slots(g, this_obj, ty, init, detail_from_init);
 }
 
 /// [`init_event`], answering the slot bag it attached.
-pub(crate) unsafe fn init_event_slots(g: *mut c_void, this_obj: u64, ty: u64, init: u64, detail_from_init: bool) -> u64 {
+pub(crate) unsafe fn init_event_slots(
+    g: *mut c_void,
+    this_obj: u64,
+    ty: u64,
+    init: u64,
+    detail_from_init: bool,
+) -> u64 {
     let mut roots = EventInitRoots::new(g, this_obj, ty, init);
     let st = state(g);
     let s = new_object(g, UNDEF);
     roots.state(s);
-    let ty = if glue::rjs_kind(g, ty) == 5 { ty } else { js_string(g, &read_string(g, ty).unwrap_or_default()) };
+    let ty = if glue::rjs_kind(g, ty) == 5 {
+        ty
+    } else {
+        js_string(g, &read_string(g, ty).unwrap_or_default())
+    };
 
     const FLAGS: &[&str] = &["bubbles", "cancelable", "composed"];
     const WITH_DETAIL: &[&str] = &["bubbles", "cancelable", "composed", "detail"];
@@ -336,9 +387,23 @@ pub(crate) unsafe fn init_event_slots(g: *mut c_void, this_obj: u64, ty: u64, in
         get_many(g, init, FLAGS, &mut m[..3]);
     }
     const FIELDS: &[&str] = &[
-        "type", "bubbles", "cancelable", "composed", "defaultPrevented", "stopProp", "stopImmediate",
-        "dispatching", "inPassive", "initialized", "phase", "path", "target", "currentTarget",
-        "isTrusted", "timeStamp", "detail",
+        "type",
+        "bubbles",
+        "cancelable",
+        "composed",
+        "defaultPrevented",
+        "stopProp",
+        "stopImmediate",
+        "dispatching",
+        "inPassive",
+        "initialized",
+        "phase",
+        "path",
+        "target",
+        "currentTarget",
+        "isTrusted",
+        "timeStamp",
+        "detail",
     ];
     let vals = [
         ty,
@@ -395,7 +460,12 @@ pub unsafe fn new_trusted_event(g: *mut c_void, ty: &str) -> u64 {
 
 /// A trusted Event with explicit `bubbles` / `cancelable` (IndexedDB's
 /// `error` bubbles and cancels; `DOMContentLoaded` bubbles).
-pub unsafe fn new_trusted_event_with(g: *mut c_void, ty: &str, bubbles: bool, cancelable: bool) -> u64 {
+pub unsafe fn new_trusted_event_with(
+    g: *mut c_void,
+    ty: &str,
+    bubbles: bool,
+    cancelable: bool,
+) -> u64 {
     let st = state(g);
     let obj = new_object(g, st.event.proto);
     init_event(g, obj, js_string(g, ty), UNDEF, false);
@@ -420,13 +490,21 @@ unsafe fn target_this(g: *mut c_void, cf: *mut c_void) -> u64 {
     // window/globalThis is a proxy over the JSGlobalObject; normalize so
     // window.addEventListener and bare addEventListener share one slot.
     let st = state(g);
-    if t == st.global_proxy { glue::rjs_global(g) } else { t }
+    if t == st.global_proxy {
+        glue::rjs_global(g)
+    } else {
+        t
+    }
 }
 
 /// What JS sees for a path node: the global object's proxy (`globalThis`),
 /// never the raw JSGlobalObject the slots are kept on.
 unsafe fn expose(g: *mut c_void, t: u64) -> u64 {
-    if t == glue::rjs_global(g) { state(g).global_proxy } else { t }
+    if t == glue::rjs_global(g) {
+        state(g).global_proxy
+    } else {
+        t
+    }
 }
 
 unsafe fn listeners_of(g: *mut c_void, target: u64, create: bool) -> u64 {
@@ -468,7 +546,13 @@ pub unsafe fn has_listener(g: *mut c_void, target: u64, ty: &str) -> bool {
 /// never mutated, so a clone in flight keeps its entries alive.
 pub unsafe fn remove_entry(g: *mut c_void, target: u64, entry: u64) {
     let st = state(g);
-    glue::rjs_define(g, entry, st.a_flags, enc_i32(entry_flags(g, entry) | L_REMOVED), 0);
+    glue::rjs_define(
+        g,
+        entry,
+        st.a_flags,
+        enc_i32(entry_flags(g, entry) | L_REMOVED),
+        0,
+    );
     let list = listeners_of(g, target, false);
     if !is_cell(list) {
         return;
@@ -498,7 +582,12 @@ struct Flattened {
 /// in WebIDL order — inherited `capture`, then `once`, `passive`, `signal` —
 /// and what a getter throws propagates.
 unsafe fn flatten(g: *mut c_void, options: u64, more: bool, method: &str) -> Result<Flattened, ()> {
-    let mut f = Flattened { capture: false, once: false, passive: None, signal: None };
+    let mut f = Flattened {
+        capture: false,
+        once: false,
+        passive: None,
+        signal: None,
+    };
     if options == UNDEF || options == NULL {
         return Ok(f);
     }
@@ -560,7 +649,8 @@ unsafe fn find_entry(g: *mut c_void, list: u64, ty: u64, cb: u64, capture: bool)
     let st = state(g);
     for i in 0..array_len(g, list) {
         let e = get_i(g, list, i);
-        if entry_flags(g, e) & L_ATTRIBUTE == 0 && get_a(g, e, st.a_cb) == cb
+        if entry_flags(g, e) & L_ATTRIBUTE == 0
+            && get_a(g, e, st.a_cb) == cb
             && ((entry_flags(g, e) & L_CAPTURE) != 0) == capture
             && glue::rjs_strict_equals(g, get_a(g, e, st.a_type), ty) != 0
         {
@@ -572,13 +662,21 @@ unsafe fn find_entry(g: *mut c_void, list: u64, ty: u64, cb: u64, capture: bool)
 
 unsafe fn handler_entry(g: *mut c_void, target: u64, ty: &str) -> u64 {
     let bag = glue::rjs_private_slot(g, target, state(g).s_handler_entries);
-    if bag == UNDEF { UNDEF } else { get(g, bag, ty) }
+    if bag == UNDEF {
+        UNDEF
+    } else {
+        get(g, bag, ty)
+    }
 }
 
 #[cfg(feature = "audio")]
 pub(super) unsafe fn ordered_handler(g: *mut c_void, target: u64, ty: &str) -> u64 {
     let entry = handler_entry(g, target, ty);
-    if entry == UNDEF { NULL } else { get_a(g, entry, state(g).a_cb) }
+    if entry == UNDEF {
+        NULL
+    } else {
+        get_a(g, entry, state(g).a_cb)
+    }
 }
 
 #[cfg(feature = "audio")]
@@ -619,9 +717,15 @@ pub unsafe fn add_event_listener(g: *mut c_void, cf: *mut c_void) -> u64 {
             &format!("Failed to execute 'addEventListener' on 'EventTarget': 2 arguments required, but only {} present.", cf_argc(cf)),
         );
     }
-    let Ok(ty) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
-    let Ok(cb) = callback_arg(g, cf_arg(cf, 1), "addEventListener") else { return UNDEF };
-    let Ok(opts) = flatten(g, cf_arg(cf, 2), true, "addEventListener") else { return UNDEF };
+    let Ok(ty) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let Ok(cb) = callback_arg(g, cf_arg(cf, 1), "addEventListener") else {
+        return UNDEF;
+    };
+    let Ok(opts) = flatten(g, cf_arg(cf, 2), true, "addEventListener") else {
+        return UNDEF;
+    };
     if let Some(sig) = opts.signal {
         if super::abort::is_aborted(g, sig) {
             return UNDEF;
@@ -635,7 +739,9 @@ pub unsafe fn add_event_listener(g: *mut c_void, cf: *mut c_void) -> u64 {
     if find_entry(g, list, ty, cb, opts.capture).is_some() {
         return UNDEF; // DOM: an identical (type, callback, capture) is not added twice
     }
-    let passive = opts.passive.unwrap_or_else(|| default_passive(g, target, &type_str));
+    let passive = opts
+        .passive
+        .unwrap_or_else(|| default_passive(g, target, &type_str));
     let flags = (if opts.once { L_ONCE } else { 0 })
         | (if opts.capture { L_CAPTURE } else { 0 })
         | (if passive { L_PASSIVE } else { 0 });
@@ -659,9 +765,15 @@ pub unsafe fn remove_event_listener(g: *mut c_void, cf: *mut c_void) -> u64 {
             &format!("Failed to execute 'removeEventListener' on 'EventTarget': 2 arguments required, but only {} present.", cf_argc(cf)),
         );
     }
-    let Ok(ty) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
-    let Ok(cb) = callback_arg(g, cf_arg(cf, 1), "removeEventListener") else { return UNDEF };
-    let Ok(opts) = flatten(g, cf_arg(cf, 2), false, "removeEventListener") else { return UNDEF };
+    let Ok(ty) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let Ok(cb) = callback_arg(g, cf_arg(cf, 1), "removeEventListener") else {
+        return UNDEF;
+    };
+    let Ok(opts) = flatten(g, cf_arg(cf, 2), false, "removeEventListener") else {
+        return UNDEF;
+    };
     let Some(cb) = cb else { return UNDEF };
     let list = listeners_of(g, target, false);
     if !is_cell(list) {
@@ -693,7 +805,10 @@ pub struct DispatchOutcome {
 unsafe fn path_for(g: *mut c_void, target: u64, ty: u64) -> Vec<u64> {
     let st = state(g);
     let mut path = vec![target];
-    if target == st.document && is_cell(st.document) && read_string(g, ty).as_deref() != Some("load") {
+    if target == st.document
+        && is_cell(st.document)
+        && read_string(g, ty).as_deref() != Some("load")
+    {
         path.push(glue::rjs_global(g));
     }
     path
@@ -702,7 +817,9 @@ unsafe fn path_for(g: *mut c_void, target: u64, ty: u64) -> Vec<u64> {
 /// Native dispatch at `target` (image load, resize, abort, socket events…):
 /// the path [`path_for`] builds. Returns `!canceled`, as `dispatchEvent` does.
 pub unsafe fn dispatch(g: *mut c_void, target: u64, event: u64) -> bool {
-    let Some(s) = event_state(g, event) else { return true };
+    let Some(s) = event_state(g, event) else {
+        return true;
+    };
     let path = path_for(g, target, get(g, s, "type"));
     !dispatch_path(g, event, &path).canceled
 }
@@ -721,14 +838,24 @@ enum Pass {
 /// every node reachable for the duration (the caller holds them).
 pub unsafe fn dispatch_path(g: *mut c_void, event: u64, path: &[u64]) -> DispatchOutcome {
     let mut out = DispatchOutcome::default();
-    let Some(s) = event_state(g, event) else { return out };
-    let Some(&target) = path.first() else { return out };
+    let Some(s) = event_state(g, event) else {
+        return out;
+    };
+    let Some(&target) = path.first() else {
+        return out;
+    };
 
     let js_path = new_array(g);
     for (i, n) in path.iter().enumerate() {
         set_i(g, js_path, i as u32, expose(g, *n));
     }
-    define_many(g, s, &["dispatching", "target", "path"], &[TRUE, expose(g, target), js_path], 0);
+    define_many(
+        g,
+        s,
+        &["dispatching", "target", "path"],
+        &[TRUE, expose(g, target), js_path],
+        0,
+    );
 
     let mut m = [UNDEF; 2];
     get_many(g, s, &["type", "bubbles"], &mut m);
@@ -738,7 +865,17 @@ pub unsafe fn dispatch_path(g: *mut c_void, event: u64, path: &[u64]) -> Dispatc
 
     for (i, node) in path.iter().enumerate().rev() {
         let phase = if i == 0 { AT_TARGET } else { CAPTURING_PHASE };
-        invoke(g, s, event, *node, phase, ty, &type_str, Pass::Capturing, &mut out);
+        invoke(
+            g,
+            s,
+            event,
+            *node,
+            phase,
+            ty,
+            &type_str,
+            Pass::Capturing,
+            &mut out,
+        );
     }
     for (i, node) in path.iter().enumerate() {
         let phase = if i == 0 {
@@ -748,13 +885,30 @@ pub unsafe fn dispatch_path(g: *mut c_void, event: u64, path: &[u64]) -> Dispatc
         } else {
             continue;
         };
-        invoke(g, s, event, *node, phase, ty, &type_str, Pass::Bubbling, &mut out);
+        invoke(
+            g,
+            s,
+            event,
+            *node,
+            phase,
+            ty,
+            &type_str,
+            Pass::Bubbling,
+            &mut out,
+        );
     }
 
     define_many(
         g,
         s,
-        &["phase", "currentTarget", "path", "dispatching", "stopProp", "stopImmediate"],
+        &[
+            "phase",
+            "currentTarget",
+            "path",
+            "dispatching",
+            "stopProp",
+            "stopImmediate",
+        ],
         &[enc_i32(NONE), NULL, UNDEF, FALSE, FALSE, FALSE],
         0,
     );
@@ -777,7 +931,13 @@ unsafe fn invoke(
 ) {
     let st = state(g);
     let this = expose(g, node);
-    define_many(g, s, &["phase", "currentTarget"], &[enc_i32(phase), this], 0);
+    define_many(
+        g,
+        s,
+        &["phase", "currentTarget"],
+        &[enc_i32(phase), this],
+        0,
+    );
     if truthy_flag(get(g, s, "stopProp")) {
         return;
     }
@@ -797,7 +957,9 @@ unsafe fn invoke(
             get_many_atoms(g, e, &[st.a_flags, st.a_type, st.a_cb], &mut f);
             let [flags, entry_ty, cb] = f;
             let flags = dec_f64(flags).unwrap_or(0.0) as i32;
-            if flags & L_REMOVED != 0 || (entry_ty != ty && glue::rjs_strict_equals(g, entry_ty, ty) == 0) {
+            if flags & L_REMOVED != 0
+                || (entry_ty != ty && glue::rjs_strict_equals(g, entry_ty, ty) == 0)
+            {
                 continue;
             }
             let capture = flags & L_CAPTURE != 0;
@@ -862,7 +1024,9 @@ unsafe fn call_listener(g: *mut c_void, cb: u64, this: u64, event: u64) -> Resul
         return Err(he);
     }
     if !is_callable(g, he) {
-        let m: Vec<u16> = "The listener's handleEvent is not a function".encode_utf16().collect();
+        let m: Vec<u16> = "The listener's handleEvent is not a function"
+            .encode_utf16()
+            .collect();
         let mut err = UNDEF;
         glue::rjs_error_create(g, 1, m.as_ptr(), m.len(), &mut err);
         return Err(err);
@@ -915,65 +1079,79 @@ unsafe fn event_target_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn install(g: *mut c_void) -> (Class, Class, Class) {
-    let event = define_class(g, &ClassSpec {
-        name: "Event",
-        arity: 1,
-        construct: Some(event_construct),
-        parent_proto: 0,
-        methods: &[
-            ("preventDefault", 0, prevent_default),
-            ("stopPropagation", 0, stop_propagation),
-            ("stopImmediatePropagation", 0, stop_immediate),
-            ("composedPath", 0, composed_path),
-            ("initEvent", 1, init_event_legacy),
-        ],
-        getters: &[
-            ("type", get_type),
-            ("bubbles", get_bubbles),
-            ("cancelable", get_cancelable),
-            ("composed", get_composed),
-            ("defaultPrevented", get_default_prevented),
-            ("target", get_target),
-            ("currentTarget", get_current_target),
-            ("srcElement", get_target),
-            ("timeStamp", get_time_stamp),
-            ("isTrusted", get_is_trusted),
-            ("eventPhase", get_event_phase),
-        ],
-        accessors: &[
-            ("cancelBubble", get_cancel_bubble, set_cancel_bubble),
-            ("returnValue", get_return_value, set_return_value),
-        ],
-    });
-    for (name, v) in [("NONE", NONE), ("CAPTURING_PHASE", CAPTURING_PHASE), ("AT_TARGET", AT_TARGET), ("BUBBLING_PHASE", BUBBLING_PHASE)] {
+    let event = define_class(
+        g,
+        &ClassSpec {
+            name: "Event",
+            arity: 1,
+            construct: Some(event_construct),
+            parent_proto: 0,
+            methods: &[
+                ("preventDefault", 0, prevent_default),
+                ("stopPropagation", 0, stop_propagation),
+                ("stopImmediatePropagation", 0, stop_immediate),
+                ("composedPath", 0, composed_path),
+                ("initEvent", 1, init_event_legacy),
+            ],
+            getters: &[
+                ("type", get_type),
+                ("bubbles", get_bubbles),
+                ("cancelable", get_cancelable),
+                ("composed", get_composed),
+                ("defaultPrevented", get_default_prevented),
+                ("target", get_target),
+                ("currentTarget", get_current_target),
+                ("srcElement", get_target),
+                ("timeStamp", get_time_stamp),
+                ("isTrusted", get_is_trusted),
+                ("eventPhase", get_event_phase),
+            ],
+            accessors: &[
+                ("cancelBubble", get_cancel_bubble, set_cancel_bubble),
+                ("returnValue", get_return_value, set_return_value),
+            ],
+        },
+    );
+    for (name, v) in [
+        ("NONE", NONE),
+        ("CAPTURING_PHASE", CAPTURING_PHASE),
+        ("AT_TARGET", AT_TARGET),
+        ("BUBBLING_PHASE", BUBBLING_PHASE),
+    ] {
         // WebIDL constants: { writable: false, enumerable: true, configurable: false }.
         define(g, event.ctor, name, enc_i32(v), 1 | 4);
         define(g, event.proto, name, enc_i32(v), 1 | 4);
     }
 
-    let custom_event = define_class(g, &ClassSpec {
-        name: "CustomEvent",
-        arity: 1,
-        construct: Some(custom_event_construct),
-        parent_proto: event.proto,
-        methods: &[],
-        getters: &[("detail", get_detail)],
-        accessors: &[],
-    });
+    let custom_event = define_class(
+        g,
+        &ClassSpec {
+            name: "CustomEvent",
+            arity: 1,
+            construct: Some(custom_event_construct),
+            parent_proto: event.proto,
+            methods: &[],
+            getters: &[("detail", get_detail)],
+            accessors: &[],
+        },
+    );
 
-    let event_target = define_class(g, &ClassSpec {
-        name: "EventTarget",
-        arity: 0,
-        construct: Some(event_target_construct),
-        parent_proto: 0,
-        methods: &[
-            ("addEventListener", 2, add_event_listener),
-            ("removeEventListener", 2, remove_event_listener),
-            ("dispatchEvent", 1, dispatch_event),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    let event_target = define_class(
+        g,
+        &ClassSpec {
+            name: "EventTarget",
+            arity: 0,
+            construct: Some(event_target_construct),
+            parent_proto: 0,
+            methods: &[
+                ("addEventListener", 2, add_event_listener),
+                ("removeEventListener", 2, remove_event_listener),
+                ("dispatchEvent", 1, dispatch_event),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
     (event, custom_event, event_target)
 }
@@ -992,9 +1170,12 @@ mod tests {
     #[test]
     fn constructor_state_survives_gc_and_reentry_in_init_getters() {
         let c = ctx();
-        let collect = unsafe { c.function_sysv("__eventInitGc", 0, force_init_gc as *const c_void) }.unwrap();
+        let collect =
+            unsafe { c.function_sysv("__eventInitGc", 0, force_init_gc as *const c_void) }.unwrap();
         c.global_set("__eventInitGc", collect).unwrap();
-        ok(&c, r#"(() => {
+        ok(
+            &c,
+            r#"(() => {
             for (let index = 0; index < 12; index++) {
                 const type = 'event-' + index + '-' + Array.from({length: 512}, (_, i) => i).join('x');
                 const seen = [];
@@ -1023,7 +1204,8 @@ mod tests {
                 if (target.dispatchEvent(custom) !== false || !dispatched || !custom.defaultPrevented || custom.currentTarget !== null || custom.eventPhase !== 0) return false;
             }
             return true;
-        })()"#);
+        })()"#,
+        );
     }
 
     #[test]
@@ -1046,10 +1228,20 @@ mod tests {
         let g = c.raw();
         let out = unsafe {
             let global = glue::rjs_global(g);
-            let path = [get(g, global, "req"), get(g, global, "tx"), get(g, global, "db")];
+            let path = [
+                get(g, global, "req"),
+                get(g, global, "tx"),
+                get(g, global, "db"),
+            ];
             dispatch_path(g, get(g, global, "ev"), &path)
         };
-        assert_eq!(out, DispatchOutcome { canceled: false, listener_threw: false });
+        assert_eq!(
+            out,
+            DispatchOutcome {
+                canceled: false,
+                listener_threw: false
+            }
+        );
         assert_eq!(
             s(&c, "log.join(' ')"),
             "db:cap:1:true:true tx:cap:1:true:true req:cap:2:true:true req:bub:2:true:true \
@@ -1074,7 +1266,11 @@ mod tests {
         let g = c.raw();
         unsafe {
             let global = glue::rjs_global(g);
-            dispatch_path(g, get(g, global, "ev"), &[get(g, global, "a"), get(g, global, "b")]);
+            dispatch_path(
+                g,
+                get(g, global, "ev"),
+                &[get(g, global, "a"), get(g, global, "b")],
+            );
         }
         assert_eq!(s(&c, "log.join()"), "b-cap,a");
     }
@@ -1094,7 +1290,11 @@ mod tests {
         let g = c.raw();
         unsafe {
             let global = glue::rjs_global(g);
-            dispatch_path(g, get(g, global, "ev"), &[get(g, global, "a"), get(g, global, "b")]);
+            dispatch_path(
+                g,
+                get(g, global, "ev"),
+                &[get(g, global, "a"), get(g, global, "b")],
+            );
         }
         // stopPropagation lets the rest of THIS node run, nothing after it.
         assert_eq!(s(&c, "log.join()"), "b-cap,true,b-cap2");
@@ -1168,7 +1368,10 @@ mod tests {
                t.dispatchEvent(new Event('x'));
                return n === 1; })()",
         );
-        let m = throws(&c, "new EventTarget().addEventListener('x', () => {}, { signal: {} })");
+        let m = throws(
+            &c,
+            "new EventTarget().addEventListener('x', () => {}, { signal: {} })",
+        );
         assert!(m.contains("AbortSignal"), "{m}");
         // Option getters run in WebIDL order.
         ok(
@@ -1192,7 +1395,10 @@ mod tests {
         );
         let m = throws(&c, "new EventTarget().addEventListener('x', 5)");
         assert!(m.contains("not of type 'Object'"), "{m}");
-        ok(&c, "new EventTarget().addEventListener('x', null) === undefined");
+        ok(
+            &c,
+            "new EventTarget().addEventListener('x', null) === undefined",
+        );
         let m = throws(&c, "new EventTarget().dispatchEvent({})");
         assert!(m.contains("not of type 'Event'"), "{m}");
     }
@@ -1262,7 +1468,10 @@ mod tests {
         }
         assert_eq!(s(&c, "log.join()"), "l1,micro,l2");
         // From script: microtasks wait for the script to finish.
-        assert_eq!(s(&c, "log = []; t.dispatchEvent(new Event('x')); log.join()"), "l1,l2");
+        assert_eq!(
+            s(&c, "log = []; t.dispatchEvent(new Event('x')); log.join()"),
+            "l1,l2"
+        );
     }
 
     #[test]
@@ -1283,7 +1492,10 @@ mod tests {
     #[test]
     fn legacy_members_and_constants() {
         let c = ctx();
-        ok(&c, "Event.AT_TARGET === 2 && Event.prototype.BUBBLING_PHASE === 3 && Event.NONE === 0");
+        ok(
+            &c,
+            "Event.AT_TARGET === 2 && Event.prototype.BUBBLING_PHASE === 3 && Event.NONE === 0",
+        );
         ok(
             &c,
             "(() => { const e = new Event('a'); e.initEvent('b', true, true);

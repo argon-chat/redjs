@@ -52,7 +52,8 @@ unsafe fn run_actions(cx: Env, t: u64) {
     let reason = cx.field(t, "reason");
     let mut actions = [None, None];
     if cx.field(t, "abort") == TRUE
-        && (writable::status(cx, w) == WritableState::Writable || cx.field(t, "sourceError") == TRUE)
+        && (writable::status(cx, w) == WritableState::Writable
+            || cx.field(t, "sourceError") == TRUE)
     {
         actions[0] = Some(writable::abort_stream(cx, w, reason));
     } else if cx.field(t, "close") == TRUE {

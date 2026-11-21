@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 use redjs::webapi::cookies::Credentials;
 use redjs::webapi::http::cache::{self, CacheMode, Config, Outcome, Sealer};
-use redjs::webapi::http::{send, Cancel, Observe, Observer, ProgressHead, Redirect, Request, Response};
+use redjs::webapi::http::{
+    send, Cancel, Observe, Observer, ProgressHead, Redirect, Request, Response,
+};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -47,10 +49,20 @@ impl Server {
         self.log.lock().unwrap().len()
     }
     fn last(&self) -> Seen {
-        self.log.lock().unwrap().last().cloned().expect("the server saw a request")
+        self.log
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("the server saw a request")
     }
     fn hits(&self, path: &str) -> usize {
-        self.log.lock().unwrap().iter().filter(|s| s.path == path).count()
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.path == path)
+            .count()
     }
 }
 
@@ -102,7 +114,10 @@ fn connection(mut sock: TcpStream, log: &Mutex<Vec<Seen>>, handler: &dyn Fn(&See
             .filter_map(|l| l.split_once(':'))
             .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
             .collect();
-        let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let len: usize = headers
+            .get("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         while buf.len() < len {
             match sock.read(&mut chunk) {
                 Ok(0) | Err(_) => return,
@@ -110,7 +125,11 @@ fn connection(mut sock: TcpStream, log: &Mutex<Vec<Seen>>, handler: &dyn Fn(&See
             }
         }
         buf.drain(..len);
-        let seen = Seen { method, path, headers };
+        let seen = Seen {
+            method,
+            path,
+            headers,
+        };
         log.lock().unwrap().push(seen.clone());
         if sock.write_all(&handler(&seen)).is_err() {
             return;
@@ -143,7 +162,12 @@ impl Installed {
         Installed::at(dir, max_bytes, sealer)
     }
     fn at(dir: PathBuf, max_bytes: u64, sealer: Option<Arc<dyn Sealer>>) -> Installed {
-        cache::install(Config { dir: dir.clone(), max_bytes, sealer }).expect("install");
+        cache::install(Config {
+            dir: dir.clone(),
+            max_bytes,
+            sealer,
+        })
+        .expect("install");
         Installed(dir)
     }
 }
@@ -159,7 +183,10 @@ fn request(method: &str, url: &str, headers: &[(&str, &str)], mode: CacheMode) -
     Request {
         method: method.into(),
         url: url.into(),
-        headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        headers: headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
         body: (method == "POST").then(|| b"x".to_vec()),
         redirect: Redirect::Follow,
         credentials: Credentials::Omit,
@@ -175,14 +202,18 @@ fn get(url: &str) -> Response {
 }
 
 fn go(r: Request) -> Response {
-    let resp = send(&r, &Cancel::default()).unwrap_or_else(|e| panic!("{} {}: {}", r.method, r.url, e.message));
+    let resp = send(&r, &Cancel::default())
+        .unwrap_or_else(|e| panic!("{} {}: {}", r.method, r.url, e.message));
     // Writes are the writer thread's; the next lookup must see this one.
     cache::flush();
     resp
 }
 
 fn hdr<'a>(r: &'a Response, name: &str) -> Option<&'a str> {
-    r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    r.headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
 }
 
 const MB: u64 = 1 << 20;
@@ -196,15 +227,37 @@ fn a_fresh_answer_is_served_from_disk_without_its_cookie() {
     let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let _c = Installed::new(64 * MB, None);
     let srv = serve(|_| {
-        reply("200 OK", &[("cache-control", "max-age=60"), ("content-type", "text/plain"), ("set-cookie", "a=1")], b"hello")
+        reply(
+            "200 OK",
+            &[
+                ("cache-control", "max-age=60"),
+                ("content-type", "text/plain"),
+                ("set-cookie", "a=1"),
+            ],
+            b"hello",
+        )
     });
     let a = get(&srv.url("/a"));
-    assert_eq!((a.status, a.cache, a.body.as_slice()), (200, Outcome::Stored, &b"hello"[..]));
+    assert_eq!(
+        (a.status, a.cache, a.body.as_slice()),
+        (200, Outcome::Stored, &b"hello"[..])
+    );
     let b = get(&srv.url("/a"));
-    assert_eq!((b.status, b.cache, b.body.as_slice()), (200, Outcome::Hit, &b"hello"[..]));
-    assert_eq!(srv.count(), 1, "the second request never reached the server");
+    assert_eq!(
+        (b.status, b.cache, b.body.as_slice()),
+        (200, Outcome::Hit, &b"hello"[..])
+    );
+    assert_eq!(
+        srv.count(),
+        1,
+        "the second request never reached the server"
+    );
     assert_eq!(hdr(&b, "content-type"), Some("text/plain"));
-    assert_eq!(hdr(&b, "set-cookie"), None, "a cached answer never sets a cookie again");
+    assert_eq!(
+        hdr(&b, "set-cookie"),
+        None,
+        "a cached answer never sets a cookie again"
+    );
     assert_eq!((b.protocol, b.connection_id, b.remote_addr), ("", 0, None));
     // A fragment is not part of the key.
     assert_eq!(get(&srv.url("/a#x")).cache, Outcome::Hit);
@@ -220,16 +273,37 @@ fn each_redirect_hop_is_cached_on_its_own_terms() {
     let srv = serve(|s| {
         if s.path.starts_with("/files/") {
             let loc = s.path.replace("/files/", "/cdn/");
-            reply("302 Found", &[("location", &loc), ("cache-control", "private, max-age=300")], b"")
+            reply(
+                "302 Found",
+                &[
+                    ("location", &loc),
+                    ("cache-control", "private, max-age=300"),
+                ],
+                b"",
+            )
         } else {
-            reply("200 OK", &[("cache-control", "max-age=2592000"), ("etag", "\"v1\""), ("content-type", "image/png")], b"PNG")
+            reply(
+                "200 OK",
+                &[
+                    ("cache-control", "max-age=2592000"),
+                    ("etag", "\"v1\""),
+                    ("content-type", "image/png"),
+                ],
+                b"PNG",
+            )
         }
     });
     let a = get(&srv.url("/files/1"));
-    assert_eq!((a.status, a.redirected, a.cache), (200, true, Outcome::Stored));
+    assert_eq!(
+        (a.status, a.redirected, a.cache),
+        (200, true, Outcome::Stored)
+    );
     assert_eq!(srv.count(), 2);
     let b = get(&srv.url("/files/1"));
-    assert_eq!((b.status, b.redirected, b.cache, b.body.as_slice()), (200, true, Outcome::Hit, &b"PNG"[..]));
+    assert_eq!(
+        (b.status, b.redirected, b.cache, b.body.as_slice()),
+        (200, true, Outcome::Hit, &b"PNG"[..])
+    );
     assert_eq!(b.url, srv.url("/cdn/1"));
     assert_eq!(srv.count(), 2, "neither hop went out again");
     // The CDN URL on its own is a hit too: it is the same entry.
@@ -242,21 +316,48 @@ fn a_stale_entry_is_revalidated_and_a_304_merges_its_headers() {
     let _c = Installed::new(64 * MB, None);
     let srv = serve(|s| {
         if s.headers.get("if-none-match").map(String::as_str) == Some("\"v1\"") {
-            reply("304 Not Modified", &[("cache-control", "no-cache"), ("x-round", "2"), ("content-type", "text/html")], b"")
+            reply(
+                "304 Not Modified",
+                &[
+                    ("cache-control", "no-cache"),
+                    ("x-round", "2"),
+                    ("content-type", "text/html"),
+                ],
+                b"",
+            )
         } else {
             reply(
                 "200 OK",
-                &[("cache-control", "no-cache"), ("etag", "\"v1\""), ("x-round", "1"), ("content-type", "text/plain")],
+                &[
+                    ("cache-control", "no-cache"),
+                    ("etag", "\"v1\""),
+                    ("x-round", "1"),
+                    ("content-type", "text/plain"),
+                ],
                 b"body-v1",
             )
         }
     });
     assert_eq!(get(&srv.url("/v")).cache, Outcome::Stored);
     let b = get(&srv.url("/v"));
-    assert_eq!((b.status, b.cache, b.body.as_slice()), (200, Outcome::Revalidated, &b"body-v1"[..]));
-    assert_eq!(srv.last().headers.get("if-none-match").map(String::as_str), Some("\"v1\""));
-    assert_eq!(hdr(&b, "x-round"), Some("2"), "the 304's headers replace the stored ones");
-    assert_eq!(hdr(&b, "content-type"), Some("text/plain"), "but never the ones that describe the body");
+    assert_eq!(
+        (b.status, b.cache, b.body.as_slice()),
+        (200, Outcome::Revalidated, &b"body-v1"[..])
+    );
+    assert_eq!(
+        srv.last().headers.get("if-none-match").map(String::as_str),
+        Some("\"v1\"")
+    );
+    assert_eq!(
+        hdr(&b, "x-round"),
+        Some("2"),
+        "the 304's headers replace the stored ones"
+    );
+    assert_eq!(
+        hdr(&b, "content-type"),
+        Some("text/plain"),
+        "but never the ones that describe the body"
+    );
     assert!(b.connection_id > 0, "a revalidation used a connection");
     assert_eq!(cache::stats().unwrap().revalidated, 1);
 }
@@ -269,21 +370,34 @@ fn the_fetch_cache_modes() {
         if s.headers.contains_key("if-none-match") {
             reply("304 Not Modified", &[], b"")
         } else {
-            reply("200 OK", &[("cache-control", "max-age=0"), ("etag", "\"e\"")], b"m")
+            reply(
+                "200 OK",
+                &[("cache-control", "max-age=0"), ("etag", "\"e\"")],
+                b"m",
+            )
         }
     });
     let u = srv.url("/m");
     let mode = |m: CacheMode| go(request("GET", &u, &[], m));
 
     // only-if-cached on a miss: an error, and nothing was sent.
-    let miss = send(&request("GET", &u, &[], CacheMode::OnlyIfCached), &Cancel::default());
+    let miss = send(
+        &request("GET", &u, &[], CacheMode::OnlyIfCached),
+        &Cancel::default(),
+    );
     assert!(miss.is_err());
     assert_eq!(srv.count(), 0);
 
     // no-store: neither looked up nor stored, and says so on the wire.
     assert_eq!(mode(CacheMode::NoStore).cache, Outcome::Off);
-    assert_eq!(srv.last().headers.get("cache-control").map(String::as_str), Some("no-cache"));
-    assert_eq!(srv.last().headers.get("pragma").map(String::as_str), Some("no-cache"));
+    assert_eq!(
+        srv.last().headers.get("cache-control").map(String::as_str),
+        Some("no-cache")
+    );
+    assert_eq!(
+        srv.last().headers.get("pragma").map(String::as_str),
+        Some("no-cache")
+    );
     assert_eq!(cache::stats().unwrap().entries, 0);
 
     // reload: not looked up, but stored.
@@ -300,12 +414,23 @@ fn the_fetch_cache_modes() {
     // no-cache: always conditional, with Fetch's max-age=0.
     assert_eq!(mode(CacheMode::NoCache).cache, Outcome::Revalidated);
     let last = srv.last();
-    assert_eq!(last.headers.get("cache-control").map(String::as_str), Some("max-age=0"));
-    assert_eq!(last.headers.get("if-none-match").map(String::as_str), Some("\"e\""));
+    assert_eq!(
+        last.headers.get("cache-control").map(String::as_str),
+        Some("max-age=0")
+    );
+    assert_eq!(
+        last.headers.get("if-none-match").map(String::as_str),
+        Some("\"e\"")
+    );
     assert_eq!(srv.count(), 4);
 
     // The script's own conditional request is passed through untouched: its 304 is the answer.
-    let own = go(request("GET", &u, &[("if-none-match", "\"e\"")], CacheMode::Default));
+    let own = go(request(
+        "GET",
+        &u,
+        &[("if-none-match", "\"e\"")],
+        CacheMode::Default,
+    ));
     assert_eq!((own.status, own.cache), (304, Outcome::Off));
 }
 
@@ -314,15 +439,33 @@ fn vary_selects_and_a_mismatch_goes_to_the_network() {
     let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let _c = Installed::new(64 * MB, None);
     let srv = serve(|s| {
-        let lang = s.headers.get("accept-language").cloned().unwrap_or_default();
-        reply("200 OK", &[("cache-control", "max-age=60"), ("vary", "Accept-Language")], lang.as_bytes())
+        let lang = s
+            .headers
+            .get("accept-language")
+            .cloned()
+            .unwrap_or_default();
+        reply(
+            "200 OK",
+            &[("cache-control", "max-age=60"), ("vary", "Accept-Language")],
+            lang.as_bytes(),
+        )
     });
     let u = srv.url("/vary");
-    let with = |l: &str| go(request("GET", &u, &[("accept-language", l)], CacheMode::Default));
+    let with = |l: &str| {
+        go(request(
+            "GET",
+            &u,
+            &[("accept-language", l)],
+            CacheMode::Default,
+        ))
+    };
     assert_eq!(with("ru").cache, Outcome::Stored);
     assert_eq!(with("ru").cache, Outcome::Hit);
     let en = with("en");
-    assert_eq!((en.cache, en.body.as_slice()), (Outcome::Stored, &b"en"[..]));
+    assert_eq!(
+        (en.cache, en.body.as_slice()),
+        (Outcome::Stored, &b"en"[..])
+    );
     assert_eq!(srv.count(), 2);
 }
 
@@ -332,7 +475,11 @@ fn unsafe_methods_invalidate_and_ranges_bypass() {
     let _c = Installed::new(64 * MB, None);
     let srv = serve(|s| match s.method.as_str() {
         "POST" => reply("200 OK", &[], b"posted"),
-        _ if s.headers.contains_key("range") => reply("206 Partial Content", &[("content-range", "bytes 0-0/5")], b"h"),
+        _ if s.headers.contains_key("range") => reply(
+            "206 Partial Content",
+            &[("content-range", "bytes 0-0/5")],
+            b"h",
+        ),
         _ => reply("200 OK", &[("cache-control", "max-age=60")], b"hello"),
     });
     let u = srv.url("/p");
@@ -340,10 +487,23 @@ fn unsafe_methods_invalidate_and_ranges_bypass() {
     assert_eq!(get(&u).cache, Outcome::Hit);
     let post = go(request("POST", &u, &[], CacheMode::Default));
     assert_eq!((post.status, post.cache), (200, Outcome::Off));
-    assert_eq!(get(&u).cache, Outcome::Stored, "the POST made the entry stale");
-    let ranged = go(request("GET", &u, &[("range", "bytes=0-0")], CacheMode::Default));
+    assert_eq!(
+        get(&u).cache,
+        Outcome::Stored,
+        "the POST made the entry stale"
+    );
+    let ranged = go(request(
+        "GET",
+        &u,
+        &[("range", "bytes=0-0")],
+        CacheMode::Default,
+    ));
     assert_eq!((ranged.status, ranged.cache), (206, Outcome::Off));
-    assert_eq!(get(&u).cache, Outcome::Hit, "a Range request neither stored nor dropped anything");
+    assert_eq!(
+        get(&u).cache,
+        Outcome::Hit,
+        "a Range request neither stored nor dropped anything"
+    );
     assert_eq!(srv.hits("/p"), 4);
 }
 
@@ -351,7 +511,13 @@ fn unsafe_methods_invalidate_and_ranges_bypass() {
 fn stale_while_revalidate_answers_at_once_and_refreshes_behind() {
     let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let _c = Installed::new(64 * MB, None);
-    let srv = serve(|_| reply("200 OK", &[("cache-control", "max-age=0, stale-while-revalidate=60")], b"swr"));
+    let srv = serve(|_| {
+        reply(
+            "200 OK",
+            &[("cache-control", "max-age=0, stale-while-revalidate=60")],
+            b"swr",
+        )
+    });
     let u = srv.url("/swr");
     assert_eq!(get(&u).cache, Outcome::Stored);
     let b = get(&u);
@@ -367,7 +533,13 @@ fn stale_while_revalidate_answers_at_once_and_refreshes_behind() {
 fn entries_survive_a_restart_and_the_cap_evicts_the_least_recently_used() {
     let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let dir = fresh_dir();
-    let srv = serve(|_| reply("200 OK", &[("cache-control", "max-age=600")], &[7u8; 10_000]));
+    let srv = serve(|_| {
+        reply(
+            "200 OK",
+            &[("cache-control", "max-age=600")],
+            &[7u8; 10_000],
+        )
+    });
     {
         let _c = Installed::at(dir.clone(), 64 * MB, None);
         assert_eq!(get(&srv.url("/keep")).cache, Outcome::Stored);
@@ -376,7 +548,11 @@ fn entries_survive_a_restart_and_the_cap_evicts_the_least_recently_used() {
         std::mem::forget(_c);
     }
     let c = Installed::at(dir.clone(), 64 * MB, None);
-    assert_eq!(get(&srv.url("/keep")).cache, Outcome::Hit, "the entry outlived its process' cache");
+    assert_eq!(
+        get(&srv.url("/keep")).cache,
+        Outcome::Hit,
+        "the entry outlived its process' cache"
+    );
     assert_eq!(srv.count(), 1);
     drop(c);
 
@@ -415,14 +591,28 @@ impl Sealer for Xor {
 fn a_sealed_cache_writes_no_plaintext_and_a_new_mode_purges() {
     let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let dir = fresh_dir();
-    let srv = serve(|_| reply("200 OK", &[("cache-control", "max-age=600")], b"PLAINTEXT-MARKER"));
+    let srv = serve(|_| {
+        reply(
+            "200 OK",
+            &[("cache-control", "max-age=600")],
+            b"PLAINTEXT-MARKER",
+        )
+    });
     let c = Installed::at(dir.clone(), 64 * MB, Some(Arc::new(Xor(0x5a))));
     assert_eq!(get(&srv.url("/secret")).cache, Outcome::Stored);
     assert_eq!(get(&srv.url("/secret")).cache, Outcome::Hit);
     for ent in std::fs::read_dir(&dir).unwrap().flatten() {
         let bytes = std::fs::read(ent.path()).unwrap();
-        assert!(!bytes.windows(16).any(|w| w == b"PLAINTEXT-MARKER"), "{:?}", ent.path());
-        assert!(!bytes.windows(7).any(|w| w == b"/secret"), "{:?}", ent.path());
+        assert!(
+            !bytes.windows(16).any(|w| w == b"PLAINTEXT-MARKER"),
+            "{:?}",
+            ent.path()
+        );
+        assert!(
+            !bytes.windows(7).any(|w| w == b"/secret"),
+            "{:?}",
+            ent.path()
+        );
     }
     cache::uninstall();
     std::mem::forget(c);
@@ -447,7 +637,10 @@ fn a_damaged_entry_is_dropped_not_served() {
         }
     }
     let r = get(&srv.url("/d"));
-    assert_eq!((r.cache, r.body.as_slice()), (Outcome::Stored, &b"good"[..]));
+    assert_eq!(
+        (r.cache, r.body.as_slice()),
+        (Outcome::Stored, &b"good"[..])
+    );
     assert_eq!(cache::stats().unwrap().errors, 1);
     assert_eq!(srv.count(), 2);
 }
@@ -466,12 +659,25 @@ fn a_second_instance_reads_but_never_writes() {
         std::mem::forget(c);
     }
     // "The other instance": the lock, held the way the cache holds it.
-    let held = std::fs::OpenOptions::new().read(true).write(true).share_mode(1).open(dir.join("lock")).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(1)
+        .open(dir.join("lock"))
+        .unwrap();
     let _c = Installed::at(dir.clone(), 64 * MB, None);
     assert!(!cache::stats().unwrap().writable);
-    assert_eq!(get(&srv.url("/s")).cache, Outcome::Hit, "it serves what the owner stored");
+    assert_eq!(
+        get(&srv.url("/s")).cache,
+        Outcome::Hit,
+        "it serves what the owner stored"
+    );
     assert_eq!(get(&srv.url("/t")).cache, Outcome::Miss);
-    assert_eq!(get(&srv.url("/t")).cache, Outcome::Miss, "…but stores nothing itself");
+    assert_eq!(
+        get(&srv.url("/t")).cache,
+        Outcome::Miss,
+        "…but stores nothing itself"
+    );
     assert!(cache::clear().is_err());
     drop(held);
 }
@@ -502,7 +708,11 @@ fn an_observer_sees_a_cached_answer_as_it_would_the_network() {
         } else if s.path == "/o/fresh" {
             reply("200 OK", &[("cache-control", "max-age=600")], b"12345")
         } else {
-            reply("200 OK", &[("cache-control", "no-cache"), ("etag", "\"o\"")], b"123")
+            reply(
+                "200 OK",
+                &[("cache-control", "no-cache"), ("etag", "\"o\"")],
+                b"123",
+            )
         }
     });
     let observed = |path: &str| {
@@ -529,7 +739,16 @@ fn a_content_coded_answer_is_served_decoded() {
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     gz.write_all(text.as_bytes()).unwrap();
     let coded = gz.finish().unwrap();
-    let srv = serve(move |_| reply("200 OK", &[("cache-control", "max-age=600"), ("content-encoding", "gzip")], &coded));
+    let srv = serve(move |_| {
+        reply(
+            "200 OK",
+            &[
+                ("cache-control", "max-age=600"),
+                ("content-encoding", "gzip"),
+            ],
+            &coded,
+        )
+    });
     let a = get(&srv.url("/gz"));
     let b = get(&srv.url("/gz"));
     assert_eq!((a.cache, b.cache), (Outcome::Stored, Outcome::Hit));
@@ -583,7 +802,11 @@ fn the_owner_opens_only_the_entries_it_lists() {
     for p in entries(&donor) {
         std::fs::copy(&p, c.0.join(p.file_name().unwrap())).unwrap();
     }
-    assert_eq!(get(&srv.url("/l")).cache, Outcome::Stored, "the unlisted file was not read");
+    assert_eq!(
+        get(&srv.url("/l")).cache,
+        Outcome::Stored,
+        "the unlisted file was not read"
+    );
     assert_eq!(srv.count(), 2);
     assert_eq!(get(&srv.url("/l")).cache, Outcome::Hit);
     for p in entries(&c.0) {
@@ -591,6 +814,10 @@ fn the_owner_opens_only_the_entries_it_lists() {
     }
     assert_eq!(get(&srv.url("/l")).cache, Outcome::Stored);
     assert_eq!(srv.count(), 3);
-    assert_eq!(cache::stats().unwrap().errors, 0, "a missing file is a miss, not damage");
+    assert_eq!(
+        cache::stats().unwrap().errors,
+        0,
+        "a missing file is a miss, not damage"
+    );
     let _ = std::fs::remove_dir_all(&donor);
 }

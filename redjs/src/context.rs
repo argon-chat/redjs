@@ -108,7 +108,13 @@ unsafe fn adopt(g: *mut c_void) -> ContextId {
     // ReadOnly | DontEnum | DontDelete — and a private name on top, so neither
     // enumeration nor any script can see it.
     glue::rjs_define(g, glue::rjs_global(g), mark, enc_id(id), 1 | 2 | 4);
-    table().lock().unwrap().insert(g as usize, Entry { id, mark: mark as usize });
+    table().lock().unwrap().insert(
+        g as usize,
+        Entry {
+            id,
+            mark: mark as usize,
+        },
+    );
     ContextId(id)
 }
 
@@ -129,7 +135,10 @@ unsafe fn mark_matches(g: *mut c_void, e: Entry) -> bool {
 pub unsafe fn register(g: *mut c_void) -> ContextId {
     let stale = table().lock().unwrap().remove(&(g as usize));
     if let Some(old) = stale {
-        purge(Gone { key: g as usize, id: ContextId(old.id) });
+        purge(Gone {
+            key: g as usize,
+            id: ContextId(old.id),
+        });
     }
     adopt(g)
 }
@@ -147,7 +156,10 @@ pub unsafe fn ensure(g: *mut c_void) -> ContextId {
         Some(e) if mark_matches(g, e) => ContextId(e.id),
         Some(e) => {
             table().lock().unwrap().remove(&(g as usize));
-            purge(Gone { key: g as usize, id: ContextId(e.id) });
+            purge(Gone {
+                key: g as usize,
+                id: ContextId(e.id),
+            });
             adopt(g)
         }
         None => adopt(g),
@@ -157,14 +169,21 @@ pub unsafe fn ensure(g: *mut c_void) -> ContextId {
 /// The id of a registered context. A plain table read — no JS — so it is safe
 /// on any hot path; `None` for an address nobody registered.
 pub fn id_of(g: *mut c_void) -> Option<ContextId> {
-    table().lock().unwrap().get(&(g as usize)).map(|e| ContextId(e.id))
+    table()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .map(|e| ContextId(e.id))
 }
 
 /// `g` is going away (`redjs_context_release`): forget everything keyed by it.
 pub fn forget(g: *mut c_void) {
     let e = table().lock().unwrap().remove(&(g as usize));
     if let Some(e) = e {
-        purge(Gone { key: g as usize, id: ContextId(e.id) });
+        purge(Gone {
+            key: g as usize,
+            id: ContextId(e.id),
+        });
     }
 }
 
@@ -218,9 +237,18 @@ mod tests {
         assert!(after.0 > before.0, "ids only grow");
         // Every address-keyed registry forgot the old context — so the next
         // `webapi::install` RUNS instead of returning early on a stale entry.
-        assert!(!crate::webapi::util::has_state(g), "stale WebState must be gone");
-        assert!(!crate::errors::rejection_armed(g), "stale rejection registration must be gone");
-        assert!(!crate::web::has_scheduler(g), "stale timers/rAF must be gone");
+        assert!(
+            !crate::webapi::util::has_state(g),
+            "stale WebState must be gone"
+        );
+        assert!(
+            !crate::errors::rejection_armed(g),
+            "stale rejection registration must be gone"
+        );
+        assert!(
+            !crate::web::has_scheduler(g),
+            "stale timers/rAF must be gone"
+        );
     }
 
     /// The raw-C-API path: same address, a global that does not carry this
@@ -237,7 +265,13 @@ mod tests {
             assert!(mark_matches(g, e));
             // No script can reach a private name; `rjs_define` is `putDirect`,
             // which overwrites whatever the attributes say.
-            glue::rjs_define(g, glue::rjs_global(g), mark as *mut c_void, enc_id(first.0 + 1_000_000), 0);
+            glue::rjs_define(
+                g,
+                glue::rjs_global(g),
+                mark as *mut c_void,
+                enc_id(first.0 + 1_000_000),
+                0,
+            );
             assert!(!mark_matches(g, e));
             let second = ensure(g);
             assert_ne!(second, first);

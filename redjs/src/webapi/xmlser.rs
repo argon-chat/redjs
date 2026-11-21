@@ -60,8 +60,15 @@ pub enum XNode {
     Text(String),
     CData(String),
     Comment(String),
-    ProcessingInstruction { target: String, data: String },
-    DocumentType { name: String, public_id: String, system_id: String },
+    ProcessingInstruction {
+        target: String,
+        data: String,
+    },
+    DocumentType {
+        name: String,
+        public_id: String,
+        system_id: String,
+    },
     /// Document and DocumentFragment both serialize as just their children.
     Container(Vec<XNode>),
 }
@@ -130,7 +137,9 @@ impl PrefixMap {
     }
 
     fn has_prefix(&self, prefix: &str) -> bool {
-        self.entries.iter().any(|(_, list)| list.iter().any(|p| p.as_deref() == Some(prefix)))
+        self.entries
+            .iter()
+            .any(|(_, list)| list.iter().any(|p| p.as_deref() == Some(prefix)))
     }
 
     /// Spec §"retrieving a preferred prefix string".
@@ -179,7 +188,10 @@ fn record_namespaces(
         let ns_key = namespace_definition.clone();
         let already = map
             .candidates(&ns_key)
-            .map(|l| l.iter().any(|p| p.as_deref() == Some(prefix_definition.as_str())))
+            .map(|l| {
+                l.iter()
+                    .any(|p| p.as_deref() == Some(prefix_definition.as_str()))
+            })
             .unwrap_or(false);
         if !already {
             map.add(Some(prefix_definition.clone()), &ns_key);
@@ -238,7 +250,11 @@ fn serialize_node(
             out.push_str(data);
             out.push_str("?>");
         }
-        XNode::DocumentType { name, public_id, system_id } => {
+        XNode::DocumentType {
+            name,
+            public_id,
+            system_id,
+        } => {
             out.push_str("<!DOCTYPE ");
             out.push_str(name);
             if !public_id.is_empty() {
@@ -255,8 +271,16 @@ fn serialize_node(
             }
             out.push('>');
         }
-        XNode::Element { namespace, prefix, local_name, attrs, children } => {
-            serialize_element(namespace, prefix, local_name, attrs, children, context_ns, map, index, out);
+        XNode::Element {
+            namespace,
+            prefix,
+            local_name,
+            attrs,
+            children,
+        } => {
+            serialize_element(
+                namespace, prefix, local_name, attrs, children, context_ns, map, index, out,
+            );
         }
     }
 }
@@ -339,7 +363,13 @@ fn serialize_element(
         }
     }
 
-    out.push_str(&serialize_attributes(attrs, &mut local_map, index, &local_prefixes, ignore_ns_def_attr));
+    out.push_str(&serialize_attributes(
+        attrs,
+        &mut local_map,
+        index,
+        &local_prefixes,
+        ignore_ns_def_attr,
+    ));
 
     let html = ns.as_deref() == Some(HTML_NS);
     if children.is_empty() {
@@ -410,11 +440,13 @@ fn serialize_attributes(
                 result.push(':');
             }
         }
-        result.push_str(if attr.namespace.as_deref() == Some(XMLNS_NS) && attr.prefix.is_none() {
-            "xmlns"
-        } else {
-            &attr.local_name
-        });
+        result.push_str(
+            if attr.namespace.as_deref() == Some(XMLNS_NS) && attr.prefix.is_none() {
+                "xmlns"
+            } else {
+                &attr.local_name
+            },
+        );
         result.push_str("=\"");
         result.push_str(&escape_attr(&attr.value));
         result.push('"');
@@ -555,11 +587,19 @@ pub unsafe fn read_node(g: *mut c_void, node: u64, depth: u32) -> Option<XNode> 
 unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let proto = {
         let nt = cf_new_target(cf);
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
         if is_cell(p) {
             p
         } else {
-            get(g, get(g, crate::glue::rjs_global(g), "XMLSerializer"), "prototype")
+            get(
+                g,
+                get(g, crate::glue::rjs_global(g), "XMLSerializer"),
+                "prototype",
+            )
         }
     };
     new_object(g, proto)
@@ -580,15 +620,18 @@ unsafe fn serialize_to_string(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 pub unsafe fn install(g: *mut c_void) {
-    define_class(g, &ClassSpec {
-        name: "XMLSerializer",
-        arity: 0,
-        construct: Some(construct),
-        parent_proto: 0,
-        methods: &[("serializeToString", 1, serialize_to_string)],
-        getters: &[],
-        accessors: &[],
-    });
+    define_class(
+        g,
+        &ClassSpec {
+            name: "XMLSerializer",
+            arity: 0,
+            construct: Some(construct),
+            parent_proto: 0,
+            methods: &[("serializeToString", 1, serialize_to_string)],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -609,7 +652,13 @@ mod tests {
         }
     }
 
-    fn el_ns(ns: &str, prefix: Option<&str>, local: &str, attrs: Vec<XAttr>, children: Vec<XNode>) -> XNode {
+    fn el_ns(
+        ns: &str,
+        prefix: Option<&str>,
+        local: &str,
+        attrs: Vec<XAttr>,
+        children: Vec<XNode>,
+    ) -> XNode {
         XNode::Element {
             namespace: Some(ns.into()),
             prefix: prefix.map(|s| s.into()),
@@ -635,7 +684,10 @@ mod tests {
 
     #[test]
     fn a_void_html_element_gets_the_space_slash_form() {
-        assert_eq!(serialize(&el_ns(HTML_NS, None, "br", vec![], vec![])), "<br xmlns=\"http://www.w3.org/1999/xhtml\" />");
+        assert_eq!(
+            serialize(&el_ns(HTML_NS, None, "br", vec![], vec![])),
+            "<br xmlns=\"http://www.w3.org/1999/xhtml\" />"
+        );
     }
 
     #[test]
@@ -648,14 +700,23 @@ mod tests {
 
     #[test]
     fn text_escapes_the_three_markup_characters() {
-        assert_eq!(serialize(&el("a", vec![XNode::Text("a<b>&c".into())])), "<a>a&lt;b&gt;&amp;c</a>");
+        assert_eq!(
+            serialize(&el("a", vec![XNode::Text("a<b>&c".into())])),
+            "<a>a&lt;b&gt;&amp;c</a>"
+        );
     }
 
     #[test]
     fn attribute_values_escape_quotes_and_newlines() {
         // An unescaped quote closes the attribute and turns the rest of the
         // value into markup — the injection this escaping exists to stop.
-        let e = el_ns("u:n", None, "a", vec![attr(None, None, "t", "x\"y\nz")], vec![]);
+        let e = el_ns(
+            "u:n",
+            None,
+            "a",
+            vec![attr(None, None, "t", "x\"y\nz")],
+            vec![],
+        );
         let s = serialize(&e);
         assert!(s.contains("t=\"x&quot;y&#xA;z\""), "{s}");
     }
@@ -672,7 +733,10 @@ mod tests {
     fn a_child_in_a_different_namespace_declares_its_own() {
         let inner = el_ns("urn:y", None, "child", vec![], vec![]);
         let outer = el_ns("urn:x", None, "root", vec![], vec![inner]);
-        assert_eq!(serialize(&outer), "<root xmlns=\"urn:x\"><child xmlns=\"urn:y\"/></root>");
+        assert_eq!(
+            serialize(&outer),
+            "<root xmlns=\"urn:x\"><child xmlns=\"urn:y\"/></root>"
+        );
     }
 
     #[test]
@@ -686,15 +750,27 @@ mod tests {
         let inner = el_ns("urn:x", Some("p"), "child", vec![], vec![]);
         let outer = el_ns("urn:x", Some("p"), "root", vec![], vec![inner]);
         let s = serialize(&outer);
-        assert_eq!(s.matches("xmlns:p=").count(), 1, "the prefix was redeclared: {s}");
+        assert_eq!(
+            s.matches("xmlns:p=").count(),
+            1,
+            "the prefix was redeclared: {s}"
+        );
         assert_eq!(s, "<p:root xmlns:p=\"urn:x\"><p:child/></p:root>");
     }
 
     #[test]
     fn a_namespaced_attribute_gets_a_generated_prefix_when_it_has_none() {
         let e = el("a", vec![]);
-        let XNode::Element { .. } = e else { unreachable!() };
-        let e = el_ns("urn:x", None, "a", vec![attr(Some("urn:z"), None, "k", "v")], vec![]);
+        let XNode::Element { .. } = e else {
+            unreachable!()
+        };
+        let e = el_ns(
+            "urn:x",
+            None,
+            "a",
+            vec![attr(Some("urn:z"), None, "k", "v")],
+            vec![],
+        );
         let s = serialize(&e);
         assert!(s.contains("xmlns:ns1=\"urn:z\""), "{s}");
         assert!(s.contains("ns1:k=\"v\""), "{s}");
@@ -704,7 +780,13 @@ mod tests {
     fn the_xml_prefix_is_predeclared_and_never_emitted() {
         // `xml:` is bound by definition (XML Namespaces §3) and declaring it
         // is an error, so a serializer that emits xmlns:xml produces invalid XML.
-        let e = el_ns("urn:x", None, "a", vec![attr(Some(XML_NS), Some("xml"), "lang", "en")], vec![]);
+        let e = el_ns(
+            "urn:x",
+            None,
+            "a",
+            vec![attr(Some(XML_NS), Some("xml"), "lang", "en")],
+            vec![],
+        );
         let s = serialize(&e);
         assert!(s.contains("xml:lang=\"en\""), "{s}");
         assert!(!s.contains("xmlns:xml"), "{s}");
@@ -728,7 +810,10 @@ mod tests {
     fn comments_pis_and_cdata_round_trip() {
         let tree = XNode::Container(vec![
             XNode::Comment(" hi ".into()),
-            XNode::ProcessingInstruction { target: "xml-stylesheet".into(), data: "href=\"a\"".into() },
+            XNode::ProcessingInstruction {
+                target: "xml-stylesheet".into(),
+                data: "href=\"a\"".into(),
+            },
             el("a", vec![XNode::CData("raw <not> escaped".into())]),
         ]);
         assert_eq!(
@@ -762,7 +847,11 @@ mod tests {
     fn nesting_order_and_mixed_content_are_preserved() {
         let tree = el(
             "p",
-            vec![XNode::Text("a".into()), el("b", vec![XNode::Text("c".into())]), XNode::Text("d".into())],
+            vec![
+                XNode::Text("a".into()),
+                el("b", vec![XNode::Text("c".into())]),
+                XNode::Text("d".into()),
+            ],
         );
         assert_eq!(serialize(&tree), "<p>a<b>c</b>d</p>");
     }
@@ -814,7 +903,10 @@ mod jsc_tests {
             &c,
             "globalThis.loop = el('a', [], []); globalThis.loop.childNodes = [globalThis.loop]; 'ok'",
         );
-        let out = s(&c, "new XMLSerializer().serializeToString(globalThis.loop).length > 0");
+        let out = s(
+            &c,
+            "new XMLSerializer().serializeToString(globalThis.loop).length > 0",
+        );
         assert_eq!(out, "true");
     }
 }

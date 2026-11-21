@@ -56,7 +56,9 @@ fn connection(mut sock: TcpStream, handler: Handler) {
             .lines()
             .find_map(|l| {
                 let (k, v) = l.split_once(':')?;
-                k.trim().eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().unwrap_or(0))
+                k.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| v.trim().parse::<usize>().unwrap_or(0))
             })
             .unwrap_or(0);
         buf.drain(..end + 4);
@@ -143,7 +145,11 @@ fn the_clients_put_reports_upload_progress_and_reads_the_etag() {
             header(head, "content-type"),
             header(head, "x-part")
         );
-        reply("200 OK", &[("ETag", "\"etag-7\""), ("Content-Type", "text/plain")], echo.as_bytes())
+        reply(
+            "200 OK",
+            &[("ETag", "\"etag-7\""), ("Content-Type", "text/plain")],
+            echo.as_bytes(),
+        )
     });
     let n = 300 * 1024;
     let out = xhr(
@@ -265,7 +271,11 @@ fn every_response_type_reads_the_body_its_own_way() {
     let c = xhr_ctx();
     let port = serve(|head, _| {
         if head.starts_with("GET /json") {
-            reply("200 OK", &[("Content-Type", "application/json")], br#"{"a":[1,2]}"#)
+            reply(
+                "200 OK",
+                &[("Content-Type", "application/json")],
+                br#"{"a":[1,2]}"#,
+            )
         } else if head.starts_with("GET /bad-json") {
             reply("200 OK", &[], b"{nope")
         } else {
@@ -275,7 +285,9 @@ fn every_response_type_reads_the_body_its_own_way() {
     let get = |rtype: &str, path: &str, done: &str| {
         xhr(
             &c,
-            &format!("xhr.open('GET', 'http://127.0.0.1:{port}{path}'); xhr.responseType = '{rtype}';"),
+            &format!(
+                "xhr.open('GET', 'http://127.0.0.1:{port}{path}'); xhr.responseType = '{rtype}';"
+            ),
             "",
             done,
         )
@@ -285,10 +297,21 @@ fn every_response_type_reads_the_body_its_own_way() {
         "true,4,1-2-3-4,true"
     );
     assert_eq!(
-        get("blob", "/bin", "[xhr.response instanceof Blob, xhr.response.size, xhr.response.type].join()"),
+        get(
+            "blob",
+            "/bin",
+            "[xhr.response instanceof Blob, xhr.response.size, xhr.response.type].join()"
+        ),
         "true,4,image/png"
     );
-    assert_eq!(get("json", "/json", "JSON.stringify(xhr.response) + (xhr.response === xhr.response)"), "{\"a\":[1,2]}true");
+    assert_eq!(
+        get(
+            "json",
+            "/json",
+            "JSON.stringify(xhr.response) + (xhr.response === xhr.response)"
+        ),
+        "{\"a\":[1,2]}true"
+    );
     assert_eq!(get("json", "/bad-json", "String(xhr.response)"), "null");
     assert_eq!(get("text", "/json", "xhr.response"), "{\"a\":[1,2]}");
     // `responseText` is only for '' and 'text'; the type is fixed once loading.
@@ -464,11 +487,22 @@ fn each_body_type_brings_its_content_type_unless_one_was_set() {
         reply("200 OK", &[], echo.as_bytes())
     });
     let post = |setup: &str, arg: &str| {
-        xhr(&c, &format!("xhr.open('POST', 'http://127.0.0.1:{port}/'); {setup}"), arg, "xhr.responseText")
+        xhr(
+            &c,
+            &format!("xhr.open('POST', 'http://127.0.0.1:{port}/'); {setup}"),
+            arg,
+            "xhr.responseText",
+        )
     };
     assert_eq!(post("", "'plain'"), "text/plain;charset=UTF-8|-|-|plain");
-    assert_eq!(post("", "new URLSearchParams({ a: '1 2', b: 'é' })"), "application/x-www-form-urlencoded;charset=UTF-8|-|-|a=1+2&b=%C3%A9");
-    assert_eq!(post("", "new Blob(['b'], { type: 'image/x' })"), "image/x|-|-|b");
+    assert_eq!(
+        post("", "new URLSearchParams({ a: '1 2', b: 'é' })"),
+        "application/x-www-form-urlencoded;charset=UTF-8|-|-|a=1+2&b=%C3%A9"
+    );
+    assert_eq!(
+        post("", "new Blob(['b'], { type: 'image/x' })"),
+        "image/x|-|-|b"
+    );
     assert_eq!(post("", "new Uint8Array([104, 105])"), "-|-|-|hi");
     assert_eq!(
         post(
@@ -479,11 +513,19 @@ fn each_body_type_brings_its_content_type_unless_one_was_set() {
         ),
         "application/json|a, b|-|{}"
     );
-    assert!(post("", "(() => { const f = new FormData(); f.append('k', 'v'); return f; })()")
-        .starts_with("multipart/form-data; boundary="));
+    assert!(post(
+        "",
+        "(() => { const f = new FormData(); f.append('k', 'v'); return f; })()"
+    )
+    .starts_with("multipart/form-data; boundary="));
     // GET and HEAD send no body, whatever send() is given.
     assert_eq!(
-        xhr(&c, &format!("xhr.open('GET', 'http://127.0.0.1:{port}/');"), "'ignored'", "xhr.responseText"),
+        xhr(
+            &c,
+            &format!("xhr.open('GET', 'http://127.0.0.1:{port}/');"),
+            "'ignored'",
+            "xhr.responseText"
+        ),
         "-|-|-|"
     );
 }
@@ -513,8 +555,11 @@ fn the_interface_has_the_spec_shape() {
     ok(&c, "(() => { const e = new ProgressEvent('x'); return !e.lengthComputable && e.loaded === 0 && e.total === 0; })()");
     ok(&c, "(() => { const x = new XMLHttpRequest(); const f = () => 1; x.onload = f; x.onerror = 'nope'; \
              return x.onload === f && x.onerror === null; })()");
-    ok(&c, "(() => { class Mine extends XMLHttpRequest {} const m = new Mine(); \
-             return m instanceof Mine && m instanceof XMLHttpRequest && m.readyState === 0; })()");
+    ok(
+        &c,
+        "(() => { class Mine extends XMLHttpRequest {} const m = new Mine(); \
+             return m instanceof Mine && m instanceof XMLHttpRequest && m.readyState === 0; })()",
+    );
 }
 
 #[test]
@@ -522,13 +567,30 @@ fn what_the_spec_forbids_throws_its_exception() {
     let c = xhr_ctx();
     // Port 9, not 1: the pool serializes connects to one origin, and the dead
     // server test above waits on port 1.
-    let name = |src: &str| s(&c, &format!("(() => {{ try {{ {src}; return 'no throw'; }} catch (e) {{ return e.name; }} }})()"));
+    let name = |src: &str| {
+        s(&c, &format!("(() => {{ try {{ {src}; return 'no throw'; }} catch (e) {{ return e.name; }} }})()"))
+    };
     assert_eq!(name("new XMLHttpRequest().send()"), "InvalidStateError");
-    assert_eq!(name("new XMLHttpRequest().setRequestHeader('a', 'b')"), "InvalidStateError");
-    assert_eq!(name("new XMLHttpRequest().open('GET', 'http://127.0.0.1:9/', false)"), "InvalidAccessError");
-    assert_eq!(name("new XMLHttpRequest().open('bad method', 'http://127.0.0.1:9/')"), "SyntaxError");
-    assert_eq!(name("new XMLHttpRequest().open('TRACE', 'http://127.0.0.1:9/')"), "SecurityError");
-    assert_eq!(name("new XMLHttpRequest().open('GET', 'http://[bad')"), "SyntaxError");
+    assert_eq!(
+        name("new XMLHttpRequest().setRequestHeader('a', 'b')"),
+        "InvalidStateError"
+    );
+    assert_eq!(
+        name("new XMLHttpRequest().open('GET', 'http://127.0.0.1:9/', false)"),
+        "InvalidAccessError"
+    );
+    assert_eq!(
+        name("new XMLHttpRequest().open('bad method', 'http://127.0.0.1:9/')"),
+        "SyntaxError"
+    );
+    assert_eq!(
+        name("new XMLHttpRequest().open('TRACE', 'http://127.0.0.1:9/')"),
+        "SecurityError"
+    );
+    assert_eq!(
+        name("new XMLHttpRequest().open('GET', 'http://[bad')"),
+        "SyntaxError"
+    );
     assert_eq!(
         name("const x = new XMLHttpRequest(); x.open('GET', 'http://127.0.0.1:9/'); x.setRequestHeader('a b', 'c')"),
         "SyntaxError"
@@ -541,11 +603,19 @@ fn what_the_spec_forbids_throws_its_exception() {
         name("const x = new XMLHttpRequest(); x.open('GET', 'http://127.0.0.1:9/'); x.send(); x.withCredentials = true"),
         "InvalidStateError"
     );
-    assert_eq!(name("XMLHttpRequest.prototype.open.call({}, 'GET', '/')"), "TypeError");
+    assert_eq!(
+        name("XMLHttpRequest.prototype.open.call({}, 'GET', '/')"),
+        "TypeError"
+    );
     assert_eq!(name("XMLHttpRequest()"), "TypeError");
     // An unsupported scheme is a network error, reported asynchronously.
     assert_eq!(
-        xhr(&c, "xhr.open('GET', 'ftp://example.com/f'); xhr.onerror = () => log.push('error');", "", "log.join() + ':' + xhr.status"),
+        xhr(
+            &c,
+            "xhr.open('GET', 'ftp://example.com/f'); xhr.onerror = () => log.push('error');",
+            "",
+            "log.join() + ':' + xhr.status"
+        ),
         "error:0"
     );
 }
@@ -584,8 +654,13 @@ fn an_unreferenced_request_still_completes() {
 #[test]
 fn a_blob_url_is_read_from_the_store() {
     let c = xhr_ctx();
-    s(&c, "globalThis.u = URL.createObjectURL(new Blob(['0123456789'], { type: 'text/x' })); 0");
-    let get = |setup: &str, send: &str, done: &str| xhr(&c, &format!("xhr.open('GET', u); {setup}"), send, done);
+    s(
+        &c,
+        "globalThis.u = URL.createObjectURL(new Blob(['0123456789'], { type: 'text/x' })); 0",
+    );
+    let get = |setup: &str, send: &str, done: &str| {
+        xhr(&c, &format!("xhr.open('GET', u); {setup}"), send, done)
+    };
     assert_eq!(
         get(
             "xhr.onreadystatechange = () => log.push(xhr.readyState); xhr.onprogress = (e) => log.push('p' + e.loaded + '/' + e.total);",
@@ -596,19 +671,42 @@ fn a_blob_url_is_read_from_the_store() {
         "2,3,p10/10,4|200|OK|0123456789|text/x|10|true"
     );
     assert_eq!(
-        get("xhr.setRequestHeader('Range', 'bytes=2-4');", "", "[xhr.status, xhr.getResponseHeader('content-range'), xhr.responseText].join()"),
+        get(
+            "xhr.setRequestHeader('Range', 'bytes=2-4');",
+            "",
+            "[xhr.status, xhr.getResponseHeader('content-range'), xhr.responseText].join()"
+        ),
         "206,bytes 2-4/10,234"
     );
     assert_eq!(
-        get("xhr.responseType = 'blob';", "", "xhr.response.size + ':' + xhr.response.type"),
+        get(
+            "xhr.responseType = 'blob';",
+            "",
+            "xhr.response.size + ':' + xhr.response.type"
+        ),
         "10:text/x"
     );
     // Revoked after open(): the entry open() resolved still loads.
-    assert_eq!(get("URL.revokeObjectURL(u);", "", "xhr.status + ':' + xhr.responseText"), "200:0123456789");
+    assert_eq!(
+        get(
+            "URL.revokeObjectURL(u);",
+            "",
+            "xhr.status + ':' + xhr.responseText"
+        ),
+        "200:0123456789"
+    );
     // Revoked before open(), and a POST: network errors.
-    for setup in ["xhr.open('GET', u);", "xhr.open('POST', URL.createObjectURL(new Blob(['x'])));"] {
+    for setup in [
+        "xhr.open('GET', u);",
+        "xhr.open('POST', URL.createObjectURL(new Blob(['x'])));",
+    ] {
         assert_eq!(
-            xhr(&c, &format!("{setup} xhr.onerror = () => log.push('error');"), "", "log.join() + ':' + xhr.status"),
+            xhr(
+                &c,
+                &format!("{setup} xhr.onerror = () => log.push('error');"),
+                "",
+                "log.join() + ':' + xhr.status"
+            ),
             "error:0",
             "{setup}"
         );
@@ -617,7 +715,12 @@ fn a_blob_url_is_read_from_the_store() {
     let t = TempFile::new("notes.txt", b"from disk");
     t.expose(&c, "picked");
     assert_eq!(
-        xhr(&c, "xhr.open('GET', URL.createObjectURL(picked));", "", "xhr.status + ':' + xhr.responseText"),
+        xhr(
+            &c,
+            "xhr.open('GET', URL.createObjectURL(picked));",
+            "",
+            "xhr.status + ':' + xhr.responseText"
+        ),
         "200:from disk"
     );
 }
@@ -649,11 +752,21 @@ fn data_urls_and_app_files_are_read_locally() {
     );
     // Not there: a 404 response, as `fetch` gives, not a network error.
     assert_eq!(
-        xhr(&c, "xhr.open('GET', 'no/such/file.json'); xhr.onerror = () => log.push('error');", "", "log.join() + xhr.status"),
+        xhr(
+            &c,
+            "xhr.open('GET', 'no/such/file.json'); xhr.onerror = () => log.push('error');",
+            "",
+            "log.join() + xhr.status"
+        ),
         "404"
     );
     assert_eq!(
-        xhr(&c, "xhr.open('PUT', 'data:,x'); xhr.onerror = () => log.push('error');", "'y'", "log.join()"),
+        xhr(
+            &c,
+            "xhr.open('PUT', 'data:,x'); xhr.onerror = () => log.push('error');",
+            "'y'",
+            "log.join()"
+        ),
         "error"
     );
 }

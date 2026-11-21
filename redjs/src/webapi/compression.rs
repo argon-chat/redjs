@@ -162,7 +162,10 @@ struct Inflate {
 
 impl Inflate {
     fn new(zlib_header: bool) -> Inflate {
-        Inflate { d: Decompress::new(zlib_header), ended: false }
+        Inflate {
+            d: Decompress::new(zlib_header),
+            ended: false,
+        }
     }
 
     /// Inflate as much of `input` as possible. Returns the bytes consumed; the
@@ -207,7 +210,12 @@ enum Dec {
     /// zlib and raw deflate: `Decompress` handles (or omits) the header and the
     /// adler32 check itself.
     Plain(Inflate),
-    Gzip { header: GzHeader, inflate: Inflate, crc: Crc, trailer: Vec<u8> },
+    Gzip {
+        header: GzHeader,
+        inflate: Inflate,
+        crc: Crc,
+        trailer: Vec<u8>,
+    },
 }
 
 enum Codec {
@@ -244,7 +252,10 @@ impl ZipData {
                 Format::Gzip => Enc::Gzip(GzEncoder::new(sink, level)),
             })
         };
-        ZipData { codec: Some(codec), done: false }
+        ZipData {
+            codec: Some(codec),
+            done: false,
+        }
     }
 
     /// Feed bytes; returns whatever output is ready. `Err` carries a message
@@ -279,7 +290,12 @@ impl ZipData {
                 inf.push(input, &mut out)?;
                 Ok(out)
             }
-            Codec::Decode(Dec::Gzip { header, inflate, crc, trailer }) => {
+            Codec::Decode(Dec::Gzip {
+                header,
+                inflate,
+                crc,
+                trailer,
+            }) => {
                 let mut rest = input;
                 let taken = header.feed(rest)?;
                 rest = &rest[taken..];
@@ -316,7 +332,12 @@ impl ZipData {
                 }
                 Ok(Vec::new())
             }
-            Codec::Decode(Dec::Gzip { header, inflate, crc, trailer }) => {
+            Codec::Decode(Dec::Gzip {
+                header,
+                inflate,
+                crc,
+                trailer,
+            }) => {
                 if !header.done || !inflate.ended {
                     return Err(TRUNCATED.into());
                 }
@@ -357,7 +378,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static ZipClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static ZipClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::compression not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::compression not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -388,8 +414,16 @@ unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let decompress = truthy_flag(cf_arg(cf, 1));
     let proto = {
         let nt = cf_new_target(cf);
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(p) { p } else { c.class.proto }
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(p) {
+            p
+        } else {
+            c.class.proto
+        }
     };
     host_create(g, c.cls, proto, ZipData::new(format, decompress))
 }
@@ -428,15 +462,18 @@ unsafe fn zip_finish(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let cls = make_host_class::<ZipData>("RedZip");
-    let class = define_class(g, &ClassSpec {
-        name: "RedZip",
-        arity: 2,
-        construct: Some(construct),
-        parent_proto: 0,
-        methods: &[("push", 1, zip_push), ("finish", 0, zip_finish)],
-        getters: &[],
-        accessors: &[],
-    });
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "RedZip",
+            arity: 2,
+            construct: Some(construct),
+            parent_proto: 0,
+            methods: &[("push", 1, zip_push), ("finish", 0, zip_finish)],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     let boxed: &'static ZipClasses = Box::leak(Box::new(ZipClasses { cls, class }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
@@ -479,8 +516,16 @@ mod tests {
     fn every_format_round_trips() {
         let data = corpus();
         for format in [Format::Deflate, Format::DeflateRaw, Format::Gzip] {
-            assert_eq!(round_trip(format, &data, 1 << 20), data, "{format:?} whole-buffer");
-            assert_eq!(round_trip(format, &data, 97), data, "{format:?} in 97-byte chunks");
+            assert_eq!(
+                round_trip(format, &data, 1 << 20),
+                data,
+                "{format:?} whole-buffer"
+            );
+            assert_eq!(
+                round_trip(format, &data, 97),
+                data,
+                "{format:?} in 97-byte chunks"
+            );
         }
     }
 
@@ -493,7 +538,12 @@ mod tests {
         let mut out = enc.push(&data).unwrap();
         out.extend_from_slice(&enc.finish().unwrap());
         assert_ne!(out, data, "the output is the input — this is a passthrough");
-        assert!(out.len() < data.len() / 4, "{} vs {}", out.len(), data.len());
+        assert!(
+            out.len() < data.len() / 4,
+            "{} vs {}",
+            out.len(),
+            data.len()
+        );
     }
 
     #[test]
@@ -503,7 +553,12 @@ mod tests {
         let mut enc = ZipData::new(Format::Gzip, false);
         let mut out = enc.push(b"hello").unwrap();
         out.extend_from_slice(&enc.finish().unwrap());
-        assert_eq!(&out[..2], &[0x1f, 0x8b], "not a gzip member: {:?}", &out[..4.min(out.len())]);
+        assert_eq!(
+            &out[..2],
+            &[0x1f, 0x8b],
+            "not a gzip member: {:?}",
+            &out[..4.min(out.len())]
+        );
     }
 
     #[test]
@@ -515,7 +570,11 @@ mod tests {
         let mut raw = b.push(b"hello hello hello").unwrap();
         raw.extend_from_slice(&b.finish().unwrap());
         // zlib = 2-byte header + deflate + 4-byte adler32.
-        assert_eq!(wrapped.len(), raw.len() + 6, "the zlib wrapper is missing or doubled");
+        assert_eq!(
+            wrapped.len(),
+            raw.len() + 6,
+            "the zlib wrapper is missing or doubled"
+        );
         assert_eq!(&wrapped[2..2 + raw.len()], &raw[..]);
     }
 
@@ -531,7 +590,10 @@ mod tests {
 
             let mut dec = ZipData::new(format, true);
             let _ = dec.push(&compressed[..compressed.len() / 2]);
-            assert!(dec.finish().is_err(), "{format:?} accepted a truncated stream");
+            assert!(
+                dec.finish().is_err(),
+                "{format:?} accepted a truncated stream"
+            );
         }
     }
 
@@ -547,7 +609,10 @@ mod tests {
         let mut dec = ZipData::new(Format::Gzip, true);
         let pushed = dec.push(&compressed);
         let finished = dec.finish();
-        assert!(pushed.is_err() || finished.is_err(), "corruption went unnoticed");
+        assert!(
+            pushed.is_err() || finished.is_err(),
+            "corruption went unnoticed"
+        );
     }
 
     #[test]
@@ -688,7 +753,10 @@ mod jsc_tests {
              try { await through(half, new DecompressionStream('gzip')); return 'accepted'; }
              catch (e) { return 'errored'; }",
         );
-        assert_eq!(out, "errored", "a truncated stream must not decompress 'successfully'");
+        assert_eq!(
+            out, "errored",
+            "a truncated stream must not decompress 'successfully'"
+        );
     }
 
     #[test]
@@ -718,8 +786,17 @@ mod jsc_tests {
     #[test]
     fn the_pair_exposes_readable_and_writable_like_a_transform_stream() {
         let c = ctx();
-        ok(&c, "new CompressionStream('gzip').readable instanceof ReadableStream");
-        ok(&c, "new CompressionStream('gzip').writable instanceof WritableStream");
-        ok(&c, "new DecompressionStream('deflate').readable instanceof ReadableStream");
+        ok(
+            &c,
+            "new CompressionStream('gzip').readable instanceof ReadableStream",
+        );
+        ok(
+            &c,
+            "new CompressionStream('gzip').writable instanceof WritableStream",
+        );
+        ok(
+            &c,
+            "new DecompressionStream('deflate').readable instanceof ReadableStream",
+        );
     }
 }

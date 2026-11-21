@@ -156,7 +156,10 @@ fn webapi_platform2(ctx: &Context) {
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
         let v = ctx.eval("ord.join('|')").unwrap();
         let s = ctx.to_rust_string(v).unwrap();
-        assert!(s.contains("micro") && s.contains("imm:xy"), "queueMicrotask + setImmediate ran: {s}");
+        assert!(
+            s.contains("micro") && s.contains("imm:xy"),
+            "queueMicrotask + setImmediate ran: {s}"
+        );
     }
 }
 
@@ -181,7 +184,10 @@ fn webapi_audio(ctx: &Context) {
                          Math.round(gain.gain.value * 100) / 100, pan.pan.value].join('|'); })()",
             )
             .unwrap();
-        assert_eq!(ctx.to_rust_string(v).unwrap(), "true|true|true|number|running|true|0.5|-1");
+        assert_eq!(
+            ctx.to_rust_string(v).unwrap(),
+            "true|true|true|number|running|true|0.5|-1"
+        );
 
         // createBuffer + copyToChannel/getChannelData round trip.
         let v = ctx
@@ -257,13 +263,18 @@ fn webapi_audio(ctx: &Context) {
                  return [p instanceof PannerNode, f.type, Math.round(f.frequency.value), an.fftSize, arr.length].join('|'); })()",
             )
             .unwrap();
-        assert_eq!(ctx.to_rust_string(v).unwrap(), "true|highpass|800|2048|1024");
+        assert_eq!(
+            ctx.to_rust_string(v).unwrap(),
+            "true|highpass|800|2048|1024"
+        );
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
 
         // suspend/resume/close lifecycle.
-        ctx.eval("globalThis.stTrail = []; ac.suspend().then(() => stTrail.push(ac.state));").unwrap();
+        ctx.eval("globalThis.stTrail = []; ac.suspend().then(() => stTrail.push(ac.state));")
+            .unwrap();
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
-        ctx.eval("ac.resume().then(() => stTrail.push(ac.state));").unwrap();
+        ctx.eval("ac.resume().then(() => stTrail.push(ac.state));")
+            .unwrap();
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
         let v = ctx.eval("stTrail.join()").unwrap();
         assert_eq!(ctx.to_rust_string(v).unwrap(), "suspended,running");
@@ -281,7 +292,10 @@ fn webapi_platform(ctx: &Context) {
     match probe {
         Ok(p) => {
             let s = ctx.to_rust_string(p).unwrap();
-            assert_eq!(s, "object,function,function,function,function,function", "platform globals present: {s}");
+            assert_eq!(
+                s, "object,function,function,function,function,function",
+                "platform globals present: {s}"
+            );
         }
         Err(Error::Exception(e)) => {
             let (m, st) = ctx.error_info(e);
@@ -320,7 +334,10 @@ fn webapi_platform(ctx: &Context) {
               c.m.get('k'), c.st.has(7), c.d.getTime(), c.d !== src.d].join(); })()",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,true,true,2.5,true,5,true,12345,true");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "true,true,true,true,2.5,true,5,true,12345,true"
+    );
     assert_eq!(
         ctx.eval("(() => { try { structuredClone({ f: () => 1 }); return 'no'; } catch (e) { return e instanceof DOMException && e.name === 'DataCloneError' && e.code === 25 ? 'dce' : 'other'; } })()")
             .map(|v| ctx.to_rust_string(v).unwrap())
@@ -337,7 +354,10 @@ fn webapi_platform(ctx: &Context) {
               (() => { try { new HTMLElement(); return 'no'; } catch (e) { return 'illegal'; } })()].join(); })()",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,true,false,true,illegal");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "true,true,true,false,true,illegal"
+    );
 
     // matchMedia + IntersectionObserver stubs are callable and inert.
     let v = ctx
@@ -358,20 +378,31 @@ fn webapi_platform(ctx: &Context) {
     )
     .unwrap();
     unsafe { ffi::redjs_pump(ctx.raw(), 7, core::ptr::null_mut()) };
-    assert_eq!(ctx.to_rust_string(ctx.eval("idle").unwrap()).unwrap(), "false,true");
+    assert_eq!(
+        ctx.to_rust_string(ctx.eval("idle").unwrap()).unwrap(),
+        "false,true"
+    );
 }
 
 fn install_webapi(ctx: &Context) -> std::path::PathBuf {
     // Assets dir with a generated PNG + a JSON for fetch/Image tests.
     let dir = std::env::temp_dir().join("redjs-webapi-test");
     let _ = std::fs::create_dir_all(&dir);
-    let img = image::RgbaImage::from_fn(4, 2, |x, y| image::Rgba([x as u8 * 10, y as u8 * 10, 200, 255]));
+    let img = image::RgbaImage::from_fn(4, 2, |x, y| {
+        image::Rgba([x as u8 * 10, y as u8 * 10, 200, 255])
+    });
     img.save(dir.join("test.png")).unwrap();
     std::fs::write(dir.join("data.json"), br#"{"hello": 42}"#).unwrap();
 
     let scripts: Vec<u16> = dir.to_string_lossy().encode_utf16().collect();
     let rc = unsafe {
-        ffi::redjs_webshim_install(ctx.raw(), scripts.as_ptr(), scripts.len(), scripts.as_ptr(), scripts.len())
+        ffi::redjs_webshim_install(
+            ctx.raw(),
+            scripts.as_ptr(),
+            scripts.len(),
+            scripts.as_ptr(),
+            scripts.len(),
+        )
     };
     assert_eq!(rc, 0, "webshim install");
     dir
@@ -387,7 +418,10 @@ fn webapi_events(ctx: &Context) {
              [e instanceof CustomEvent, e instanceof Event, e.type, e.cancelable, e.bubbles, e.detail.n].join()",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "true,true,boom,true,false,7");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "true,true,boom,true,false,7"
+    );
 
     // Getters live on the prototype (spec shape), readonly.
     assert_eq!(
@@ -432,7 +466,11 @@ fn webapi_events(ctx: &Context) {
              [r, log.includes('never')].join()",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "false,false", "canceled dispatch returns false, stopImmediate works");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "false,false",
+        "canceled dispatch returns false, stopImmediate works"
+    );
 
     // onX handler property participates in dispatch.
     let v = ctx
@@ -472,7 +510,10 @@ fn webapi_encoding_url_blob(ctx: &Context) {
              return [ru, u16, canon, fatal, unknown, into.read, into.written].join('|'); })()",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "Привет|AЖ|windows-1252|type|range|3|6");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "Привет|AЖ|windows-1252|type|range|3|6"
+    );
 
     // crypto.subtle.digest against known SHA test vectors.
     let probe = ctx
@@ -507,7 +548,10 @@ fn webapi_encoding_url_blob(ctx: &Context) {
              [u.protocol, u.hostname, u.port, u.pathname, u.search, u.hash, u.origin].join('|')",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "https:|example.com|8080|/b|?x=1&y=%D0%B4|#frag|https://example.com:8080");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "https:|example.com|8080|/b|?x=1&y=%D0%B4|#frag|https://example.com:8080"
+    );
 
     let v = ctx
         .eval(
@@ -515,7 +559,10 @@ fn webapi_encoding_url_blob(ctx: &Context) {
              [u2.href, u2.searchParams.get('q'), URL.canParse('nope'), u2 instanceof URL].join('|')",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "https://host/base/dir/rel/path?q=1|1|false|true");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "https://host/base/dir/rel/path?q=1|1|false|true"
+    );
 
     let v = ctx
         .eval(
@@ -552,7 +599,10 @@ fn webapi_encoding_url_blob(ctx: &Context) {
              return [forOf, keys, values, afterMutate, selfIter].join('|'); })()",
         )
         .unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "a:1,b:2,c:3|a,b,c|1,2,3|c:3|self");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "a:1,b:2,c:3|a,b,c|1,2,3|c:3|self"
+    );
 
     // Blob: parts, size/type, slice (negative indices), text/arrayBuffer.
     ctx.eval(
@@ -566,7 +616,10 @@ fn webapi_encoding_url_blob(ctx: &Context) {
     .unwrap();
     ctx.drain_microtasks();
     let v = ctx.eval("blobDone").unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "12|text/plain|hello world!|world|12|true");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "12|text/plain|hello world!|world|12|true"
+    );
 }
 
 fn webapi_fetch_images_dom(ctx: &Context) {
@@ -587,7 +640,10 @@ fn webapi_fetch_images_dom(ctx: &Context) {
     .unwrap();
     ctx.drain_microtasks();
     let v = ctx.eval("fetched").unwrap();
-    assert_eq!(ctx.to_rust_string(v).unwrap(), "true|200|application/json|42|false|404|hi");
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "true|200|application/json|42|false|404|hi"
+    );
 
     // createImageBitmap from fetch().blob() + region crop — the sprite path.
     ctx.eval(
@@ -615,7 +671,9 @@ fn webapi_fetch_images_dom(ctx: &Context) {
     )
     .unwrap();
     unsafe { ffi::redjs_pump(ctx.raw(), 7, core::ptr::null_mut()) };
-    let v = ctx.eval("[im instanceof HTMLImageElement, im.complete, imgEvents.join()].join('|')").unwrap();
+    let v = ctx
+        .eval("[im instanceof HTMLImageElement, im.complete, imgEvents.join()].join('|')")
+        .unwrap();
     assert_eq!(
         ctx.to_rust_string(v).unwrap(),
         "true|true|sync:false,listener,onload:4x2",
@@ -627,14 +685,20 @@ fn webapi_fetch_images_dom(ctx: &Context) {
         let bmp = ctx.eval("(() => im)()").unwrap();
         let (mut ptr, mut len, mut w, mut h) = (core::ptr::null::<u8>(), 0usize, 0u32, 0u32);
         let rc = ffi::redjs_image_pixels(ctx.raw(), bmp.0, &mut ptr, &mut len, &mut w, &mut h);
-        assert_eq!((rc, w, h, len), (0, 4, 2, 32), "image_pixels on HTMLImageElement");
+        assert_eq!(
+            (rc, w, h, len),
+            (0, 4, 2, 32),
+            "image_pixels on HTMLImageElement"
+        );
         let px = core::slice::from_raw_parts(ptr, len);
         assert_eq!(px[2], 200, "blue channel of the generated png");
     }
 
     // document/window natives + host hooks.
     unsafe {
-        let canvas = ctx.eval("({ __brand: 'HTMLCanvasElement', width: 640 })").unwrap();
+        let canvas = ctx
+            .eval("({ __brand: 'HTMLCanvasElement', width: 640 })")
+            .unwrap();
         ctx.protect(canvas);
         let id: Vec<u16> = "canvas".encode_utf16().collect();
         ffi::redjs_dom_register_element(ctx.raw(), id.as_ptr(), id.len(), canvas.0);
@@ -648,11 +712,19 @@ fn webapi_fetch_images_dom(ctx: &Context) {
         ctx.eval("globalThis.sizes = []; window.addEventListener('resize', () => sizes.push(innerWidth + 'x' + innerHeight));").unwrap();
         ffi::redjs_dom_resize(ctx.raw(), 1280, 720, 2.0);
         assert_eq!(
-            ctx.to_rust_string(ctx.eval("[sizes.join(), devicePixelRatio, window === globalThis].join('|')").unwrap()).unwrap(),
+            ctx.to_rust_string(
+                ctx.eval("[sizes.join(), devicePixelRatio, window === globalThis].join('|')")
+                    .unwrap()
+            )
+            .unwrap(),
             "1280x720|2|true"
         );
         assert_eq!(
-            ctx.to_rust_string(ctx.eval("[outerWidth, outerHeight, scrollY, pageXOffset].join()").unwrap()).unwrap(),
+            ctx.to_rust_string(
+                ctx.eval("[outerWidth, outerHeight, scrollY, pageXOffset].join()")
+                    .unwrap()
+            )
+            .unwrap(),
             "1280,720,0,0"
         );
         ffi::redjs_dom_set_viewport(ctx.raw(), 1000, 700, 1016, 739, 1.5);
@@ -680,12 +752,19 @@ fn webapi_fetch_images_dom(ctx: &Context) {
 
         ctx.eval("globalThis.lifecycle = []; document.addEventListener('DOMContentLoaded', () => lifecycle.push('dcl:' + document.readyState)); window.addEventListener('load', () => lifecycle.push('load'));").unwrap();
         ffi::redjs_dom_content_loaded(ctx.raw());
-        assert_eq!(ctx.to_rust_string(ctx.eval("lifecycle.join()").unwrap()).unwrap(), "dcl:interactive,load");
+        assert_eq!(
+            ctx.to_rust_string(ctx.eval("lifecycle.join()").unwrap())
+                .unwrap(),
+            "dcl:interactive,load"
+        );
 
         ctx.eval("globalThis.vis = []; document.addEventListener('visibilitychange', () => vis.push(document.visibilityState));").unwrap();
         ffi::redjs_dom_set_visibility(ctx.raw(), 1);
         ffi::redjs_dom_set_visibility(ctx.raw(), 0);
-        assert_eq!(ctx.to_rust_string(ctx.eval("vis.join()").unwrap()).unwrap(), "hidden,visible");
+        assert_eq!(
+            ctx.to_rust_string(ctx.eval("vis.join()").unwrap()).unwrap(),
+            "hidden,visible"
+        );
     }
 
     // The dumb-stub remainder still works (OffscreenCanvas over native pixels).
@@ -695,7 +774,11 @@ fn webapi_fetch_images_dom(ctx: &Context) {
              const d = c.getImageData(0, 0, 4, 2); return d.data[2]; })()",
         )
         .unwrap();
-    assert_eq!(v.as_number(), Some(200.0), "OffscreenCanvas drawImage from native image");
+    assert_eq!(
+        v.as_number(),
+        Some(200.0),
+        "OffscreenCanvas drawImage from native image"
+    );
 }
 
 fn web_scheduler(ctx: &Context) {
@@ -706,8 +789,17 @@ fn web_scheduler(ctx: &Context) {
         let before = ffi::redjs_now();
         let v = ctx.eval("performance.now()").unwrap().as_number().unwrap();
         let after = ffi::redjs_now();
-        assert!(v >= before && v <= after, "performance.now ({v}) within [{before}, {after}]");
-        assert!(ctx.eval("performance.timeOrigin").unwrap().as_number().unwrap() > 0.0);
+        assert!(
+            v >= before && v <= after,
+            "performance.now ({v}) within [{before}, {after}]"
+        );
+        assert!(
+            ctx.eval("performance.timeOrigin")
+                .unwrap()
+                .as_number()
+                .unwrap()
+                > 0.0
+        );
 
         // rAF: registered → fires ONCE with the pump timestamp; re-registration
         // during the callback lands in the NEXT frame's batch.
@@ -719,7 +811,11 @@ fn web_scheduler(ctx: &Context) {
         .unwrap();
         let mut stats = redjs::ffi::RjsPumpStats::default();
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
-        assert_eq!((stats.raf_fired, stats.raf_pending), (1, 1), "one fired, re-registration pending");
+        assert_eq!(
+            (stats.raf_fired, stats.raf_pending),
+            (1, 1),
+            "one fired, re-registration pending"
+        );
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
         assert_eq!(stats.raf_pending, 0, "chain stopped after 3 frames");
@@ -728,7 +824,14 @@ fn web_scheduler(ctx: &Context) {
         let n = ctx.eval("frames.length").unwrap().as_number().unwrap();
         assert_eq!(n, 3.0);
         // Timestamps are the shared clock and monotonic.
-        assert_eq!(ctx.eval("frames.every(t => t > 0) && frames[0] <= frames[1] && frames[1] <= frames[2]").unwrap().as_bool(), Some(true));
+        assert_eq!(
+            ctx.eval(
+                "frames.every(t => t > 0) && frames[0] <= frames[1] && frames[1] <= frames[2]"
+            )
+            .unwrap()
+            .as_bool(),
+            Some(true)
+        );
 
         // cancelAnimationFrame.
         ctx.eval("globalThis.c = 0; const id = requestAnimationFrame(() => c++); cancelAnimationFrame(id);").unwrap();
@@ -745,8 +848,14 @@ fn web_scheduler(ctx: &Context) {
         )
         .unwrap();
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
-        assert_eq!(stats.timers_fired, 1, "only t0 due immediately (interval waits 1ms)");
-        assert_eq!(ctx.to_rust_string(ctx.eval("log.join()").unwrap()).unwrap(), "t0");
+        assert_eq!(
+            stats.timers_fired, 1,
+            "only t0 due immediately (interval waits 1ms)"
+        );
+        assert_eq!(
+            ctx.to_rust_string(ctx.eval("log.join()").unwrap()).unwrap(),
+            "t0"
+        );
         std::thread::sleep(std::time::Duration::from_millis(3));
         ffi::redjs_pump(ctx.raw(), 7, &mut stats); // nested + first interval fire
         std::thread::sleep(std::time::Duration::from_millis(3));
@@ -770,7 +879,9 @@ fn web_scheduler(ctx: &Context) {
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
         std::thread::sleep(std::time::Duration::from_millis(3));
         ffi::redjs_pump(ctx.raw(), 7, &mut stats);
-        let targs = ctx.to_rust_string(ctx.eval("targs.join()").unwrap()).unwrap();
+        let targs = ctx
+            .to_rust_string(ctx.eval("targs.join()").unwrap())
+            .unwrap();
         assert_eq!(targs, "7,obj,str,i,i", "timer extra args (got: {targs})");
 
         // Microtasks drain as part of the pump (async work driven per frame).
@@ -796,15 +907,24 @@ fn eval_basics(ctx: &Context) {
     let v = ctx.eval("6 * 7").unwrap();
     assert_eq!(v.as_number(), Some(42.0));
 
-    let v = ctx.eval("(function f(){ return 'hi ' + 'there'; })()").unwrap();
+    let v = ctx
+        .eval("(function f(){ return 'hi ' + 'there'; })()")
+        .unwrap();
     assert_eq!(ctx.to_rust_string(v).unwrap(), "hi there");
 
     // Named source shows up in stacks.
-    let err = ctx.eval_named("throw new Error('boom')", "game/main.js").unwrap_err();
-    let Error::Exception(e) = err else { panic!("expected exception") };
+    let err = ctx
+        .eval_named("throw new Error('boom')", "game/main.js")
+        .unwrap_err();
+    let Error::Exception(e) = err else {
+        panic!("expected exception")
+    };
     let (msg, stack) = ctx.error_info(e);
     assert_eq!(msg, "boom");
-    assert!(stack.contains("game/main.js"), "stack should name the source: {stack}");
+    assert!(
+        stack.contains("game/main.js"),
+        "stack should name the source: {stack}"
+    );
 }
 
 fn value_encoding(ctx: &Context) {
@@ -828,10 +948,11 @@ fn value_encoding(ctx: &Context) {
 
     // Encode side: pass values INTO JS.
     let sum = ctx
-        .call(ctx.eval("(function(a,b){ return a+b; })").unwrap(), Value::undefined(), &[
-            Value::int32(40),
-            Value::double(2.5),
-        ])
+        .call(
+            ctx.eval("(function(a,b){ return a+b; })").unwrap(),
+            Value::undefined(),
+            &[Value::int32(40), Value::double(2.5)],
+        )
         .unwrap();
     assert_eq!(sum.as_number(), Some(42.5));
 
@@ -881,11 +1002,15 @@ fn properties_objects_arrays(ctx: &Context) {
     sec("  set");
     ctx.set(obj, &a_x, Value::int32(10)).unwrap();
     sec("  define");
-    ctx.define(obj, &a_y, ctx.string("val"), 1 /* readonly */).unwrap();
+    ctx.define(obj, &a_y, ctx.string("val"), 1 /* readonly */)
+        .unwrap();
 
     sec("  get");
     assert_eq!(ctx.get(obj, &a_x).unwrap().as_number(), Some(10.0));
-    assert_eq!(ctx.to_rust_string(ctx.get(obj, &a_y).unwrap()).unwrap(), "val");
+    assert_eq!(
+        ctx.to_rust_string(ctx.get(obj, &a_y).unwrap()).unwrap(),
+        "val"
+    );
 
     // Expose to JS through the global and read from script.
     sec("  global_set");
@@ -909,9 +1034,17 @@ fn properties_objects_arrays(ctx: &Context) {
     assert_eq!(ctx.get_index(arr, 1).unwrap().as_number(), Some(2.0));
 
     // Descriptor-style reads (the GPUDevice.createX(descriptor) pattern).
-    let desc = ctx.eval("({ size: 256, usage: 0x28, label: 'vbuf', origin: [1,2,3] })").unwrap();
-    assert_eq!(ctx.get(desc, &ctx.atom("size")).unwrap().as_number(), Some(256.0));
-    assert_eq!(ctx.get(desc, &ctx.atom("usage")).unwrap().as_number(), Some(40.0));
+    let desc = ctx
+        .eval("({ size: 256, usage: 0x28, label: 'vbuf', origin: [1,2,3] })")
+        .unwrap();
+    assert_eq!(
+        ctx.get(desc, &ctx.atom("size")).unwrap().as_number(),
+        Some(256.0)
+    );
+    assert_eq!(
+        ctx.get(desc, &ctx.atom("usage")).unwrap().as_number(),
+        Some(40.0)
+    );
     let origin = ctx.get(desc, &ctx.atom("origin")).unwrap();
     assert_eq!(ctx.get_index(origin, 2).unwrap().as_number(), Some(3.0));
     // Missing property → undefined (ClearScript's IsUndefined pattern).
@@ -935,7 +1068,9 @@ fn host_functions(ctx: &Context) {
 
     // Hot loop through the trampoline — sanity that the SysV→MS transition
     // holds under JIT tiers (LLInt → DFG/FTL happens within these counts).
-    let v = ctx.eval("let s=0; for (let i=0;i<200000;i++) s = hostAdd(s, 1); s").unwrap();
+    let v = ctx
+        .eval("let s=0; for (let i=0;i<200000;i++) s = hostAdd(s, 1); s")
+        .unwrap();
     assert_eq!(v.as_number(), Some(200000.0));
 
     // Direct sysv64 host function — the zero-overhead Rust path.
@@ -960,7 +1095,14 @@ fn host_functions(ctx: &Context) {
     let mut out = 0u64;
     let name: Vec<u16> = "msSub".encode_utf16().collect();
     let status = unsafe {
-        ffi::redjs_function_create(ctx.raw(), name.as_ptr(), name.len(), 2, ms_abi_sub as *const c_void, &mut out)
+        ffi::redjs_function_create(
+            ctx.raw(),
+            name.as_ptr(),
+            name.len(),
+            2,
+            ms_abi_sub as *const c_void,
+            &mut out,
+        )
     };
     assert_eq!(status, 0);
     ctx.global_set("msSub", Value(out)).unwrap();
@@ -974,7 +1116,13 @@ fn host_functions(ctx: &Context) {
     let name: Vec<u16> = "msData".encode_utf16().collect();
     let status = unsafe {
         ffi::redjs_function_create_with_data(
-            ctx.raw(), name.as_ptr(), name.len(), 0, ms_abi_data as *const c_void, 777usize as *mut c_void, &mut out,
+            ctx.raw(),
+            name.as_ptr(),
+            name.len(),
+            0,
+            ms_abi_data as *const c_void,
+            777usize as *mut c_void,
+            &mut out,
         )
     };
     assert_eq!(status, 0);
@@ -1018,7 +1166,10 @@ fn callframe_layout_contract(ctx: &Context) {
         })
         .unwrap();
     ctx.global_set("probe", f).unwrap();
-    assert_eq!(ctx.eval("probe.call({o:1}, 11, 22, 33)").unwrap().as_bool(), Some(true));
+    assert_eq!(
+        ctx.eval("probe.call({o:1}, 11, 22, 33)").unwrap().as_bool(),
+        Some(true)
+    );
 
     // Under-application: arg(1) must read as undefined, argc == 1.
     let f = ctx
@@ -1033,18 +1184,26 @@ fn callframe_layout_contract(ctx: &Context) {
 
 fn calls_and_constructors(ctx: &Context) {
     // rust→js call with `this`.
-    let obj = ctx.eval("({ n: 40, add(x) { return this.n + x; } })").unwrap();
+    let obj = ctx
+        .eval("({ n: 40, add(x) { return this.n + x; } })")
+        .unwrap();
     let add = ctx.get(obj, &ctx.atom("add")).unwrap();
     let r = ctx.call(add, obj, &[Value::int32(2)]).unwrap();
     assert_eq!(r.as_number(), Some(42.0));
 
     // construct.
-    let ctor = ctx.eval("(class Point { constructor(x, y) { this.x = x; this.y = y; } })").unwrap();
-    let p = ctx.construct(ctor, &[Value::int32(3), Value::int32(4)]).unwrap();
+    let ctor = ctx
+        .eval("(class Point { constructor(x, y) { this.x = x; this.y = y; } })")
+        .unwrap();
+    let p = ctx
+        .construct(ctor, &[Value::int32(3), Value::int32(4)])
+        .unwrap();
     assert_eq!(ctx.get(p, &ctx.atom("y")).unwrap().as_number(), Some(4.0));
 
     // js exception propagates through call.
-    let thrower = ctx.eval("(function(){ throw new TypeError('nope'); })").unwrap();
+    let thrower = ctx
+        .eval("(function(){ throw new TypeError('nope'); })")
+        .unwrap();
     let Err(Error::Exception(e)) = ctx.call(thrower, Value::undefined(), &[]) else {
         panic!("expected exception");
     };
@@ -1054,7 +1213,9 @@ fn calls_and_constructors(ctx: &Context) {
 
 fn exceptions(ctx: &Context) {
     // Syntax error at eval.
-    let Err(Error::Exception(e)) = ctx.eval("function {") else { panic!() };
+    let Err(Error::Exception(e)) = ctx.eval("function {") else {
+        panic!()
+    };
     let (msg, _) = ctx.error_info(e);
     assert!(!msg.is_empty());
 
@@ -1086,20 +1247,31 @@ fn typed_arrays(ctx: &Context) {
     assert_eq!(info.length, 8);
     assert_eq!(info.byte_length, 32);
     assert_eq!(info.detached, 0);
-    let floats = unsafe { core::slice::from_raw_parts(info.data as *const f32, info.length as usize) };
+    let floats =
+        unsafe { core::slice::from_raw_parts(info.data as *const f32, info.length as usize) };
     assert_eq!(floats[4], 6.0);
 
     // Subarray keeps byteOffset.
-    let v = ctx.eval("new Uint16Array(new ArrayBuffer(64), 8, 12)").unwrap();
+    let v = ctx
+        .eval("new Uint16Array(new ArrayBuffer(64), 8, 12)")
+        .unwrap();
     let info = ctx.typedarray_info(v).unwrap();
-    assert_eq!((info.kind, info.length, info.byte_offset), (TaKind::U16 as u32, 12, 8));
+    assert_eq!(
+        (info.kind, info.length, info.byte_offset),
+        (TaKind::U16 as u32, 12, 8)
+    );
 
     // Host-created typed array visible to JS.
     let ta = ctx.typedarray(TaKind::U8, 4).unwrap();
     let info = ctx.typedarray_info(ta).unwrap();
-    unsafe { core::slice::from_raw_parts_mut(info.data as *mut u8, 4).copy_from_slice(&[1, 2, 3, 4]) };
+    unsafe {
+        core::slice::from_raw_parts_mut(info.data as *mut u8, 4).copy_from_slice(&[1, 2, 3, 4])
+    };
     ctx.global_set("hostBytes", ta).unwrap();
-    assert_eq!(ctx.eval("hostBytes[0] + hostBytes[3]").unwrap().as_number(), Some(5.0));
+    assert_eq!(
+        ctx.eval("hostBytes[0] + hostBytes[3]").unwrap().as_number(),
+        Some(5.0)
+    );
 
     // ArrayBuffer info.
     let ab = ctx.eval("new ArrayBuffer(128)").unwrap();
@@ -1116,8 +1288,13 @@ fn external_buffers(ctx: &Context) {
 
     let ab = unsafe { ctx.arraybuffer_external(ptr, 64, None, core::ptr::null_mut()) }.unwrap();
     ctx.global_set("mapped", ab).unwrap();
-    ctx.eval("new Uint8Array(mapped).set([7, 8, 9], 4)").unwrap();
-    assert_eq!(&host_mem[4..7], &[7, 8, 9], "JS write must hit host memory directly");
+    ctx.eval("new Uint8Array(mapped).set([7, 8, 9], 4)")
+        .unwrap();
+    assert_eq!(
+        &host_mem[4..7],
+        &[7, 8, 9],
+        "JS write must hit host memory directly"
+    );
 
     // unmap(): detach → JS views die, host memory stays ours.
     ctx.arraybuffer_detach(ab).unwrap();
@@ -1130,11 +1307,19 @@ fn external_buffers(ctx: &Context) {
     static DEALLOC_HITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     unsafe extern "C" fn dealloc(bytes: *mut c_void, _ctx: *mut c_void) {
         DEALLOC_HITS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-        drop(Box::from_raw(core::slice::from_raw_parts_mut(bytes as *mut u8, 16)));
+        drop(Box::from_raw(core::slice::from_raw_parts_mut(
+            bytes as *mut u8,
+            16,
+        )));
     }
     let leaked = Box::into_raw(vec![0u8; 16].into_boxed_slice()) as *mut u8;
     let ab = unsafe {
-        ctx.arraybuffer_external(leaked as *mut c_void, 16, Some(dealloc), core::ptr::null_mut())
+        ctx.arraybuffer_external(
+            leaked as *mut c_void,
+            16,
+            Some(dealloc),
+            core::ptr::null_mut(),
+        )
     }
     .unwrap();
     let abi = ctx.arraybuffer_info(ab).unwrap();
@@ -1163,13 +1348,16 @@ fn external_buffers(ctx: &Context) {
 }
 
 #[inline(never)]
-fn make_dead_external_ta(
-    ctx: &Context,
-    dealloc: unsafe extern "C" fn(*mut c_void, *mut c_void),
-) {
+fn make_dead_external_ta(ctx: &Context, dealloc: unsafe extern "C" fn(*mut c_void, *mut c_void)) {
     let leaked = Box::into_raw(vec![0u8; 16].into_boxed_slice()) as *mut u8;
     let ta = unsafe {
-        ctx.typedarray_external(TaKind::U8, leaked as *mut c_void, 16, Some(dealloc), core::ptr::null_mut())
+        ctx.typedarray_external(
+            TaKind::U8,
+            leaked as *mut c_void,
+            16,
+            Some(dealloc),
+            core::ptr::null_mut(),
+        )
     }
     .unwrap();
     let info = ctx.typedarray_info(ta).unwrap();
@@ -1193,9 +1381,11 @@ fn promises_and_microtasks(ctx: &Context) {
     // .then after a microtask drain (the Task→Promise seam).
     let (promise, resolve, _reject) = ctx.promise().unwrap();
     ctx.global_set("hostPromise", promise).unwrap();
-    ctx.eval("globalThis.observed = 'pending'; hostPromise.then(v => { observed = 'got:' + v; })").unwrap();
+    ctx.eval("globalThis.observed = 'pending'; hostPromise.then(v => { observed = 'got:' + v; })")
+        .unwrap();
 
-    ctx.call(resolve, Value::undefined(), &[Value::int32(99)]).unwrap();
+    ctx.call(resolve, Value::undefined(), &[Value::int32(99)])
+        .unwrap();
     ctx.drain_microtasks();
     let v = ctx.eval("observed").unwrap();
     assert_eq!(ctx.to_rust_string(v).unwrap(), "got:99");
@@ -1207,7 +1397,9 @@ fn promises_and_microtasks(ctx: &Context) {
 
     // JS async function → host observes settlement by polling promise_info
     // (how C# converts a JS promise into a Task without callbacks).
-    let p = ctx.eval("(async () => { let x = await Promise.resolve(20); return x + 22; })()").unwrap();
+    let p = ctx
+        .eval("(async () => { let x = await Promise.resolve(20); return x + 22; })()")
+        .unwrap();
     ctx.protect(p);
     ctx.drain_microtasks();
     let (st, res) = ctx.promise_info(p).unwrap();
@@ -1236,11 +1428,15 @@ fn host_objects(ctx: &Context) {
     // Handle 0xBEEF travels JS and comes back identical (the wrapper pattern:
     // JS object carries a host handle; methods read it back in one call).
     let mut obj = 0u64;
-    let status = unsafe { ffi::redjs_hostobject_create(ctx.raw(), cls, 0xBEEF as *mut c_void, 0, &mut obj) };
+    let status =
+        unsafe { ffi::redjs_hostobject_create(ctx.raw(), cls, 0xBEEF as *mut c_void, 0, &mut obj) };
     assert_eq!(status, 0);
     ctx.global_set("gpuBuf", Value(obj)).unwrap();
     let round = ctx.eval("(() => gpuBuf)()").unwrap();
-    assert_eq!(unsafe { ffi::redjs_hostobject_data(round.0) } as usize, 0xBEEF);
+    assert_eq!(
+        unsafe { ffi::redjs_hostobject_data(round.0) } as usize,
+        0xBEEF
+    );
 
     // Not a host object → null.
     assert!(unsafe { ffi::redjs_hostobject_data(ctx.object().0) }.is_null());
@@ -1256,9 +1452,14 @@ fn host_objects(ctx: &Context) {
         .unwrap();
     ctx.define(proto, &ctx.atom("handle"), getter, 0).unwrap();
     let mut obj2 = 0u64;
-    unsafe { ffi::redjs_hostobject_create(ctx.raw(), cls, 0x1234 as *mut c_void, proto.0, &mut obj2) };
+    unsafe {
+        ffi::redjs_hostobject_create(ctx.raw(), cls, 0x1234 as *mut c_void, proto.0, &mut obj2)
+    };
     ctx.global_set("gpuBuf2", Value(obj2)).unwrap();
-    assert_eq!(ctx.eval("gpuBuf2.handle()").unwrap().as_number(), Some(0x1234 as f64));
+    assert_eq!(
+        ctx.eval("gpuBuf2.handle()").unwrap().as_number(),
+        Some(0x1234 as f64)
+    );
 
     // Finalizer: create unreferenced host objects, force GC. Conservative
     // stack scanning may keep a straggler alive, so require ≥3 of 4.
@@ -1293,7 +1494,8 @@ fn gc_and_stats(ctx: &Context) {
     // protect keeps a value across GC.
     let v = ctx.string("survives");
     ctx.protect(v);
-    ctx.eval("for (let i = 0; i < 1000; i++) ({ junk: 'x'.repeat(100) })").unwrap();
+    ctx.eval("for (let i = 0; i < 1000; i++) ({ junk: 'x'.repeat(100) })")
+        .unwrap();
     ctx.gc();
     assert_eq!(ctx.read_string(v).unwrap(), "survives");
     ctx.unprotect(v);
@@ -1331,10 +1533,12 @@ fn engine_surface(ctx: &Context) {
     assert_eq!(unsafe { ffi::redjs_init(core::ptr::null()) }, 0);
 
     let s = |src: &str| -> String {
-        let v = ctx.eval_named(src, "engine/surface.js").unwrap_or_else(|e| match e {
-            Error::Exception(x) => panic!("{src}\n  threw: {:?}", ctx.error_info(x)),
-            e => panic!("{src}: {e:?}"),
-        });
+        let v = ctx
+            .eval_named(src, "engine/surface.js")
+            .unwrap_or_else(|e| match e {
+                Error::Exception(x) => panic!("{src}\n  threw: {:?}", ctx.error_info(x)),
+                e => panic!("{src}: {e:?}"),
+            });
         ctx.to_rust_string(v).unwrap()
     };
 
@@ -1413,7 +1617,14 @@ fn engine_surface(ctx: &Context) {
         .function("hostInvoke", 1, |g, cf| unsafe {
             let args = HostArgs::new(cf);
             let mut out = 0u64;
-            let rc = redjs::glue::rjs_call(g, args.arg(0).0, Value::undefined().0, core::ptr::null(), 0, &mut out);
+            let rc = redjs::glue::rjs_call(
+                g,
+                args.arg(0).0,
+                Value::undefined().0,
+                core::ptr::null(),
+                0,
+                &mut out,
+            );
             if rc != 0 {
                 ffi::redjs_throw(g, out);
                 return Value::undefined().0;
@@ -1428,7 +1639,10 @@ fn engine_surface(ctx: &Context) {
         try { outer(); return 'no throw'; } catch (e) { return String(e.stack); }
     })()"#);
     for frame in ["inner", "middle", "outer", "engine/surface.js"] {
-        assert!(stack.contains(frame), "{frame} missing from a stack that crossed a host fn:\n{stack}");
+        assert!(
+            stack.contains(frame),
+            "{frame} missing from a stack that crossed a host fn:\n{stack}"
+        );
     }
 
     // Native: walk from inside a host fn back out through JSC to here, once
@@ -1505,7 +1719,16 @@ fn capture_stack() -> Vec<usize> {
             } else {
                 let mut data = core::ptr::null_mut();
                 let mut frame = 0u64;
-                RtlVirtualUnwind(0, base, pc, entry, &mut cx, &mut data, &mut frame, core::ptr::null_mut());
+                RtlVirtualUnwind(
+                    0,
+                    base,
+                    pc,
+                    entry,
+                    &mut cx,
+                    &mut data,
+                    &mut frame,
+                    core::ptr::null_mut(),
+                );
             }
         }
     }
@@ -1538,7 +1761,10 @@ fn native_unwind_through_js(ctx: &Context, src: &str) {
     let outside = capture_stack();
     ctx.eval_named(src, "engine/unwind.js").unwrap();
     let inside = INSIDE.with(|i| i.borrow().clone());
-    assert!(outside.len() >= 4, "the reference walk itself is too short: {outside:x?}");
+    assert!(
+        outside.len() >= 4,
+        "the reference walk itself is too short: {outside:x?}"
+    );
     let tail = &outside[2..];
     assert!(
         inside.len() > tail.len() && inside.ends_with(tail),
@@ -1572,7 +1798,12 @@ fn child_small_structure_heap() {
 #[test]
 fn small_structure_heap_boots() {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "child_small_structure_heap", "--nocapture", "--test-threads=1"])
+        .args([
+            "--exact",
+            "child_small_structure_heap",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env("REDJS_SMOKE_CHILD", "1")
         .env("JSC_structureHeapSizeInKB", "262144")
         .output()
@@ -1589,10 +1820,15 @@ fn small_structure_heap_boots() {
 fn host_function_throw(ctx: &Context) {
     // Host fn returning after redjs_throw → JS sees the exception; the VM
     // exception state must not leak into subsequent evals.
-    let v = ctx.eval("(() => { try { hostThrow(); return 'bad'; } catch { return 'caught'; } })()").unwrap();
+    let v = ctx
+        .eval("(() => { try { hostThrow(); return 'bad'; } catch { return 'caught'; } })()")
+        .unwrap();
     assert_eq!(ctx.to_rust_string(v).unwrap(), "caught");
     assert_eq!(ctx.eval("1 + 1").unwrap().as_number(), Some(2.0));
 
     let mut pending = 0u64;
-    assert_eq!(unsafe { ffi::redjs_exception_pending(ctx.raw(), &mut pending) }, 0);
+    assert_eq!(
+        unsafe { ffi::redjs_exception_pending(ctx.raw(), &mut pending) },
+        0
+    );
 }

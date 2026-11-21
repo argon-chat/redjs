@@ -19,10 +19,29 @@ mod tests {
     /// gives each. The audit below covers everything on the global; this list
     /// pins the ones the finding was about, by name.
     const PINNED: &[&str] = &[
-        "Blob", "File", "FileList", "Headers", "Request", "Response", "FormData", "URL",
-        "URLSearchParams", "AbortController", "AbortSignal", "Event", "EventTarget",
-        "DOMException", "TextEncoder", "TextDecoder", "WebSocket", "XMLHttpRequest",
-        "ImageBitmap", "ImageData", "Path2D", "DOMMatrix", "Navigator",
+        "Blob",
+        "File",
+        "FileList",
+        "Headers",
+        "Request",
+        "Response",
+        "FormData",
+        "URL",
+        "URLSearchParams",
+        "AbortController",
+        "AbortSignal",
+        "Event",
+        "EventTarget",
+        "DOMException",
+        "TextEncoder",
+        "TextDecoder",
+        "WebSocket",
+        "XMLHttpRequest",
+        "ImageBitmap",
+        "ImageData",
+        "Path2D",
+        "DOMMatrix",
+        "Navigator",
     ];
 
     /// The audit: every global function with an own `prototype` object whose
@@ -59,7 +78,10 @@ mod tests {
         let c = ctx();
         let bad = s(&c, AUDIT);
         let unexpected: Vec<&str> = bad.split(',').filter(|e| !e.is_empty()).collect();
-        assert!(unexpected.is_empty(), "interface prototypes without their own @@toStringTag: {unexpected:?}");
+        assert!(
+            unexpected.is_empty(),
+            "interface prototypes without their own @@toStringTag: {unexpected:?}"
+        );
     }
 
     #[test]
@@ -106,8 +128,14 @@ mod tests {
     #[test]
     fn a_media_device_info_is_not_a_plain_object() {
         let c = ctx();
-        ok(&c, "MediaDeviceInfo.prototype[Symbol.toStringTag] === 'MediaDeviceInfo'");
-        ok(&c, "AudioContext.prototype[Symbol.toStringTag] === 'AudioContext'");
+        ok(
+            &c,
+            "MediaDeviceInfo.prototype[Symbol.toStringTag] === 'MediaDeviceInfo'",
+        );
+        ok(
+            &c,
+            "AudioContext.prototype[Symbol.toStringTag] === 'AudioContext'",
+        );
         ok(&c, "GainNode.prototype[Symbol.toStringTag] === 'GainNode'");
         // An instance too: JSC tags an API object with its JSClass's name
         // ahead of its prototype chain (audio.rs `node_class_for`).

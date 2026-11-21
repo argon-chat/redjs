@@ -66,7 +66,14 @@ const BUN_HOOKS: [&str; 8] = [
 ];
 
 /// The prebuilt's static libraries on Windows.
-const WINDOWS_WEBKIT_LIBS: &[&str] = &["JavaScriptCore", "WTF", "bmalloc", "sicudt", "sicuin", "sicuuc"];
+const WINDOWS_WEBKIT_LIBS: &[&str] = &[
+    "JavaScriptCore",
+    "WTF",
+    "bmalloc",
+    "sicudt",
+    "sicuin",
+    "sicuuc",
+];
 
 /// Windows system libs WebKit pulls in. `ntdll`: the JIT/LLInt unwind-info
 /// registration (`RtlAddGrowableFunctionTable`) — glue.cpp also carries it
@@ -94,7 +101,14 @@ const WINDOWS_SYSTEM_LIBS: &[&str] = &[
 /// an engine DLL exports, less what it does not define (a declaration behind
 /// a feature the C++ was built without). SQLite (`webapi/indexeddb`) stays
 /// in the Rust image and is not listed.
-const ENGINE_IMPORTERS: &[&str] = &["aot.rs", "capi.rs", "glue.rs", "icu.rs", "profiling.rs", "web.rs"];
+const ENGINE_IMPORTERS: &[&str] = &[
+    "aot.rs",
+    "capi.rs",
+    "glue.rs",
+    "icu.rs",
+    "profiling.rs",
+    "web.rs",
+];
 
 /// Number of pre-compiled host-function trampolines. Each registered C# host
 /// function consumes one slot for the lifetime of the process.
@@ -126,7 +140,12 @@ fn main() {
         println!("cargo:rustc-check-cfg=cfg(redjs_engine_dll)");
         return;
     }
-    if windows && !env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default().split(',').any(|f| f == "crt-static") {
+    if windows
+        && !env::var("CARGO_CFG_TARGET_FEATURE")
+            .unwrap_or_default()
+            .split(',')
+            .any(|f| f == "crt-static")
+    {
         panic!(
             "\n\nredjs links the static CRT on Windows: the JavaScriptCore prebuilt and its C++ glue are /MT,\n\
              and mixing them with the dynamic CRT gives two heaps in one process. Add to .cargo/config.toml:\n\n\
@@ -143,7 +162,9 @@ fn main() {
     // with every release. See `link_engine_dll`.
     println!("cargo:rerun-if-env-changed=REDJS_ENGINE_DLL");
     println!("cargo:rustc-check-cfg=cfg(redjs_engine_dll)");
-    let engine_dll = env::var("REDJS_ENGINE_DLL").ok().filter(|name| windows && !name.is_empty());
+    let engine_dll = env::var("REDJS_ENGINE_DLL")
+        .ok()
+        .filter(|name| windows && !name.is_empty());
     if let Some(name) = &engine_dll {
         assert!(
             name.ends_with(".dll") && !name.contains(['/', '\\', ':', '"']),
@@ -384,27 +405,29 @@ fn main() {
     // (research/reports/m25/indexeddb-p2-impl.md has the numbers, and the
     // benchmarks that say what it costs). /Gy + /Gw put every function and
     // global in its own COMDAT, so the linker drops what nothing reaches.
-    let sqlite = env::var_os("CARGO_FEATURE_INDEXEDDB_SQLITE").is_some().then(|| {
-        let mc = fetch::sqlite3mc(&manifest, &pins);
-        let mut sqlite = native_build(false, windows);
-        if windows {
+    let sqlite = env::var_os("CARGO_FEATURE_INDEXEDDB_SQLITE")
+        .is_some()
+        .then(|| {
+            let mc = fetch::sqlite3mc(&manifest, &pins);
+            let mut sqlite = native_build(false, windows);
+            if windows {
+                sqlite
+                    .flag("/Gy")
+                    .flag("/Gw")
+                    .define("_CRT_SECURE_NO_WARNINGS", None);
+            } else {
+                sqlite.flag("-ffunction-sections").flag("-fdata-sections");
+            }
             sqlite
-                .flag("/Gy")
-                .flag("/Gw")
-                .define("_CRT_SECURE_NO_WARNINGS", None);
-        } else {
-            sqlite.flag("-ffunction-sections").flag("-fdata-sections");
-        }
-        sqlite
-            .file("cpp/idb_sqlite.c")
-            .include(&mc)
-            .opt_level_str("s")
-            .flag("-w")
-            .define("NDEBUG", None);
-        println!("cargo:rerun-if-changed=cpp/idb_sqlite.c");
-        println!("cargo:rerun-if-changed={}", mc.join(".redjs-pin").display());
-        sqlite
-    });
+                .file("cpp/idb_sqlite.c")
+                .include(&mc)
+                .opt_level_str("s")
+                .flag("-w")
+                .define("NDEBUG", None);
+            println!("cargo:rerun-if-changed=cpp/idb_sqlite.c");
+            println!("cargo:rerun-if-changed={}", mc.join(".redjs-pin").display());
+            sqlite
+        });
 
     // The three compile at once; archiving stays in this order so the link
     // lines (GNU ld resolves left to right) come out as before.
@@ -415,22 +438,50 @@ fn main() {
         (glue, allocator.join().unwrap(), sqlite.join().unwrap())
     });
     let archive = |cpp: bool, objects: Vec<PathBuf>, metadata: bool, name: &str| {
-        native_build(cpp, windows).objects(objects).cargo_metadata(metadata).compile(name);
+        native_build(cpp, windows)
+            .objects(objects)
+            .cargo_metadata(metadata)
+            .compile(name);
     };
     archive(true, glue_objects, engine_dll.is_none(), "redjs_glue");
-    archive(true, allocator_objects, engine_dll.is_none(), "redjs_mimalloc");
+    archive(
+        true,
+        allocator_objects,
+        engine_dll.is_none(),
+        "redjs_mimalloc",
+    );
     if let Some(objects) = sqlite_objects {
         archive(false, objects, true, "redjs_sqlite");
     }
 
-    let icu_root = (env::var_os("CARGO_FEATURE_ICU_ROOT").is_some() && target_os != "macos")
-        .then(|| link_icu_root(&manifest, &out_dir, &lib, windows, &target_arch, platform, &pins));
+    let icu_root =
+        (env::var_os("CARGO_FEATURE_ICU_ROOT").is_some() && target_os != "macos").then(|| {
+            link_icu_root(
+                &manifest,
+                &out_dir,
+                &lib,
+                windows,
+                &target_arch,
+                platform,
+                &pins,
+            )
+        });
 
     if let Some(name) = &engine_dll {
-        link_engine_dll(&manifest, &out_dir, &lib, name, icu_root.as_deref(), no_jit.as_deref());
+        link_engine_dll(
+            &manifest,
+            &out_dir,
+            &lib,
+            name,
+            icu_root.as_deref(),
+            no_jit.as_deref(),
+        );
     } else {
         if let Some(archive) = &no_jit {
-            println!("cargo:rustc-link-search=native={}", archive.parent().unwrap().display());
+            println!(
+                "cargo:rustc-link-search=native={}",
+                archive.parent().unwrap().display()
+            );
         }
         if windows {
             if let Some(stripped) = webkit_without_debug_info(&out_dir, &lib) {
@@ -455,8 +506,9 @@ fn main() {
         for name in ["icui18n", "icuuc", "icudata"] {
             let alias = out_dir.join(format!("libredjs_{name}.a"));
             let _ = std::fs::remove_file(&alias);
-            link_alias(&lib.join(format!("lib{name}.a")), &alias)
-                .unwrap_or_else(|e| panic!("linking {} to Bun's lib{name}.a: {e}", alias.display()));
+            link_alias(&lib.join(format!("lib{name}.a")), &alias).unwrap_or_else(|e| {
+                panic!("linking {} to Bun's lib{name}.a: {e}", alias.display())
+            });
         }
         println!("cargo:rustc-link-search=native={}", out_dir.display());
         &[
@@ -565,7 +617,10 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
         removed.push("WebAssembly");
         stubs.extend([
             ("entry.WebAssembly", "redjs_removed_wasm_entry"),
-            ("host-function.WebAssembly", "redjs_removed_wasm_host_function"),
+            (
+                "host-function.WebAssembly",
+                "redjs_removed_wasm_host_function",
+            ),
             ("skip.WebAssembly", "redjs_removed_wasm_skip"),
         ]);
     }
@@ -573,7 +628,10 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
         removed.push("Interpreter");
         stubs.extend([
             ("entry.Interpreter", "redjs_removed_interpreter_entry"),
-            ("host-function.Interpreter", "redjs_removed_interpreter_host_function"),
+            (
+                "host-function.Interpreter",
+                "redjs_removed_interpreter_host_function",
+            ),
             ("skip.Interpreter", "redjs_removed_interpreter_skip"),
         ]);
     }
@@ -587,9 +645,14 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
     println!("cargo:rerun-if-changed={}", receipt_path.display());
     let receipt = fs::read_to_string(&receipt_path)
         .unwrap_or_else(|e| panic!("\n\n{}: {e}\n{fix}\n", receipt_path.display()));
-    let field = |key: &str| receipt.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('='));
+    let field = |key: &str| {
+        receipt
+            .lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+    };
     assert!(
-        receipt.starts_with("redjs.no-jit.v2\n") && field("webkit") == Some(pin(pins, "webkit.version")),
+        receipt.starts_with("redjs.no-jit.v2\n")
+            && field("webkit") == Some(pin(pins, "webkit.version")),
         "\n\n{} was made for another engine than pins.txt names.\n{fix}\n",
         dir.display()
     );
@@ -599,7 +662,8 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
         dir.display()
     );
     assert!(
-        field("removed") == Some(removed.as_str()) && stubs.iter().all(|(key, symbol)| field(key) == Some(symbol)),
+        field("removed") == Some(removed.as_str())
+            && stubs.iter().all(|(key, symbol)| field(key) == Some(symbol)),
         "\n\n{} leaves out {}, and this build leaves out {removed}.\n{fix}\n",
         dir.display(),
         field("removed").unwrap_or("nothing it names")
@@ -609,7 +673,11 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
     } else {
         format!("lib{NO_JIT_LIB}.a")
     });
-    assert!(archive.is_file(), "\n\n{} is missing.\n{fix}\n", archive.display());
+    assert!(
+        archive.is_file(),
+        "\n\n{} is missing.\n{fix}\n",
+        archive.display()
+    );
     println!("cargo:rerun-if-changed={}", archive.display());
     archive
 }
@@ -625,13 +693,20 @@ fn link_icu_root(
     platform: &str,
     pins: &[(String, String)],
 ) -> PathBuf {
-    let library = webkit_lib.join(if windows { "sicudt.lib" } else { "libicudata.a" });
+    let library = webkit_lib.join(if windows {
+        "sicudt.lib"
+    } else {
+        "libicudata.a"
+    });
     let keep_path = manifest.join("icu-root.txt");
     println!("cargo:rerun-if-changed={}", keep_path.display());
     println!("cargo:rerun-if-changed=build_icu.rs");
     let keep_text = fs::read_to_string(&keep_path).expect("icu-root.txt is readable");
-    let keep: Vec<&str> =
-        keep_text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let keep: Vec<&str> = keep_text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
 
     let full = icu::read(&library, windows);
     let root = icu::subset(&full, &keep);
@@ -639,7 +714,8 @@ fn link_icu_root(
     let key = format!("icu.root.{platform}.sha256");
     match pins.iter().find(|(k, _)| *k == key) {
         Some((_, want)) => assert_eq!(
-            &hash, want,
+            &hash,
+            want,
             "the root-only ICU data built from {} is not the one pins.txt names ({key}): \
              the prebuilt or icu-root.txt changed. Check the change, then pin the new hash.",
             library.display()
@@ -647,9 +723,20 @@ fn link_icu_root(
         None => panic!("pins.txt has no `{key}`; the root-only ICU data built here is {hash}"),
     }
 
-    let object = out_dir.join(if windows { "icudata_root.obj" } else { "icudata_root.o" });
-    fs::write(&object, icu::object(&full.symbol, &root, &full.dict, windows, arch)).unwrap();
-    native_build(false, windows).object(&object).cargo_metadata(false).compile(ICU_ROOT_LIB);
+    let object = out_dir.join(if windows {
+        "icudata_root.obj"
+    } else {
+        "icudata_root.o"
+    });
+    fs::write(
+        &object,
+        icu::object(&full.symbol, &root, &full.dict, windows, arch),
+    )
+    .unwrap();
+    native_build(false, windows)
+        .object(&object)
+        .cargo_metadata(false)
+        .compile(ICU_ROOT_LIB);
     println!("cargo:rustc-cfg=redjs_icu_root");
 
     let name = format!("{}.dat", full.package);
@@ -659,9 +746,14 @@ fn link_icu_root(
     println!("cargo:rustc-env=REDJS_ICU_FULL_DATA={}", dat.display());
     // OUT_DIR is target/<triple>/<profile>/build/redjs-<hash>/out.
     if let Some(profile) = out_dir.ancestors().nth(3) {
-        fs::copy(&dat, profile.join(&name)).unwrap_or_else(|e| panic!("copying {name} to {}: {e}", profile.display()));
+        fs::copy(&dat, profile.join(&name))
+            .unwrap_or_else(|e| panic!("copying {name} to {}: {e}", profile.display()));
     }
-    out_dir.join(if windows { format!("{ICU_ROOT_LIB}.lib") } else { format!("lib{ICU_ROOT_LIB}.a") })
+    out_dir.join(if windows {
+        format!("{ICU_ROOT_LIB}.lib")
+    } else {
+        format!("lib{ICU_ROOT_LIB}.a")
+    })
 }
 
 /// Dev builds link JavaScriptCore and WTF without their CodeView (1.3 GB), which every consumer
@@ -675,7 +767,10 @@ fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBu
     if out_dir.ancestors().nth(3)?.file_name()? != "debug" {
         return None;
     }
-    let sysroot = std::process::Command::new(env::var_os("RUSTC")?).args(["--print", "sysroot"]).output().ok()?;
+    let sysroot = std::process::Command::new(env::var_os("RUSTC")?)
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
     let objcopy = PathBuf::from(String::from_utf8(sysroot.stdout).ok()?.trim())
         .join("lib/rustlib")
         .join(env::var("HOST").ok()?)
@@ -723,12 +818,19 @@ fn link_engine_dll(
             .unwrap_or_else(|| panic!("REDJS_ENGINE_DLL needs the MSVC linker ({name})"))
             .to_command()
     };
-    let mut libraries: Vec<PathBuf> = ["redjs_glue.lib", "redjs_mimalloc.lib"].iter().map(|l| out_dir.join(l)).collect();
-    libraries.extend(WINDOWS_WEBKIT_LIBS.iter().map(|l| match (*l, icu_root, no_jit) {
-        ("sicudt", Some(root), _) => root.to_path_buf(),
-        ("JavaScriptCore", _, Some(archive)) => archive.to_path_buf(),
-        _ => webkit_lib.join(format!("{l}.lib")),
-    }));
+    let mut libraries: Vec<PathBuf> = ["redjs_glue.lib", "redjs_mimalloc.lib"]
+        .iter()
+        .map(|l| out_dir.join(l))
+        .collect();
+    libraries.extend(
+        WINDOWS_WEBKIT_LIBS
+            .iter()
+            .map(|l| match (*l, icu_root, no_jit) {
+                ("sicudt", Some(root), _) => root.to_path_buf(),
+                ("JavaScriptCore", _, Some(archive)) => archive.to_path_buf(),
+                _ => webkit_lib.join(format!("{l}.lib")),
+            }),
+    );
 
     let mut defined = std::collections::HashSet::new();
     let mut mimalloc = Vec::new();
@@ -738,7 +840,11 @@ fn link_engine_dll(
             .arg(library)
             .output()
             .unwrap_or_else(|e| panic!("link /dump {}: {e}", library.display()));
-        assert!(output.status.success(), "link /dump {} failed", library.display());
+        assert!(
+            output.status.success(),
+            "link /dump {} failed",
+            library.display()
+        );
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             let mut words = line.split_whitespace();
             if let (Some(offset), Some(symbol), None) = (words.next(), words.next(), words.next()) {
@@ -757,13 +863,25 @@ fn link_engine_dll(
         let path = manifest.join("src").join(file);
         println!("cargo:rerun-if-changed={}", path.display());
         let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        exports.extend(extern_c_names(&text).into_iter().filter(|n| defined.contains(n)));
+        exports.extend(
+            extern_c_names(&text)
+                .into_iter()
+                .filter(|n| defined.contains(n)),
+        );
     }
     // mimalloc's public API too: embedders read its stats and options (the
     // skathi devtools memory report) from outside this crate.
     exports.extend(mimalloc);
-    for required in ["rjs_init", "rjs_set_icu_decompress", "rjs_icu_zstd_dict", "JSGlobalContextCreate"] {
-        assert!(exports.contains(required), "the engine DLL would not export {required}");
+    for required in [
+        "rjs_init",
+        "rjs_set_icu_decompress",
+        "rjs_icu_zstd_dict",
+        "JSGlobalContextCreate",
+    ] {
+        assert!(
+            exports.contains(required),
+            "the engine DLL would not export {required}"
+        );
     }
     let compiler = env::var_os("CARGO_FEATURE_AOT_COMPILER").is_some();
     assert!(
@@ -782,7 +900,15 @@ fn link_engine_dll(
     let dll = out_dir.join(name);
     let implib = out_dir.join("redjs_engine.lib");
     let output = tool("link")
-        .args(["/nologo", "/DLL", "/MACHINE:X64", "/INCREMENTAL:NO", "/OPT:REF", "/OPT:NOICF", "/Brepro"])
+        .args([
+            "/nologo",
+            "/DLL",
+            "/MACHINE:X64",
+            "/INCREMENTAL:NO",
+            "/OPT:REF",
+            "/OPT:NOICF",
+            "/Brepro",
+        ])
         .arg(format!("/OUT:{}", dll.display()))
         .arg(format!("/IMPLIB:{}", implib.display()))
         .arg(format!("/DEF:{}", def.display()))
@@ -803,7 +929,8 @@ fn link_engine_dll(
     if let Some(profile) = out_dir.ancestors().nth(3) {
         for directory in [profile.to_path_buf(), profile.join("deps")] {
             if directory.is_dir() {
-                fs::copy(&dll, directory.join(name)).unwrap_or_else(|e| panic!("copying {name} to {}: {e}", directory.display()));
+                fs::copy(&dll, directory.join(name))
+                    .unwrap_or_else(|e| panic!("copying {name} to {}: {e}", directory.display()));
             }
         }
     }
@@ -896,7 +1023,8 @@ fn pin<'a>(pins: &'a [(String, String)], key: &str) -> &'a str {
 fn check_prebuilt(webkit: &Path, pins: &[(String, String)]) {
     let want = pin(pins, "webkit.version");
     let cfg = webkit.join("include").join("cmakeconfig.h");
-    let fix = "Point BUN_WEBKIT_DIR at an extraction of the pinned tarball, or unset it to let redjs \
+    let fix =
+        "Point BUN_WEBKIT_DIR at an extraction of the pinned tarball, or unset it to let redjs \
                fetch the pinned prebuilt.";
     let Ok(text) = fs::read_to_string(&cfg) else {
         panic!(

@@ -160,7 +160,9 @@ pub fn input_devices() -> Vec<AudioDevice> {
         .into_iter()
         .map(|d| AudioDevice {
             id: format!("{}", d.id),
-            label: d.name.unwrap_or_else(|| String::from("Unknown input device")),
+            label: d
+                .name
+                .unwrap_or_else(|| String::from("Unknown input device")),
             is_default: d.is_default,
         })
         .collect()
@@ -169,7 +171,11 @@ pub fn input_devices() -> Vec<AudioDevice> {
 /// What a fake capture lists (webapi/mediastream.rs, `set_fake_capture`).
 fn fake_inputs() -> Vec<AudioDevice> {
     use super::mediastream::fake::{DEVICE_ID, LABEL};
-    vec![AudioDevice { id: DEVICE_ID.to_string(), label: LABEL.to_string(), is_default: true }]
+    vec![AudioDevice {
+        id: DEVICE_ID.to_string(),
+        label: LABEL.to_string(),
+        is_default: true,
+    }]
 }
 
 /// The system's audio output endpoints, default first.
@@ -183,7 +189,9 @@ pub fn output_devices() -> Vec<AudioDevice> {
         .into_iter()
         .map(|d| AudioDevice {
             id: format!("{}", d.id),
-            label: d.name.unwrap_or_else(|| String::from("Unknown output device")),
+            label: d
+                .name
+                .unwrap_or_else(|| String::from("Unknown output device")),
             is_default: d.is_default,
         })
         .collect()
@@ -217,15 +225,26 @@ fn devices_changed(prev: &[(String, bool)], next: &[(String, bool)]) -> bool {
 }
 
 fn snapshot_of(devices: &[AudioDevice]) -> Vec<(String, bool)> {
-    devices.iter().map(|d| (d.id.clone(), d.is_default)).collect()
+    devices
+        .iter()
+        .map(|d| (d.id.clone(), d.is_default))
+        .collect()
 }
 
 /// Outputs and inputs together: plugging in a headset's microphone is a
 /// `devicechange` as much as its speakers are.
 fn snapshot_now() -> Vec<(String, bool)> {
     let mut s = snapshot_of(&output_devices());
-    let inputs = if super::mediastream::fake_capture() { fake_inputs() } else { input_devices() };
-    s.extend(inputs.into_iter().map(|d| (format!("in:{}", d.id), d.is_default)));
+    let inputs = if super::mediastream::fake_capture() {
+        fake_inputs()
+    } else {
+        input_devices()
+    };
+    s.extend(
+        inputs
+            .into_iter()
+            .map(|d| (format!("in:{}", d.id), d.is_default)),
+    );
     s
 }
 
@@ -250,7 +269,12 @@ fn classes_reg() -> &'static Mutex<HashMap<usize, &'static MdClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static MdClasses {
-    classes_reg().lock().unwrap().get(&(g as usize)).copied().expect("webapi::mediadevices not installed")
+    classes_reg()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::mediadevices not installed")
 }
 
 /// The `devicechange` poll's state. `armed` is false while nobody is listening,
@@ -385,7 +409,11 @@ unsafe fn info_slots(g: *mut c_void, obj: u64) -> u64 {
 unsafe fn new_device_info(g: *mut c_void, kind: &str, device_id: &str, label: &str) -> u64 {
     let c = classes(g);
     // mediacapture-main §9.2.1: an input device is an InputDeviceInfo.
-    let proto = if kind == "audioinput" || kind == "videoinput" { c.input.proto } else { c.info.proto };
+    let proto = if kind == "audioinput" || kind == "videoinput" {
+        c.input.proto
+    } else {
+        c.info.proto
+    };
     let obj = new_object(g, proto);
     let slots = new_object(g, UNDEF);
     define(g, slots, "deviceId", js_string(g, device_id), 0);
@@ -456,11 +484,23 @@ unsafe fn input_get_capabilities(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((rate, channels)) = super::mediastream::input_format(g as usize, &id) else {
         return out;
     };
-    fill_capabilities(g, out, rate, channels, super::mediastream::capture_processing_available());
+    fill_capabilities(
+        g,
+        out,
+        rate,
+        channels,
+        super::mediastream::capture_processing_available(),
+    );
     out
 }
 
-pub(super) unsafe fn fill_capabilities(g: *mut c_void, out: u64, rate: u32, channels: u32, can: bool) {
+pub(super) unsafe fn fill_capabilities(
+    g: *mut c_void,
+    out: u64,
+    rate: u32,
+    channels: u32,
+    can: bool,
+) {
     let range = |name: &str, min: f64, max: f64| {
         let r = new_object(g, UNDEF);
         define(g, r, "min", enc_f64(min), 0);
@@ -496,7 +536,12 @@ unsafe fn push_kind(g: *mut c_void, arr: u64, i: &mut u32, kind: &str, devices: 
         .find(|d| d.is_default)
         .map(|d| format!("Default - {}", d.label))
         .unwrap_or_else(|| String::from("Default"));
-    set_i(g, arr, *i, new_device_info(g, kind, DEFAULT_SINK, &default_label));
+    set_i(
+        g,
+        arr,
+        *i,
+        new_device_info(g, kind, DEFAULT_SINK, &default_label),
+    );
     *i += 1;
     for d in devices {
         // A backend that ever hands back the literal id "default" would produce
@@ -579,7 +624,13 @@ pub unsafe fn pump(g: *mut c_void) {
         return;
     };
     let obj = p.obj;
-    let fire = p.step(Instant::now(), host, changes, || has_device_change_listener(g, obj), snapshot_now);
+    let fire = p.step(
+        Instant::now(),
+        host,
+        changes,
+        || has_device_change_listener(g, obj),
+        snapshot_now,
+    );
     polls().lock().unwrap().insert(g as usize, p);
     if fire {
         let ev = events::new_trusted_event(g, "devicechange");
@@ -594,45 +645,58 @@ pub unsafe fn pump(g: *mut c_void) {
 pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     let s_md = atom_priv(g, "redjs#mediaDevices");
 
-    let info = define_class(g, &ClassSpec {
-        name: "MediaDeviceInfo",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("toJSON", 0, info_to_json)],
-        getters: &[
-            ("deviceId", info_get_device_id),
-            ("kind", info_get_kind),
-            ("label", info_get_label),
-            ("groupId", info_get_group_id),
-        ],
-        accessors: &[],
-    });
+    let info = define_class(
+        g,
+        &ClassSpec {
+            name: "MediaDeviceInfo",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("toJSON", 0, info_to_json)],
+            getters: &[
+                ("deviceId", info_get_device_id),
+                ("kind", info_get_kind),
+                ("label", info_get_label),
+                ("groupId", info_get_group_id),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let input = define_class(g, &ClassSpec {
-        name: "InputDeviceInfo",
-        arity: 0,
-        construct: None,
-        parent_proto: info.proto,
-        methods: &[("getCapabilities", 0, input_get_capabilities)],
-        getters: &[],
-        accessors: &[],
-    });
+    let input = define_class(
+        g,
+        &ClassSpec {
+            name: "InputDeviceInfo",
+            arity: 0,
+            construct: None,
+            parent_proto: info.proto,
+            methods: &[("getCapabilities", 0, input_get_capabilities)],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     // WebIDL: an interface object's [[Prototype]] is its parent's.
-    crate::capi::JSObjectSetPrototype(g, input.ctor as usize as crate::capi::JSObjectRef, info.ctor as usize as crate::capi::JSValueRef);
+    crate::capi::JSObjectSetPrototype(
+        g,
+        input.ctor as usize as crate::capi::JSObjectRef,
+        info.ctor as usize as crate::capi::JSValueRef,
+    );
 
-    let md_class = define_class(g, &ClassSpec {
-        name: "MediaDevices",
-        arity: 0,
-        construct: None,
-        parent_proto: event_target_proto,
-        methods: &[
-            ("enumerateDevices", 0, md_enumerate_devices),
-            ("getUserMedia", 1, md_get_user_media),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    let md_class = define_class(
+        g,
+        &ClassSpec {
+            name: "MediaDevices",
+            arity: 0,
+            construct: None,
+            parent_proto: event_target_proto,
+            methods: &[
+                ("enumerateDevices", 0, md_enumerate_devices),
+                ("getUserMedia", 1, md_get_user_media),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
     let boxed: &'static MdClasses = Box::leak(Box::new(MdClasses { info, input, s_md }));
     classes_reg().lock().unwrap().insert(g as usize, boxed);
@@ -654,7 +718,10 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     };
     define(g, navigator, "mediaDevices", md, 2);
 
-    polls().lock().unwrap().insert(g as usize, PollState::new(md));
+    polls()
+        .lock()
+        .unwrap()
+        .insert(g as usize, PollState::new(md));
 }
 
 /// The capabilities of the fake microphone (48 kHz mono), as its track
@@ -682,7 +749,10 @@ mod tests {
     #[test]
     fn an_unknown_id_is_refused_rather_than_silently_defaulted() {
         assert_eq!(resolve_output("not-a-device"), Err(()));
-        assert_eq!(resolve_output("wasapi:{00000000-0000-0000-0000-000000000000}"), Err(()));
+        assert_eq!(
+            resolve_output("wasapi:{00000000-0000-0000-0000-000000000000}"),
+            Err(())
+        );
     }
 
     #[test]
@@ -691,7 +761,10 @@ mod tests {
         // an id this module hands to JS must parse back into a device CPAL can
         // open. Vacuous on a machine with no audio hardware — see the report.
         for d in output_devices() {
-            assert!(!d.id.is_empty(), "an enumerated device has an empty id: {d:?}");
+            assert!(
+                !d.id.is_empty(),
+                "an enumerated device has an empty id: {d:?}"
+            );
             assert!(
                 matches!(resolve_output(&d.id), Ok(Some(_))),
                 "enumerated id does not resolve back: {d:?}",
@@ -712,18 +785,31 @@ mod tests {
     #[test]
     fn the_change_detector_sees_adds_removals_and_a_new_default() {
         let a = vec![("a".to_string(), true), ("b".to_string(), false)];
-        assert!(!devices_changed(&a, &a.clone()), "an unchanged list must not fire");
+        assert!(
+            !devices_changed(&a, &a.clone()),
+            "an unchanged list must not fire"
+        );
 
-        let added = vec![("a".to_string(), true), ("b".to_string(), false), ("c".to_string(), false)];
+        let added = vec![
+            ("a".to_string(), true),
+            ("b".to_string(), false),
+            ("c".to_string(), false),
+        ];
         assert!(devices_changed(&a, &added), "a plugged-in device must fire");
 
         let removed = vec![("a".to_string(), true)];
-        assert!(devices_changed(&a, &removed), "an unplugged device must fire");
+        assert!(
+            devices_changed(&a, &removed),
+            "an unplugged device must fire"
+        );
 
         // Same devices, the OS default moved. The list is identical by id; only
         // the flag moved, and an implementation comparing ids alone misses it.
         let redefaulted = vec![("a".to_string(), false), ("b".to_string(), true)];
-        assert!(devices_changed(&a, &redefaulted), "a new system default must fire");
+        assert!(
+            devices_changed(&a, &redefaulted),
+            "a new system default must fire"
+        );
     }
 
     fn list(ids: &[(&str, bool)]) -> Vec<(String, bool)> {
@@ -748,7 +834,15 @@ mod tests {
             let mut p = PollState::new(0);
             p.seen = 0;
             p.last_poll = t;
-            Rig { p, t, host, changes: 0, listening: true, devices: list(&[("a", true)]), reads: 0 }
+            Rig {
+                p,
+                t,
+                host,
+                changes: 0,
+                listening: true,
+                devices: list(&[("a", true)]),
+                reads: 0,
+            }
         }
 
         /// Advances the clock by `ms` and runs one step.
@@ -757,10 +851,16 @@ mod tests {
             let reads = &mut self.reads;
             let devices = self.devices.clone();
             let listening = self.listening;
-            self.p.step(self.t, self.host, self.changes, || listening, || {
-                *reads += 1;
-                devices
-            })
+            self.p.step(
+                self.t,
+                self.host,
+                self.changes,
+                || listening,
+                || {
+                    *reads += 1;
+                    devices
+                },
+            )
         }
 
         /// Steps every 16 ms for `ms`, and counts the fires.
@@ -831,12 +931,22 @@ mod tests {
 
     #[test]
     fn a_default_change_moves_its_flows_generation_and_counts_as_a_change() {
-        let (out0, in0, ch0) =
-            (default_generation(Flow::Output), default_generation(Flow::Input), CHANGES.load(Ordering::Acquire));
+        let (out0, in0, ch0) = (
+            default_generation(Flow::Output),
+            default_generation(Flow::Input),
+            CHANGES.load(Ordering::Acquire),
+        );
         notify_default_changed(Flow::Input);
         assert_eq!(default_generation(Flow::Input), in0 + 1);
-        assert_eq!(default_generation(Flow::Output), out0, "only the input moved");
-        assert!(CHANGES.load(Ordering::Acquire) > ch0, "devicechange fires for it too");
+        assert_eq!(
+            default_generation(Flow::Output),
+            out0,
+            "only the input moved"
+        );
+        assert!(
+            CHANGES.load(Ordering::Acquire) > ch0,
+            "devicechange fires for it too"
+        );
     }
 }
 
@@ -870,8 +980,14 @@ mod jsc_tests {
         // The application registers a `devicechange` listener in its
         // constructor, unconditionally. Without the EventTarget prototype that
         // call throws and the audio package never finishes constructing.
-        ok(&c, "typeof navigator.mediaDevices.addEventListener === 'function'");
-        ok(&c, "typeof navigator.mediaDevices.removeEventListener === 'function'");
+        ok(
+            &c,
+            "typeof navigator.mediaDevices.addEventListener === 'function'",
+        );
+        ok(
+            &c,
+            "typeof navigator.mediaDevices.removeEventListener === 'function'",
+        );
     }
 
     #[test]
@@ -935,9 +1051,15 @@ mod jsc_tests {
             ),
             "ok"
         );
-        let got = run(&c, "await navigator.mediaDevices.getUserMedia({ audio: true }); return 'resolved';");
+        let got = run(
+            &c,
+            "await navigator.mediaDevices.getUserMedia({ audio: true }); return 'resolved';",
+        );
         assert!(got.contains("DOMException NotAllowedError"), "{got}");
-        assert!(got.contains("has not enabled microphone capture"), "getUserMedia must say why: {got}");
+        assert!(
+            got.contains("has not enabled microphone capture"),
+            "getUserMedia must say why: {got}"
+        );
     }
 
     #[test]
@@ -963,7 +1085,11 @@ mod jsc_tests {
         unsafe {
             let g = c.raw();
             crate::glue::rjs_lock(g);
-            for (name, kind, id) in [("anon", "audioinput", ""), ("mic", "audioinput", "default"), ("spk", "audiooutput", "default")] {
+            for (name, kind, id) in [
+                ("anon", "audioinput", ""),
+                ("mic", "audioinput", "default"),
+                ("spk", "audiooutput", "default"),
+            ] {
                 let d = super::new_device_info(g, kind, id, id);
                 crate::webapi::util::define(g, crate::glue::rjs_global(g), name, d, 0);
             }
@@ -971,15 +1097,29 @@ mod jsc_tests {
         }
         ok(&c, "anon instanceof InputDeviceInfo && mic instanceof InputDeviceInfo && !(spk instanceof InputDeviceInfo) && spk instanceof MediaDeviceInfo");
         ok(&c, "Object.prototype.toString.call(mic) === '[object InputDeviceInfo]' && Object.prototype.toString.call(spk) === '[object MediaDeviceInfo]'");
-        ok(&c, "mic.kind === 'audioinput' && mic.toJSON().deviceId === 'default'");
+        ok(
+            &c,
+            "mic.kind === 'audioinput' && mic.toJSON().deviceId === 'default'",
+        );
         // The anonymous entry has nothing to describe.
         assert_eq!(s(&c, "JSON.stringify(anon.getCapabilities())"), "{}");
         // Capture not allowed: no format to read, the ids only.
-        assert_eq!(s(&c, "JSON.stringify(mic.getCapabilities())"), r#"{"deviceId":"default","groupId":""}"#);
-        assert!(throws(&c, "InputDeviceInfo.prototype.getCapabilities.call(spk)").contains("wrong this"));
-        assert!(throws(&c, "InputDeviceInfo.prototype.getCapabilities.call({})").contains("wrong this"));
+        assert_eq!(
+            s(&c, "JSON.stringify(mic.getCapabilities())"),
+            r#"{"deviceId":"default","groupId":""}"#
+        );
+        assert!(
+            throws(&c, "InputDeviceInfo.prototype.getCapabilities.call(spk)")
+                .contains("wrong this")
+        );
+        assert!(
+            throws(&c, "InputDeviceInfo.prototype.getCapabilities.call({})").contains("wrong this")
+        );
         crate::webapi::mediastream::fake::enable(c.raw());
-        assert_eq!(s(&c, "JSON.stringify(mic.getCapabilities())"), super::FAKE_CAPABILITIES);
+        assert_eq!(
+            s(&c, "JSON.stringify(mic.getCapabilities())"),
+            super::FAKE_CAPABILITIES
+        );
     }
 
     #[test]

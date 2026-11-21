@@ -295,7 +295,10 @@ fn set_presented(surface: &Mutex<Surface>, on: bool) {
 /// Publishes `surface` under the embedder's `key` (skathi: the host node
 /// id of the `<canvas>`). A later registration under the same key wins.
 pub fn register_present(key: u64, surface: &SurfaceRef) {
-    let old = presented().lock().unwrap().insert(key, Arc::downgrade(surface));
+    let old = presented()
+        .lock()
+        .unwrap()
+        .insert(key, Arc::downgrade(surface));
     if let Some(old) = old.and_then(|w| w.upgrade()) {
         if !Arc::ptr_eq(&old, surface) {
             set_presented(&old, false);
@@ -316,7 +319,10 @@ pub fn unregister_present(key: u64) {
 pub(crate) fn unregister_present_if(key: u64, surface: &SurfaceRef) {
     let removed = {
         let mut p = presented().lock().unwrap();
-        let ours = p.get(&key).map(|w| std::ptr::eq(w.as_ptr(), Arc::as_ptr(surface))).unwrap_or(false);
+        let ours = p
+            .get(&key)
+            .map(|w| std::ptr::eq(w.as_ptr(), Arc::as_ptr(surface)))
+            .unwrap_or(false);
         ours && p.remove(&key).is_some()
     };
     if removed {
@@ -363,7 +369,11 @@ mod tests {
     use super::*;
 
     fn put(rgba: [u8; 4]) -> Cmd {
-        Cmd::Put { x: 0, y: 0, image: Arc::new(Image::from_premul(1, 1, rgba.to_vec(), true)) }
+        Cmd::Put {
+            x: 0,
+            y: 0,
+            image: Arc::new(Image::from_premul(1, 1, rgba.to_vec(), true)),
+        }
     }
 
     /// The presenter's protocol, as skathi's host drives it: a frame that
@@ -386,7 +396,10 @@ mod tests {
 
         let hidden = Arc::new(Mutex::new(Surface::new(2, 1, Options::default())));
         hidden.lock().unwrap().push(put([9, 9, 9, 255]));
-        assert!(!take_presented_changed(), "an offscreen surface never asks for a frame");
+        assert!(
+            !take_presented_changed(),
+            "an offscreen surface never asks for a frame"
+        );
 
         shown.lock().unwrap().push(put([0, 0, 255, 255]));
         shown.lock().unwrap().push(put([255, 0, 0, 255]));
@@ -403,10 +416,17 @@ mod tests {
         assert!(take_presented_changed());
         assert!(present(key, g2).is_some());
         shown.lock().unwrap().push(put([1, 1, 1, 255]));
-        assert!(!take_presented_changed(), "the replaced surface is not presented any more");
+        assert!(
+            !take_presented_changed(),
+            "the replaced surface is not presented any more"
+        );
 
         unregister_present_if(key, &shown);
-        assert_eq!(present_size(key), Some((1, 1)), "only the surface the key names is withdrawn");
+        assert_eq!(
+            present_size(key),
+            Some((1, 1)),
+            "only the surface the key names is withdrawn"
+        );
         unregister_present(key);
         assert!(take_presented_changed(), "withdrawing is a change");
         assert!(present(key, 0).is_none() && present_size(key).is_none());
@@ -437,7 +457,11 @@ mod tests {
         assert_eq!(&s.snapshot().data[..4], &[0, 0, 0, 0]);
 
         s.push(clear(2.0, 2.0));
-        assert_ne!(s.generation(), g2, "a partial clear does not prove the bitmap blank");
+        assert_ne!(
+            s.generation(),
+            g2,
+            "a partial clear does not prove the bitmap blank"
+        );
         s.push(clear(4.0, 4.0));
         let g3 = s.generation();
         s.reset(4, 4);

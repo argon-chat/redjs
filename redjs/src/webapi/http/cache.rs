@@ -314,11 +314,14 @@ pub fn stats() -> Option<Stats> {
 pub fn clear() -> Result<u64, String> {
     let s = current().ok_or_else(|| String::from("no HTTP cache is installed"))?;
     if !s.writable {
-        return Err(String::from("another instance owns the HTTP cache folder; only it can clear it"));
+        return Err(String::from(
+            "another instance owns the HTTP cache folder; only it can clear it",
+        ));
     }
     let (tx, rx) = mpsc::channel();
     s.send(Job::Clear(tx));
-    rx.recv_timeout(Duration::from_secs(10)).map_err(|_| String::from("the cache writer did not answer"))
+    rx.recv_timeout(Duration::from_secs(10))
+        .map_err(|_| String::from("the cache writer did not answer"))
 }
 
 /// Writes the index now, and waits (≤ 2 s) for writes already queued. For an
@@ -343,7 +346,10 @@ pub(crate) enum Action {
     Serve { entry: Entry, revalidate: bool },
     /// Ask the network with these conditional headers added. A 304 serves
     /// `entry`, refreshed.
-    Validate { entry: Entry, conditional: Vec<(String, String)> },
+    Validate {
+        entry: Entry,
+        conditional: Vec<(String, String)>,
+    },
     /// `only-if-cached`, and nothing usable.
     Fail(HttpError),
 }
@@ -356,7 +362,10 @@ pub(crate) struct Planned {
 
 impl Planned {
     fn off() -> Planned {
-        Planned { action: Action::Network, ctx: None }
+        Planned {
+            action: Action::Network,
+            ctx: None,
+        }
     }
 
     pub(crate) fn into_parts(self) -> (Action, Option<Ctx>) {
@@ -409,19 +418,36 @@ pub(crate) enum Settled {
 /// those calls to its blocking pool; every other plan is instant. (The
 /// blocking transport is on a worker thread already and does not ask.)
 #[cfg_attr(not(feature = "net-h2"), allow(dead_code))]
-pub(crate) fn reads_disk(method: &str, url: &str, headers: &[(String, String)], mode: CacheMode) -> bool {
+pub(crate) fn reads_disk(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    mode: CacheMode,
+) -> bool {
     method.eq_ignore_ascii_case("GET")
         && !has(headers, "range")
-        && !matches!(effective_mode(mode, headers), CacheMode::NoStore | CacheMode::Reload)
+        && !matches!(
+            effective_mode(mode, headers),
+            CacheMode::NoStore | CacheMode::Reload
+        )
         && current().is_some_and(|s| key_of(url).is_some_and(|k| s.may_have(hash_of(&k))))
 }
 
 /// Decides one hop. `headers` are the hop's request headers as they will be
 /// sent (the jar's `Cookie` included), `url` its URL. Reads at most one file.
-pub(crate) fn plan(method: &str, url: &str, headers: &[(String, String)], mode: CacheMode) -> Planned {
-    let Some(store) = current() else { return Planned::off() };
+pub(crate) fn plan(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    mode: CacheMode,
+) -> Planned {
+    let Some(store) = current() else {
+        return Planned::off();
+    };
     let method = method.to_ascii_uppercase();
-    let Some(key) = key_of(url) else { return Planned::off() };
+    let Some(key) = key_of(url) else {
+        return Planned::off();
+    };
     if has(headers, "range") {
         store.c.bypassed.fetch_add(1, Ordering::Relaxed);
         return Planned::off();
@@ -440,7 +466,10 @@ pub(crate) fn plan(method: &str, url: &str, headers: &[(String, String)], mode: 
     };
     if unsafe_method {
         // Not cacheable here, but its answer may invalidate (settle).
-        return Planned { action: Action::Network, ctx: Some(ctx(false)) };
+        return Planned {
+            action: Action::Network,
+            ctx: Some(ctx(false)),
+        };
     }
     let mode = effective_mode(mode, headers);
     if method != "GET" || mode == CacheMode::NoStore {
@@ -448,7 +477,10 @@ pub(crate) fn plan(method: &str, url: &str, headers: &[(String, String)], mode: 
         return Planned::off();
     }
     if mode == CacheMode::Reload {
-        return Planned { action: Action::Network, ctx: Some(ctx(true)) };
+        return Planned {
+            action: Action::Network,
+            ctx: Some(ctx(true)),
+        };
     }
     let only = mode == CacheMode::OnlyIfCached;
     let found = store.read(hash, &key).filter(|e| vary_matches(e, headers));
@@ -462,10 +494,16 @@ pub(crate) fn plan(method: &str, url: &str, headers: &[(String, String)], mode: 
                 ctx: None,
             };
         }
-        return Planned { action: Action::Network, ctx: Some(ctx(true)) };
+        return Planned {
+            action: Action::Network,
+            ctx: Some(ctx(true)),
+        };
     };
     let action = match mode {
-        CacheMode::ForceCache | CacheMode::OnlyIfCached => Action::Serve { entry, revalidate: false },
+        CacheMode::ForceCache | CacheMode::OnlyIfCached => Action::Serve {
+            entry,
+            revalidate: false,
+        },
         CacheMode::NoCache => match conditional_headers(&entry) {
             Some(conditional) => Action::Validate { entry, conditional },
             None => Action::Network,
@@ -476,12 +514,18 @@ pub(crate) fn plan(method: &str, url: &str, headers: &[(String, String)], mode: 
             let lifetime = freshness_lifetime(&entry, &cc);
             let age = current_age(&entry, now);
             if age < lifetime {
-                Action::Serve { entry, revalidate: false }
+                Action::Serve {
+                    entry,
+                    revalidate: false,
+                }
             } else if !cc.must_revalidate
                 && !cc.no_cache
                 && cc.swr.is_some_and(|swr| age < lifetime.saturating_add(swr))
             {
-                Action::Serve { entry, revalidate: true }
+                Action::Serve {
+                    entry,
+                    revalidate: true,
+                }
             } else {
                 match conditional_headers(&entry) {
                     Some(conditional) => Action::Validate { entry, conditional },
@@ -493,7 +537,10 @@ pub(crate) fn plan(method: &str, url: &str, headers: &[(String, String)], mode: 
     if matches!(action, Action::Serve { .. }) {
         store.c.hits.fetch_add(1, Ordering::Relaxed);
     }
-    Planned { action, ctx: Some(ctx(!only)) }
+    Planned {
+        action,
+        ctx: Some(ctx(!only)),
+    }
 }
 
 /// A hop's network answer. `validating` is the entry a [`Action::Validate`]
@@ -507,14 +554,20 @@ pub(crate) fn settle(
     body: &[u8],
     coded: bool,
 ) -> Settled {
-    let Some(ctx) = ctx else { return Settled::Network(Outcome::Off) };
+    let Some(ctx) = ctx else {
+        return Settled::Network(Outcome::Off);
+    };
     let store = &ctx.store;
     if ctx.unsafe_method {
         if (200..400).contains(&status) {
             store.invalidate(&ctx.key);
             for name in ["location", "content-location"] {
-                let Some(v) = header(headers, name) else { continue };
-                let Ok(other) = super::resolve_location(&ctx.url, v) else { continue };
+                let Some(v) = header(headers, name) else {
+                    continue;
+                };
+                let Ok(other) = super::resolve_location(&ctx.url, v) else {
+                    continue;
+                };
                 if super::same_origin(&ctx.url, &other) {
                     if let Some(k) = key_of(&other) {
                         store.invalidate(&k);
@@ -554,7 +607,11 @@ pub(crate) fn settle(
     };
     match worth_storing(&entry, headers, body.len() as u64, store.max_bytes) {
         Some(vary) => {
-            let entry = Entry { vary: vary_digests(&vary, &ctx.request_headers), body: body.to_vec(), ..entry };
+            let entry = Entry {
+                vary: vary_digests(&vary, &ctx.request_headers),
+                body: body.to_vec(),
+                ..entry
+            };
             store.put(ctx.hash, &entry);
             store.c.stored.fetch_add(1, Ordering::Relaxed);
             Settled::Network(Outcome::Stored)
@@ -575,7 +632,12 @@ pub(crate) fn settle(
 pub(crate) fn revalidate_in_background(req: &Request, url: &str) {
     static INFLIGHT: Mutex<Option<HashSet<String>>> = Mutex::new(None);
     let Some(key) = key_of(url) else { return };
-    if !INFLIGHT.lock().unwrap().get_or_insert_with(HashSet::new).insert(key.clone()) {
+    if !INFLIGHT
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashSet::new)
+        .insert(key.clone())
+    {
         return;
     }
     let r = Request {
@@ -627,7 +689,14 @@ pub(crate) fn observe(
     if !super::is_final(status, headers) {
         return;
     }
-    o.0.head(&super::ProgressHead { status, status_text: reason, headers, url, redirected, protocol });
+    o.0.head(&super::ProgressHead {
+        status,
+        status_text: reason,
+        headers,
+        url,
+        redirected,
+        protocol,
+    });
     if !body.is_empty() {
         let n = body.len() as u64;
         o.0.body(body, n, Some(n));
@@ -661,9 +730,15 @@ pub(crate) fn add_mode_headers(mode: CacheMode, headers: &mut Vec<(String, Strin
 
 /// The mode after the request's own headers had their say (module header).
 fn effective_mode(mode: CacheMode, headers: &[(String, String)]) -> CacheMode {
-    let conditional = ["if-none-match", "if-modified-since", "if-match", "if-unmodified-since", "if-range"]
-        .iter()
-        .any(|n| has(headers, n));
+    let conditional = [
+        "if-none-match",
+        "if-modified-since",
+        "if-match",
+        "if-unmodified-since",
+        "if-range",
+    ]
+    .iter()
+    .any(|n| has(headers, n));
     if conditional && mode != CacheMode::OnlyIfCached {
         return CacheMode::NoStore;
     }
@@ -707,7 +782,10 @@ impl Cc {
             }
             for d in split_list(v) {
                 let (n, val) = match d.split_once('=') {
-                    Some((n, val)) => (n.trim().to_ascii_lowercase(), Some(val.trim().trim_matches('"'))),
+                    Some((n, val)) => (
+                        n.trim().to_ascii_lowercase(),
+                        Some(val.trim().trim_matches('"')),
+                    ),
                     None => (d.trim().to_ascii_lowercase(), None),
                 };
                 // A malformed number is a value of 0: stale, never "forever".
@@ -743,14 +821,21 @@ fn split_list(v: &str) -> Vec<&str> {
         }
     }
     out.push(&v[start..]);
-    out.into_iter().map(str::trim).filter(|s| !s.is_empty()).collect()
+    out.into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn pragma_no_cache(headers: &[(String, String)]) -> bool {
     headers
         .iter()
         .filter(|(k, _)| k.eq_ignore_ascii_case("pragma"))
-        .any(|(_, v)| split_list(v).iter().any(|d| d.eq_ignore_ascii_case("no-cache")))
+        .any(|(_, v)| {
+            split_list(v)
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case("no-cache"))
+        })
 }
 
 fn has(headers: &[(String, String)], name: &str) -> bool {
@@ -764,7 +849,10 @@ fn date(headers: &[(String, String)], name: &str) -> Option<i64> {
 /// RFC 9111 §4.2.1, with Chromium's heuristics (module header). Seconds;
 /// `i64::MAX` is forever.
 fn freshness_lifetime(e: &Entry, cc: &Cc) -> i64 {
-    if cc.no_cache || cc.no_store || (!has(&e.headers, "cache-control") && pragma_no_cache(&e.headers)) {
+    if cc.no_cache
+        || cc.no_store
+        || (!has(&e.headers, "cache-control") && pragma_no_cache(&e.headers))
+    {
         return 0;
     }
     if let Some(m) = cc.max_age {
@@ -790,7 +878,10 @@ fn freshness_lifetime(e: &Entry, cc: &Cc) -> i64 {
 /// RFC 9111 §4.2.3. Seconds.
 fn current_age(e: &Entry, now: i64) -> i64 {
     let served = date(&e.headers, "date").unwrap_or(e.response_time);
-    let age_value = header(&e.headers, "age").and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(0).max(0);
+    let age_value = header(&e.headers, "age")
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
     let apparent = (e.response_time - served).max(0);
     let delay = (e.response_time - e.request_time).max(0);
     let initial = apparent.max(age_value.saturating_add(delay));
@@ -812,7 +903,12 @@ const HEURISTIC: &[u16] = &[200, 203, 204, 300, 301, 308, 404, 405, 410, 414, 50
 
 /// `Some(vary names)` when the answer is stored (module header, "What is
 /// stored"), `None` otherwise.
-fn worth_storing(e: &Entry, raw_headers: &[(String, String)], body_len: u64, max_bytes: u64) -> Option<Vec<String>> {
+fn worth_storing(
+    e: &Entry,
+    raw_headers: &[(String, String)],
+    body_len: u64,
+    max_bytes: u64,
+) -> Option<Vec<String>> {
     let cc = Cc::of(raw_headers);
     if cc.no_store || e.status < 200 || e.status == 206 || e.status == 304 {
         return None;
@@ -823,7 +919,12 @@ fn worth_storing(e: &Entry, raw_headers: &[(String, String)], body_len: u64, max
     let vary: Vec<String> = raw_headers
         .iter()
         .filter(|(k, _)| k.eq_ignore_ascii_case("vary"))
-        .flat_map(|(_, v)| split_list(v).into_iter().map(|s| s.to_ascii_lowercase()).collect::<Vec<_>>())
+        .flat_map(|(_, v)| {
+            split_list(v)
+                .into_iter()
+                .map(|s| s.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
         .collect();
     if vary.iter().any(|v| v == "*") {
         return None;
@@ -846,7 +947,12 @@ fn storable_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
     let named: Vec<String> = headers
         .iter()
         .filter(|(k, _)| k.eq_ignore_ascii_case("connection"))
-        .flat_map(|(_, v)| split_list(v).into_iter().map(|s| s.to_ascii_lowercase()).collect::<Vec<_>>())
+        .flat_map(|(_, v)| {
+            split_list(v)
+                .into_iter()
+                .map(|s| s.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
         .collect();
     headers
         .iter()
@@ -909,14 +1015,19 @@ fn merge_304(e: &mut Entry, headers: &[(String, String)]) {
         .cloned()
         .collect();
     let names: HashSet<String> = fresh.iter().map(|(k, _)| k.to_ascii_lowercase()).collect();
-    e.headers.retain(|(k, _)| !names.contains(&k.to_ascii_lowercase()));
+    e.headers
+        .retain(|(k, _)| !names.contains(&k.to_ascii_lowercase()));
     e.headers.extend(fresh);
 }
 
 /// A request header's value as `Vary` compares it: every line of that name,
 /// trimmed and joined.
 fn request_value(headers: &[(String, String)], name: &str) -> Option<String> {
-    let vals: Vec<&str> = headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()).collect();
+    let vals: Vec<&str> = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.trim())
+        .collect();
     (!vals.is_empty()).then(|| vals.join(", "))
 }
 
@@ -925,11 +1036,16 @@ fn digest(s: &str) -> [u8; 32] {
 }
 
 fn vary_digests(names: &[String], request: &[(String, String)]) -> Vec<(String, Option<[u8; 32]>)> {
-    names.iter().map(|n| (n.clone(), request_value(request, n).map(|v| digest(&v)))).collect()
+    names
+        .iter()
+        .map(|n| (n.clone(), request_value(request, n).map(|v| digest(&v))))
+        .collect()
 }
 
 fn vary_matches(e: &Entry, request: &[(String, String)]) -> bool {
-    e.vary.iter().all(|(n, d)| request_value(request, n).map(|v| digest(&v)) == *d)
+    e.vary
+        .iter()
+        .all(|(n, d)| request_value(request, n).map(|v| digest(&v)) == *d)
 }
 
 /// The cache key: the URL without its fragment. `None` for a URL that does
@@ -965,11 +1081,15 @@ fn unhex(s: &str) -> Option<Hash> {
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,7 +1133,11 @@ struct R<'a> {
 
 impl<'a> R<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
-        let end = self.at.checked_add(n).filter(|e| *e <= self.b.len()).ok_or("truncated entry")?;
+        let end = self
+            .at
+            .checked_add(n)
+            .filter(|e| *e <= self.b.len())
+            .ok_or("truncated entry")?;
         let s = &self.b[self.at..end];
         self.at = end;
         Ok(s)
@@ -1035,7 +1159,8 @@ impl<'a> R<'a> {
         self.take(usize::try_from(n).map_err(|_| "entry length overflows")?)
     }
     fn str(&mut self) -> Result<String, String> {
-        String::from_utf8(self.bytes()?.to_vec()).map_err(|_| String::from("entry text is not UTF-8"))
+        String::from_utf8(self.bytes()?.to_vec())
+            .map_err(|_| String::from("entry text is not UTF-8"))
     }
 }
 
@@ -1107,7 +1232,17 @@ fn decode_payload(p: &[u8]) -> Result<Entry, String> {
     }
     let coded = r.u8()? != 0;
     let body = r.bytes()?.to_vec();
-    Ok(Entry { key, status, reason, request_time, response_time, vary, headers, coded, body })
+    Ok(Entry {
+        key,
+        status,
+        reason,
+        request_time,
+        response_time,
+        vary,
+        headers,
+        coded,
+        body,
+    })
 }
 
 fn encode_file(payload: Vec<u8>, sealer: Option<&dyn Sealer>) -> Result<Vec<u8>, String> {
@@ -1129,7 +1264,10 @@ fn decode_file(bytes: &[u8], sealer: Option<&dyn Sealer>) -> Result<Entry, Strin
         return Err("not a cache entry".into());
     }
     if bytes[4] != VERSION {
-        return Err(format!("entry format {} (this build reads {VERSION})", bytes[4]));
+        return Err(format!(
+            "entry format {} (this build reads {VERSION})",
+            bytes[4]
+        ));
     }
     let sealed = bytes[5] & FLAG_SEALED != 0;
     let body = &bytes[HEAD_LEN..];
@@ -1258,11 +1396,15 @@ fn take_lock(dir: &Path) -> Option<File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        o.share_mode(1 /* FILE_SHARE_READ: others may read who holds it, nobody may take it */);
+        o.share_mode(
+            1, /* FILE_SHARE_READ: others may read who holds it, nobody may take it */
+        );
     }
     let mut f = o.open(dir.join("lock")).ok()?;
     let _ = f.set_len(0);
-    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     let _ = write!(f, "pid {}\nexe {exe}\n", std::process::id());
     Some(f)
 }
@@ -1281,7 +1423,9 @@ impl Store {
         let lock = take_lock(&dir);
         let writable = lock.is_some();
         let mode = mode_line(cfg.sealer.as_deref());
-        let on_disk = fs::read_to_string(dir.join("mode")).ok().map(|s| s.trim().to_string());
+        let on_disk = fs::read_to_string(dir.join("mode"))
+            .ok()
+            .map(|s| s.trim().to_string());
         if on_disk.as_deref() != Some(mode.as_str()) {
             if writable {
                 purge(&dir);
@@ -1296,7 +1440,10 @@ impl Store {
             }
         }
         // The files are the truth; the index only remembers when each was used.
-        let saved = fs::read(dir.join("index")).ok().and_then(|b| decode_index(&b)).unwrap_or_default();
+        let saved = fs::read(dir.join("index"))
+            .ok()
+            .and_then(|b| decode_index(&b))
+            .unwrap_or_default();
         let mut index = Index::default();
         if let Ok(rd) = fs::read_dir(&dir) {
             for ent in rd.flatten() {
@@ -1307,14 +1454,22 @@ impl Store {
                     }
                     continue;
                 }
-                let Some(h) = name.strip_suffix(".e").and_then(unhex) else { continue };
+                let Some(h) = name.strip_suffix(".e").and_then(unhex) else {
+                    continue;
+                };
                 let Ok(md) = ent.metadata() else { continue };
                 let mtime = md
                     .modified()
                     .ok()
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_millis() as u64);
-                index.set(h, Meta { size: md.len(), used: saved.get(&h).copied().unwrap_or(mtime) });
+                index.set(
+                    h,
+                    Meta {
+                        size: md.len(),
+                        used: saved.get(&h).copied().unwrap_or(mtime),
+                    },
+                );
             }
         }
         index.dirty = false;
@@ -1408,7 +1563,13 @@ impl Store {
                         ix.dirty = true;
                     }
                     // How a read-only instance learns of the owner's entries.
-                    None if !self.writable => ix.set(h, Meta { size: bytes.len() as u64, used }),
+                    None if !self.writable => ix.set(
+                        h,
+                        Meta {
+                            size: bytes.len() as u64,
+                            used,
+                        },
+                    ),
                     // The owner evicted or removed it during the read: it stays
                     // dropped, since its file is gone or going.
                     None => {}
@@ -1475,7 +1636,10 @@ impl Store {
                     let freed = {
                         let mut ix = self.index.lock().unwrap();
                         let b = ix.bytes;
-                        *ix = Index { dirty: true, ..Index::default() };
+                        *ix = Index {
+                            dirty: true,
+                            ..Index::default()
+                        };
                         b
                     };
                     purge(&self.dir);
@@ -1518,7 +1682,13 @@ impl Store {
             }
             return;
         }
-        self.index.lock().unwrap().set(h, Meta { size: bytes.len() as u64, used: now_ms() });
+        self.index.lock().unwrap().set(
+            h,
+            Meta {
+                size: bytes.len() as u64,
+                used: now_ms(),
+            },
+        );
         self.evict();
     }
 
@@ -1542,7 +1712,9 @@ impl Store {
             }
             out
         };
-        self.c.evicted.fetch_add(victims.len() as u64, Ordering::Relaxed);
+        self.c
+            .evicted
+            .fetch_add(victims.len() as u64, Ordering::Relaxed);
         for h in victims {
             let _ = fs::remove_file(self.path(h));
         }
@@ -1575,7 +1747,10 @@ fn purge(dir: &Path) {
 /// To `<name>.<pid>.tmp`, then renamed over `path`. No fsync: a torn entry
 /// fails its CRC and is dropped, which is all a cache needs.
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let tmp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path).inspect_err(|_| {
@@ -1592,7 +1767,10 @@ mod tests {
     use super::*;
 
     fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn entry(status: u16, headers: &[(&str, &str)], at: i64) -> Entry {
@@ -1620,26 +1798,79 @@ mod tests {
     #[test]
     fn lifetime_follows_max_age_then_expires_then_heuristics() {
         let life = |e: &Entry| freshness_lifetime(e, &Cc::of(&e.headers));
-        assert_eq!(life(&entry(200, &[("cache-control", "max-age=60")], T0)), 60);
+        assert_eq!(
+            life(&entry(200, &[("cache-control", "max-age=60")], T0)),
+            60
+        );
         // max-age wins over Expires.
-        assert_eq!(life(&entry(200, &[("cache-control", "max-age=60"), ("expires", "Sat, 03 Oct 2026 05:00:00 GMT")], T0)), 60);
-        assert_eq!(life(&entry(200, &[("date", T0_DATE), ("expires", "Sat, 03 Oct 2026 05:00:00 GMT")], T0)), 3600);
+        assert_eq!(
+            life(&entry(
+                200,
+                &[
+                    ("cache-control", "max-age=60"),
+                    ("expires", "Sat, 03 Oct 2026 05:00:00 GMT")
+                ],
+                T0
+            )),
+            60
+        );
+        assert_eq!(
+            life(&entry(
+                200,
+                &[
+                    ("date", T0_DATE),
+                    ("expires", "Sat, 03 Oct 2026 05:00:00 GMT")
+                ],
+                T0
+            )),
+            3600
+        );
         // An unparseable Expires means already stale.
         assert_eq!(life(&entry(200, &[("expires", "0")], T0)), 0);
         // 10% of Date − Last-Modified, for a 200 only.
-        let lm = [("date", T0_DATE), ("last-modified", "Thu, 03 Sep 2026 04:00:00 GMT")];
+        let lm = [
+            ("date", T0_DATE),
+            ("last-modified", "Thu, 03 Sep 2026 04:00:00 GMT"),
+        ];
         assert_eq!(life(&entry(200, &lm, T0)), 30 * 86_400 / 10);
         assert_eq!(life(&entry(404, &lm, T0)), 0);
-        assert_eq!(life(&entry(200, &[lm[0], lm[1], ("cache-control", "must-revalidate")], T0)), 0);
+        assert_eq!(
+            life(&entry(
+                200,
+                &[lm[0], lm[1], ("cache-control", "must-revalidate")],
+                T0
+            )),
+            0
+        );
         // Permanent redirects and 410 are fresh forever; a 302 is not.
         assert_eq!(life(&entry(301, &[], T0)), i64::MAX);
         assert_eq!(life(&entry(308, &[], T0)), i64::MAX);
         assert_eq!(life(&entry(302, &[], T0)), 0);
         // no-cache, either way.
-        assert_eq!(life(&entry(200, &[("cache-control", "max-age=60, no-cache")], T0)), 0);
-        assert_eq!(life(&entry(200, &[("pragma", "no-cache"), ("expires", "Sat, 03 Oct 2026 05:00:00 GMT")], T0)), 0);
+        assert_eq!(
+            life(&entry(
+                200,
+                &[("cache-control", "max-age=60, no-cache")],
+                T0
+            )),
+            0
+        );
+        assert_eq!(
+            life(&entry(
+                200,
+                &[
+                    ("pragma", "no-cache"),
+                    ("expires", "Sat, 03 Oct 2026 05:00:00 GMT")
+                ],
+                T0
+            )),
+            0
+        );
         // A malformed max-age is 0, never forever.
-        assert_eq!(life(&entry(200, &[("cache-control", "max-age=soon")], T0)), 0);
+        assert_eq!(
+            life(&entry(200, &[("cache-control", "max-age=soon")], T0)),
+            0
+        );
     }
 
     #[test]
@@ -1658,13 +1889,31 @@ mod tests {
         let cap = 1 << 20;
         let ok = |e: &Entry| worth_storing(e, &e.headers, e.body.len() as u64, cap).is_some();
         assert!(ok(&entry(200, &[("cache-control", "max-age=60")], T0)));
-        assert!(ok(&entry(200, &[("etag", "\"x\"")], T0)), "validators make a stale entry useful");
-        assert!(!ok(&entry(200, &[], T0)), "nothing could serve it but force-cache");
-        assert!(!ok(&entry(200, &[("cache-control", "no-store, max-age=60")], T0)));
+        assert!(
+            ok(&entry(200, &[("etag", "\"x\"")], T0)),
+            "validators make a stale entry useful"
+        );
+        assert!(
+            !ok(&entry(200, &[], T0)),
+            "nothing could serve it but force-cache"
+        );
+        assert!(!ok(&entry(
+            200,
+            &[("cache-control", "no-store, max-age=60")],
+            T0
+        )));
         assert!(!ok(&entry(206, &[("cache-control", "max-age=60")], T0)));
-        assert!(!ok(&entry(200, &[("cache-control", "max-age=60"), ("vary", "*")], T0)));
+        assert!(!ok(&entry(
+            200,
+            &[("cache-control", "max-age=60"), ("vary", "*")],
+            T0
+        )));
         // A 302 only with explicit freshness: Argon's /files hop.
-        assert!(ok(&entry(302, &[("cache-control", "private, max-age=300")], T0)));
+        assert!(ok(&entry(
+            302,
+            &[("cache-control", "private, max-age=300")],
+            T0
+        )));
         assert!(!ok(&entry(302, &[("etag", "\"x\"")], T0)));
         assert!(ok(&entry(301, &[], T0)));
         // An eighth of the cap at most.
@@ -1691,7 +1940,12 @@ mod tests {
     fn a_304_updates_what_it_may_and_nothing_about_the_body() {
         let mut e = entry(
             200,
-            &[("content-type", "image/png"), ("etag", "\"v1\""), ("cache-control", "max-age=1"), ("date", "old")],
+            &[
+                ("content-type", "image/png"),
+                ("etag", "\"v1\""),
+                ("cache-control", "max-age=1"),
+                ("date", "old"),
+            ],
             T0,
         );
         merge_304(
@@ -1708,7 +1962,12 @@ mod tests {
         );
         assert_eq!(
             e.headers,
-            h(&[("content-type", "image/png"), ("etag", "\"v1\""), ("cache-control", "max-age=600"), ("date", T0_DATE)])
+            h(&[
+                ("content-type", "image/png"),
+                ("etag", "\"v1\""),
+                ("cache-control", "max-age=600"),
+                ("date", T0_DATE)
+            ])
         );
     }
 
@@ -1716,16 +1975,43 @@ mod tests {
     fn modes_from_request_headers() {
         use CacheMode::*;
         assert_eq!(effective_mode(Default, &h(&[])), Default);
-        assert_eq!(effective_mode(Default, &h(&[("If-None-Match", "\"x\"")])), NoStore);
-        assert_eq!(effective_mode(ForceCache, &h(&[("if-modified-since", "x")])), NoStore);
-        assert_eq!(effective_mode(OnlyIfCached, &h(&[("if-modified-since", "x")])), OnlyIfCached);
-        assert_eq!(effective_mode(Default, &h(&[("cache-control", "no-cache")])), Reload);
-        assert_eq!(effective_mode(Default, &h(&[("pragma", "no-cache")])), Reload);
-        assert_eq!(effective_mode(Default, &h(&[("cache-control", "max-age=0")])), NoCache);
-        assert_eq!(effective_mode(Default, &h(&[("cache-control", "no-store")])), NoStore);
-        assert_eq!(effective_mode(Default, &h(&[("cache-control", "max-age=10, max-stale")])), Default);
+        assert_eq!(
+            effective_mode(Default, &h(&[("If-None-Match", "\"x\"")])),
+            NoStore
+        );
+        assert_eq!(
+            effective_mode(ForceCache, &h(&[("if-modified-since", "x")])),
+            NoStore
+        );
+        assert_eq!(
+            effective_mode(OnlyIfCached, &h(&[("if-modified-since", "x")])),
+            OnlyIfCached
+        );
+        assert_eq!(
+            effective_mode(Default, &h(&[("cache-control", "no-cache")])),
+            Reload
+        );
+        assert_eq!(
+            effective_mode(Default, &h(&[("pragma", "no-cache")])),
+            Reload
+        );
+        assert_eq!(
+            effective_mode(Default, &h(&[("cache-control", "max-age=0")])),
+            NoCache
+        );
+        assert_eq!(
+            effective_mode(Default, &h(&[("cache-control", "no-store")])),
+            NoStore
+        );
+        assert_eq!(
+            effective_mode(Default, &h(&[("cache-control", "max-age=10, max-stale")])),
+            Default
+        );
         // An explicit mode is not overridden by the request's directives.
-        assert_eq!(effective_mode(ForceCache, &h(&[("cache-control", "no-cache")])), ForceCache);
+        assert_eq!(
+            effective_mode(ForceCache, &h(&[("cache-control", "no-cache")])),
+            ForceCache
+        );
     }
 
     #[test]
@@ -1747,8 +2033,18 @@ mod tests {
         let mut e = entry(200, &[], T0);
         e.vary = vary_digests(&["accept".into(), "cookie".into(), "x-absent".into()], &req);
         assert!(vary_matches(&e, &req));
-        assert!(!vary_matches(&e, &h(&[("accept", "image/*"), ("cookie", "sid=other")])));
-        assert!(!vary_matches(&e, &h(&[("accept", "image/*"), ("cookie", "sid=secret"), ("x-absent", "1")])));
+        assert!(!vary_matches(
+            &e,
+            &h(&[("accept", "image/*"), ("cookie", "sid=other")])
+        ));
+        assert!(!vary_matches(
+            &e,
+            &h(&[
+                ("accept", "image/*"),
+                ("cookie", "sid=secret"),
+                ("x-absent", "1")
+            ])
+        ));
         // The raw value never lands in the entry.
         let bytes = encode_payload(&e);
         assert!(!bytes.windows(10).any(|w| w == b"sid=secret"));
@@ -1756,8 +2052,14 @@ mod tests {
 
     #[test]
     fn split_list_keeps_quoted_commas() {
-        assert_eq!(split_list(r#"no-cache="a, b", max-age=5 ,, private"#), vec![r#"no-cache="a, b""#, "max-age=5", "private"]);
-        let cc = Cc::of(&h(&[("Cache-Control", "max-age=5"), ("cache-control", "max-age=9, stale-while-revalidate=30")]));
+        assert_eq!(
+            split_list(r#"no-cache="a, b", max-age=5 ,, private"#),
+            vec![r#"no-cache="a, b""#, "max-age=5", "private"]
+        );
+        let cc = Cc::of(&h(&[
+            ("Cache-Control", "max-age=5"),
+            ("cache-control", "max-age=9, stale-while-revalidate=30"),
+        ]));
         assert_eq!((cc.max_age, cc.swr), (Some(5), Some(30)));
     }
 
@@ -1812,7 +2114,10 @@ mod tests {
 
     #[test]
     fn the_key_drops_the_fragment_and_names_no_url_on_disk() {
-        assert_eq!(key_of("https://X.test/a?b=1#frag").as_deref(), Some("https://x.test/a?b=1"));
+        assert_eq!(
+            key_of("https://X.test/a?b=1#frag").as_deref(),
+            Some("https://x.test/a?b=1")
+        );
         let name = hex(&hash_of("https://x.test/a"));
         assert_eq!(name.len(), 32);
         assert_eq!(unhex(&name), Some(hash_of("https://x.test/a")));

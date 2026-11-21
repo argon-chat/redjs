@@ -34,16 +34,37 @@ enum Node {
     Str(Vec<u16>),
     /// `end` = byte offset of the object's END tag (where an injected
     /// property goes).
-    Obj { props: Vec<(PKey, usize)>, end: usize },
-    Arr { len: u32, props: Vec<(PKey, usize)>, end: usize },
+    Obj {
+        props: Vec<(PKey, usize)>,
+        end: usize,
+    },
+    Arr {
+        len: u32,
+        props: Vec<(PKey, usize)>,
+        end: usize,
+    },
     Date(f64),
-    Buffer { start: usize, len: usize },
-    View { kind: u8, off: u64, len1: u64, buf: usize },
+    Buffer {
+        start: usize,
+        len: usize,
+    },
+    View {
+        kind: u8,
+        off: u64,
+        len1: u64,
+        buf: usize,
+    },
     /// A Blob, or a File when `file` is `(name, lastModified)`.
-    Blob { mime: Vec<u16>, size: u64, file: Option<(Vec<u16>, f64)> },
+    Blob {
+        mime: Vec<u16>,
+        size: u64,
+        file: Option<(Vec<u16>, f64)>,
+    },
     StrObj(Vec<u16>),
     /// An Error's own data properties (message / stack / cause).
-    Error { props: Vec<(PKey, usize)> },
+    Error {
+        props: Vec<(PKey, usize)>,
+    },
     Ref(u32),
 }
 
@@ -132,9 +153,15 @@ impl Rd<'_> {
                 Some(s.iter().map(|&c| c as u16).collect())
             }
             tag::STRING_UTF16 => {
-                let s = self.b.get(self.pos..self.pos.checked_add(n.checked_mul(2)?)?)?;
+                let s = self
+                    .b
+                    .get(self.pos..self.pos.checked_add(n.checked_mul(2)?)?)?;
                 self.pos += n * 2;
-                Some(s.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect())
+                Some(
+                    s.chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect(),
+                )
             }
             _ => None,
         }
@@ -144,10 +171,21 @@ impl Rd<'_> {
 impl<'a> Parsed<'a> {
     /// Parses bytes written by the serializer. `None` = corrupt.
     pub fn parse(bytes: &'a [u8]) -> Option<Parsed<'a>> {
-        if bytes.len() < 5 || bytes[..3] != MAGIC || bytes[3] != VERSION || bytes[4] & !FLAG_STORAGE != 0 {
+        if bytes.len() < 5
+            || bytes[..3] != MAGIC
+            || bytes[3] != VERSION
+            || bytes[4] & !FLAG_STORAGE != 0
+        {
             return None;
         }
-        let mut p = Parsed { bytes, nodes: Vec::new(), offsets: Vec::new(), id_node: Vec::new(), id_offset: Vec::new(), refs: Vec::new() };
+        let mut p = Parsed {
+            bytes,
+            nodes: Vec::new(),
+            offsets: Vec::new(),
+            id_node: Vec::new(),
+            id_offset: Vec::new(),
+            refs: Vec::new(),
+        };
         let mut r = Rd { b: bytes, pos: 5 };
         let mut stack: Vec<Frame> = Vec::new();
         let mut have_root = false;
@@ -196,7 +234,9 @@ impl<'a> Parsed<'a> {
                     Kind::Props => {
                         let k = f.key.take()?;
                         match &mut p.nodes[f.node] {
-                            Node::Obj { props, .. } | Node::Arr { props, .. } | Node::Error { props } => props.push((k, idx)),
+                            Node::Obj { props, .. }
+                            | Node::Arr { props, .. }
+                            | Node::Error { props } => props.push((k, idx)),
                             _ => return None,
                         }
                     }
@@ -205,7 +245,9 @@ impl<'a> Parsed<'a> {
                         f.left -= 1;
                         match &mut p.nodes[f.node] {
                             Node::View { buf, .. } => *buf = idx,
-                            Node::Error { props } => props.push((PKey::Name("cause".encode_utf16().collect()), idx)),
+                            Node::Error { props } => {
+                                props.push((PKey::Name("cause".encode_utf16().collect()), idx))
+                            }
                             _ => {}
                         }
                     }
@@ -272,13 +314,42 @@ impl<'a> Parsed<'a> {
                 leaf(self, Node::Ref(id))
             }
             tag::OBJECT => {
-                let idx = self.object(Node::Obj { props: Vec::new(), end: 0 }, at);
-                Some((idx, Some(Frame { node: idx, kind: Kind::Props, left: 0, key: None })))
+                let idx = self.object(
+                    Node::Obj {
+                        props: Vec::new(),
+                        end: 0,
+                    },
+                    at,
+                );
+                Some((
+                    idx,
+                    Some(Frame {
+                        node: idx,
+                        kind: Kind::Props,
+                        left: 0,
+                        key: None,
+                    }),
+                ))
             }
             tag::ARRAY => {
                 let len = u32::try_from(r.varint()?).ok()?;
-                let idx = self.object(Node::Arr { len, props: Vec::new(), end: 0 }, at);
-                Some((idx, Some(Frame { node: idx, kind: Kind::Props, left: 0, key: None })))
+                let idx = self.object(
+                    Node::Arr {
+                        len,
+                        props: Vec::new(),
+                        end: 0,
+                    },
+                    at,
+                );
+                Some((
+                    idx,
+                    Some(Frame {
+                        node: idx,
+                        kind: Kind::Props,
+                        left: 0,
+                        key: None,
+                    }),
+                ))
             }
             tag::DATE => {
                 let d = r.f64()?;
@@ -292,7 +363,15 @@ impl<'a> Parsed<'a> {
             }
             tag::MAP | tag::SET => {
                 let idx = self.object(Node::Other, at);
-                Some((idx, Some(Frame { node: idx, kind: Kind::Seq, left: 0, key: None })))
+                Some((
+                    idx,
+                    Some(Frame {
+                        node: idx,
+                        kind: Kind::Seq,
+                        left: 0,
+                        key: None,
+                    }),
+                ))
             }
             tag::BOOLEAN_OBJECT => {
                 let idx = self.object(Node::Other, at);
@@ -337,7 +416,12 @@ impl<'a> Parsed<'a> {
                     props.push((PKey::Name("stack".encode_utf16().collect()), n));
                 }
                 self.nodes[idx] = Node::Error { props };
-                let frame = (mask & 4 != 0).then_some(Frame { node: idx, kind: Kind::Fixed, left: 1, key: None });
+                let frame = (mask & 4 != 0).then_some(Frame {
+                    node: idx,
+                    kind: Kind::Fixed,
+                    left: 1,
+                    key: None,
+                });
                 Some((idx, frame))
             }
             tag::ARRAY_BUFFER | tag::RESIZABLE_ARRAY_BUFFER => {
@@ -353,8 +437,24 @@ impl<'a> Parsed<'a> {
                 let kind = r.byte()?;
                 let off = r.varint()?;
                 let len1 = r.varint()?;
-                let idx = self.object(Node::View { kind, off, len1, buf: usize::MAX }, at);
-                Some((idx, Some(Frame { node: idx, kind: Kind::Fixed, left: 1, key: None })))
+                let idx = self.object(
+                    Node::View {
+                        kind,
+                        off,
+                        len1,
+                        buf: usize::MAX,
+                    },
+                    at,
+                );
+                Some((
+                    idx,
+                    Some(Frame {
+                        node: idx,
+                        kind: Kind::Fixed,
+                        left: 1,
+                        key: None,
+                    }),
+                ))
             }
             tag::BLOB | tag::FILE => {
                 let idx = self.object(Node::Other, at);
@@ -369,13 +469,22 @@ impl<'a> Parsed<'a> {
                 } else {
                     None
                 };
-                self.nodes[idx] = Node::Blob { mime, size: n, file };
+                self.nodes[idx] = Node::Blob {
+                    mime,
+                    size: n,
+                    file,
+                };
                 Some((idx, None))
             }
             tag::FILE_LIST => {
                 let idx = self.object(Node::Other, at);
                 let n = u32::try_from(r.varint()?).ok()?;
-                let frame = (n > 0).then_some(Frame { node: idx, kind: Kind::Fixed, left: n, key: None });
+                let frame = (n > 0).then_some(Frame {
+                    node: idx,
+                    kind: Kind::Fixed,
+                    left: n,
+                    key: None,
+                });
                 Some((idx, frame))
             }
             tag::IMAGE_DATA => {
@@ -383,7 +492,15 @@ impl<'a> Parsed<'a> {
                 r.varint()?;
                 r.varint()?;
                 r.skip(1)?;
-                Some((idx, Some(Frame { node: idx, kind: Kind::Fixed, left: 1, key: None })))
+                Some((
+                    idx,
+                    Some(Frame {
+                        node: idx,
+                        kind: Kind::Fixed,
+                        left: 1,
+                        key: None,
+                    }),
+                ))
             }
             tag::DOMPOINT => {
                 let idx = self.object(Node::Other, at);
@@ -437,7 +554,10 @@ impl<'a> Parsed<'a> {
     }
 
     fn own<'b>(&'b self, props: &'b [(PKey, usize)], name: &[u16]) -> Option<usize> {
-        props.iter().find(|(k, _)| matches!(k, PKey::Name(n) if n == name)).map(|(_, v)| *v)
+        props
+            .iter()
+            .find(|(k, _)| matches!(k, PKey::Name(n) if n == name))
+            .map(|(_, v)| *v)
     }
 
     fn root(&self) -> usize {
@@ -467,7 +587,9 @@ const SIZE: &[u16] = &[0x73, 0x69, 0x7a, 0x65];
 const TYPE: &[u16] = &[0x74, 0x79, 0x70, 0x65];
 /// A File's own special identifiers (IndexedDB §7.5): `name`, `lastModified`.
 const NAME: &[u16] = &[0x6e, 0x61, 0x6d, 0x65];
-const LAST_MODIFIED: &[u16] = &[0x6c, 0x61, 0x73, 0x74, 0x4d, 0x6f, 0x64, 0x69, 0x66, 0x69, 0x65, 0x64];
+const LAST_MODIFIED: &[u16] = &[
+    0x6c, 0x61, 0x73, 0x74, 0x4d, 0x6f, 0x64, 0x69, 0x66, 0x69, 0x65, 0x64,
+];
 /// `lastModifiedDate`: not in the IndexedDB spec, but Chromium's key-path
 /// evaluator answers it (a Date key), as its File has the attribute.
 const LAST_MODIFIED_DATE: &[u16] = &[
@@ -506,10 +628,21 @@ impl Parsed<'_> {
                         Node::Arr { len, .. } if ident == LENGTH => Val::Num(*len as f64),
                         Node::Blob { size, .. } if ident == SIZE => Val::Num(*size as f64),
                         Node::Blob { mime, .. } if ident == TYPE => Val::Str(mime.clone()),
-                        Node::Blob { file: Some((name, _)), .. } if ident == NAME => Val::Str(name.clone()),
-                        Node::Blob { file: Some((_, lm)), .. } if ident == LAST_MODIFIED => Val::Num(*lm),
-                        Node::Blob { file: Some((_, lm)), .. } if ident == LAST_MODIFIED_DATE => Val::Date(*lm),
-                        Node::Obj { props, .. } | Node::Arr { props, .. } | Node::Error { props } => {
+                        Node::Blob {
+                            file: Some((name, _)),
+                            ..
+                        } if ident == NAME => Val::Str(name.clone()),
+                        Node::Blob {
+                            file: Some((_, lm)),
+                            ..
+                        } if ident == LAST_MODIFIED => Val::Num(*lm),
+                        Node::Blob {
+                            file: Some((_, lm)),
+                            ..
+                        } if ident == LAST_MODIFIED_DATE => Val::Date(*lm),
+                        Node::Obj { props, .. }
+                        | Node::Arr { props, .. }
+                        | Node::Error { props } => {
                             let c = self.own(props, ident)?;
                             if matches!(self.nodes[self.resolve(c)], Node::Undefined) {
                                 return None;
@@ -563,7 +696,10 @@ impl Parsed<'_> {
                 seen.push(i);
                 let mut keys = Vec::with_capacity(*len as usize);
                 for ix in 0..*len {
-                    let c = props.iter().find(|(k, _)| *k == PKey::Index(ix)).map(|(_, v)| *v)?;
+                    let c = props
+                        .iter()
+                        .find(|(k, _)| *k == PKey::Index(ix))
+                        .map(|(_, v)| *v)?;
                     keys.push(self.convert(&Val::Node(c), seen, depth + 1)?);
                 }
                 Some(Key::Array(keys))
@@ -576,9 +712,16 @@ impl Parsed<'_> {
     fn binary(&self, i: usize) -> Option<Vec<u8>> {
         match &self.nodes[i] {
             Node::Buffer { start, len } => Some(self.bytes[*start..*start + *len].to_vec()),
-            Node::View { kind, off, len1, buf } => {
+            Node::View {
+                kind,
+                off,
+                len1,
+                buf,
+            } => {
                 let b = self.resolve(*buf);
-                let Node::Buffer { start, len } = self.nodes[b] else { return None };
+                let Node::Buffer { start, len } = self.nodes[b] else {
+                    return None;
+                };
                 let elem: u64 = match kind {
                     1..=3 | 12 => 1,
                     4 | 5 | 13 => 2,
@@ -586,7 +729,11 @@ impl Parsed<'_> {
                     9..=11 => 8,
                     _ => return None,
                 };
-                let n = if *len1 == 0 { (len as u64).saturating_sub(*off) / elem * elem } else { (len1 - 1).saturating_mul(elem) };
+                let n = if *len1 == 0 {
+                    (len as u64).saturating_sub(*off) / elem * elem
+                } else {
+                    (len1 - 1).saturating_mul(elem)
+                };
                 if off.saturating_add(n) > len as u64 {
                     return None;
                 }
@@ -617,7 +764,13 @@ impl Parsed<'_> {
                 let mut out: Vec<Key> = Vec::new();
                 let mut enc: Vec<Vec<u8>> = Vec::new();
                 for ix in 0..*len {
-                    let Some(c) = props.iter().find(|(k, _)| *k == PKey::Index(ix)).map(|(_, v)| *v) else { continue };
+                    let Some(c) = props
+                        .iter()
+                        .find(|(k, _)| *k == PKey::Index(ix))
+                        .map(|(_, v)| *v)
+                    else {
+                        continue;
+                    };
                     if let Some(k) = self.convert(&Val::Node(c), &mut seen, 1) {
                         let e = k.encode();
                         if !enc.contains(&e) {
@@ -647,7 +800,10 @@ impl Parsed<'_> {
                 _ => return false,
             }
         }
-        matches!(self.nodes[self.resolve(v)], Node::Obj { .. } | Node::Arr { .. })
+        matches!(
+            self.nodes[self.resolve(v)],
+            Node::Obj { .. } | Node::Arr { .. }
+        )
     }
 }
 
@@ -758,7 +914,11 @@ pub fn inject(bytes: &[u8], path: &[u16], key: f64) -> Option<Vec<u8>> {
         },
     };
     // Objects whose tag is at or after `at` move up by `created` ids.
-    let first_shifted = p.id_offset.iter().position(|&o| o >= at).unwrap_or(p.id_offset.len()) as u32;
+    let first_shifted = p
+        .id_offset
+        .iter()
+        .position(|&o| o >= at)
+        .unwrap_or(p.id_offset.len()) as u32;
     let mut out = Vec::with_capacity(bytes.len() + insert.len() + 8);
     let mut pos = 0usize;
     let mut refs = p.refs.iter().peekable();
@@ -774,7 +934,11 @@ pub fn inject(bytes: &[u8], path: &[u16], key: f64) -> Option<Vec<u8>> {
             if ro == pos {
                 refs.next();
                 out.push(tag::OBJECT_REF);
-                let id = if created > 0 && id >= first_shifted { id + created } else { id };
+                let id = if created > 0 && id >= first_shifted {
+                    id + created
+                } else {
+                    id
+                };
                 put_varint(&mut out, id as u64);
                 pos += rl;
                 continue;
@@ -845,12 +1009,18 @@ mod tests {
         assert_eq!(p.extract(&kp("a.b")), Ok(Some(Key::Number(5.0))));
         assert_eq!(p.extract(&kp("s.length")), Ok(Some(Key::Number(3.0))));
         assert_eq!(p.extract(&kp("arr.length")), Ok(Some(Key::Number(2.0))));
-        assert_eq!(p.extract(&kp("arr")), Ok(Some(Key::Array(vec![Key::Number(1.0), Key::Number(2.0)]))));
+        assert_eq!(
+            p.extract(&kp("arr")),
+            Ok(Some(Key::Array(vec![Key::Number(1.0), Key::Number(2.0)])))
+        );
         assert_eq!(p.extract(&kp("missing")), Err(()));
         assert_eq!(p.extract(&kp("a")), Ok(None), "an object is not a key");
         assert_eq!(
             p.extract(&KeyPath::List(vec![u("s"), u("a.b")])),
-            Ok(Some(Key::Array(vec![Key::String(u("hey")), Key::Number(5.0)])))
+            Ok(Some(Key::Array(vec![
+                Key::String(u("hey")),
+                Key::Number(5.0)
+            ])))
         );
         assert!(p.can_inject(&u("x")));
         assert!(p.can_inject(&u("q.r.s")));
@@ -883,12 +1053,20 @@ mod tests {
         let kp = |s: &str| KeyPath::String(u(s));
         assert_eq!(p.extract(&kp("f.name")), Ok(Some(Key::String(u("n.txt")))));
         assert_eq!(p.extract(&kp("f.lastModified")), Ok(Some(Key::Number(7.0))));
-        assert_eq!(p.extract(&kp("f.lastModifiedDate")), Ok(Some(Key::Date(7.0))), "Chromium's extra identifier");
+        assert_eq!(
+            p.extract(&kp("f.lastModifiedDate")),
+            Ok(Some(Key::Date(7.0))),
+            "Chromium's extra identifier"
+        );
         assert_eq!(p.extract(&kp("f.size")), Ok(Some(Key::Number(2.0))));
         assert_eq!(p.extract(&kp("f.type")), Ok(Some(Key::String(u("t/x")))));
         // The FileList's child was consumed as ONE value: what follows is read.
         assert_eq!(p.extract(&kp("after")), Ok(Some(Key::Number(3.0))));
-        assert_eq!(p.extract(&kp("l.length")), Err(()), "IndexedDB names no FileList identifier");
+        assert_eq!(
+            p.extract(&kp("l.length")),
+            Err(()),
+            "IndexedDB names no FileList identifier"
+        );
     }
 
     #[test]
@@ -899,7 +1077,10 @@ mod tests {
         put_varint(&mut b, 0);
         let p = Parsed::parse(&b).expect("parses");
         assert_eq!(p.extract(&KeyPath::String(u("name"))), Err(()));
-        assert_eq!(p.extract(&KeyPath::String(u("size"))), Ok(Some(Key::Number(0.0))));
+        assert_eq!(
+            p.extract(&KeyPath::String(u("size"))),
+            Ok(Some(Key::Number(0.0)))
+        );
     }
 
     #[test]
@@ -919,9 +1100,20 @@ mod tests {
         b.extend(number_bytes(4.0));
         b.push(tag::END);
         let p = Parsed::parse(&b).expect("parses");
-        assert_eq!(p.extract(&KeyPath::String(u("k"))), Ok(Some(Key::Number(4.0))));
-        assert_eq!(p.extract(&KeyPath::String(u("h"))), Ok(None), "a handle is not a key");
-        assert_eq!(p.extract(&KeyPath::String(u("h.name"))), Err(()), "nor has identifiers");
+        assert_eq!(
+            p.extract(&KeyPath::String(u("k"))),
+            Ok(Some(Key::Number(4.0)))
+        );
+        assert_eq!(
+            p.extract(&KeyPath::String(u("h"))),
+            Ok(None),
+            "a handle is not a key"
+        );
+        assert_eq!(
+            p.extract(&KeyPath::String(u("h.name"))),
+            Err(()),
+            "nor has identifiers"
+        );
         // Its payload cut short is corruption.
         let cut = b.iter().position(|&x| x == 0xFF).unwrap();
         assert!(Parsed::parse(&b[..cut]).is_none());
@@ -943,7 +1135,10 @@ mod tests {
         b.push(tag::END);
         let out = inject(&b, &u("n.id"), 7.0).expect("injects");
         let p = Parsed::parse(&out).expect("still parses");
-        assert_eq!(p.extract(&KeyPath::String(u("n.id"))), Ok(Some(Key::Number(7.0))));
+        assert_eq!(
+            p.extract(&KeyPath::String(u("n.id"))),
+            Ok(Some(Key::Number(7.0)))
+        );
         // The reference still points at `o` (id 1, before the insertion).
         let again = p.eval(&KeyPath::String(u("again"))).unwrap();
         let o = p.eval(&KeyPath::String(u("o"))).unwrap();
@@ -971,8 +1166,14 @@ mod tests {
         b2.push(tag::END);
         let out = inject(&b2, &u("a.x.y"), 3.0).expect("injects");
         let p = Parsed::parse(&out).expect("parses");
-        assert_eq!(p.extract(&KeyPath::String(u("a.x.y"))), Ok(Some(Key::Number(3.0))));
-        assert_eq!(p.extract(&KeyPath::String(u("c.tag"))), Ok(Some(Key::String(u("B")))));
+        assert_eq!(
+            p.extract(&KeyPath::String(u("a.x.y"))),
+            Ok(Some(Key::Number(3.0)))
+        );
+        assert_eq!(
+            p.extract(&KeyPath::String(u("c.tag"))),
+            Ok(Some(Key::String(u("B"))))
+        );
 
         // An own `undefined` is replaced in place.
         let mut b3 = hdr();
@@ -983,11 +1184,21 @@ mod tests {
         b3.extend(number_bytes(1.0));
         b3.push(tag::END);
         let pb = Parsed::parse(&b3).unwrap();
-        assert_eq!(pb.extract(&KeyPath::String(u("id"))), Err(()), "undefined is failure");
+        assert_eq!(
+            pb.extract(&KeyPath::String(u("id"))),
+            Err(()),
+            "undefined is failure"
+        );
         let out = inject(&b3, &u("id"), 1e10).expect("injects");
         let p = Parsed::parse(&out).unwrap();
-        assert_eq!(p.extract(&KeyPath::String(u("id"))), Ok(Some(Key::Number(1e10))));
-        assert_eq!(p.extract(&KeyPath::String(u("z"))), Ok(Some(Key::Number(1.0))));
+        assert_eq!(
+            p.extract(&KeyPath::String(u("id"))),
+            Ok(Some(Key::Number(1e10)))
+        );
+        assert_eq!(
+            p.extract(&KeyPath::String(u("z"))),
+            Ok(Some(Key::Number(1.0)))
+        );
     }
 
     #[test]

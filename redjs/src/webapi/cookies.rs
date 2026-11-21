@@ -319,7 +319,11 @@ impl Jar {
 
     fn stamp(&mut self) -> i64 {
         let now = now_us();
-        self.last_stamp = if now > self.last_stamp { now } else { self.last_stamp + 1 };
+        self.last_stamp = if now > self.last_stamp {
+            now
+        } else {
+            self.last_stamp + 1
+        };
         self.last_stamp
     }
 
@@ -327,7 +331,12 @@ impl Jar {
     fn persist(&self) {
         match host() {
             Some(h) => {
-                let keep: Vec<Cookie> = self.cookies.iter().filter(|c| c.expires.is_some()).cloned().collect();
+                let keep: Vec<Cookie> = self
+                    .cookies
+                    .iter()
+                    .filter(|c| c.expires.is_some())
+                    .cloned()
+                    .collect();
                 h.store(&keep);
             }
             None => advise_no_host(),
@@ -351,8 +360,12 @@ impl Jar {
     }
 
     fn drop_lru(&mut self, pred: impl Fn(&Cookie) -> bool) {
-        if let Some((i, _)) =
-            self.cookies.iter().enumerate().filter(|(_, c)| pred(c)).min_by_key(|(_, c)| c.last_access)
+        if let Some((i, _)) = self
+            .cookies
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| pred(c))
+            .min_by_key(|(_, c)| c.last_access)
         {
             self.cookies.remove(i);
         }
@@ -391,7 +404,10 @@ fn advise_same_site(c: &Cookie, host: &str) {
 }
 
 fn now_us() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0)
 }
 
 fn now_s() -> i64 {
@@ -406,25 +422,128 @@ fn now_s() -> i64 {
 /// not the full list). Bare TLDs are refused by rule, not by table.
 pub const PUBLIC_SUFFIXES: &[&str] = &[
     // ccTLD second levels that registrars sell under.
-    "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "ac.uk", "gov.uk", "sch.uk",
-    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
-    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz",
-    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "gr.jp", "ad.jp", "ed.jp", "lg.jp",
-    "co.kr", "or.kr", "ne.kr", "go.kr", "ac.kr",
-    "com.br", "net.br", "org.br", "gov.br", "edu.br",
-    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
-    "com.tw", "net.tw", "org.tw", "com.hk", "net.hk", "org.hk", "com.sg", "net.sg", "org.sg",
-    "co.in", "net.in", "org.in", "firm.in", "gen.in", "ind.in",
-    "com.mx", "org.mx", "gob.mx", "com.ar", "com.co", "com.pe", "com.ve",
-    "com.tr", "net.tr", "org.tr", "gov.tr", "com.ua", "net.ua", "org.ua", "com.ru", "net.ru",
-    "org.ru", "pp.ru", "msk.ru", "spb.ru", "com.pl", "net.pl", "org.pl",
-    "co.za", "org.za", "net.za", "gov.za", "co.il", "org.il", "net.il", "ac.il",
-    "com.eg", "com.sa", "com.my", "com.ph", "com.sk", "co.th", "in.th", "co.id", "or.id",
+    "co.uk",
+    "org.uk",
+    "me.uk",
+    "ltd.uk",
+    "plc.uk",
+    "net.uk",
+    "ac.uk",
+    "gov.uk",
+    "sch.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "edu.au",
+    "gov.au",
+    "asn.au",
+    "id.au",
+    "co.nz",
+    "net.nz",
+    "org.nz",
+    "govt.nz",
+    "ac.nz",
+    "co.jp",
+    "ne.jp",
+    "or.jp",
+    "ac.jp",
+    "go.jp",
+    "gr.jp",
+    "ad.jp",
+    "ed.jp",
+    "lg.jp",
+    "co.kr",
+    "or.kr",
+    "ne.kr",
+    "go.kr",
+    "ac.kr",
+    "com.br",
+    "net.br",
+    "org.br",
+    "gov.br",
+    "edu.br",
+    "com.cn",
+    "net.cn",
+    "org.cn",
+    "gov.cn",
+    "edu.cn",
+    "com.tw",
+    "net.tw",
+    "org.tw",
+    "com.hk",
+    "net.hk",
+    "org.hk",
+    "com.sg",
+    "net.sg",
+    "org.sg",
+    "co.in",
+    "net.in",
+    "org.in",
+    "firm.in",
+    "gen.in",
+    "ind.in",
+    "com.mx",
+    "org.mx",
+    "gob.mx",
+    "com.ar",
+    "com.co",
+    "com.pe",
+    "com.ve",
+    "com.tr",
+    "net.tr",
+    "org.tr",
+    "gov.tr",
+    "com.ua",
+    "net.ua",
+    "org.ua",
+    "com.ru",
+    "net.ru",
+    "org.ru",
+    "pp.ru",
+    "msk.ru",
+    "spb.ru",
+    "com.pl",
+    "net.pl",
+    "org.pl",
+    "co.za",
+    "org.za",
+    "net.za",
+    "gov.za",
+    "co.il",
+    "org.il",
+    "net.il",
+    "ac.il",
+    "com.eg",
+    "com.sa",
+    "com.my",
+    "com.ph",
+    "com.sk",
+    "co.th",
+    "in.th",
+    "co.id",
+    "or.id",
     // Private suffixes whose subdomains belong to different people.
-    "github.io", "githubusercontent.com", "gitlab.io", "herokuapp.com", "appspot.com",
-    "blogspot.com", "cloudfront.net", "azurewebsites.net", "netlify.app", "vercel.app",
-    "pages.dev", "workers.dev", "web.app", "firebaseapp.com", "fly.dev", "onrender.com",
-    "ngrok.io", "ngrok-free.app", "s3.amazonaws.com", "glitch.me", "repl.co",
+    "github.io",
+    "githubusercontent.com",
+    "gitlab.io",
+    "herokuapp.com",
+    "appspot.com",
+    "blogspot.com",
+    "cloudfront.net",
+    "azurewebsites.net",
+    "netlify.app",
+    "vercel.app",
+    "pages.dev",
+    "workers.dev",
+    "web.app",
+    "firebaseapp.com",
+    "fly.dev",
+    "onrender.com",
+    "ngrok.io",
+    "ngrok-free.app",
+    "s3.amazonaws.com",
+    "glitch.me",
+    "repl.co",
 ];
 
 /// Is `domain` (canonical) a public suffix — somewhere nobody may set a
@@ -470,7 +589,8 @@ pub fn path_match(request_path: &str, cookie_path: &str) -> bool {
         return true;
     }
     request_path.starts_with(cookie_path)
-        && (cookie_path.ends_with('/') || request_path.as_bytes().get(cookie_path.len()) == Some(&b'/'))
+        && (cookie_path.ends_with('/')
+            || request_path.as_bytes().get(cookie_path.len()) == Some(&b'/'))
 }
 
 /// A transport the `Secure` attribute trusts: `https:`/`wss:`, or loopback
@@ -480,7 +600,9 @@ pub fn is_secure_transport(u: &url::Url) -> bool {
         return true;
     }
     match u.host() {
-        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost") || d.to_ascii_lowercase().ends_with(".localhost"),
+        Some(url::Host::Domain(d)) => {
+            d.eq_ignore_ascii_case("localhost") || d.to_ascii_lowercase().ends_with(".localhost")
+        }
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
@@ -506,7 +628,11 @@ fn cookie_scheme(u: &url::Url) -> bool {
 // ---------------------------------------------------------------------------
 
 fn is_delimiter(b: u8) -> bool {
-    b == 0x09 || (0x20..=0x2f).contains(&b) || (0x3b..=0x40).contains(&b) || (0x5b..=0x60).contains(&b) || (0x7b..=0x7e).contains(&b)
+    b == 0x09
+        || (0x20..=0x2f).contains(&b)
+        || (0x3b..=0x40).contains(&b)
+        || (0x5b..=0x60).contains(&b)
+        || (0x7b..=0x7e).contains(&b)
 }
 
 /// `1*max DIGIT`, then either the end or a non-digit (and anything after).
@@ -547,10 +673,12 @@ fn parse_month(tok: &[u8]) -> Option<u32> {
         return None;
     }
     let m = std::str::from_utf8(&tok[..3]).ok()?.to_ascii_lowercase();
-    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-        .iter()
-        .position(|x| *x == m)
-        .map(|i| i as u32 + 1)
+    [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ]
+    .iter()
+    .position(|x| *x == m)
+    .map(|i| i as u32 + 1)
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's algorithm).
@@ -576,7 +704,11 @@ fn days_in_month(y: i64, m: u32) -> u32 {
 /// A cookie-date to Unix seconds; `None` when the algorithm says "fail".
 pub fn parse_cookie_date(s: &str) -> Option<i64> {
     let (mut time, mut day, mut month, mut year) = (None, None, None, None);
-    for tok in s.as_bytes().split(|b| is_delimiter(*b)).filter(|t| !t.is_empty()) {
+    for tok in s
+        .as_bytes()
+        .split(|b| is_delimiter(*b))
+        .filter(|t| !t.is_empty())
+    {
         if time.is_none() {
             if let Some(t) = parse_time(tok) {
                 time = Some(t);
@@ -610,7 +742,13 @@ pub fn parse_cookie_date(s: &str) -> Option<i64> {
     } else if (0..=69).contains(&y) {
         y += 2000;
     }
-    if !(1..=31).contains(&d) || y < 1601 || h > 23 || mi > 59 || sec > 59 || d > days_in_month(y, m) {
+    if !(1..=31).contains(&d)
+        || y < 1601
+        || h > 23
+        || mi > 59
+        || sec > 59
+        || d > days_in_month(y, m)
+    {
         return None;
     }
     Some(days_from_civil(y, m, d) * 86_400 + (h * 3600 + mi * 60 + sec) as i64)
@@ -624,7 +762,8 @@ pub fn parse_cookie_date(s: &str) -> Option<i64> {
 pub type Ignored = String;
 
 fn has_ctl(s: &str) -> bool {
-    s.bytes().any(|b| b <= 0x08 || (0x0a..=0x1f).contains(&b) || b == 0x7f)
+    s.bytes()
+        .any(|b| b <= 0x08 || (0x0a..=0x1f).contains(&b) || b == 0x7f)
 }
 
 /// The parsed attributes of one `Set-Cookie`, before the store's rules.
@@ -656,7 +795,9 @@ fn parse_set_cookie(header: &str, now: i64) -> Result<Parsed, Ignored> {
         return Err("both the name and the value are empty".into());
     }
     if name.len() + value.len() > MAX_NAME_VALUE {
-        return Err(format!("the name and value are over {MAX_NAME_VALUE} bytes"));
+        return Err(format!(
+            "the name and value are over {MAX_NAME_VALUE} bytes"
+        ));
     }
     let mut p = Parsed {
         name: name.to_string(),
@@ -692,8 +833,14 @@ fn parse_set_cookie(header: &str, now: i64) -> Result<Parsed, Ignored> {
                     // A number too long for i64 is still a number: a huge
                     // positive one is "far future" (capped), a huge negative
                     // one is "already gone".
-                    let delta = v.parse::<i64>().unwrap_or(if b[0] == b'-' { -1 } else { i64::MAX });
-                    p.max_age = Some(if delta <= 0 { i64::MIN } else { now.saturating_add(delta.min(MAX_AGE_CAP_S)) });
+                    let delta =
+                        v.parse::<i64>()
+                            .unwrap_or(if b[0] == b'-' { -1 } else { i64::MAX });
+                    p.max_age = Some(if delta <= 0 {
+                        i64::MIN
+                    } else {
+                        now.saturating_add(delta.min(MAX_AGE_CAP_S))
+                    });
                 }
             }
             "domain" => {
@@ -734,7 +881,9 @@ fn store_parsed(jar: &mut Jar, u: &url::Url, p: Parsed, api: Api, now: i64) -> R
             if is_public_suffix(&d) {
                 (host.clone(), true)
             } else if !domain_match(&host, &d) {
-                return Err(format!("Domain={d:?} does not domain-match the host {host:?}"));
+                return Err(format!(
+                    "Domain={d:?} does not domain-match the host {host:?}"
+                ));
             } else {
                 (d, false)
             }
@@ -822,7 +971,8 @@ pub fn set_from_header(u: &url::Url, header: &str, api: Api) -> Result<(), Ignor
     jar.ensure_loaded();
     let persistent_before = jar.cookies.iter().filter(|c| c.expires.is_some()).count();
     let r = store_parsed(&mut jar, u, parsed, api, now);
-    if r.is_ok() || persistent_before != jar.cookies.iter().filter(|c| c.expires.is_some()).count() {
+    if r.is_ok() || persistent_before != jar.cookies.iter().filter(|c| c.expires.is_some()).count()
+    {
         jar.persist();
     }
     r
@@ -861,7 +1011,11 @@ pub fn header_for(u: &url::Url, api: Api) -> Option<String> {
         .iter_mut()
         .filter(|c| {
             !c.expired(now)
-                && if c.host_only { host == c.domain } else { domain_match(&host, &c.domain) }
+                && if c.host_only {
+                    host == c.domain
+                } else {
+                    domain_match(&host, &c.domain)
+                }
                 && path_match(&path, &c.path)
                 && (!c.secure || secure)
                 && (!c.http_only || api == Api::Http)
@@ -870,7 +1024,12 @@ pub fn header_for(u: &url::Url, api: Api) -> Option<String> {
     if hits.is_empty() {
         return None;
     }
-    hits.sort_by(|a, b| b.path.len().cmp(&a.path.len()).then(a.creation.cmp(&b.creation)));
+    hits.sort_by(|a, b| {
+        b.path
+            .len()
+            .cmp(&a.path.len())
+            .then(a.creation.cmp(&b.creation))
+    });
     let mut out = String::new();
     for c in hits {
         c.last_access = stamp;
@@ -894,7 +1053,10 @@ pub fn header_for(u: &url::Url, api: Api) -> Option<String> {
 pub fn with_cookies(u: &url::Url, headers: &[(String, String)]) -> Option<Vec<(String, String)>> {
     let jar_value = header_for(u, Api::Http)?;
     let mut out = headers.to_vec();
-    match out.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case("cookie")) {
+    match out
+        .iter_mut()
+        .find(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+    {
         Some((_, v)) if !v.trim().is_empty() => {
             v.push_str("; ");
             v.push_str(&jar_value);
@@ -932,12 +1094,19 @@ pub struct HostCookie {
 /// host cannot provision a cookie a server could not have set — except that
 /// the embedder is an HTTP API, so `HttpOnly` is allowed.
 pub fn set(c: HostCookie) -> Result<(), Ignored> {
-    let u = url::Url::parse(&c.url).map_err(|e| format!("cookies::set: invalid url {:?}: {e}", c.url))?;
+    let u = url::Url::parse(&c.url)
+        .map_err(|e| format!("cookies::set: invalid url {:?}: {e}", c.url))?;
     if !cookie_scheme(&u) {
-        return Err(format!("cookies::set: {}: URLs have no cookies", u.scheme()));
+        return Err(format!(
+            "cookies::set: {}: URLs have no cookies",
+            u.scheme()
+        ));
     }
-    if c.name.contains(['=', ';']) || has_ctl(&c.name) || c.value.contains(';') || has_ctl(&c.value) {
-        return Err("cookies::set: the name or value contains '=', ';' or a control character".into());
+    if c.name.contains(['=', ';']) || has_ctl(&c.name) || c.value.contains(';') || has_ctl(&c.value)
+    {
+        return Err(
+            "cookies::set: the name or value contains '=', ';' or a control character".into(),
+        );
     }
     let bad = |s: &Option<String>| s.as_deref().is_some_and(|s| s.contains(';') || has_ctl(s));
     if bad(&c.domain) || bad(&c.path) {
@@ -948,11 +1117,17 @@ pub fn set(c: HostCookie) -> Result<(), Ignored> {
         name: c.name,
         value: c.value,
         expires: c.expires.map(|t| {
-            let s = t.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+            let s = t
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
             s.min(now + MAX_AGE_CAP_S)
         }),
         max_age: None,
-        domain: c.domain.map(|d| d.trim_start_matches('.').to_string()).filter(|d| !d.is_empty()),
+        domain: c
+            .domain
+            .map(|d| d.trim_start_matches('.').to_string())
+            .filter(|d| !d.is_empty()),
         path: c.path.filter(|p| p.starts_with('/')),
         secure: c.secure,
         http_only: c.http_only,
@@ -969,15 +1144,22 @@ pub fn set(c: HostCookie) -> Result<(), Ignored> {
 /// request to `url` would carry, whatever its `Secure` flag or expiry.
 /// Returns how many went.
 pub fn remove(url: &str, name: &str) -> usize {
-    let Ok(u) = url::Url::parse(url) else { return 0 };
-    let Some(host) = canonical_host(&u) else { return 0 };
+    let Ok(u) = url::Url::parse(url) else {
+        return 0;
+    };
+    let Some(host) = canonical_host(&u) else {
+        return 0;
+    };
     let path = request_path(&u).to_string();
     let mut jar = jar().lock().unwrap();
     jar.ensure_loaded();
     let before = jar.cookies.len();
     jar.cookies.retain(|c| {
-        let applies = (if c.host_only { host == c.domain } else { domain_match(&host, &c.domain) })
-            && path_match(&path, &c.path);
+        let applies = (if c.host_only {
+            host == c.domain
+        } else {
+            domain_match(&host, &c.domain)
+        }) && path_match(&path, &c.path);
         !(c.name == name && applies)
     });
     let gone = before - jar.cookies.len();
@@ -1002,8 +1184,11 @@ pub fn get(url: Option<&str>) -> Vec<Cookie> {
             None => true,
             Some(u) => {
                 let host = canonical_host(u).unwrap_or_default();
-                (if c.host_only { host == c.domain } else { domain_match(&host, &c.domain) })
-                    && path_match(request_path(u), &c.path)
+                (if c.host_only {
+                    host == c.domain
+                } else {
+                    domain_match(&host, &c.domain)
+                }) && path_match(request_path(u), &c.path)
                     && (!c.secure || is_secure_transport(u))
             }
         })
@@ -1089,13 +1274,19 @@ mod tests {
     fn a_public_suffix_domain_is_refused_unless_it_is_the_host_itself() {
         let _g = test_lock();
         reset_for_tests();
-        assert!(set_h("https://example.com/", "x=1; Domain=com").is_err(), "a bare TLD");
+        assert!(
+            set_h("https://example.com/", "x=1; Domain=com").is_err(),
+            "a bare TLD"
+        );
         assert!(set_h("https://shop.example.co.uk/", "x=1; Domain=co.uk").is_err());
         assert!(set_h("https://me.github.io/", "x=1; Domain=github.io").is_err());
         // Domain=<the host> on a single-label host: becomes host-only.
         set_h("http://localhost/", "l=1; Domain=localhost").unwrap();
         assert_eq!(sent("http://localhost/"), "l=1");
-        let c = get(Some("http://localhost/")).into_iter().find(|c| c.name == "l").unwrap();
+        let c = get(Some("http://localhost/"))
+            .into_iter()
+            .find(|c| c.name == "l")
+            .unwrap();
         assert!(c.host_only);
     }
 
@@ -1106,7 +1297,10 @@ mod tests {
         set_h("http://127.0.0.1/", "ip=1").unwrap();
         assert_eq!(sent("http://127.0.0.1/"), "ip=1");
         assert!(domain_match("127.0.0.1", "127.0.0.1"));
-        assert!(!domain_match("10.0.0.1", "0.0.1"), "no suffix matching on an IP");
+        assert!(
+            !domain_match("10.0.0.1", "0.0.1"),
+            "no suffix matching on an IP"
+        );
         assert!(set_h("http://10.0.0.1/", "x=1; Domain=0.0.1").is_err());
         // A control character anywhere in the string drops the whole cookie.
         assert!(set_h("http://127.0.0.1/", "p=1; Path=/a\u{1}b").is_err());
@@ -1151,7 +1345,10 @@ mod tests {
     fn secure_cookies_need_a_secure_transport_both_ways() {
         let _g = test_lock();
         reset_for_tests();
-        assert!(set_h("http://example.com/", "s=1; Secure").is_err(), "set over http");
+        assert!(
+            set_h("http://example.com/", "s=1; Secure").is_err(),
+            "set over http"
+        );
         set_h("https://example.com/", "s=1; Secure").unwrap();
         assert_eq!(sent("https://example.com/"), "s=1");
         assert_eq!(sent("http://example.com/"), "", "never sent over http");
@@ -1179,24 +1376,46 @@ mod tests {
         set_h("https://example.com/", "n=1; SameSite=None; Secure").unwrap();
         assert!(set_h("https://example.com/", "__Secure-a=1").is_err());
         set_h("https://example.com/", "__Secure-a=1; Secure").unwrap();
-        assert!(set_h("https://example.com/", "__Host-b=1; Secure; Path=/; Domain=example.com").is_err());
-        assert!(set_h("https://example.com/x/y", "__Host-b=1; Secure").is_err(), "no Path=/");
+        assert!(set_h(
+            "https://example.com/",
+            "__Host-b=1; Secure; Path=/; Domain=example.com"
+        )
+        .is_err());
+        assert!(
+            set_h("https://example.com/x/y", "__Host-b=1; Secure").is_err(),
+            "no Path=/"
+        );
         set_h("https://example.com/x/y", "__Host-b=1; Secure; Path=/").unwrap();
         let s = sent("https://example.com/");
-        assert!(s.contains("n=1") && s.contains("__Secure-a=1") && s.contains("__Host-b=1"), "{s}");
+        assert!(
+            s.contains("n=1") && s.contains("__Secure-a=1") && s.contains("__Host-b=1"),
+            "{s}"
+        );
     }
 
     #[test]
     fn max_age_wins_over_expires_and_zero_deletes() {
         let _g = test_lock();
         reset_for_tests();
-        set_h("https://example.com/", "m=1; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600").unwrap();
+        set_h(
+            "https://example.com/",
+            "m=1; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=3600",
+        )
+        .unwrap();
         assert_eq!(sent("https://example.com/"), "m=1", "Max-Age kept it alive");
         set_h("https://example.com/", "m=1; Max-Age=0").unwrap();
         assert_eq!(sent("https://example.com/"), "", "Max-Age=0 deleted it");
         set_h("https://example.com/", "e=1").unwrap();
-        set_h("https://example.com/", "e=2; Expires=Thu, 01 Jan 1970 00:00:00 GMT").unwrap();
-        assert_eq!(sent("https://example.com/"), "", "a past Expires deletes the namesake");
+        set_h(
+            "https://example.com/",
+            "e=2; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        )
+        .unwrap();
+        assert_eq!(
+            sent("https://example.com/"),
+            "",
+            "a past Expires deletes the namesake"
+        );
     }
 
     #[test]
@@ -1204,11 +1423,19 @@ mod tests {
         let _g = test_lock();
         reset_for_tests();
         set_h("https://example.com/", "far=1; Max-Age=999999999999").unwrap();
-        set_h("https://example.com/", "far2=1; Expires=Fri, 01 Jan 9999 00:00:00 GMT").unwrap();
+        set_h(
+            "https://example.com/",
+            "far2=1; Expires=Fri, 01 Jan 9999 00:00:00 GMT",
+        )
+        .unwrap();
         let now = now_s();
         for c in get(None) {
             let e = c.expires.unwrap();
-            assert!(e <= now + MAX_AGE_CAP_S + 1 && e > now + MAX_AGE_CAP_S - 10, "{} {e}", c.name);
+            assert!(
+                e <= now + MAX_AGE_CAP_S + 1 && e > now + MAX_AGE_CAP_S - 10,
+                "{} {e}",
+                c.name
+            );
         }
     }
 
@@ -1230,7 +1457,9 @@ mod tests {
         set_h("https://example.com/", "h=1; HttpOnly").unwrap();
         assert_eq!(header_for(&u("https://example.com/"), Api::NonHttp), None);
         assert!(set_from_header(&u("https://example.com/"), "h=evil", Api::NonHttp).is_err());
-        assert!(set_from_header(&u("https://example.com/"), "z=1; HttpOnly", Api::NonHttp).is_err());
+        assert!(
+            set_from_header(&u("https://example.com/"), "z=1; HttpOnly", Api::NonHttp).is_err()
+        );
         assert_eq!(sent("https://example.com/"), "h=1");
     }
 
@@ -1244,7 +1473,11 @@ mod tests {
         assert!(set_h("https://example.com/", "=").is_err());
         assert!(set_h("https://example.com/", &format!("big={}", "x".repeat(5000))).is_err());
         // An over-long attribute is ignored, not the cookie.
-        set_h("https://example.com/", &format!("ok=1; Path=/{}", "p".repeat(1100))).unwrap();
+        set_h(
+            "https://example.com/",
+            &format!("ok=1; Path=/{}", "p".repeat(1100)),
+        )
+        .unwrap();
         assert!(sent("https://example.com/").contains("ok=1"));
     }
 
@@ -1253,10 +1486,16 @@ mod tests {
         let t = parse_cookie_date("Wed, 21 Oct 2015 07:28:00 GMT").unwrap();
         assert_eq!(t, 1_445_412_480);
         // The RFC's tolerance: other separators, order, two-digit years.
-        assert_eq!(parse_cookie_date("Wednesday, 21-Oct-15 07:28:00 GMT"), Some(t));
+        assert_eq!(
+            parse_cookie_date("Wednesday, 21-Oct-15 07:28:00 GMT"),
+            Some(t)
+        );
         assert_eq!(parse_cookie_date("21 Oct 2015 07:28:00"), Some(t));
         assert_eq!(parse_cookie_date("Thu, 01 Jan 70 00:00:00 GMT"), Some(0));
-        assert_eq!(parse_cookie_date("Sat, 01 Jan 2000 00:00:00 GMT"), Some(946_684_800));
+        assert_eq!(
+            parse_cookie_date("Sat, 01 Jan 2000 00:00:00 GMT"),
+            Some(946_684_800)
+        );
         // Failures.
         assert_eq!(parse_cookie_date("not a date"), None);
         assert_eq!(parse_cookie_date("31 Feb 2015 00:00:00"), None);
@@ -1281,8 +1520,15 @@ mod tests {
         let _g = test_lock();
         reset_for_tests();
         set_h("https://example.com/", "jar=1").unwrap();
-        let out = with_cookies(&u("https://example.com/"), &[("cookie".into(), "mine=1".into())]).unwrap();
-        assert_eq!(out, vec![("cookie".to_string(), "mine=1; jar=1".to_string())]);
+        let out = with_cookies(
+            &u("https://example.com/"),
+            &[("cookie".into(), "mine=1".into())],
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            vec![("cookie".to_string(), "mine=1; jar=1".to_string())]
+        );
         let out = with_cookies(&u("https://example.com/"), &[]).unwrap();
         assert_eq!(out, vec![("cookie".to_string(), "jar=1".to_string())]);
         assert!(with_cookies(&u("https://other.com/"), &[]).is_none());
@@ -1306,11 +1552,27 @@ mod tests {
         set(base.clone()).unwrap();
         assert_eq!(sent("https://api.argon.example/ion/x"), "Probe=a=1&b=2");
         assert_eq!(sent("http://api.argon.example/"), "", "Secure");
-        assert_eq!(header_for(&u("https://api.argon.example/"), Api::NonHttp), None, "HttpOnly");
+        assert_eq!(
+            header_for(&u("https://api.argon.example/"), Api::NonHttp),
+            None,
+            "HttpOnly"
+        );
         // A host cannot set what a server could not.
-        assert!(set(HostCookie { domain: Some("other.example".into()), ..base.clone() }).is_err());
-        assert!(set(HostCookie { url: "http://argon.example/".into(), ..base.clone() }).is_err());
-        assert!(set(HostCookie { value: "a;b".into(), ..base.clone() }).is_err());
+        assert!(set(HostCookie {
+            domain: Some("other.example".into()),
+            ..base.clone()
+        })
+        .is_err());
+        assert!(set(HostCookie {
+            url: "http://argon.example/".into(),
+            ..base.clone()
+        })
+        .is_err());
+        assert!(set(HostCookie {
+            value: "a;b".into(),
+            ..base.clone()
+        })
+        .is_err());
         assert_eq!(get(Some("https://api.argon.example/")).len(), 1);
         assert_eq!(remove("https://api.argon.example/", "Probe"), 1);
         assert_eq!(sent("https://api.argon.example/"), "");
@@ -1346,10 +1608,18 @@ mod tests {
         set_host(rec);
         set_h("https://example.com/", "session=1").unwrap();
         set_h("https://example.com/", "kept=1; Max-Age=60").unwrap();
-        assert_eq!(sent("https://example.com/"), "old=disk; session=1; kept=1", "loaded from the host");
+        assert_eq!(
+            sent("https://example.com/"),
+            "old=disk; session=1; kept=1",
+            "loaded from the host"
+        );
         let last = rec.0.lock().unwrap().last().cloned().unwrap();
         let names: Vec<_> = last.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, vec!["old", "kept"], "the session cookie stayed in memory");
+        assert_eq!(
+            names,
+            vec!["old", "kept"],
+            "the session cookie stayed in memory"
+        );
         *HOST.write().unwrap() = prev;
         reset_for_tests();
     }
@@ -1361,9 +1631,15 @@ mod tests {
         for i in 0..(MAX_PER_DOMAIN + 5) {
             set_h("https://many.example/", &format!("c{i}=1")).unwrap();
         }
-        let n = get(None).iter().filter(|c| c.domain == "many.example").count();
+        let n = get(None)
+            .iter()
+            .filter(|c| c.domain == "many.example")
+            .count();
         assert_eq!(n, MAX_PER_DOMAIN);
-        assert!(!sent("https://many.example/").contains("c0=1"), "the oldest went first");
+        assert!(
+            !sent("https://many.example/").contains("c0=1"),
+            "the oldest went first"
+        );
         reset_for_tests();
     }
 }

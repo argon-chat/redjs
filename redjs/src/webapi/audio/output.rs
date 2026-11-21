@@ -20,7 +20,8 @@ const DEFAULT_BLOCK_FRAMES: u32 = 1024;
 /// The graph's block size on every stream. A restart reuses the processor, and a schedule compiled
 /// for the old stream can still reach it; firewheel 0.10 panics when their block sizes differ.
 /// Longer callbacks are rendered in blocks.
-const GRAPH_BLOCK_FRAMES: core::num::NonZeroU32 = core::num::NonZeroU32::new(DEFAULT_BLOCK_FRAMES).unwrap();
+const GRAPH_BLOCK_FRAMES: core::num::NonZeroU32 =
+    core::num::NonZeroU32::new(DEFAULT_BLOCK_FRAMES).unwrap();
 const BUILD_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What a context asks an [`OutputBackend`] for.
@@ -204,7 +205,9 @@ impl ObjectBus {
     }
 
     pub(crate) fn is_lost(&self, slot: usize) -> bool {
-        self.slots.get(slot).is_none_or(|s| s.lost.load(Ordering::Acquire))
+        self.slots
+            .get(slot)
+            .is_none_or(|s| s.lost.load(Ordering::Acquire))
     }
 
     /// How many slots the backend gave up; the page's thread reassigns when it changes.
@@ -231,8 +234,16 @@ impl ObjectBus {
     ///
     /// # Safety
     /// Only on the thread rendering the stream.
-    pub(crate) unsafe fn write(&self, slot: usize, owner: u64, left: &[f32], right: Option<&[f32]>) -> bool {
-        let Some(s) = self.slots.get(slot) else { return false };
+    pub(crate) unsafe fn write(
+        &self,
+        slot: usize,
+        owner: u64,
+        left: &[f32],
+        right: Option<&[f32]>,
+    ) -> bool {
+        let Some(s) = self.slots.get(slot) else {
+            return false;
+        };
         if owner == 0 || s.owner.load(Ordering::Acquire) != owner {
             return false;
         }
@@ -335,7 +346,9 @@ impl Renderer {
     /// the context's own panning, and the object is not handed out again on this stream.
     pub fn lose_object(&self, index: u32) {
         let Some(bus) = self.bus.get() else { return };
-        let Some(s) = bus.slots.get(index as usize) else { return };
+        let Some(s) = bus.slots.get(index as usize) else {
+            return;
+        };
         if !s.lost.swap(true, Ordering::AcqRel) {
             s.owner.store(0, Ordering::Release);
             bus.lost.fetch_add(1, Ordering::AcqRel);
@@ -443,7 +456,8 @@ impl AudioBackend for RedBackend {
                 Err(e) => refused = config.objects.then_some(e),
             }
         }
-        let (mut out, info) = open_cpal(&config).inspect_err(|_| START_REFUSAL.set(refused.clone()))?;
+        let (mut out, info) =
+            open_cpal(&config).inspect_err(|_| START_REFUSAL.set(refused.clone()))?;
         out.refused = refused;
         Ok((RedBackend::Cpal(out), info))
     }
@@ -473,7 +487,10 @@ impl AudioBackend for RedBackend {
     }
 }
 
-fn open_embedder(b: &dyn OutputBackend, config: &RedConfig) -> Result<(RedBackend, StreamInfo), String> {
+fn open_embedder(
+    b: &dyn OutputBackend,
+    config: &RedConfig,
+) -> Result<(RedBackend, StreamInfo), String> {
     let (tx, rx) = mpsc::sync_channel(1);
     let bus: Arc<BusCell> = Arc::new(OnceLock::new());
     let renderer = Renderer {
@@ -560,7 +577,9 @@ fn open_cpal(config: &RedConfig) -> Result<(CpalOut, StreamInfo), OutputError> {
     }
     let channels = default.channels().max(1);
     let buffer_size = match default.buffer_size() {
-        &cpal::SupportedBufferSize::Range { min, max } => cpal::BufferSize::Fixed(DEFAULT_BLOCK_FRAMES.clamp(min, max)),
+        &cpal::SupportedBufferSize::Range { min, max } => {
+            cpal::BufferSize::Fixed(DEFAULT_BLOCK_FRAMES.clamp(min, max))
+        }
         cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Default,
     };
     let stream_config = cpal::StreamConfig {
@@ -592,7 +611,8 @@ fn open_cpal(config: &RedConfig) -> Result<(CpalOut, StreamInfo), OutputError> {
         .map_err(|e| err(&e))?;
     stream.play().map_err(|e| err(&e))?;
     let info = StreamInfo {
-        sample_rate: core::num::NonZeroU32::new(rate).unwrap_or(core::num::NonZeroU32::new(48_000).unwrap()),
+        sample_rate: core::num::NonZeroU32::new(rate)
+            .unwrap_or(core::num::NonZeroU32::new(48_000).unwrap()),
         max_block_frames: GRAPH_BLOCK_FRAMES,
         num_stream_out_channels: channels as u32,
         output_device_id: id,

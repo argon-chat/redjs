@@ -44,7 +44,12 @@ struct BatteryState {
 
 impl Default for BatteryState {
     fn default() -> Self {
-        Self { charging: true, charging_time: 0.0, discharging_time: f64::INFINITY, level: 1.0 }
+        Self {
+            charging: true,
+            charging_time: 0.0,
+            discharging_time: f64::INFINITY,
+            level: 1.0,
+        }
     }
 }
 
@@ -71,13 +76,21 @@ impl From<PowerStatus> for BatteryState {
         let charging = s.ac_line_status != 0 || s.battery_flag & 8 != 0;
         Self {
             charging,
-            charging_time: if s.battery_life_percent == 100 { 0.0 } else { f64::INFINITY },
+            charging_time: if s.battery_life_percent == 100 {
+                0.0
+            } else {
+                f64::INFINITY
+            },
             discharging_time: if !charging && s.battery_life_time != u32::MAX {
                 s.battery_life_time as f64
             } else {
                 f64::INFINITY
             },
-            level: if s.battery_life_percent <= 100 { s.battery_life_percent as f64 / 100.0 } else { 1.0 },
+            level: if s.battery_life_percent <= 100 {
+                s.battery_life_percent as f64 / 100.0
+            } else {
+                1.0
+            },
         }
     }
 }
@@ -207,15 +220,29 @@ battery_getter!(get_level, level, enc_f64);
 
 unsafe fn get_handler(g: *mut c_void, cf: *mut c_void, name: &str) -> u64 {
     let value = cf_this(cf);
-    let Some((_, slot, _)) = branded(g, value) else { return throw_type_error(g, "Illegal invocation") };
+    let Some((_, slot, _)) = branded(g, value) else {
+        return throw_type_error(g, "Illegal invocation");
+    };
     get(g, get_a(g, value, slot as *mut c_void), name)
 }
 
 unsafe fn set_handler(g: *mut c_void, cf: *mut c_void, name: &str) -> u64 {
     let value = cf_this(cf);
-    let Some((_, slot, _)) = branded(g, value) else { return throw_type_error(g, "Illegal invocation") };
+    let Some((_, slot, _)) = branded(g, value) else {
+        return throw_type_error(g, "Illegal invocation");
+    };
     let handler = cf_arg(cf, 0);
-    define(g, get_a(g, value, slot as *mut c_void), name, if glue::rjs_kind(g, handler) == 9 { handler } else { NULL }, 0);
+    define(
+        g,
+        get_a(g, value, slot as *mut c_void),
+        name,
+        if glue::rjs_kind(g, handler) == 9 {
+            handler
+        } else {
+            NULL
+        },
+        0,
+    );
     UNDEF
 }
 
@@ -233,14 +260,27 @@ macro_rules! battery_handler {
 }
 
 battery_handler!(get_on_charging, set_on_charging, "onchargingchange");
-battery_handler!(get_on_charging_time, set_on_charging_time, "onchargingtimechange");
-battery_handler!(get_on_discharging_time, set_on_discharging_time, "ondischargingtimechange");
+battery_handler!(
+    get_on_charging_time,
+    set_on_charging_time,
+    "onchargingtimechange"
+);
+battery_handler!(
+    get_on_discharging_time,
+    set_on_discharging_time,
+    "ondischargingtimechange"
+);
 battery_handler!(get_on_level, set_on_level, "onlevelchange");
 
 #[crate::host_fn]
 pub(super) unsafe fn get_battery(g: *mut c_void, cf: *mut c_void) -> u64 {
     let id = crate::context::ensure(g);
-    let navigator = registry().lock().unwrap().get(&id.0).expect("battery installed after navigator").navigator;
+    let navigator = registry()
+        .lock()
+        .unwrap()
+        .get(&id.0)
+        .expect("battery installed after navigator")
+        .navigator;
     if cf_this(cf) != navigator {
         // Promise-returning WebIDL operations reject for an invalid receiver.
         // Identity also rejects proxies and objects inheriting from navigator.
@@ -264,8 +304,14 @@ pub unsafe fn monitor(g: *mut c_void) {
 /// # Safety
 /// `g` must be the current thread's live context.
 pub unsafe fn on_battery(g: *mut c_void) -> bool {
-    let Some(id) = crate::context::id_of(g) else { return false };
-    registry().lock().unwrap().get(&id.0).is_some_and(|c| !c.pending.unwrap_or(c.current).charging)
+    let Some(id) = crate::context::id_of(g) else {
+        return false;
+    };
+    registry()
+        .lock()
+        .unwrap()
+        .get(&id.0)
+        .is_some_and(|c| !c.pending.unwrap_or(c.current).charging)
 }
 
 unsafe fn get_or_start(g: *mut c_void, id: ContextId) -> u64 {
@@ -283,7 +329,12 @@ unsafe fn get_or_start(g: *mut c_void, id: ContextId) -> u64 {
     glue::rjs_define(g, manager, brand as *mut c_void, TRUE, 1 | 2 | 4);
     let handlers = new_object(g, UNDEF);
     glue::rjs_define(g, manager, handler_slot as *mut c_void, handlers, 1 | 2 | 4);
-    for name in ["onchargingchange", "onchargingtimechange", "ondischargingtimechange", "onlevelchange"] {
+    for name in [
+        "onchargingchange",
+        "onchargingtimechange",
+        "ondischargingtimechange",
+        "onlevelchange",
+    ] {
         define(g, handlers, name, NULL, 0);
     }
     // Install the cache before resolving: resolution can synchronously read
@@ -320,7 +371,12 @@ unsafe fn get_or_start(g: *mut c_void, id: ContextId) -> u64 {
     // state and skip the real subscription, avoiding machine-dependent races.
     if initial.is_none() && !defer_injected {
         let subscription = platform::subscribe(id);
-        registry().lock().unwrap().get_mut(&id.0).unwrap().subscription = Some(subscription);
+        registry()
+            .lock()
+            .unwrap()
+            .get_mut(&id.0)
+            .unwrap()
+            .subscription = Some(subscription);
     }
     // Native Promise machinery remains independent of a replaced global.
     // Even an already fulfilled Promise invokes .then callbacks asynchronously.
@@ -335,27 +391,45 @@ unsafe fn inflight(g: *mut c_void) -> bool {
     if ACQUIRING.load(Ordering::Acquire) == 0 {
         return false;
     }
-    let Some(id) = crate::context::id_of(g) else { return false };
-    registry().lock().unwrap().get(&id.0).is_some_and(|c| is_cell(c.resolve))
+    let Some(id) = crate::context::id_of(g) else {
+        return false;
+    };
+    registry()
+        .lock()
+        .unwrap()
+        .get(&id.0)
+        .is_some_and(|c| is_cell(c.resolve))
 }
 
 unsafe fn ready(g: *mut c_void) -> bool {
     if PENDING.load(Ordering::Acquire) == 0 {
         return false;
     }
-    let Some(id) = crate::context::id_of(g) else { return false };
-    registry().lock().unwrap().get(&id.0).is_some_and(|c| c.pending.is_some())
+    let Some(id) = crate::context::id_of(g) else {
+        return false;
+    };
+    registry()
+        .lock()
+        .unwrap()
+        .get(&id.0)
+        .is_some_and(|c| c.pending.is_some())
 }
 
 unsafe fn drain(g: *mut c_void) -> usize {
     if PENDING.load(Ordering::Acquire) == 0 {
         return 0;
     }
-    let Some(id) = crate::context::id_of(g) else { return 0 };
+    let Some(id) = crate::context::id_of(g) else {
+        return 0;
+    };
     let (manager, old, next, resolve) = {
         let mut reg = registry().lock().unwrap();
-        let Some(c) = reg.get_mut(&id.0) else { return 0 };
-        let Some(next) = c.pending.take() else { return 0 };
+        let Some(c) = reg.get_mut(&id.0) else {
+            return 0;
+        };
+        let Some(next) = c.pending.take() else {
+            return 0;
+        };
         PENDING.fetch_sub(1, Ordering::AcqRel);
         let resolve = c.resolve;
         c.resolve = UNDEF;
@@ -382,7 +456,9 @@ unsafe fn drain(g: *mut c_void) -> usize {
             if old.$field != next.$field {
                 {
                     let mut reg = registry().lock().unwrap();
-                    let Some(c) = reg.get_mut(&id.0) else { return count };
+                    let Some(c) = reg.get_mut(&id.0) else {
+                        return count;
+                    };
                     c.current.$field = next.$field;
                 }
                 events::dispatch(g, manager, events::new_trusted_event(g, $event));
@@ -426,8 +502,16 @@ pub(super) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
             ],
             accessors: &[
                 ("onchargingchange", get_on_charging, set_on_charging),
-                ("onchargingtimechange", get_on_charging_time, set_on_charging_time),
-                ("ondischargingtimechange", get_on_discharging_time, set_on_discharging_time),
+                (
+                    "onchargingtimechange",
+                    get_on_charging_time,
+                    set_on_charging_time,
+                ),
+                (
+                    "ondischargingtimechange",
+                    get_on_discharging_time,
+                    set_on_discharging_time,
+                ),
                 ("onlevelchange", get_on_level, set_on_level),
             ],
         },
@@ -457,7 +541,11 @@ pub(super) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
             defer_initial: false,
         },
     );
-    crate::web::register_pump_source(crate::web::PumpSource { inflight, ready, drain });
+    crate::web::register_pump_source(crate::web::PumpSource {
+        inflight,
+        ready,
+        drain,
+    });
 }
 
 #[cfg(windows)]
@@ -504,7 +592,11 @@ mod platform {
 
     // Callback userdata is the monotonic id encoded as a pointer, never a
     // dereferenced allocation: a late callback has no freed memory to touch.
-    unsafe extern "system" fn changed(context: *const c_void, _kind: u32, _setting: *const c_void) -> u32 {
+    unsafe extern "system" fn changed(
+        context: *const c_void,
+        _kind: u32,
+        _setting: *const c_void,
+    ) -> u32 {
         refresh(ContextId(context as usize as u64));
         0
     }
@@ -543,18 +635,33 @@ mod platform {
     pub(super) fn subscribe(id: ContextId) -> Subscription {
         const SETTINGS: [Guid; 2] = [
             // GUID_ACDC_POWER_SOURCE; GUID_BATTERY_PERCENTAGE_REMAINING.
-            Guid { data1: 0x5d3e9a59, data2: 0xe9d5, data3: 0x4b00, data4: [0xa6, 0xbd, 0xff, 0x34, 0xff, 0x51, 0x65, 0x48] },
-            Guid { data1: 0xa7ad8041, data2: 0xb45a, data3: 0x4cae, data4: [0x87, 0xa3, 0xee, 0xcb, 0xb4, 0x68, 0xa9, 0xe1] },
+            Guid {
+                data1: 0x5d3e9a59,
+                data2: 0xe9d5,
+                data3: 0x4b00,
+                data4: [0xa6, 0xbd, 0xff, 0x34, 0xff, 0x51, 0x65, 0x48],
+            },
+            Guid {
+                data1: 0xa7ad8041,
+                data2: 0xb45a,
+                data3: 0x4cae,
+                data4: [0x87, 0xa3, 0xee, 0xcb, 0xb4, 0x68, 0xa9, 0xe1],
+            },
         ];
         let mut subscription = Subscription {
             handles: Vec::new(),
-            recipient: Box::new(SubscribeParameters { callback: changed, context: id.0 as usize as *const c_void }),
+            recipient: Box::new(SubscribeParameters {
+                callback: changed,
+                context: id.0 as usize as *const c_void,
+            }),
         };
-        let recipient = subscription.recipient.as_ref() as *const SubscribeParameters as *mut c_void;
+        let recipient =
+            subscription.recipient.as_ref() as *const SubscribeParameters as *mut c_void;
         for guid in &SETTINGS {
             let mut handle = core::ptr::null_mut();
             // DEVICE_NOTIFY_CALLBACK = 2. Recipient is an input-only pointer.
-            let error = unsafe { PowerSettingRegisterNotification(guid, 2, recipient, &mut handle) };
+            let error =
+                unsafe { PowerSettingRegisterNotification(guid, 2, recipient, &mut handle) };
             if error == 0 {
                 subscription.handles.push(handle as usize);
             } else {
@@ -597,13 +704,20 @@ mod tests {
         unsafe {
             // Match a host frame: only explicit checkpoints drain microtasks.
             glue::rjs_lock(c.raw());
-            crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+            crate::web::pump(
+                c.raw(),
+                crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                core::ptr::null_mut(),
+            );
             glue::rjs_unlock(c.raw());
         }
     }
 
     fn battery(c: &crate::api::Context) {
-        s(c, "navigator.getBattery().then(b => globalThis.battery = b); 0");
+        s(
+            c,
+            "navigator.getBattery().then(b => globalThis.battery = b); 0",
+        );
         pump(c);
     }
 
@@ -618,13 +732,30 @@ mod tests {
                 ..PowerStatus::default()
             }
         }
-        assert_eq!(BatteryState::from(raw(1, 128, 255, u32::MAX)), BatteryState::default());
-        assert_eq!(BatteryState::from(raw(255, 255, 255, u32::MAX)), BatteryState::default());
+        assert_eq!(
+            BatteryState::from(raw(1, 128, 255, u32::MAX)),
+            BatteryState::default()
+        );
+        assert_eq!(
+            BatteryState::from(raw(255, 255, 255, u32::MAX)),
+            BatteryState::default()
+        );
         let dc = BatteryState::from(raw(0, 2, 25, 3600));
-        assert_eq!(dc, BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 3600.0, level: 0.25 });
+        assert_eq!(
+            dc,
+            BatteryState {
+                charging: false,
+                charging_time: f64::INFINITY,
+                discharging_time: 3600.0,
+                level: 0.25
+            }
+        );
         let ac = BatteryState::from(raw(1, 8, 50, 3600));
         assert!(ac.charging && ac.charging_time.is_infinite() && ac.discharging_time.is_infinite());
-        assert_eq!(BatteryState::from(raw(1, 1, 100, u32::MAX)), BatteryState::default());
+        assert_eq!(
+            BatteryState::from(raw(1, 1, 100, u32::MAX)),
+            BatteryState::default()
+        );
         let unknown = BatteryState::from(raw(0, 0, 255, u32::MAX));
         assert!(
             !unknown.charging
@@ -672,13 +803,24 @@ mod tests {
         battery(&a);
         battery(&b);
         s(&a, "globalThis.log = []; for (const name of ['chargingchange','chargingtimechange','dischargingtimechange','levelchange']) battery.addEventListener(name, function(e) { log.push(e.type + ':' + e.isTrusted + ':' + (e.target === battery && e.currentTarget === battery && this === battery) + ':' + e.bubbles + ':' + e.cancelable); Promise.resolve().then(() => log.push('micro:' + e.type)); }); battery.onlevelchange = function(e) { log.push('handler:' + (this === battery) + ':' + battery.level); }; 0");
-        let dc = BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 7200.0, level: 0.75 };
+        let dc = BatteryState {
+            charging: false,
+            charging_time: f64::INFINITY,
+            discharging_time: 7200.0,
+            level: 0.75,
+        };
         publish(&a, dc);
-        ok(&a, "log.length === 0 && battery.charging && battery.level === 1");
+        ok(
+            &a,
+            "log.length === 0 && battery.charging && battery.level === 1",
+        );
         pump(&a);
         assert_eq!(s(&a, "log.join('|')"), "chargingchange:true:true:false:false|micro:chargingchange|chargingtimechange:true:true:false:false|micro:chargingtimechange|dischargingtimechange:true:true:false:false|micro:dischargingtimechange|levelchange:true:true:false:false|micro:levelchange|handler:true:0.75");
         ok(&a, "battery.charging === false && battery.chargingTime === Infinity && battery.dischargingTime === 7200 && battery.level === 0.75");
-        ok(&b, "battery.charging && battery.level === 1 && battery.chargingTime === 0");
+        ok(
+            &b,
+            "battery.charging && battery.level === 1 && battery.chargingTime === 0",
+        );
         publish(&a, dc);
         pump(&a);
         ok(&a, "log.length === 9");
@@ -700,17 +842,47 @@ mod tests {
     fn asynchronous_initial_snapshot_is_coalesced_rooted_and_fulfilled_atomically() {
         let c = ctx();
         let id = crate::context::id_of(c.raw()).unwrap();
-        registry().lock().unwrap().get_mut(&id.0).unwrap().defer_initial = true;
+        registry()
+            .lock()
+            .unwrap()
+            .get_mut(&id.0)
+            .unwrap()
+            .defer_initial = true;
         s(&c, "globalThis.initialLog = []; globalThis.first = navigator.getBattery(); first.then(b => { initialLog.push([b.charging, b.chargingTime, b.dischargingTime, b.level]); }); 0");
-        ok(&c, "initialLog.length === 0 && first === navigator.getBattery()");
+        ok(
+            &c,
+            "initialLog.length === 0 && first === navigator.getBattery()",
+        );
         let manager = registry().lock().unwrap().get(&id.0).unwrap().manager;
         unsafe {
-            define(c.raw(), glue::rjs_global(c.raw()), "pendingBattery", manager, 0);
+            define(
+                c.raw(),
+                glue::rjs_global(c.raw()),
+                "pendingBattery",
+                manager,
+                0,
+            );
             glue::rjs_gc(c.raw(), 0);
         }
         s(&c, "globalThis.initialEvents = 0; for (const type of ['chargingchange','chargingtimechange','dischargingtimechange','levelchange']) pendingBattery.addEventListener(type, () => initialEvents++); Object.defineProperty(BatteryManager.prototype, 'then', { configurable: true, get() { globalThis.reentered = navigator.getBattery(); return undefined; } }); 0");
-        super::publish(id, BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 3600.0, level: 0.2 });
-        super::publish(id, BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 7200.0, level: 0.5 });
+        super::publish(
+            id,
+            BatteryState {
+                charging: false,
+                charging_time: f64::INFINITY,
+                discharging_time: 3600.0,
+                level: 0.2,
+            },
+        );
+        super::publish(
+            id,
+            BatteryState {
+                charging: false,
+                charging_time: f64::INFINITY,
+                discharging_time: 7200.0,
+                level: 0.5,
+            },
+        );
         pump(&c);
         ok(&c, "initialEvents === 0 && initialLog.length === 1 && initialLog[0][0] === false && initialLog[0][1] === Infinity && initialLog[0][2] === 7200 && initialLog[0][3] === 0.5 && reentered === first");
         s(&c, "delete BatteryManager.prototype.then; 0");
@@ -723,9 +895,20 @@ mod tests {
     fn asynchronous_default_snapshot_still_completes_initial_promise() {
         let c = ctx();
         let id = crate::context::id_of(c.raw()).unwrap();
-        registry().lock().unwrap().get_mut(&id.0).unwrap().defer_initial = true;
+        registry()
+            .lock()
+            .unwrap()
+            .get_mut(&id.0)
+            .unwrap()
+            .defer_initial = true;
         s(&c, "globalThis.initialDone = false; navigator.getBattery().then(b => { initialDone = b.charging && b.level === 1 && b.chargingTime === 0 && b.dischargingTime === Infinity; }); 0");
-        super::publish(id, BatteryState { level: 0.2, ..BatteryState::default() });
+        super::publish(
+            id,
+            BatteryState {
+                level: 0.2,
+                ..BatteryState::default()
+            },
+        );
         // Returning to construction defaults must retain initial completion.
         super::publish(id, BatteryState::default());
         pump(&c);
@@ -736,11 +919,24 @@ mod tests {
     fn closing_during_acquisition_discards_late_completion() {
         let c = ctx();
         let id = crate::context::id_of(c.raw()).unwrap();
-        registry().lock().unwrap().get_mut(&id.0).unwrap().defer_initial = true;
+        registry()
+            .lock()
+            .unwrap()
+            .get_mut(&id.0)
+            .unwrap()
+            .defer_initial = true;
         s(&c, "navigator.getBattery(); 0");
-        assert!(is_cell(registry().lock().unwrap().get(&id.0).unwrap().resolve));
+        assert!(is_cell(
+            registry().lock().unwrap().get(&id.0).unwrap().resolve
+        ));
         crate::context::forget(c.raw());
-        super::publish(id, BatteryState { level: 0.1, ..BatteryState::default() });
+        super::publish(
+            id,
+            BatteryState {
+                level: 0.1,
+                ..BatteryState::default()
+            },
+        );
         assert!(!registry().lock().unwrap().contains_key(&id.0));
     }
 
@@ -775,7 +971,13 @@ mod tests {
         initial(&c, BatteryState::default());
         battery(&c);
         let id = crate::context::id_of(c.raw()).unwrap();
-        publish(&c, BatteryState { level: 0.2, ..BatteryState::default() });
+        publish(
+            &c,
+            BatteryState {
+                level: 0.2,
+                ..BatteryState::default()
+            },
+        );
         crate::context::forget(c.raw());
         assert!(!registry().lock().unwrap().contains_key(&id.0));
         #[cfg(windows)]

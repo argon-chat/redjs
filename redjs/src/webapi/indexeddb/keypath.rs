@@ -100,7 +100,8 @@ unsafe fn valid_string(g: *mut c_void, s: &[u16]) -> bool {
     if s.is_empty() {
         return true;
     }
-    s.split(|&c| c == b'.' as u16).all(|ident| valid_identifier(g, ident))
+    s.split(|&c| c == b'.' as u16)
+        .all(|ident| valid_identifier(g, ident))
 }
 
 unsafe fn valid_identifier(g: *mut c_void, ident: &[u16]) -> bool {
@@ -109,11 +110,14 @@ unsafe fn valid_identifier(g: *mut c_void, ident: &[u16]) -> bool {
     }
     // ASCII fast path: the overwhelmingly common case.
     if ident.iter().all(|&c| c < 0x80) {
-        let ok_start = |c: u16| (c as u8).is_ascii_alphabetic() || c == b'$' as u16 || c == b'_' as u16;
+        let ok_start =
+            |c: u16| (c as u8).is_ascii_alphabetic() || c == b'$' as u16 || c == b'_' as u16;
         let ok_part = |c: u16| ok_start(c) || (c as u8).is_ascii_digit();
         return ok_start(ident[0]) && ident[1..].iter().all(|&c| ok_part(c));
     }
-    let Some((re, exec)) = super::intrinsics(g).map(|i| (i.ident_re, i.regexp_exec)) else { return false };
+    let Some((re, exec)) = super::intrinsics(g).map(|i| (i.ident_re, i.regexp_exec)) else {
+        return false;
+    };
     let s = js_string16(g, ident);
     match call(g, exec, re, &[s]) {
         Ok(m) => m != NULL && m != UNDEF,

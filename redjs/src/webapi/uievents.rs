@@ -96,7 +96,10 @@ pub enum ItemKind {
     /// A file item. The `File` itself lives in the DataTransfer's JS-side
     /// slot under the item's id; `path` is set for a host drop (what
     /// `getAsFileSystemHandle` is handed), `None` for `items.add(file)`.
-    File { path: Option<std::path::PathBuf>, is_dir: bool },
+    File {
+        path: Option<std::path::PathBuf>,
+        is_dir: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,7 +124,13 @@ pub struct DataTransferData {
 impl Default for DataTransferData {
     /// What `new DataTransfer()` makes (HTML §"DataTransfer()").
     fn default() -> Self {
-        DataTransferData { items: Vec::new(), drop_effect: "none".into(), effect_allowed: "none".into(), mode: DragDataMode::ReadWrite, next_id: 1 }
+        DataTransferData {
+            items: Vec::new(),
+            drop_effect: "none".into(),
+            effect_allowed: "none".into(),
+            mode: DragDataMode::ReadWrite,
+            next_id: 1,
+        }
     }
 }
 
@@ -139,7 +148,9 @@ pub fn normalize_format(format: &str) -> String {
 
 impl DataTransferData {
     fn text_index(&self, f: &str) -> Option<usize> {
-        self.items.iter().position(|i| matches!(i.kind, ItemKind::Text(_)) && i.mime == f)
+        self.items
+            .iter()
+            .position(|i| matches!(i.kind, ItemKind::Text(_)) && i.mime == f)
     }
 
     /// `getData` over the item list (the mode is the caller's business).
@@ -147,10 +158,18 @@ impl DataTransferData {
     /// line that is not a `#` comment.
     pub fn get(&self, format: &str) -> String {
         let f = normalize_format(format);
-        let Some(i) = self.text_index(&f) else { return String::new() };
-        let ItemKind::Text(data) = &self.items[i].kind else { return String::new() };
+        let Some(i) = self.text_index(&f) else {
+            return String::new();
+        };
+        let ItemKind::Text(data) = &self.items[i].kind else {
+            return String::new();
+        };
         if format.eq_ignore_ascii_case("url") {
-            return data.split(['\r', '\n']).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("").to_string();
+            return data
+                .split(['\r', '\n'])
+                .find(|l| !l.is_empty() && !l.starts_with('#'))
+                .unwrap_or("")
+                .to_string();
         }
         data.clone()
     }
@@ -184,8 +203,17 @@ impl DataTransferData {
         if self.mode == DragDataMode::Disabled {
             return Vec::new();
         }
-        let mut t: Vec<String> = self.items.iter().filter(|i| matches!(i.kind, ItemKind::Text(_))).map(|i| i.mime.clone()).collect();
-        if self.items.iter().any(|i| matches!(i.kind, ItemKind::File { .. })) {
+        let mut t: Vec<String> = self
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, ItemKind::Text(_)))
+            .map(|i| i.mime.clone())
+            .collect();
+        if self
+            .items
+            .iter()
+            .any(|i| matches!(i.kind, ItemKind::File { .. }))
+        {
             t.push("Files".into());
         }
         t
@@ -200,7 +228,11 @@ impl DataTransferData {
 
     /// The items as `items` shows them: none once the event is over.
     fn visible(&self) -> &[Item] {
-        if self.mode == DragDataMode::Disabled { &[] } else { &self.items }
+        if self.mode == DragDataMode::Disabled {
+            &[]
+        } else {
+            &self.items
+        }
     }
 }
 
@@ -242,14 +274,20 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static UiClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static UiClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::uievents not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::uievents not installed")
 }
 
 /// The host's `getAsFileSystemHandle` (File System Access): given a dropped
 /// item's path and whether it is a directory, a `FileSystemHandle` value
 /// (`Ok`) or the exception the promise rejects with (`Err`). Called on the JS
 /// thread with the item's drag data store still readable.
-pub type HandleHook = unsafe fn(g: *mut c_void, path: &std::path::Path, is_dir: bool) -> Result<u64, u64>;
+pub type HandleHook =
+    unsafe fn(g: *mut c_void, path: &std::path::Path, is_dir: bool) -> Result<u64, u64>;
 
 fn handle_hooks() -> &'static Mutex<HashMap<usize, HandleHook>> {
     static H: OnceLock<Mutex<HashMap<usize, HandleHook>>> = OnceLock::new();
@@ -265,12 +303,20 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 /// reads.
 unsafe fn slots(g: *mut c_void, this: u64) -> Option<u64> {
     let s = get_a(g, this, state(g).s_event);
-    if is_cell(s) { Some(s) } else { None }
+    if is_cell(s) {
+        Some(s)
+    } else {
+        None
+    }
 }
 
 /// A number member read from the init dictionary, or its default when absent.
 unsafe fn num(g: *mut c_void, v: u64, default: f64) -> u64 {
-    if v == UNDEF { enc_f64(default) } else { enc_f64(read_number(g, v)) }
+    if v == UNDEF {
+        enc_f64(default)
+    } else {
+        enc_f64(read_number(g, v))
+    }
 }
 
 unsafe fn flag(g: *mut c_void, v: u64) -> u64 {
@@ -278,7 +324,11 @@ unsafe fn flag(g: *mut c_void, v: u64) -> u64 {
 }
 
 fn obj_or_null(v: u64) -> u64 {
-    if v == UNDEF { NULL } else { v }
+    if v == UNDEF {
+        NULL
+    } else {
+        v
+    }
 }
 
 unsafe fn string_or(g: *mut c_void, v: u64, default: &str) -> u64 {
@@ -294,7 +344,11 @@ unsafe fn string_or(g: *mut c_void, v: u64, default: &str) -> u64 {
 /// A `DOMString?` member whose default is null (`InputEvent.data`): an explicit
 /// `null` stays null rather than becoming the string `"null"`.
 unsafe fn nullable_string(g: *mut c_void, v: u64) -> u64 {
-    if v == UNDEF || v == NULL { NULL } else { string_or(g, v, "") }
+    if v == UNDEF || v == NULL {
+        NULL
+    } else {
+        string_or(g, v, "")
+    }
 }
 
 /// ECMA-262 ToUint32, for the enumerated `unsigned long` members — see the
@@ -307,7 +361,11 @@ fn to_uint32(d: f64) -> u32 {
 }
 
 unsafe fn uint32(g: *mut c_void, v: u64) -> u64 {
-    if v == UNDEF { enc_f64(0.0) } else { enc_f64(to_uint32(read_number(g, v)) as f64) }
+    if v == UNDEF {
+        enc_f64(0.0)
+    } else {
+        enc_f64(to_uint32(read_number(g, v)) as f64)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -323,8 +381,11 @@ const KEY_LOCATIONS: &[(&str, i32)] = &[
     ("DOM_KEY_LOCATION_NUMPAD", 3),
 ];
 
-const DELTA_MODES: &[(&str, i32)] =
-    &[("DOM_DELTA_PIXEL", 0), ("DOM_DELTA_LINE", 1), ("DOM_DELTA_PAGE", 2)];
+const DELTA_MODES: &[(&str, i32)] = &[
+    ("DOM_DELTA_PIXEL", 0),
+    ("DOM_DELTA_LINE", 1),
+    ("DOM_DELTA_PAGE", 2),
+];
 
 const UI: &[&str] = &["view", "detail", "which"];
 
@@ -338,13 +399,33 @@ unsafe fn ui_slots(g: *mut c_void, obj: u64, ty: u64, init: u64) -> u64 {
     get_many(g, init, UI, &mut m);
     // Legacy `which`: 0 unless the init dict says otherwise (UI Events, legacy
     // section). Mouse events override it.
-    define_many(g, s, UI, &[obj_or_null(m[0]), num(g, m[1], 0.0), num(g, m[2], 0.0)], 0);
+    define_many(
+        g,
+        s,
+        UI,
+        &[obj_or_null(m[0]), num(g, m[1], 0.0), num(g, m[2], 0.0)],
+        0,
+    );
     s
 }
 
 const MOUSE: &[&str] = &[
-    "screenX", "screenY", "clientX", "clientY", "offsetX", "offsetY", "movementX", "movementY",
-    "button", "buttons", "ctrlKey", "shiftKey", "altKey", "metaKey", "relatedTarget", "which",
+    "screenX",
+    "screenY",
+    "clientX",
+    "clientY",
+    "offsetX",
+    "offsetY",
+    "movementX",
+    "movementY",
+    "button",
+    "buttons",
+    "ctrlKey",
+    "shiftKey",
+    "altKey",
+    "metaKey",
+    "relatedTarget",
+    "which",
 ];
 
 unsafe fn init_mouse_event(g: *mut c_void, obj: u64, ty: u64, init: u64) -> u64 {
@@ -369,7 +450,17 @@ unsafe fn init_mouse(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     init_mouse_event(g, obj, ty, init);
 }
 
-const KEYBOARD: &[&str] = &["key", "code", "location", "ctrlKey", "shiftKey", "altKey", "metaKey", "repeat", "isComposing"];
+const KEYBOARD: &[&str] = &[
+    "key",
+    "code",
+    "location",
+    "ctrlKey",
+    "shiftKey",
+    "altKey",
+    "metaKey",
+    "repeat",
+    "isComposing",
+];
 
 unsafe fn init_keyboard_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     let s = ui_slots(g, obj, ty, init);
@@ -392,14 +483,31 @@ unsafe fn init_gesture_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     let names = &["scale", "rotation"];
     let mut fields = [UNDEF; 2];
     get_many(g, init, names, &mut fields);
-    define_many(g, slots, names, &[num(g, fields[0], 1.0), num(g, fields[1], 0.0)], 0);
+    define_many(
+        g,
+        slots,
+        names,
+        &[num(g, fields[0], 1.0), num(g, fields[1], 0.0)],
+        0,
+    );
 }
 
 unsafe fn init_wheel_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     let s = init_mouse_event(g, obj, ty, init);
     let mut m = [UNDEF; 4];
     get_many(g, init, WHEEL, &mut m);
-    define_many(g, s, WHEEL, &[num(g, m[0], 0.0), num(g, m[1], 0.0), num(g, m[2], 0.0), uint32(g, m[3])], 0);
+    define_many(
+        g,
+        s,
+        WHEEL,
+        &[
+            num(g, m[0], 0.0),
+            num(g, m[1], 0.0),
+            num(g, m[2], 0.0),
+            uint32(g, m[3]),
+        ],
+        0,
+    );
 }
 
 const FOCUS: &[&str] = &["relatedTarget"];
@@ -417,15 +525,46 @@ unsafe fn init_input_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     let s = ui_slots(g, obj, ty, init);
     let mut m = [UNDEF; 3];
     get_many(g, init, INPUT, &mut m);
-    define_many(g, s, INPUT, &[nullable_string(g, m[0]), string_or(g, m[1], ""), flag(g, m[2])], 0);
+    define_many(
+        g,
+        s,
+        INPUT,
+        &[
+            nullable_string(g, m[0]),
+            string_or(g, m[1], ""),
+            flag(g, m[2]),
+        ],
+        0,
+    );
 }
 
 const POINTER: &[&str] = &[
-    "pointerId", "width", "height", "pressure", "tangentialPressure", "tiltX", "tiltY", "twist",
-    "altitudeAngle", "azimuthAngle", "pointerType", "isPrimary",
+    "pointerId",
+    "width",
+    "height",
+    "pressure",
+    "tangentialPressure",
+    "tiltX",
+    "tiltY",
+    "twist",
+    "altitudeAngle",
+    "azimuthAngle",
+    "pointerType",
+    "isPrimary",
 ];
 /// Spec defaults: altitude π/2 (perpendicular), azimuth 0.
-const POINTER_DEFAULTS: [f64; 10] = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, std::f64::consts::FRAC_PI_2, 0.0];
+const POINTER_DEFAULTS: [f64; 10] = [
+    0.0,
+    1.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    std::f64::consts::FRAC_PI_2,
+    0.0,
+];
 
 /// WebIDL `long` (ToInt32): `tiltX`, `tiltY` and `twist` are whole degrees.
 fn to_int32(d: f64) -> i32 {
@@ -449,12 +588,20 @@ fn tilt_to_spherical(tilt_x: f64, tilt_y: f64) -> (f64, f64) {
             0.0
         }
     } else if tilt_y == 0.0 {
-        if tilt_x < 0.0 { PI } else { 0.0 }
+        if tilt_x < 0.0 {
+            PI
+        } else {
+            0.0
+        }
     } else if flat {
         0.0
     } else {
         let a = yr.tan().atan2(xr.tan());
-        if a < 0.0 { a + 2.0 * PI } else { a }
+        if a < 0.0 {
+            a + 2.0 * PI
+        } else {
+            a
+        }
     };
     let altitude = if flat {
         0.0
@@ -472,7 +619,10 @@ fn spherical_to_tilt(altitude: f64, azimuth: f64) -> (f64, f64) {
     use std::f64::consts::{FRAC_PI_2, PI};
     if altitude != 0.0 {
         let t = altitude.tan();
-        return ((azimuth.cos() / t).atan().to_degrees(), (azimuth.sin() / t).atan().to_degrees());
+        return (
+            (azimuth.cos() / t).atan().to_degrees(),
+            (azimuth.sin() / t).atan().to_degrees(),
+        );
     }
     let (x, y) = if azimuth == 0.0 || azimuth == 2.0 * PI {
         (FRAC_PI_2, 0.0)
@@ -503,16 +653,26 @@ unsafe fn pointer_list(g: *mut c_void, v: u64, member: &str) -> Result<u64, ()> 
         return Ok(out);
     }
     if !is_cell(v) {
-        throw_type_error(g, &format!("PointerEvent constructor: {member} is not a sequence"));
+        throw_type_error(
+            g,
+            &format!("PointerEvent constructor: {member} is not a sequence"),
+        );
         return Err(());
     }
     let proto = classes(g).pointer.proto;
     let n = read_number(g, get(g, v, "length"));
-    let n = if n.is_finite() && n > 0.0 { n.min(u32::MAX as f64) as u32 } else { 0 };
+    let n = if n.is_finite() && n > 0.0 {
+        n.min(u32::MAX as f64) as u32
+    } else {
+        0
+    };
     for i in 0..n {
         let e = get_i(g, v, i);
         if !proto_chain_has(g, e, proto) {
-            throw_type_error(g, &format!("PointerEvent constructor: {member}[{i}] is not a PointerEvent"));
+            throw_type_error(
+                g,
+                &format!("PointerEvent constructor: {member}[{i}] is not a PointerEvent"),
+            );
             return Err(());
         }
         set_i(g, out, i, e);
@@ -529,12 +689,13 @@ unsafe fn init_pointer_event(g: *mut c_void, obj: u64, ty: u64, init: u64) -> Re
         v[i] = num(g, m[i], POINTER_DEFAULTS[i]);
     }
     let number = |v: u64| dec_f64(v).unwrap_or(0.0);
-    let (tilt_given, angles_given) = (m[5] != UNDEF || m[6] != UNDEF, m[8] != UNDEF || m[9] != UNDEF);
+    let (tilt_given, angles_given) = (
+        m[5] != UNDEF || m[6] != UNDEF,
+        m[8] != UNDEF || m[9] != UNDEF,
+    );
     if tilt_given && !angles_given {
-        let (altitude, azimuth) = tilt_to_spherical(
-            to_int32(number(v[5])) as f64,
-            to_int32(number(v[6])) as f64,
-        );
+        let (altitude, azimuth) =
+            tilt_to_spherical(to_int32(number(v[5])) as f64, to_int32(number(v[6])) as f64);
         v[8] = enc_f64(altitude);
         v[9] = enc_f64(azimuth);
     } else if angles_given && !tilt_given {
@@ -715,7 +876,10 @@ macro_rules! event_ctor {
         #[crate::host_fn]
         unsafe fn $name(g: *mut c_void, cf: *mut c_void) -> u64 {
             if cf_argc(cf) < 1 {
-                return throw_type_error(g, concat!($label, " constructor requires a type argument"));
+                return throw_type_error(
+                    g,
+                    concat!($label, " constructor requires a type argument"),
+                );
             }
             let c = classes(g);
             let obj = ordinary_create(g, cf_new_target(cf), c.$field.proto);
@@ -727,9 +891,19 @@ macro_rules! event_ctor {
 
 event_ctor!(ui_construct, ui_event, init_ui_event, "UIEvent");
 event_ctor!(mouse_construct, mouse, init_mouse, "MouseEvent");
-event_ctor!(keyboard_construct, keyboard, init_keyboard_event, "KeyboardEvent");
+event_ctor!(
+    keyboard_construct,
+    keyboard,
+    init_keyboard_event,
+    "KeyboardEvent"
+);
 event_ctor!(wheel_construct, wheel, init_wheel_event, "WheelEvent");
-event_ctor!(gesture_construct, gesture, init_gesture_event, "GestureEvent");
+event_ctor!(
+    gesture_construct,
+    gesture,
+    init_gesture_event,
+    "GestureEvent"
+);
 event_ctor!(focus_construct, focus, init_focus_event, "FocusEvent");
 event_ctor!(input_construct, input, init_input_event, "InputEvent");
 #[crate::host_fn]
@@ -798,8 +972,16 @@ unsafe fn dt_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn ordinary_create_proto(g: *mut c_void, new_target: u64, fallback: u64) -> u64 {
-    let p = if is_cell(new_target) { get(g, new_target, "prototype") } else { UNDEF };
-    if is_cell(p) { p } else { fallback }
+    let p = if is_cell(new_target) {
+        get(g, new_target, "prototype")
+    } else {
+        UNDEF
+    };
+    if is_cell(p) {
+        p
+    } else {
+        fallback
+    }
 }
 
 /// The cached `DataTransferItem` for item `id` (the same object every time).
@@ -827,7 +1009,9 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
     let all: Vec<u64> = d.items.iter().map(|i| i.id).collect();
     let b = bag(g, dt);
     let list = get(g, b, "list");
-    let Some(ld) = host_data::<DtListData>(g, c.list_cls, list) else { return };
+    let Some(ld) = host_data::<DtListData>(g, c.list_cls, list) else {
+        return;
+    };
     let shown = ld.shown;
     ld.shown = ids.len() as u32;
     for i in ids.len() as u32..shown {
@@ -844,7 +1028,12 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
         define(g, desc, "value", o, 0);
         define(g, desc, "enumerable", TRUE, 0);
         define(g, desc, "configurable", TRUE, 0);
-        let _ = call(g, c.define_property, UNDEF, &[list, enc_i32(i as i32), desc]);
+        let _ = call(
+            g,
+            c.define_property,
+            UNDEF,
+            &[list, enc_i32(i as i32), desc],
+        );
     }
     for map in ["files", "objs"] {
         let m = get(g, b, map);
@@ -853,7 +1042,9 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
             continue;
         }
         for k in 0..array_len(g, keys) {
-            let Some(name) = read_string(g, get_i(g, keys, k)) else { continue };
+            let Some(name) = read_string(g, get_i(g, keys, k)) else {
+                continue;
+            };
             if name.parse::<u64>().is_ok_and(|id| !all.contains(&id)) {
                 let a = atom(g, &name);
                 glue::rjs_delete(g, m, a);
@@ -865,10 +1056,22 @@ unsafe fn resync(g: *mut c_void, dt: u64) {
 
 /// `DOMString` argument `i` of a method that requires `n`, converted with
 /// ToString (rethrowing); `Err` = the exception is pending.
-unsafe fn string_arg(g: *mut c_void, cf: *mut c_void, i: u32, n: u32, who: &str) -> Result<String, ()> {
+unsafe fn string_arg(
+    g: *mut c_void,
+    cf: *mut c_void,
+    i: u32,
+    n: u32,
+    who: &str,
+) -> Result<String, ()> {
     let argc = cf_argc(cf);
     if argc < n {
-        throw_type_error(g, &format!("Failed to execute {who}: {n} argument{} required, but only {argc} present.", if n == 1 { "" } else { "s" }));
+        throw_type_error(
+            g,
+            &format!(
+                "Failed to execute {who}: {n} argument{} required, but only {argc} present.",
+                if n == 1 { "" } else { "s" }
+            ),
+        );
         return Err(());
     }
     let s = to_js_string(g, cf_arg(cf, i))?;
@@ -880,10 +1083,18 @@ unsafe fn dt_get_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.getData called on a non-DataTransfer");
     }
-    let Ok(format) = string_arg(g, cf, 0, 1, "'getData' on 'DataTransfer'") else { return UNDEF };
-    let Some(d) = this_dt(g, cf) else { return UNDEF };
+    let Ok(format) = string_arg(g, cf, 0, 1, "'getData' on 'DataTransfer'") else {
+        return UNDEF;
+    };
+    let Some(d) = this_dt(g, cf) else {
+        return UNDEF;
+    };
     // Protected (dragenter/over/leave): types are visible, data is not.
-    let v = if d.mode.readable() { d.get(&format) } else { String::new() };
+    let v = if d.mode.readable() {
+        d.get(&format)
+    } else {
+        String::new()
+    };
     js_string(g, &v)
 }
 
@@ -892,9 +1103,15 @@ unsafe fn dt_set_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.setData called on a non-DataTransfer");
     }
-    let Ok(format) = string_arg(g, cf, 0, 2, "'setData' on 'DataTransfer'") else { return UNDEF };
-    let Ok(data) = string_arg(g, cf, 1, 2, "'setData' on 'DataTransfer'") else { return UNDEF };
-    let Some(d) = this_dt(g, cf) else { return UNDEF };
+    let Ok(format) = string_arg(g, cf, 0, 2, "'setData' on 'DataTransfer'") else {
+        return UNDEF;
+    };
+    let Ok(data) = string_arg(g, cf, 1, 2, "'setData' on 'DataTransfer'") else {
+        return UNDEF;
+    };
+    let Some(d) = this_dt(g, cf) else {
+        return UNDEF;
+    };
     if d.mode == DragDataMode::ReadWrite {
         d.set(&format, &data);
         resync(g, cf_this(cf));
@@ -910,10 +1127,14 @@ unsafe fn dt_clear_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     let format = if cf_arg(cf, 0) == UNDEF {
         None
     } else {
-        let Ok(f) = string_arg(g, cf, 0, 1, "'clearData' on 'DataTransfer'") else { return UNDEF };
+        let Ok(f) = string_arg(g, cf, 0, 1, "'clearData' on 'DataTransfer'") else {
+            return UNDEF;
+        };
         Some(f)
     };
-    let Some(d) = this_dt(g, cf) else { return UNDEF };
+    let Some(d) = this_dt(g, cf) else {
+        return UNDEF;
+    };
     if d.mode == DragDataMode::ReadWrite {
         d.clear(format.as_deref());
         resync(g, cf_this(cf));
@@ -946,12 +1167,20 @@ unsafe fn dt_files(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "DataTransfer.files called on a non-DataTransfer");
     };
     let ids: Vec<u64> = if d.mode.readable() {
-        d.items.iter().filter(|i| matches!(i.kind, ItemKind::File { .. })).map(|i| i.id).collect()
+        d.items
+            .iter()
+            .filter(|i| matches!(i.kind, ItemKind::File { .. }))
+            .map(|i| i.id)
+            .collect()
     } else {
         Vec::new()
     };
     let files_map = get(g, bag(g, this), "files");
-    let files: Vec<u64> = ids.iter().map(|id| get(g, files_map, &id.to_string())).filter(|v| is_cell(*v)).collect();
+    let files: Vec<u64> = ids
+        .iter()
+        .map(|id| get(g, files_map, &id.to_string()))
+        .filter(|v| is_cell(*v))
+        .collect();
     super::file::create_file_list(g, &files)
 }
 
@@ -981,7 +1210,9 @@ unsafe fn dt_set_drop(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.dropEffect called on a non-DataTransfer");
     }
-    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let v = read_string(g, s).unwrap_or_default();
     if let Some(d) = this_dt(g, cf) {
         if matches!(v.as_str(), "none" | "copy" | "link" | "move") {
@@ -1009,10 +1240,23 @@ unsafe fn dt_set_effect(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_dt(g, cf).is_none() {
         return throw_type_error(g, "DataTransfer.effectAllowed called on a non-DataTransfer");
     }
-    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let v = read_string(g, s).unwrap_or_default();
     if let Some(d) = this_dt(g, cf) {
-        let known = matches!(v.as_str(), "none" | "copy" | "copyLink" | "copyMove" | "link" | "linkMove" | "move" | "all" | "uninitialized");
+        let known = matches!(
+            v.as_str(),
+            "none"
+                | "copy"
+                | "copyLink"
+                | "copyMove"
+                | "link"
+                | "linkMove"
+                | "move"
+                | "all"
+                | "uninitialized"
+        );
         if known && d.mode == DragDataMode::ReadWrite {
             d.effect_allowed = v;
         }
@@ -1022,14 +1266,26 @@ unsafe fn dt_set_effect(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn dt_set_image(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(d) = this_dt(g, cf) else { return throw_type_error(g, "Illegal invocation of setDragImage") };
-    if d.mode != DragDataMode::ReadWrite { return UNDEF; }
+    let Some(d) = this_dt(g, cf) else {
+        return throw_type_error(g, "Illegal invocation of setDragImage");
+    };
+    if d.mode != DragDataMode::ReadWrite {
+        return UNDEF;
+    }
     let image = cf_arg(cf, 0);
-    if !super::blob::is_object(g, image) { return throw_type_error(g, "setDragImage expects an element"); }
+    if !super::blob::is_object(g, image) {
+        return throw_type_error(g, "setDragImage expects an element");
+    }
     let x = read_number(g, cf_arg(cf, 1)) as i32;
     let y = read_number(g, cf_arg(cf, 2)) as i32;
     let b = bag(g, cf_this(cf));
-    define_many(g, b, &["image", "imageX", "imageY"], &[image, enc_i32(x), enc_i32(y)], 0);
+    define_many(
+        g,
+        b,
+        &["image", "imageX", "imageY"],
+        &[image, enc_i32(x), enc_i32(y)],
+        0,
+    );
     UNDEF
 }
 
@@ -1052,14 +1308,27 @@ pub struct DragExport {
 /// host-created File and cannot be requested by passing an object with a path property.
 pub unsafe fn export_drag(g: *mut c_void, store: u64) -> Option<DragExport> {
     let d = dt_of(g, store)?;
-    if d.mode != DragDataMode::ReadWrite { return None; }
+    if d.mode != DragDataMode::ReadWrite {
+        return None;
+    }
     let items = d.items.clone();
     let effects = d.effect_allowed.clone();
     let b = bag(g, store);
     let image = get(g, b, "image");
-    let image = is_cell(image).then(|| (image, read_number(g,get(g,b,"imageX")) as i32, read_number(g,get(g,b,"imageY")) as i32));
+    let image = is_cell(image).then(|| {
+        (
+            image,
+            read_number(g, get(g, b, "imageX")) as i32,
+            read_number(g, get(g, b, "imageY")) as i32,
+        )
+    });
     let map = get(g, b, "files");
-    let mut result = DragExport { strings: Vec::new(), files: Vec::new(), effects, image };
+    let mut result = DragExport {
+        strings: Vec::new(),
+        files: Vec::new(),
+        effects,
+        image,
+    };
     for item in items {
         match item.kind {
             ItemKind::Text(value) => result.strings.push((item.mime, value)),
@@ -1068,7 +1337,12 @@ pub unsafe fn export_drag(g: *mut c_void, store: u64) -> Option<DragExport> {
                 if let Some(range) = super::blob::range_of(g, value) {
                     let path = super::file::path_of(g, value);
                     let name = super::file::native_name(g, value)?;
-                    result.files.push(DragExportFile { name, path, directory: is_dir, range });
+                    result.files.push(DragExportFile {
+                        name,
+                        path,
+                        directory: is_dir,
+                        range,
+                    });
                 }
             }
         }
@@ -1079,12 +1353,26 @@ pub unsafe fn export_drag(g: *mut c_void, store: u64) -> Option<DragExport> {
 /// Gives a new target event its own access mode and the original in-process file objects.
 pub unsafe fn transfer_for_target(g: *mut c_void, source: u64, mode: DragDataMode) -> Option<u64> {
     let d = dt_of(g, source)?;
-    let data = DataTransferData { items:d.items.clone(), drop_effect:"none".into(), effect_allowed:d.effect_allowed.clone(), mode, next_id:d.next_id };
-    let ids: Vec<_> = data.items.iter().filter(|i| matches!(i.kind,ItemKind::File{..})).map(|i| i.id).collect();
+    let data = DataTransferData {
+        items: d.items.clone(),
+        drop_effect: "none".into(),
+        effect_allowed: d.effect_allowed.clone(),
+        mode,
+        next_id: d.next_id,
+    };
+    let ids: Vec<_> = data
+        .items
+        .iter()
+        .filter(|i| matches!(i.kind, ItemKind::File { .. }))
+        .map(|i| i.id)
+        .collect();
     let target = make_dt(g, classes(g).dt.proto, data);
-    let from = get(g, bag(g,source), "files");
-    let to = get(g,bag(g,target), "files");
-    for id in ids { let key = id.to_string(); define(g,to,&key,get(g,from,&key),0); }
+    let from = get(g, bag(g, source), "files");
+    let to = get(g, bag(g, target), "files");
+    for id in ids {
+        let key = id.to_string();
+        define(g, to, &key, get(g, from, &key), 0);
+    }
     Some(target)
 }
 
@@ -1103,11 +1391,18 @@ unsafe fn owner<'a>(g: *mut c_void, v: u64) -> Option<(u64, &'a mut DataTransfer
     dt_of(g, dt).map(|d| (dt, d))
 }
 
-unsafe fn this_list<'a>(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<(u64, &'a mut DataTransferData), u64> {
+unsafe fn this_list<'a>(
+    g: *mut c_void,
+    cf: *mut c_void,
+    what: &str,
+) -> Result<(u64, &'a mut DataTransferData), u64> {
     let c = classes(g);
     let this = cf_this(cf);
     if host_data::<DtListData>(g, c.list_cls, this).is_none() {
-        return Err(throw_type_error(g, &format!("DataTransferItemList.{what} called on a non-DataTransferItemList")));
+        return Err(throw_type_error(
+            g,
+            &format!("DataTransferItemList.{what} called on a non-DataTransferItemList"),
+        ));
     }
     owner(g, this).ok_or_else(|| throw_type_error(g, "DataTransferItemList: lost its DataTransfer"))
 }
@@ -1131,20 +1426,35 @@ unsafe fn list_add(g: *mut c_void, cf: *mut c_void) -> u64 {
     // Overload resolution on the argument count: two arguments are
     // (DOMString, DOMString), one must be a File.
     let (kind, mime, file) = if argc >= 2 {
-        let Ok(data) = string_arg(g, cf, 0, 2, "'add' on 'DataTransferItemList'") else { return UNDEF };
-        let Ok(ty) = string_arg(g, cf, 1, 2, "'add' on 'DataTransferItemList'") else { return UNDEF };
+        let Ok(data) = string_arg(g, cf, 0, 2, "'add' on 'DataTransferItemList'") else {
+            return UNDEF;
+        };
+        let Ok(ty) = string_arg(g, cf, 1, 2, "'add' on 'DataTransferItemList'") else {
+            return UNDEF;
+        };
         (ItemKind::Text(data), ty.to_ascii_lowercase(), UNDEF)
     } else if argc == 1 {
         let f = cf_arg(cf, 0);
         if !super::file::is_file(g, f) {
             return throw_type_error(g, "Failed to execute 'add' on 'DataTransferItemList': parameter 1 is not of type 'File'.");
         }
-        let mime = super::blob::data_of(g, f).map(|b| b.mime.to_ascii_lowercase()).unwrap_or_default();
-        (ItemKind::File { path: None, is_dir: false }, mime, f)
+        let mime = super::blob::data_of(g, f)
+            .map(|b| b.mime.to_ascii_lowercase())
+            .unwrap_or_default();
+        (
+            ItemKind::File {
+                path: None,
+                is_dir: false,
+            },
+            mime,
+            f,
+        )
     } else {
         return throw_type_error(g, "Failed to execute 'add' on 'DataTransferItemList': 1 argument required, but only 0 present.");
     };
-    let Ok((dt, d)) = this_list(g, cf, "add") else { return UNDEF };
+    let Ok((dt, d)) = this_list(g, cf, "add") else {
+        return UNDEF;
+    };
     if d.mode != DragDataMode::ReadWrite {
         return NULL;
     }
@@ -1171,8 +1481,12 @@ unsafe fn list_remove(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Failed to execute 'remove' on 'DataTransferItemList': 1 argument required, but only 0 present.");
     }
-    let Ok(n) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
-    let Ok((dt, d)) = this_list(g, cf, "remove") else { return UNDEF };
+    let Ok(n) = to_number(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let Ok((dt, d)) = this_list(g, cf, "remove") else {
+        return UNDEF;
+    };
     // HTML: "not in the read/write mode" throws, the disabled mode included
     // (Chromium: `!CanWriteData()`).
     match d.mode {
@@ -1186,7 +1500,11 @@ unsafe fn list_remove(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
     }
     // `unsigned long`: ToNumber, then modulo 2^32.
-    let i = if n.is_finite() { n.trunc().rem_euclid(4_294_967_296.0) as usize } else { 0 };
+    let i = if n.is_finite() {
+        n.trunc().rem_euclid(4_294_967_296.0) as usize
+    } else {
+        0
+    };
     if i < d.items.len() {
         d.items.remove(i);
         resync(g, dt);
@@ -1215,14 +1533,27 @@ struct DtItemData {
 
 /// The item behind a DataTransferItem: `None` once it is disabled (removed,
 /// or its event is over) — every member then answers as for no item.
-unsafe fn this_item(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<Option<(u64, DragDataMode, Item)>, u64> {
+unsafe fn this_item(
+    g: *mut c_void,
+    cf: *mut c_void,
+    what: &str,
+) -> Result<Option<(u64, DragDataMode, Item)>, u64> {
     let c = classes(g);
     let this = cf_this(cf);
     let Some(id) = host_data::<DtItemData>(g, c.item_cls, this).map(|d| d.id) else {
-        return Err(throw_type_error(g, &format!("DataTransferItem.{what} called on a non-DataTransferItem")));
+        return Err(throw_type_error(
+            g,
+            &format!("DataTransferItem.{what} called on a non-DataTransferItem"),
+        ));
     };
-    let Some((dt, d)) = owner(g, this) else { return Ok(None) };
-    Ok(d.visible().iter().find(|i| i.id == id).cloned().map(|i| (dt, d.mode, i)))
+    let Some((dt, d)) = owner(g, this) else {
+        return Ok(None);
+    };
+    Ok(d.visible()
+        .iter()
+        .find(|i| i.id == id)
+        .cloned()
+        .map(|i| (dt, d.mode, i)))
 }
 
 /// The readable drop that owns a file item. The store lets an embedder share a virtual
@@ -1230,28 +1561,50 @@ unsafe fn this_item(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<Optio
 pub unsafe fn dropped_entry(g: *mut c_void, item: u64) -> Option<(u64, std::path::PathBuf, bool)> {
     let id = host_data::<DtItemData>(g, classes(g).item_cls, item)?.id;
     let (store, d) = owner(g, item)?;
-    if !d.mode.readable() { return None; }
+    if !d.mode.readable() {
+        return None;
+    }
     let entry = d.items.iter().find(|i| i.id == id)?;
     match &entry.kind {
-        ItemKind::File { path: Some(path), is_dir } => Some((store, path.clone(), *is_dir)),
+        ItemKind::File {
+            path: Some(path),
+            is_dir,
+        } => Some((store, path.clone(), *is_dir)),
         _ => None,
     }
 }
 
 /// All disk entries in a readable store, in item order, without opening their paths.
 pub unsafe fn dropped_roots(g: *mut c_void, store: u64) -> Vec<(std::path::PathBuf, bool)> {
-    let Some(d) = host_data::<DataTransferData>(g, classes(g).dt_cls, store) else { return Vec::new() };
-    if !d.mode.readable() { return Vec::new(); }
-    d.items.iter().filter_map(|i| match &i.kind {
-        ItemKind::File { path: Some(path), is_dir } => Some((path.clone(), *is_dir)),
-        _ => None,
-    }).collect()
+    let Some(d) = host_data::<DataTransferData>(g, classes(g).dt_cls, store) else {
+        return Vec::new();
+    };
+    if !d.mode.readable() {
+        return Vec::new();
+    }
+    d.items
+        .iter()
+        .filter_map(|i| match &i.kind {
+            ItemKind::File {
+                path: Some(path),
+                is_dir,
+            } => Some((path.clone(), *is_dir)),
+            _ => None,
+        })
+        .collect()
 }
 
 #[crate::host_fn]
 unsafe fn item_kind(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "kind") {
-        Ok(Some((_, _, i))) => js_string(g, if matches!(i.kind, ItemKind::Text(_)) { "string" } else { "file" }),
+        Ok(Some((_, _, i))) => js_string(
+            g,
+            if matches!(i.kind, ItemKind::Text(_)) {
+                "string"
+            } else {
+                "file"
+            },
+        ),
         Ok(None) => js_string(g, ""),
         Err(e) => e,
     }
@@ -1292,7 +1645,17 @@ unsafe fn item_get_as_string(g: *mut c_void, cf: *mut c_void) -> u64 {
     if glue::rjs_kind(g, cb) != 9 {
         return throw_type_error(g, "Failed to execute 'getAsString' on 'DataTransferItem': The callback provided as parameter 1 is not a function.");
     }
-    let Some((_, mode, Item { kind: ItemKind::Text(data), .. })) = found else { return UNDEF };
+    let Some((
+        _,
+        mode,
+        Item {
+            kind: ItemKind::Text(data),
+            ..
+        },
+    )) = found
+    else {
+        return UNDEF;
+    };
     if !mode.readable() {
         return UNDEF;
     }
@@ -1323,7 +1686,11 @@ unsafe fn item_get_as_file(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_item(g, cf, "getAsFile") {
         Ok(Some((dt, mode, i))) if mode.readable() && matches!(i.kind, ItemKind::File { .. }) => {
             let f = get(g, get(g, bag(g, dt), "files"), &i.id.to_string());
-            if is_cell(f) { f } else { NULL }
+            if is_cell(f) {
+                f
+            } else {
+                NULL
+            }
         }
         Ok(_) => NULL,
         Err(e) => e,
@@ -1351,7 +1718,22 @@ unsafe fn item_get_as_handle(g: *mut c_void, cf: *mut c_void) -> u64 {
         Err(e) => return super::domexception::rejected_with(g, e),
     };
     let hook = handle_hooks().lock().unwrap().get(&(g as usize)).copied();
-    let (Some(hook), Some((_, mode, Item { kind: ItemKind::File { path: Some(path), is_dir }, .. }))) = (hook, found) else {
+    let (
+        Some(hook),
+        Some((
+            _,
+            mode,
+            Item {
+                kind:
+                    ItemKind::File {
+                        path: Some(path),
+                        is_dir,
+                    },
+                ..
+            },
+        )),
+    ) = (hook, found)
+    else {
         return resolved_promise(g, NULL);
     };
     if !mode.readable() {
@@ -1388,15 +1770,29 @@ pub struct DropEntry {
 /// `g` must be a live context with the web API installed, on its thread.
 pub unsafe fn create_drag_data(g: *mut c_void, entries: &[DropEntry], mode: DragDataMode) -> u64 {
     let c = classes(g);
-    let data = DataTransferData { effect_allowed: "all".into(), drop_effect: "copy".into(), mode, ..DataTransferData::default() };
+    let data = DataTransferData {
+        effect_allowed: "all".into(),
+        drop_effect: "copy".into(),
+        mode,
+        ..DataTransferData::default()
+    };
     let dt = make_dt(g, c.dt.proto, data);
     let files_map = get(g, bag(g, dt), "files");
     for e in entries {
-        let name = e.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = e
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let (size, mtime) = match (e.is_dir, e.stat) {
             (false, Some((s, m))) => (s, Some(m)),
             (false, None) => super::file::snapshot(&e.path).unwrap_or((0, None)),
-            (true, _) => (0, e.stat.map(|s| s.1).or_else(|| std::fs::metadata(&e.path).and_then(|m| m.modified()).ok())),
+            (true, _) => (
+                0,
+                e.stat
+                    .map(|s| s.1)
+                    .or_else(|| std::fs::metadata(&e.path).and_then(|m| m.modified()).ok()),
+            ),
         };
         if e.is_dir {
             super::blob::advise(
@@ -1406,10 +1802,26 @@ pub unsafe fn create_drag_data(g: *mut c_void, entries: &[DropEntry], mode: Drag
                     .to_string(),
             );
         }
-        let f = super::file::create_file(g, &e.path, &name, if e.is_dir { Some("") } else { None }, size, mtime, "");
-        let mime = super::blob::data_of(g, f).map(|b| b.mime.clone()).unwrap_or_default();
+        let f = super::file::create_file(
+            g,
+            &e.path,
+            &name,
+            if e.is_dir { Some("") } else { None },
+            size,
+            mtime,
+            "",
+        );
+        let mime = super::blob::data_of(g, f)
+            .map(|b| b.mime.clone())
+            .unwrap_or_default();
         let Some(d) = dt_of(g, dt) else { break };
-        let id = d.push(ItemKind::File { path: Some(e.path.clone()), is_dir: e.is_dir }, mime);
+        let id = d.push(
+            ItemKind::File {
+                path: Some(e.path.clone()),
+                is_dir: e.is_dir,
+            },
+            mime,
+        );
         define(g, files_map, &id.to_string(), f, 0);
     }
     resync(g, dt);
@@ -1430,23 +1842,43 @@ pub unsafe fn external_drag_data(
     mut unreadable: impl FnMut(&std::path::Path),
 ) -> u64 {
     let dt = if mode == DragDataMode::ReadOnly {
-        let entries: Vec<_> = paths.iter().filter_map(|path| {
-            let m = std::fs::metadata(path).ok();
-            match m {
-                Some(m) if m.is_file() || m.is_dir() => Some(DropEntry {
-                    path: path.clone(), is_dir: m.is_dir(),
-                    stat: m.modified().ok().map(|mtime| (m.len(), mtime)),
-                }),
-                _ => { unreadable(path); None }
-            }
-        }).collect();
+        let entries: Vec<_> = paths
+            .iter()
+            .filter_map(|path| {
+                let m = std::fs::metadata(path).ok();
+                match m {
+                    Some(m) if m.is_file() || m.is_dir() => Some(DropEntry {
+                        path: path.clone(),
+                        is_dir: m.is_dir(),
+                        stat: m.modified().ok().map(|mtime| (m.len(), mtime)),
+                    }),
+                    _ => {
+                        unreadable(path);
+                        None
+                    }
+                }
+            })
+            .collect();
         create_drag_data(g, &entries, mode)
     } else {
         let c = classes(g);
-        let mut data = DataTransferData { mode: DragDataMode::Protected, ..Default::default() };
+        let mut data = DataTransferData {
+            mode: DragDataMode::Protected,
+            ..Default::default()
+        };
         for path in paths {
-            let mime = path.file_name().and_then(|n| n.to_str()).and_then(super::mime::type_for_name).unwrap_or("");
-            data.push(ItemKind::File { path: None, is_dir: false }, mime.into());
+            let mime = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(super::mime::type_for_name)
+                .unwrap_or("");
+            data.push(
+                ItemKind::File {
+                    path: None,
+                    is_dir: false,
+                },
+                mime.into(),
+            );
         }
         make_dt(g, c.dt.proto, data)
     };
@@ -1487,14 +1919,22 @@ pub unsafe fn set_file_system_handle_hook(g: *mut c_void, hook: Option<HandleHoo
             handle_hooks().lock().unwrap().remove(&(g as usize));
         }
     }
-    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return };
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else {
+        return;
+    };
     define_handle_method(g, c, hook.is_some());
 }
 
 unsafe fn define_handle_method(g: *mut c_void, c: &UiClasses, present: bool) {
     let a = atom(g, "getAsFileSystemHandle");
     if present {
-        glue::rjs_define(g, c.item.proto, a, make_fn(g, "getAsFileSystemHandle", 0, item_get_as_handle), 2);
+        glue::rjs_define(
+            g,
+            c.item.proto,
+            a,
+            make_fn(g, "getAsFileSystemHandle", 0, item_get_as_handle),
+            2,
+        );
     } else {
         glue::rjs_delete(g, c.item.proto, a);
     }
@@ -1516,154 +1956,230 @@ unsafe fn define_constants(g: *mut c_void, class: &Class, consts: &[(&'static st
 }
 
 pub unsafe fn install(g: *mut c_void, event_proto: u64) {
-    let ui_event = define_class(g, &ClassSpec {
-        name: "UIEvent",
-        arity: 1,
-        construct: Some(ui_construct),
-        parent_proto: event_proto,
-        methods: &[],
-        getters: &[("view", ui_view), ("detail", ui_detail), ("which", ui_which)],
-        accessors: &[],
-    });
+    let ui_event = define_class(
+        g,
+        &ClassSpec {
+            name: "UIEvent",
+            arity: 1,
+            construct: Some(ui_construct),
+            parent_proto: event_proto,
+            methods: &[],
+            getters: &[
+                ("view", ui_view),
+                ("detail", ui_detail),
+                ("which", ui_which),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let mouse = define_class(g, &ClassSpec {
-        name: "MouseEvent",
-        arity: 1,
-        construct: Some(mouse_construct),
-        parent_proto: ui_event.proto,
-        methods: &[("getModifierState", 1, m_get_modifier_state)],
-        getters: &[
-            ("screenX", m_screen_x), ("screenY", m_screen_y),
-            ("clientX", m_client_x), ("clientY", m_client_y),
-            ("x", m_x), ("y", m_y),
-            ("pageX", m_page_x), ("pageY", m_page_y),
-            ("offsetX", m_offset_x), ("offsetY", m_offset_y),
-            ("movementX", m_movement_x), ("movementY", m_movement_y),
-            ("button", m_button), ("buttons", m_buttons),
-            ("ctrlKey", m_ctrl), ("shiftKey", m_shift), ("altKey", m_alt), ("metaKey", m_meta),
-            ("relatedTarget", m_related),
-        ],
-        accessors: &[],
-    });
+    let mouse = define_class(
+        g,
+        &ClassSpec {
+            name: "MouseEvent",
+            arity: 1,
+            construct: Some(mouse_construct),
+            parent_proto: ui_event.proto,
+            methods: &[("getModifierState", 1, m_get_modifier_state)],
+            getters: &[
+                ("screenX", m_screen_x),
+                ("screenY", m_screen_y),
+                ("clientX", m_client_x),
+                ("clientY", m_client_y),
+                ("x", m_x),
+                ("y", m_y),
+                ("pageX", m_page_x),
+                ("pageY", m_page_y),
+                ("offsetX", m_offset_x),
+                ("offsetY", m_offset_y),
+                ("movementX", m_movement_x),
+                ("movementY", m_movement_y),
+                ("button", m_button),
+                ("buttons", m_buttons),
+                ("ctrlKey", m_ctrl),
+                ("shiftKey", m_shift),
+                ("altKey", m_alt),
+                ("metaKey", m_meta),
+                ("relatedTarget", m_related),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let keyboard = define_class(g, &ClassSpec {
-        name: "KeyboardEvent",
-        arity: 1,
-        construct: Some(keyboard_construct),
-        parent_proto: ui_event.proto,
-        methods: &[("getModifierState", 1, k_get_modifier_state)],
-        getters: &[
-            ("key", k_key), ("code", k_code), ("location", k_location),
-            ("repeat", k_repeat), ("isComposing", k_composing),
-            ("ctrlKey", k_ctrl), ("shiftKey", k_shift), ("altKey", k_alt), ("metaKey", k_meta),
-        ],
-        accessors: &[],
-    });
+    let keyboard = define_class(
+        g,
+        &ClassSpec {
+            name: "KeyboardEvent",
+            arity: 1,
+            construct: Some(keyboard_construct),
+            parent_proto: ui_event.proto,
+            methods: &[("getModifierState", 1, k_get_modifier_state)],
+            getters: &[
+                ("key", k_key),
+                ("code", k_code),
+                ("location", k_location),
+                ("repeat", k_repeat),
+                ("isComposing", k_composing),
+                ("ctrlKey", k_ctrl),
+                ("shiftKey", k_shift),
+                ("altKey", k_alt),
+                ("metaKey", k_meta),
+            ],
+            accessors: &[],
+        },
+    );
     define_constants(g, &keyboard, KEY_LOCATIONS);
 
-    let wheel = define_class(g, &ClassSpec {
-        name: "WheelEvent",
-        arity: 1,
-        construct: Some(wheel_construct),
-        parent_proto: mouse.proto,
-        methods: &[],
-        getters: &[
-            ("deltaX", w_delta_x), ("deltaY", w_delta_y), ("deltaZ", w_delta_z),
-            ("deltaMode", w_delta_mode),
-        ],
-        accessors: &[],
-    });
+    let wheel = define_class(
+        g,
+        &ClassSpec {
+            name: "WheelEvent",
+            arity: 1,
+            construct: Some(wheel_construct),
+            parent_proto: mouse.proto,
+            methods: &[],
+            getters: &[
+                ("deltaX", w_delta_x),
+                ("deltaY", w_delta_y),
+                ("deltaZ", w_delta_z),
+                ("deltaMode", w_delta_mode),
+            ],
+            accessors: &[],
+        },
+    );
     define_constants(g, &wheel, DELTA_MODES);
 
-    let gesture = define_class(g, &ClassSpec {
-        name: "GestureEvent",
-        arity: 1,
-        construct: Some(gesture_construct),
-        parent_proto: ui_event.proto,
-        methods: &[],
-        getters: &[
-            ("scale", g_scale), ("rotation", g_rotation),
-            ("clientX", m_client_x), ("clientY", m_client_y),
-            ("pageX", m_page_x), ("pageY", m_page_y),
-            ("screenX", m_screen_x), ("screenY", m_screen_y),
-            ("ctrlKey", m_ctrl), ("shiftKey", m_shift), ("altKey", m_alt), ("metaKey", m_meta),
-        ],
-        accessors: &[],
-    });
+    let gesture = define_class(
+        g,
+        &ClassSpec {
+            name: "GestureEvent",
+            arity: 1,
+            construct: Some(gesture_construct),
+            parent_proto: ui_event.proto,
+            methods: &[],
+            getters: &[
+                ("scale", g_scale),
+                ("rotation", g_rotation),
+                ("clientX", m_client_x),
+                ("clientY", m_client_y),
+                ("pageX", m_page_x),
+                ("pageY", m_page_y),
+                ("screenX", m_screen_x),
+                ("screenY", m_screen_y),
+                ("ctrlKey", m_ctrl),
+                ("shiftKey", m_shift),
+                ("altKey", m_alt),
+                ("metaKey", m_meta),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let focus = define_class(g, &ClassSpec {
-        name: "FocusEvent",
-        arity: 1,
-        construct: Some(focus_construct),
-        parent_proto: ui_event.proto,
-        methods: &[],
-        getters: &[("relatedTarget", f_related)],
-        accessors: &[],
-    });
+    let focus = define_class(
+        g,
+        &ClassSpec {
+            name: "FocusEvent",
+            arity: 1,
+            construct: Some(focus_construct),
+            parent_proto: ui_event.proto,
+            methods: &[],
+            getters: &[("relatedTarget", f_related)],
+            accessors: &[],
+        },
+    );
 
-    let input = define_class(g, &ClassSpec {
-        name: "InputEvent",
-        arity: 1,
-        construct: Some(input_construct),
-        parent_proto: ui_event.proto,
-        methods: &[],
-        getters: &[
-            ("data", i_data), ("inputType", i_input_type), ("isComposing", i_composing),
-        ],
-        accessors: &[],
-    });
+    let input = define_class(
+        g,
+        &ClassSpec {
+            name: "InputEvent",
+            arity: 1,
+            construct: Some(input_construct),
+            parent_proto: ui_event.proto,
+            methods: &[],
+            getters: &[
+                ("data", i_data),
+                ("inputType", i_input_type),
+                ("isComposing", i_composing),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let pointer = define_class(g, &ClassSpec {
-        name: "PointerEvent",
-        arity: 1,
-        construct: Some(pointer_construct),
-        parent_proto: mouse.proto,
-        methods: &[
-            ("getCoalescedEvents", 0, p_coalesced),
-            ("getPredictedEvents", 0, p_predicted),
-        ],
-        getters: &[
-            ("pointerId", p_id), ("width", p_width), ("height", p_height),
-            ("pressure", p_pressure), ("tangentialPressure", p_tangential),
-            ("tiltX", p_tilt_x), ("tiltY", p_tilt_y), ("twist", p_twist),
-            ("altitudeAngle", p_altitude), ("azimuthAngle", p_azimuth),
-            ("pointerType", p_type), ("isPrimary", p_primary),
-        ],
-        accessors: &[],
-    });
+    let pointer = define_class(
+        g,
+        &ClassSpec {
+            name: "PointerEvent",
+            arity: 1,
+            construct: Some(pointer_construct),
+            parent_proto: mouse.proto,
+            methods: &[
+                ("getCoalescedEvents", 0, p_coalesced),
+                ("getPredictedEvents", 0, p_predicted),
+            ],
+            getters: &[
+                ("pointerId", p_id),
+                ("width", p_width),
+                ("height", p_height),
+                ("pressure", p_pressure),
+                ("tangentialPressure", p_tangential),
+                ("tiltX", p_tilt_x),
+                ("tiltY", p_tilt_y),
+                ("twist", p_twist),
+                ("altitudeAngle", p_altitude),
+                ("azimuthAngle", p_azimuth),
+                ("pointerType", p_type),
+                ("isPrimary", p_primary),
+            ],
+            accessors: &[],
+        },
+    );
 
     let dt_cls = make_host_class::<DataTransferData>("DataTransfer");
-    let dt = define_class(g, &ClassSpec {
-        name: "DataTransfer",
-        arity: 0,
-        construct: Some(dt_construct),
-        parent_proto: 0,
-        methods: &[
-            ("getData", 1, dt_get_data),
-            ("setData", 2, dt_set_data),
-            ("clearData", 1, dt_clear_data),
-            // Spec: sets the drag feedback image. There is no drag feedback
-            // surface here, and the call is advisory — a no-op is the whole
-            // behaviour, not a placeholder for one.
-            ("setDragImage", 3, dt_set_image),
-        ],
-        getters: &[("types", dt_types), ("files", dt_files), ("items", dt_items)],
-        accessors: &[
-            ("dropEffect", dt_get_drop, dt_set_drop),
-            ("effectAllowed", dt_get_effect, dt_set_effect),
-        ],
-    });
+    let dt = define_class(
+        g,
+        &ClassSpec {
+            name: "DataTransfer",
+            arity: 0,
+            construct: Some(dt_construct),
+            parent_proto: 0,
+            methods: &[
+                ("getData", 1, dt_get_data),
+                ("setData", 2, dt_set_data),
+                ("clearData", 1, dt_clear_data),
+                // Spec: sets the drag feedback image. There is no drag feedback
+                // surface here, and the call is advisory — a no-op is the whole
+                // behaviour, not a placeholder for one.
+                ("setDragImage", 3, dt_set_image),
+            ],
+            getters: &[
+                ("types", dt_types),
+                ("files", dt_files),
+                ("items", dt_items),
+            ],
+            accessors: &[
+                ("dropEffect", dt_get_drop, dt_set_drop),
+                ("effectAllowed", dt_get_effect, dt_set_effect),
+            ],
+        },
+    );
 
     let list_cls = make_host_class::<DtListData>("DataTransferItemList");
-    let list = define_class(g, &ClassSpec {
-        name: "DataTransferItemList",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("add", 1, list_add), ("remove", 1, list_remove), ("clear", 0, list_clear)],
-        getters: &[("length", list_length)],
-        accessors: &[],
-    });
+    let list = define_class(
+        g,
+        &ClassSpec {
+            name: "DataTransferItemList",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("add", 1, list_add),
+                ("remove", 1, list_remove),
+                ("clear", 0, list_clear),
+            ],
+            getters: &[("length", list_length)],
+            accessors: &[],
+        },
+    );
     // An indexed getter and `length`: it iterates as an array does (WebIDL).
     let global = glue::rjs_global(g);
     let values = get(g, get(g, get(g, global, "Array"), "prototype"), "values");
@@ -1672,15 +2188,21 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     glue::rjs_atom_free(g, it);
 
     let item_cls = make_host_class::<DtItemData>("DataTransferItem");
-    let item = define_class(g, &ClassSpec {
-        name: "DataTransferItem",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("getAsString", 1, item_get_as_string), ("getAsFile", 0, item_get_as_file)],
-        getters: &[("kind", item_kind), ("type", item_type)],
-        accessors: &[],
-    });
+    let item = define_class(
+        g,
+        &ClassSpec {
+            name: "DataTransferItem",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("getAsString", 1, item_get_as_string),
+                ("getAsFile", 0, item_get_as_file),
+            ],
+            getters: &[("kind", item_kind), ("type", item_type)],
+            accessors: &[],
+        },
+    );
 
     let object = get(g, global, "Object");
     let define_property = get(g, object, "defineProperty");
@@ -1688,15 +2210,18 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     crate::ffi::redjs_protect(g, define_property);
     crate::ffi::redjs_protect(g, freeze);
 
-    let drag = define_class(g, &ClassSpec {
-        name: "DragEvent",
-        arity: 1,
-        construct: Some(drag_construct),
-        parent_proto: mouse.proto,
-        methods: &[],
-        getters: &[("dataTransfer", d_data_transfer)],
-        accessors: &[],
-    });
+    let drag = define_class(
+        g,
+        &ClassSpec {
+            name: "DragEvent",
+            arity: 1,
+            construct: Some(drag_construct),
+            parent_proto: mouse.proto,
+            methods: &[],
+            getters: &[("dataTransfer", d_data_transfer)],
+            accessors: &[],
+        },
+    );
 
     let boxed: &'static UiClasses = Box::leak(Box::new(UiClasses {
         ui_event,
@@ -1726,7 +2251,6 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1747,7 +2271,12 @@ mod tests {
         let mut d = DataTransferData::default();
         d.set("text", "a");
         d.set("text/plain", "b");
-        assert_eq!(d.items.len(), 1, "the alias created a second entry: {:?}", d.items);
+        assert_eq!(
+            d.items.len(),
+            1,
+            "the alias created a second entry: {:?}",
+            d.items
+        );
         assert_eq!(d.get("Text"), "b");
     }
 
@@ -1775,7 +2304,7 @@ mod jsc_tests {
 
     #[test]
     fn source_export_and_target_modes_preserve_files_and_private_items() {
-        use super::{export_drag, transfer_for_target, set_drag_data_mode, DragDataMode};
+        use super::{export_drag, set_drag_data_mode, transfer_for_target, DragDataMode};
         use crate::webapi::file::testing::file_ctx;
         use crate::webapi::util::define;
         let c = file_ctx();
@@ -1792,11 +2321,29 @@ mod jsc_tests {
             set_drag_data_mode(g, store, DragDataMode::Protected);
             assert!(export_drag(g, store).is_none());
             let global = crate::glue::rjs_global(g);
-            define(g, global, "over", transfer_for_target(g, store, DragDataMode::Protected).unwrap(), 0);
-            define(g, global, "dropStore", transfer_for_target(g, store, DragDataMode::ReadOnly).unwrap(), 0);
+            define(
+                g,
+                global,
+                "over",
+                transfer_for_target(g, store, DragDataMode::Protected).unwrap(),
+                0,
+            );
+            define(
+                g,
+                global,
+                "dropStore",
+                transfer_for_target(g, store, DragDataMode::ReadOnly).unwrap(),
+                0,
+            );
             ok(&c, "over.files.length===0 && over.getData('app/private')==='' && over.types.includes('app/private')");
-            ok(&c, "dropStore.files[0]===original && dropStore.getData('app/private')==='exact'");
-            ok(&c, "(() => { dropStore.clearData(); return dropStore.items.length === 2; })()");
+            ok(
+                &c,
+                "dropStore.files[0]===original && dropStore.getData('app/private')==='exact'",
+            );
+            ok(
+                &c,
+                "(() => { dropStore.clearData(); return dropStore.items.length === 2; })()",
+            );
         }
     }
 
@@ -1814,9 +2361,15 @@ mod jsc_tests {
     #[test]
     fn init_dictionary_members_read_back() {
         let c = ctx();
-        ok(&c, "(e => e.clientX === 10 && e.clientY === 20 && e.button === 2 && e.ctrlKey === true)\
-                (new MouseEvent('click', { clientX: 10, clientY: 20, button: 2, ctrlKey: true }))");
-        ok(&c, "(e => e.x === 10 && e.pageX === 10)(new MouseEvent('click', { clientX: 10 }))");
+        ok(
+            &c,
+            "(e => e.clientX === 10 && e.clientY === 20 && e.button === 2 && e.ctrlKey === true)\
+                (new MouseEvent('click', { clientX: 10, clientY: 20, button: 2, ctrlKey: true }))",
+        );
+        ok(
+            &c,
+            "(e => e.x === 10 && e.pageX === 10)(new MouseEvent('click', { clientX: 10 }))",
+        );
         ok(&c, "(e => e.pointerType === 'pen' && e.pressure === 0.5 && e.isPrimary === true)\
                 (new PointerEvent('pointerdown', { pointerType: 'pen', pressure: 0.5, isPrimary: true }))");
     }
@@ -1829,21 +2382,33 @@ mod jsc_tests {
         ok(&c, "(e => e.pointerType === '5' && e.isPrimary === true && e.bubbles === true && e.type === '7')\
                 (new PointerEvent(7, { pointerType: 5, isPrimary: 1, bubbles: 'yes' }))");
         ok(&c, "(e => e.location === 4294967295 && e.key === 'null')(new KeyboardEvent('k', { location: -1, key: null }))");
-        ok(&c, "(e => e.data === null && e.inputType === '')(new InputEvent('i', { data: null }))");
+        ok(
+            &c,
+            "(e => e.data === null && e.inputType === '')(new InputEvent('i', { data: null }))",
+        );
         ok(&c, "(e => e.deltaY === 2 && e.deltaMode === 1 && e.clientX === 3)(new WheelEvent('w', { deltaY: 2, deltaMode: 1.7, clientX: 3 }))");
-        ok(&c, "new MouseEvent('x', { get clientX() { throw 1 } }).clientX === 0");
+        ok(
+            &c,
+            "new MouseEvent('x', { get clientX() { throw 1 } }).clientX === 0",
+        );
     }
 
     #[test]
     fn coalesced_and_predicted_events_come_from_the_init_dict() {
         let c = ctx();
-        ok(&c, "(() => { const a = new PointerEvent('pointermove', { clientX: 1 }); \
+        ok(
+            &c,
+            "(() => { const a = new PointerEvent('pointermove', { clientX: 1 }); \
                 const e = new PointerEvent('pointermove', { coalescedEvents: [a] }); \
                 const l = e.getCoalescedEvents(); l.pop(); \
-                return e.getCoalescedEvents()[0] === a && e.getPredictedEvents().length === 0 })()");
+                return e.getCoalescedEvents()[0] === a && e.getPredictedEvents().length === 0 })()",
+        );
         ok(&c, "(() => { try { new PointerEvent('p', { coalescedEvents: [new MouseEvent('m')] }); return false } \
                 catch (e) { return e instanceof TypeError } })()");
-        ok(&c, "new PointerEvent('p').getCoalescedEvents().length === 0");
+        ok(
+            &c,
+            "new PointerEvent('p').getCoalescedEvents().length === 0",
+        );
     }
 
     #[test]
@@ -1853,8 +2418,11 @@ mod jsc_tests {
                 (new PointerEvent('p', { tiltX: 45 }))");
         ok(&c, "(e => Math.abs(e.altitudeAngle - Math.PI / 4) < 1e-9 && e.azimuthAngle === 3 * Math.PI / 2)\
                 (new PointerEvent('p', { tiltY: -45 }))");
-        ok(&c, "(e => e.tiltX === 0 && e.tiltY === 45)\
-                (new PointerEvent('p', { altitudeAngle: Math.PI / 4, azimuthAngle: Math.PI / 2 }))");
+        ok(
+            &c,
+            "(e => e.tiltX === 0 && e.tiltY === 45)\
+                (new PointerEvent('p', { altitudeAngle: Math.PI / 4, azimuthAngle: Math.PI / 2 }))",
+        );
         ok(&c, "(e => e.tiltX === 30 && e.twist === 359)(new PointerEvent('p', { tiltX: 30.9, twist: 359.5 }))");
     }
 
@@ -1871,16 +2439,28 @@ mod jsc_tests {
         // so it must NOT silently mirror clientX — that is a plausible wrong
         // number, and a hit test built on it lands in the wrong place.
         let c = ctx();
-        ok(&c, "new MouseEvent('click', { clientX: 100 }).offsetX === 0");
+        ok(
+            &c,
+            "new MouseEvent('click', { clientX: 100 }).offsetX === 0",
+        );
         ok(&c, "new MouseEvent('click', { offsetX: 7 }).offsetX === 7");
     }
 
     #[test]
     fn get_modifier_state_answers_the_four_tracked_keys() {
         let c = ctx();
-        ok(&c, "new MouseEvent('c', { shiftKey: true }).getModifierState('Shift') === true");
-        ok(&c, "new MouseEvent('c', { shiftKey: true }).getModifierState('Control') === false");
-        ok(&c, "new MouseEvent('c').getModifierState('CapsLock') === false");
+        ok(
+            &c,
+            "new MouseEvent('c', { shiftKey: true }).getModifierState('Shift') === true",
+        );
+        ok(
+            &c,
+            "new MouseEvent('c', { shiftKey: true }).getModifierState('Control') === false",
+        );
+        ok(
+            &c,
+            "new MouseEvent('c').getModifierState('CapsLock') === false",
+        );
     }
 
     #[test]
@@ -1936,7 +2516,9 @@ mod jsc_tests {
                  const kept = dt.types.join() === 'Files' && dt.items.length === 1; dt.items.clear(); return kept && dt.items.length === 0 && dt.items[0] === undefined; })()");
         assert!(throws(&c, "(() => { const dt = new DataTransfer(); dt.items.add('x', 'a/b'); dt.items.add('y', 'A/B'); })()")
             .contains("already exists"));
-        assert!(throws(&c, "new DataTransfer().items.add('only one')").contains("not of type 'File'"));
+        assert!(
+            throws(&c, "new DataTransfer().items.add('only one')").contains("not of type 'File'")
+        );
         ok(&c, "(() => { const dt = new DataTransfer(); const it = dt.items.add('s', 'a/b'); dt.items.remove(0); \
                  return it.kind === '' && it.type === '' && dt.items.length === 0; })()");
         ok(&c, "(() => { const dt = new DataTransfer(); dt.dropEffect = 'bogus'; dt.effectAllowed = 'bogus'; const a = dt.dropEffect + dt.effectAllowed; \
@@ -1974,8 +2556,18 @@ mod jsc_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let g = c.raw();
         unsafe {
-            let entries =
-                [DropEntry { path: a.0.clone(), is_dir: false, stat: None }, DropEntry { path: dir.clone(), is_dir: true, stat: None }];
+            let entries = [
+                DropEntry {
+                    path: a.0.clone(),
+                    is_dir: false,
+                    stat: None,
+                },
+                DropEntry {
+                    path: dir.clone(),
+                    is_dir: true,
+                    stat: None,
+                },
+            ];
             let dt = create_drag_data(g, &entries, DragDataMode::Protected);
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "dt", dt, 0);
             // dragenter / dragover: kinds and types, no files, no data.
@@ -1988,8 +2580,14 @@ mod jsc_tests {
             ok(&c, "dt.files.length === 2 && dt.files[0].name === 'photo.png' && dt.items[0].getAsFile() === dt.files[0] \
                     && dt.files[1].size === 0 && dt.files[1].type === '' && dt.items.add('a', 'b') === null");
             assert_eq!(run(&c, "return await dt.files[0].text();"), "PNGDATA");
-            assert!(run(&c, "return await dt.files[1].text();").starts_with("ERROR: NotReadableError"), "a directory cannot be read");
-            ok(&c, "(() => { globalThis.kept = dt.items[0]; return true; })()");
+            assert!(
+                run(&c, "return await dt.files[1].text();").starts_with("ERROR: NotReadableError"),
+                "a directory cannot be read"
+            );
+            ok(
+                &c,
+                "(() => { globalThis.kept = dt.items[0]; return true; })()",
+            );
             // After the event: nothing is left in it.
             set_drag_data_mode(g, dt, DragDataMode::Disabled);
             ok(&c, "dt.types.length === 0 && dt.items.length === 0 && dt.items[0] === undefined && dt.files.length === 0 \
@@ -1997,19 +2595,34 @@ mod jsc_tests {
             // Disabled is not read/write either: remove() throws (it returned silently).
             assert!(throws(&c, "dt.items.remove(0)").contains("not writable"));
         }
-        assert!(crate::webapi::blob::advisories().iter().any(|m| m.contains("A-F3")));
+        assert!(crate::webapi::blob::advisories()
+            .iter()
+            .any(|m| m.contains("A-F3")));
         let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
     fn the_file_system_handle_hook_is_called_for_a_dropped_path() {
-        use super::{create_drag_data, set_drag_data_mode, set_file_system_handle_hook, DragDataMode, DropEntry};
+        use super::{
+            create_drag_data, set_drag_data_mode, set_file_system_handle_hook, DragDataMode,
+            DropEntry,
+        };
         use crate::webapi::file::testing::{file_ctx, run, TempFile};
-        unsafe fn hook(g: *mut core::ffi::c_void, path: &std::path::Path, is_dir: bool) -> Result<u64, u64> {
+        unsafe fn hook(
+            g: *mut core::ffi::c_void,
+            path: &std::path::Path,
+            is_dir: bool,
+        ) -> Result<u64, u64> {
             let o = crate::webapi::util::new_object(g, crate::webapi::util::UNDEF);
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             crate::webapi::util::define(g, o, "name", crate::webapi::util::js_string(g, &name), 0);
-            crate::webapi::util::define(g, o, "kind", crate::webapi::util::js_string(g, if is_dir { "directory" } else { "file" }), 0);
+            crate::webapi::util::define(
+                g,
+                o,
+                "kind",
+                crate::webapi::util::js_string(g, if is_dir { "directory" } else { "file" }),
+                0,
+            );
             Ok(o)
         }
         let c = file_ctx();
@@ -2017,13 +2630,31 @@ mod jsc_tests {
         let g = c.raw();
         unsafe {
             set_file_system_handle_hook(g, Some(hook));
-            ok(&c, "typeof DataTransferItem.prototype.getAsFileSystemHandle === 'function'");
+            ok(
+                &c,
+                "typeof DataTransferItem.prototype.getAsFileSystemHandle === 'function'",
+            );
             // A bad `this` is a rejection, not a synchronous throw plus a stray promise.
             ok(&c, "(() => { const p = DataTransferItem.prototype.getAsFileSystemHandle.call({}); globalThis.bad = p; \n                     p.catch(() => {}); return p instanceof Promise; })()");
             assert_eq!(run(&c, "try { await bad; return 'resolved'; } catch (e) { return String(e instanceof TypeError); }"), "true");
-            let dt = create_drag_data(g, &[DropEntry { path: t.0.clone(), is_dir: false, stat: None }], DragDataMode::Protected);
+            let dt = create_drag_data(
+                g,
+                &[DropEntry {
+                    path: t.0.clone(),
+                    is_dir: false,
+                    stat: None,
+                }],
+                DragDataMode::Protected,
+            );
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "dt", dt, 0);
-            assert_eq!(run(&c, "return String(await dt.items[0].getAsFileSystemHandle());"), "null", "protected: null");
+            assert_eq!(
+                run(
+                    &c,
+                    "return String(await dt.items[0].getAsFileSystemHandle());"
+                ),
+                "null",
+                "protected: null"
+            );
             set_drag_data_mode(g, dt, DragDataMode::ReadOnly);
             assert_eq!(run(&c, "const h = await dt.items[0].getAsFileSystemHandle(); return h.kind + ':' + h.name;"), "file:h.txt");
             assert_eq!(
@@ -2034,13 +2665,19 @@ mod jsc_tests {
             );
             set_file_system_handle_hook(g, None);
         }
-        ok(&c, "!('getAsFileSystemHandle' in DataTransferItem.prototype)");
+        ok(
+            &c,
+            "!('getAsFileSystemHandle' in DataTransferItem.prototype)",
+        );
     }
 
     #[test]
     fn a_getter_on_a_foreign_object_is_a_type_error() {
         let c = ctx();
-        let msg = throws(&c, "Object.getOwnPropertyDescriptor(MouseEvent.prototype,'clientX').get.call({})");
+        let msg = throws(
+            &c,
+            "Object.getOwnPropertyDescriptor(MouseEvent.prototype,'clientX').get.call({})",
+        );
         assert!(msg.contains("non-Event"), "{msg}");
     }
 
@@ -2053,7 +2690,10 @@ mod jsc_tests {
         ok(&c, "new KeyboardEvent('keydown') instanceof UIEvent");
         ok(&c, "new KeyboardEvent('keydown') instanceof Event");
         ok(&c, "!(new KeyboardEvent('keydown') instanceof MouseEvent)");
-        ok(&c, "Object.getPrototypeOf(KeyboardEvent.prototype) === UIEvent.prototype");
+        ok(
+            &c,
+            "Object.getPrototypeOf(KeyboardEvent.prototype) === UIEvent.prototype",
+        );
         ok(&c, "new KeyboardEvent('keydown').type === 'keydown'");
     }
 
@@ -2093,12 +2733,30 @@ mod jsc_tests {
     #[test]
     fn keyboard_event_get_modifier_state_answers_the_four_tracked_keys() {
         let c = ctx();
-        ok(&c, "new KeyboardEvent('k', { ctrlKey: true }).getModifierState('Control') === true");
-        ok(&c, "new KeyboardEvent('k', { shiftKey: true }).getModifierState('Shift') === true");
-        ok(&c, "new KeyboardEvent('k', { altKey: true }).getModifierState('Alt') === true");
-        ok(&c, "new KeyboardEvent('k', { metaKey: true }).getModifierState('Meta') === true");
-        ok(&c, "new KeyboardEvent('k').getModifierState('Control') === false");
-        ok(&c, "new KeyboardEvent('k').getModifierState('CapsLock') === false");
+        ok(
+            &c,
+            "new KeyboardEvent('k', { ctrlKey: true }).getModifierState('Control') === true",
+        );
+        ok(
+            &c,
+            "new KeyboardEvent('k', { shiftKey: true }).getModifierState('Shift') === true",
+        );
+        ok(
+            &c,
+            "new KeyboardEvent('k', { altKey: true }).getModifierState('Alt') === true",
+        );
+        ok(
+            &c,
+            "new KeyboardEvent('k', { metaKey: true }).getModifierState('Meta') === true",
+        );
+        ok(
+            &c,
+            "new KeyboardEvent('k').getModifierState('Control') === false",
+        );
+        ok(
+            &c,
+            "new KeyboardEvent('k').getModifierState('CapsLock') === false",
+        );
     }
 
     #[test]
@@ -2157,7 +2815,10 @@ mod jsc_tests {
         ok(&c, "new WheelEvent('wheel') instanceof MouseEvent");
         ok(&c, "new WheelEvent('wheel') instanceof UIEvent");
         ok(&c, "new WheelEvent('wheel') instanceof Event");
-        ok(&c, "Object.getPrototypeOf(WheelEvent.prototype) === MouseEvent.prototype");
+        ok(
+            &c,
+            "Object.getPrototypeOf(WheelEvent.prototype) === MouseEvent.prototype",
+        );
     }
 
     #[test]
@@ -2189,10 +2850,19 @@ mod jsc_tests {
         // every use of it is `=== WheelEvent.DOM_DELTA_*`, and 1.5 matches none
         // of them while looking like a valid value.
         let c = ctx();
-        ok(&c, "new WheelEvent('wheel', { deltaMode: 1.9 }).deltaMode === 1");
-        ok(&c, "new WheelEvent('wheel', { deltaMode: NaN }).deltaMode === 0");
+        ok(
+            &c,
+            "new WheelEvent('wheel', { deltaMode: 1.9 }).deltaMode === 1",
+        );
+        ok(
+            &c,
+            "new WheelEvent('wheel', { deltaMode: NaN }).deltaMode === 0",
+        );
         // …while a plain double member keeps its fraction.
-        ok(&c, "new WheelEvent('wheel', { deltaY: 1.9 }).deltaY === 1.9");
+        ok(
+            &c,
+            "new WheelEvent('wheel', { deltaY: 1.9 }).deltaY === 1.9",
+        );
     }
 
     #[test]
@@ -2232,7 +2902,10 @@ mod jsc_tests {
             "(() => { const t = new EventTarget(); \
               return new FocusEvent('blur', { relatedTarget: t }).relatedTarget === t; })()",
         );
-        ok(&c, "new FocusEvent('focus', { bubbles: true, detail: 2 }).detail === 2");
+        ok(
+            &c,
+            "new FocusEvent('focus', { bubbles: true, detail: 2 }).detail === 2",
+        );
     }
 
     #[test]
@@ -2272,7 +2945,10 @@ mod jsc_tests {
         // string stays the empty string rather than collapsing to null.
         ok(&c, "new InputEvent('input', { data: null }).data === null");
         ok(&c, "new InputEvent('input', { data: '' }).data === ''");
-        ok(&c, "new InputEvent('beforeinput', { inputType: 'deleteContentBackward' }).data === null");
+        ok(
+            &c,
+            "new InputEvent('beforeinput', { inputType: 'deleteContentBackward' }).data === null",
+        );
     }
 
     #[test]
@@ -2349,12 +3025,17 @@ mod jsc_tests {
         ] {
             let msg = throws(
                 &c,
-                &format!("Object.getOwnPropertyDescriptor({proto}.prototype,'{name}').get.call({{}})"),
+                &format!(
+                    "Object.getOwnPropertyDescriptor({proto}.prototype,'{name}').get.call({{}})"
+                ),
             );
             assert!(msg.contains("non-Event"), "{proto}.{name}: {msg}");
             assert!(msg.contains(proto), "{proto}.{name}: {msg}");
         }
-        let msg = throws(&c, "KeyboardEvent.prototype.getModifierState.call({}, 'Shift')");
+        let msg = throws(
+            &c,
+            "KeyboardEvent.prototype.getModifierState.call({}, 'Shift')",
+        );
         assert!(msg.contains("KeyboardEvent.getModifierState"), "{msg}");
     }
 }

@@ -17,7 +17,11 @@ fn parse(pieces: &[&[u8]]) -> (Vec<SseEvent>, Parser) {
 }
 
 fn ev(ty: &str, data: &str, id: &str) -> SseEvent {
-    SseEvent { ty: ty.into(), data: data.into(), id: id.into() }
+    SseEvent {
+        ty: ty.into(),
+        data: data.into(),
+        id: id.into(),
+    }
 }
 
 #[test]
@@ -25,7 +29,12 @@ fn the_parser_follows_the_event_stream_rules() {
     let (out, _) = parse(&[b"data: a\ndata:b\n\nevent: tick\ndata\nid: 7\n\n: comment\n\n"]);
     assert_eq!(out, vec![ev("message", "a\nb", ""), ev("tick", "", "7")]);
 
-    let (out, _) = parse(&[b"\xEF\xBB", b"\xBFdata: x\r", b"\ndata: y\r\r", b"data: z\n\ndata: lost"]);
+    let (out, _) = parse(&[
+        b"\xEF\xBB",
+        b"\xBFdata: x\r",
+        b"\ndata: y\r\r",
+        b"data: z\n\ndata: lost",
+    ]);
     assert_eq!(out, vec![ev("message", "x\ny", ""), ev("message", "z", "")]);
 
     let (out, p) = parse(&[b"id: 3\n\nid: bad\0id\nretry: 1500\nretry: 2s\ndata:  two spaces\n\n"]);
@@ -54,7 +63,11 @@ fn serve(handler: impl Fn(usize, &str, &mut TcpStream) + Send + Sync + 'static) 
                         Ok(k) => head.extend_from_slice(&b[..k]),
                     }
                 }
-                h(n.fetch_add(1, Ordering::SeqCst), &String::from_utf8_lossy(&head), &mut sock);
+                h(
+                    n.fetch_add(1, Ordering::SeqCst),
+                    &String::from_utf8_lossy(&head),
+                    &mut sock,
+                );
             });
         }
     });
@@ -93,7 +106,10 @@ fn events_arrive_with_their_type_id_and_origin() {
              }});"
         ),
     );
-    assert_eq!(out, "0 | open:1 | message,hello,1,true | custom,2,1,true | 2");
+    assert_eq!(
+        out,
+        "0 | open:1 | message,hello,1,true | custom,2,1,true | 2"
+    );
 }
 
 #[test]
@@ -106,7 +122,11 @@ fn a_dropped_stream_reconnects_with_the_last_event_id_after_retry() {
             send(sock, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n");
             let last = head
                 .lines()
-                .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("last-event-id")).map(|(_, v)| v.trim()))
+                .find_map(|l| {
+                    l.split_once(':')
+                        .filter(|(k, _)| k.eq_ignore_ascii_case("last-event-id"))
+                        .map(|(_, v)| v.trim())
+                })
                 .unwrap_or("-")
                 .to_string();
             let chunk = format!("data: again {last}\n\n");
@@ -139,7 +159,10 @@ fn a_wrong_answer_fails_the_connection_for_good() {
     let seen = Arc::clone(&hits);
     let port = serve(move |_, _, sock| {
         seen.fetch_add(1, Ordering::SeqCst);
-        send(sock, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nhi");
+        send(
+            sock,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nhi",
+        );
     });
     let c = file_ctx();
     let out = run(
@@ -159,7 +182,10 @@ fn a_wrong_answer_fails_the_connection_for_good() {
 fn the_interface_has_the_spec_shape() {
     let c = file_ctx();
     ok(&c, "EventSource.CONNECTING === 0 && EventSource.OPEN === 1 && EventSource.CLOSED === 2 && EventSource.prototype.CLOSED === 2");
-    ok(&c, "Object.getPrototypeOf(EventSource.prototype) === EventTarget.prototype");
+    ok(
+        &c,
+        "Object.getPrototypeOf(EventSource.prototype) === EventTarget.prototype",
+    );
     ok(&c, "(() => { try { new EventSource('http://[::1'); return false; } catch (e) { return e instanceof DOMException && e.name === 'SyntaxError'; } })()");
     assert_eq!(
         run(

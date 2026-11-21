@@ -93,7 +93,12 @@ fn refusal(name: &str) -> String {
 
 /// Run one dialog. `Ok(None)` = cancelled (prompt), `Ok(Some(s))` = the text,
 /// and for `confirm` the text is `"1"`/`"0"`.
-unsafe fn ask(g: *mut c_void, kind: i32, message: &str, default_value: &str) -> Option<(i32, Option<String>)> {
+unsafe fn ask(
+    g: *mut c_void,
+    kind: i32,
+    message: &str,
+    default_value: &str,
+) -> Option<(i32, Option<String>)> {
     let f = handler_of(g)?;
     let msg: Vec<u16> = message.encode_utf16().collect();
     let def: Vec<u16> = default_value.encode_utf16().collect();
@@ -112,7 +117,11 @@ unsafe fn ask(g: *mut c_void, kind: i32, message: &str, default_value: &str) -> 
 
 #[crate::host_fn]
 unsafe fn js_alert(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let msg = if cf_argc(cf) == 0 { String::new() } else { read_string(g, cf_arg(cf, 0)).unwrap_or_default() };
+    let msg = if cf_argc(cf) == 0 {
+        String::new()
+    } else {
+        read_string(g, cf_arg(cf, 0)).unwrap_or_default()
+    };
     match ask(g, KIND_ALERT, &msg, "") {
         Some(_) => UNDEF,
         None => throw_type_error(g, &refusal("alert")),
@@ -121,7 +130,11 @@ unsafe fn js_alert(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn js_confirm(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let msg = if cf_argc(cf) == 0 { String::new() } else { read_string(g, cf_arg(cf, 0)).unwrap_or_default() };
+    let msg = if cf_argc(cf) == 0 {
+        String::new()
+    } else {
+        read_string(g, cf_arg(cf, 0)).unwrap_or_default()
+    };
     match ask(g, KIND_CONFIRM, &msg, "") {
         Some((rc, _)) => enc_bool(rc != 0),
         None => throw_type_error(g, &refusal("confirm")),
@@ -130,7 +143,11 @@ unsafe fn js_confirm(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn js_prompt(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let msg = if cf_argc(cf) == 0 { String::new() } else { read_string(g, cf_arg(cf, 0)).unwrap_or_default() };
+    let msg = if cf_argc(cf) == 0 {
+        String::new()
+    } else {
+        read_string(g, cf_arg(cf, 0)).unwrap_or_default()
+    };
     // Spec: the second argument defaults to the empty string, and that default
     // is what a cancelled dialog does NOT return — cancel is null.
     let default_value = match cf_arg(cf, 1) {
@@ -152,7 +169,13 @@ unsafe fn js_prompt(g: *mut c_void, cf: *mut c_void) -> u64 {
 pub unsafe fn install(g: *mut c_void) {
     let global = glue::rjs_global(g);
     define(g, global, "alert", make_fn(g, "alert", 1, js_alert), 2);
-    define(g, global, "confirm", make_fn(g, "confirm", 1, js_confirm), 2);
+    define(
+        g,
+        global,
+        "confirm",
+        make_fn(g, "confirm", 1, js_confirm),
+        2,
+    );
     define(g, global, "prompt", make_fn(g, "prompt", 2, js_prompt), 2);
 }
 
@@ -173,7 +196,9 @@ mod jsc_tests {
     /// `ANSWER` its neighbour had just set and returned null.)
     fn exclusive() -> std::sync::MutexGuard<'static, ()> {
         static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        L.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     unsafe extern "C" fn test_handler(
@@ -234,7 +259,10 @@ mod jsc_tests {
 
         ANSWER.store(1, Ordering::SeqCst);
         let out = s(&c, "prompt('name?', 'anon')");
-        assert_eq!(out, "name?|anon", "the message or the default did not reach the handler");
+        assert_eq!(
+            out, "name?|anon",
+            "the message or the default did not reach the handler"
+        );
 
         // Cancel is null, NOT the default string — the distinction the whole
         // return type exists for.

@@ -77,7 +77,11 @@ pub fn set_user_agent(ua: Option<&str>) {
 
 /// The user agent string `navigator.userAgent` reports right now.
 pub fn user_agent() -> String {
-    USER_AGENT.read().unwrap().clone().unwrap_or_else(|| DEFAULT_USER_AGENT.to_owned())
+    USER_AGENT
+        .read()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| DEFAULT_USER_AGENT.to_owned())
 }
 
 /// HTML: `appVersion` is the user agent string minus its leading "Mozilla/".
@@ -100,7 +104,9 @@ pub fn platform(ua: &str) -> &'static str {
 }
 
 pub fn hardware_concurrency() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 static LANGUAGES: RwLock<Option<Vec<String>>> = RwLock::new(None);
@@ -108,7 +114,9 @@ static LANGUAGES_EPOCH: AtomicUsize = AtomicUsize::new(0);
 
 /// `None`, or no valid tag, restores [`system_languages`]. No `languagechange` event fires.
 pub fn set_languages(langs: Option<Vec<String>>) {
-    let langs = langs.map(|l| dedup_tags(l.iter().map(String::as_str))).filter(|l| !l.is_empty());
+    let langs = langs
+        .map(|l| dedup_tags(l.iter().map(String::as_str)))
+        .filter(|l| !l.is_empty());
     *LANGUAGES.write().unwrap() = langs;
     LANGUAGES_EPOCH.fetch_add(1, Ordering::AcqRel);
 }
@@ -134,7 +142,10 @@ pub fn accept_language_for(langs: &[String]) -> String {
         }
         let b = base(tag);
         let run_continues = langs.get(i + 1).is_some_and(|next| base(next) == b);
-        let named = langs.iter().chain(&expanded).any(|t| t.eq_ignore_ascii_case(&b));
+        let named = langs
+            .iter()
+            .chain(&expanded)
+            .any(|t| t.eq_ignore_ascii_case(&b));
         if !run_continues && !named {
             expanded.push(b);
         }
@@ -158,7 +169,11 @@ pub fn system_languages() -> &'static [String] {
     static SYSTEM: OnceLock<Vec<String>> = OnceLock::new();
     SYSTEM.get_or_init(|| {
         let tags = dedup_tags(os_languages().iter().map(String::as_str));
-        if tags.is_empty() { vec!["en-US".to_owned()] } else { tags }
+        if tags.is_empty() {
+            vec!["en-US".to_owned()]
+        } else {
+            tags
+        }
     })
 }
 
@@ -206,27 +221,41 @@ pub fn canonical_tag(raw: &str) -> Option<String> {
 fn os_languages() -> Vec<String> {
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetUserPreferredUILanguages(flags: u32, num: *mut u32, buffer: *mut u16, len: *mut u32) -> i32;
+        fn GetUserPreferredUILanguages(
+            flags: u32,
+            num: *mut u32,
+            buffer: *mut u16,
+            len: *mut u32,
+        ) -> i32;
     }
     const MUI_LANGUAGE_NAME: u32 = 0x8;
     let (mut num, mut len) = (0u32, 0u32);
     // SAFETY: the first call only reports the length; the second writes at most `len` units.
     unsafe {
-        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut num, core::ptr::null_mut(), &mut len) == 0 || len == 0 {
+        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut num, core::ptr::null_mut(), &mut len)
+            == 0
+            || len == 0
+        {
             return Vec::new();
         }
         let mut buf = vec![0u16; len as usize];
-        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut num, buf.as_mut_ptr(), &mut len) == 0 {
+        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut num, buf.as_mut_ptr(), &mut len) == 0
+        {
             return Vec::new();
         }
-        buf.split(|&u| u == 0).filter(|s| !s.is_empty()).map(String::from_utf16_lossy).collect()
+        buf.split(|&u| u == 0)
+            .filter(|s| !s.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect()
     }
 }
 
 /// An app started from Finder has no `LANG`: the list is the user's `AppleLanguages` default.
 #[cfg(target_os = "macos")]
 fn os_languages() -> Vec<String> {
-    let out = std::process::Command::new("/usr/bin/defaults").args(["read", "-g", "AppleLanguages"]).output();
+    let out = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "-g", "AppleLanguages"])
+        .output();
     match out {
         Ok(o) if o.status.success() => apple_languages(&String::from_utf8_lossy(&o.stdout)),
         _ => posix_languages(|k| std::env::var(k).ok()),
@@ -250,7 +279,9 @@ fn apple_languages(out: &str) -> Vec<String> {
 /// gettext's order: `LANGUAGE` unless the locale is `C`, then `LC_ALL`, `LC_MESSAGES`, `LANG`.
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 fn posix_languages(var: impl Fn(&str) -> Option<String>) -> Vec<String> {
-    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().find_map(|k| var(k).filter(|v| !v.is_empty()));
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|k| var(k).filter(|v| !v.is_empty()));
     let mut out = Vec::new();
     if locale.as_deref().and_then(canonical_tag).is_some() {
         if let Some(list) = var("LANGUAGE") {
@@ -357,8 +388,15 @@ fn advise_no_provider() {
 }
 
 unsafe fn online_queue_len(g: *mut c_void) -> usize {
-    let Some(id) = crate::context::id_of(g) else { return 0 };
-    online_queues().lock().unwrap().get(&id.0).map(Vec::len).unwrap_or(0)
+    let Some(id) = crate::context::id_of(g) else {
+        return 0;
+    };
+    online_queues()
+        .lock()
+        .unwrap()
+        .get(&id.0)
+        .map(Vec::len)
+        .unwrap_or(0)
 }
 
 /// Never in flight: a change is queued whole, so there is nothing to wait for.
@@ -377,7 +415,9 @@ unsafe fn online_drain(g: *mut c_void) -> usize {
     if ONLINE_PENDING.load(Ordering::Acquire) == 0 {
         return 0;
     }
-    let Some(id) = crate::context::id_of(g) else { return 0 };
+    let Some(id) = crate::context::id_of(g) else {
+        return 0;
+    };
     let mut n = 0usize;
     loop {
         let next = {
@@ -426,7 +466,9 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 }
 
 unsafe fn is_navigator(g: *mut c_void, v: u64) -> bool {
-    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return false };
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else {
+        return false;
+    };
     is_cell(v) && get_a(g, v, c.s_nav) == TRUE
 }
 
@@ -477,7 +519,9 @@ unsafe fn get_languages(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_navigator(g, nav) {
         return throw_type_error(g, "Illegal invocation");
     }
-    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return UNDEF };
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else {
+        return UNDEF;
+    };
     let (s_array, s_epoch) = (c.s_languages, c.s_languages_epoch);
     let epoch = enc_i32((LANGUAGES_EPOCH.load(Ordering::Acquire) & 0x7fff_ffff) as i32);
     let cached = get_a(g, nav, s_array);
@@ -501,7 +545,10 @@ const GREASE_BRAND: &str = "Not)A;Brand";
 pub fn ua_product(ua: &str) -> (String, String) {
     ua.split_whitespace()
         .rev()
-        .find_map(|t| t.split_once('/').filter(|(n, v)| !n.is_empty() && !v.is_empty() && !n.starts_with('(')))
+        .find_map(|t| {
+            t.split_once('/')
+                .filter(|(n, v)| !n.is_empty() && !v.is_empty() && !n.starts_with('('))
+        })
         .map(|(n, v)| (n.to_string(), v.to_string()))
         .unwrap_or_else(|| ("RedVue".into(), "1.0".into()))
 }
@@ -534,7 +581,11 @@ pub fn windows_platform_version(build: u32) -> &'static str {
 
 #[cfg_attr(windows, allow(dead_code))]
 fn three_part(v: &str) -> String {
-    let mut parts: Vec<&str> = v.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).take(3).collect();
+    let mut parts: Vec<&str> = v
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .take(3)
+        .collect();
     while parts.len() < 3 {
         parts.push("0");
     }
@@ -565,7 +616,11 @@ fn platform_version() -> String {
         csd: [0; 128],
     };
     // SAFETY: `info` is a correctly sized OSVERSIONINFOW.
-    let build = if unsafe { RtlGetVersion(&mut info) } == 0 { info.build } else { 0 };
+    let build = if unsafe { RtlGetVersion(&mut info) } == 0 {
+        info.build
+    } else {
+        0
+    };
     windows_platform_version(build).to_string()
 }
 
@@ -575,7 +630,13 @@ fn platform_version() -> String {
     let mut len = buf.len();
     // SAFETY: `buf` holds `len` bytes; sysctlbyname writes at most that.
     let rc = unsafe {
-        libc::sysctlbyname(c"kern.osproductversion".as_ptr(), buf.as_mut_ptr().cast(), &mut len, core::ptr::null_mut(), 0)
+        libc::sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            core::ptr::null_mut(),
+            0,
+        )
     };
     if rc != 0 {
         return String::new();
@@ -638,8 +699,16 @@ pub fn high_entropy_json(hints: &[String]) -> String {
         "\"mobile\":false".to_string(),
         format!("\"platform\":{}", json_str(ua_platform())),
     ];
-    let arch = if cfg!(any(target_arch = "aarch64", target_arch = "arm")) { "arm" } else { "x86" };
-    let bitness = if cfg!(target_pointer_width = "64") { "64" } else { "32" };
+    let arch = if cfg!(any(target_arch = "aarch64", target_arch = "arm")) {
+        "arm"
+    } else {
+        "x86"
+    };
+    let bitness = if cfg!(target_pointer_width = "64") {
+        "64"
+    } else {
+        "32"
+    };
     for hint in hints {
         let value = match hint.as_str() {
             "architecture" => json_str(arch),
@@ -665,7 +734,9 @@ unsafe fn parse_json(g: *mut c_void, json: &str) -> u64 {
 }
 
 unsafe fn is_ua_data(g: *mut c_void, v: u64) -> bool {
-    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return false };
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else {
+        return false;
+    };
     is_cell(v) && get_a(g, v, c.s_ua) == TRUE
 }
 
@@ -717,7 +788,9 @@ unsafe fn ua_high_entropy(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let mut hints = Vec::new();
     for i in 0..array_len(g, list) {
-        let Ok(s) = to_js_string(g, get_i(g, list, i)) else { return UNDEF };
+        let Ok(s) = to_js_string(g, get_i(g, list, i)) else {
+            return UNDEF;
+        };
         hints.push(read_string(g, s).unwrap_or_default());
     }
     resolved_promise(g, parse_json(g, &high_entropy_json(&hints)))
@@ -729,21 +802,35 @@ unsafe fn get_user_agent_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_navigator(g, nav) {
         return throw_type_error(g, "Illegal invocation");
     }
-    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return UNDEF };
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else {
+        return UNDEF;
+    };
     get_a(g, nav, c.s_ua_data)
 }
 
 unsafe fn install_ua_data(g: *mut c_void, nav: u64) {
-    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else { return };
-    let class = define_class(g, &ClassSpec {
-        name: "NavigatorUAData",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("getHighEntropyValues", 1, ua_high_entropy), ("toJSON", 0, ua_to_json)],
-        getters: &[("brands", ua_brands), ("mobile", ua_mobile), ("platform", ua_platform_get)],
-        accessors: &[],
-    });
+    let Some(c) = registry().lock().unwrap().get(&(g as usize)).copied() else {
+        return;
+    };
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "NavigatorUAData",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("getHighEntropyValues", 1, ua_high_entropy),
+                ("toJSON", 0, ua_to_json),
+            ],
+            getters: &[
+                ("brands", ua_brands),
+                ("mobile", ua_mobile),
+                ("platform", ua_platform_get),
+            ],
+            accessors: &[],
+        },
+    );
     let data = new_object(g, class.proto);
     glue::rjs_define(g, data, c.s_ua, TRUE, 1 | 2 | 4);
     glue::rjs_define(g, nav, c.s_ua_data, data, 1 | 2 | 4);
@@ -763,48 +850,58 @@ unsafe fn get_on_line(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let s_nav = atom_priv(g, "redjs#navigator");
-    registry().lock().unwrap().insert(g as usize, Box::leak(Box::new(NavClasses {
-        s_nav,
-        s_languages: atom_priv(g, "redjs#languages"),
-        s_languages_epoch: atom_priv(g, "redjs#languagesEpoch"),
-        s_ua_data: atom_priv(g, "redjs#uaData"),
-        s_ua: atom_priv(g, "redjs#uaDataBrand"),
-    })));
+    registry().lock().unwrap().insert(
+        g as usize,
+        Box::leak(Box::new(NavClasses {
+            s_nav,
+            s_languages: atom_priv(g, "redjs#languages"),
+            s_languages_epoch: atom_priv(g, "redjs#languagesEpoch"),
+            s_ua_data: atom_priv(g, "redjs#uaData"),
+            s_ua: atom_priv(g, "redjs#uaDataBrand"),
+        })),
+    );
 
-    let class = define_class(g, &ClassSpec {
-        name: "Navigator",
-        arity: 0,
-        construct: None, // "Illegal constructor", as in a browser
-        parent_proto: 0,
-        methods: &[
-            #[cfg(feature = "battery")]
-            ("getBattery", 0, super::battery::get_battery),
-        ],
-        getters: &[
-            ("appCodeName", get_app_code_name),
-            ("appName", get_app_name),
-            ("appVersion", get_app_version),
-            ("platform", get_platform),
-            ("product", get_product),
-            ("productSub", get_product_sub),
-            ("userAgent", get_user_agent),
-            ("vendor", get_vendor),
-            ("vendorSub", get_vendor_sub),
-            ("hardwareConcurrency", get_hardware_concurrency),
-            ("language", get_language),
-            ("userAgentData", get_user_agent_data),
-            ("languages", get_languages),
-            ("onLine", get_on_line),
-        ],
-        accessors: &[],
-    });
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "Navigator",
+            arity: 0,
+            construct: None, // "Illegal constructor", as in a browser
+            parent_proto: 0,
+            methods: &[
+                #[cfg(feature = "battery")]
+                ("getBattery", 0, super::battery::get_battery),
+            ],
+            getters: &[
+                ("appCodeName", get_app_code_name),
+                ("appName", get_app_name),
+                ("appVersion", get_app_version),
+                ("platform", get_platform),
+                ("product", get_product),
+                ("productSub", get_product_sub),
+                ("userAgent", get_user_agent),
+                ("vendor", get_vendor),
+                ("vendorSub", get_vendor_sub),
+                ("hardwareConcurrency", get_hardware_concurrency),
+                ("language", get_language),
+                ("userAgentData", get_user_agent_data),
+                ("languages", get_languages),
+                ("onLine", get_on_line),
+            ],
+            accessors: &[],
+        },
+    );
 
     // A host that put its own `navigator` up before install keeps its object
     // (and whatever it hung on it); it just becomes a Navigator underneath.
     let global = glue::rjs_global(g);
     let existing = get(g, global, "navigator");
     let nav = if is_cell(existing) {
-        crate::capi::JSObjectSetPrototype(g, existing as usize as crate::capi::JSObjectRef, class.proto as usize as crate::capi::JSValueRef);
+        crate::capi::JSObjectSetPrototype(
+            g,
+            existing as usize as crate::capi::JSObjectRef,
+            class.proto as usize as crate::capi::JSValueRef,
+        );
         existing
     } else {
         let n = new_object(g, class.proto);
@@ -840,7 +937,10 @@ mod tests {
     #[test]
     fn battery_feature_off_has_no_surface() {
         let c = ctx();
-        ok(&c, "!('getBattery' in navigator) && typeof BatteryManager === 'undefined'");
+        ok(
+            &c,
+            "!('getBattery' in navigator) && typeof BatteryManager === 'undefined'",
+        );
     }
 
     #[test]
@@ -856,9 +956,15 @@ mod tests {
                    JSON.stringify(navigator.vendor), JSON.stringify(navigator.vendorSub)].join('|')"),
             "Mozilla|Netscape|Gecko|20030107|\"\"|\"\""
         );
-        ok(&c, "Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency >= 1");
+        ok(
+            &c,
+            "Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency >= 1",
+        );
         // The other navigator.* surfaces hang off this same object.
-        ok(&c, "typeof navigator.permissions === 'object' && navigator.permissions !== null");
+        ok(
+            &c,
+            "typeof navigator.permissions === 'object' && navigator.permissions !== null",
+        );
     }
 
     /// The default, an override, and the reset — in one test, because the
@@ -867,16 +973,27 @@ mod tests {
     fn user_agent_default_and_override() {
         let c = ctx();
         assert_eq!(s(&c, "navigator.userAgent"), super::DEFAULT_USER_AGENT);
-        assert_eq!(s(&c, "navigator.appVersion"), super::app_version(super::DEFAULT_USER_AGENT));
-        assert_eq!(s(&c, "navigator.platform"), super::platform(super::DEFAULT_USER_AGENT));
+        assert_eq!(
+            s(&c, "navigator.appVersion"),
+            super::app_version(super::DEFAULT_USER_AGENT)
+        );
+        assert_eq!(
+            s(&c, "navigator.platform"),
+            super::platform(super::DEFAULT_USER_AGENT)
+        );
         #[cfg(target_os = "macos")]
         assert_eq!(s(&c, "navigator.platform"), "MacIntel");
         #[cfg(target_os = "windows")]
         assert_eq!(s(&c, "navigator.platform"), "Win32");
 
-        let ua: Vec<u16> = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2".encode_utf16().collect();
+        let ua: Vec<u16> = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2"
+            .encode_utf16()
+            .collect();
         unsafe { crate::ffi::redjs_navigator_set_user_agent(ua.as_ptr(), ua.len()) };
-        let got = s(&c, "[navigator.userAgent, navigator.appVersion, navigator.platform].join('|')");
+        let got = s(
+            &c,
+            "[navigator.userAgent, navigator.appVersion, navigator.platform].join('|')",
+        );
         unsafe { crate::ffi::redjs_navigator_set_user_agent(core::ptr::null(), 0) };
         assert_eq!(got, "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2|5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2|MacIntel");
         assert_eq!(s(&c, "navigator.userAgent"), super::DEFAULT_USER_AGENT);
@@ -897,24 +1014,40 @@ mod tests {
 
     #[test]
     fn accept_language_is_chromiums() {
-        let h = |l: &[&str]| super::accept_language_for(&l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(h(&["ru-RU", "en-US"]), "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7");
+        let h = |l: &[&str]| {
+            super::accept_language_for(&l.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            h(&["ru-RU", "en-US"]),
+            "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+        );
         assert_eq!(h(&["en-US", "en-GB"]), "en-US,en-GB;q=0.9,en;q=0.8");
         assert_eq!(h(&["de", "en-US", "en"]), "de,en-US;q=0.9,en;q=0.8");
         assert_eq!(h(&["zh-Hans-CN"]), "zh-Hans-CN,zh;q=0.9");
-        let many: Vec<String> = (0..12).map(|i| format!("x{}", (b'a' + i) as char)).collect();
-        assert!(super::accept_language_for(&many).ends_with("xk;q=0.1,xl;q=0.1"), "the floor is 0.1");
+        let many: Vec<String> = (0..12)
+            .map(|i| format!("x{}", (b'a' + i) as char))
+            .collect();
+        assert!(
+            super::accept_language_for(&many).ends_with("xk;q=0.1,xl;q=0.1"),
+            "the floor is 0.1"
+        );
     }
 
     #[test]
     fn user_agent_data_follows_the_user_agent() {
         let c = ctx();
-        assert_eq!(super::ua_product("Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0"), ("RedVue".into(), "1.0".into()));
+        assert_eq!(
+            super::ua_product("Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedVue/1.0"),
+            ("RedVue".into(), "1.0".into())
+        );
         assert_eq!(super::windows_platform_version(26100), "19.0.0");
         assert_eq!(super::windows_platform_version(19045), "10.0.0");
         ok(&c, "navigator.userAgentData instanceof NavigatorUAData && navigator.userAgentData === navigator.userAgentData");
         ok(&c, "navigator.userAgentData.mobile === false && Object.isFrozen(navigator.userAgentData.brands)");
-        ok(&c, "navigator.userAgentData.brands.some(b => b.brand === 'RedVue' && b.version === '1')");
+        ok(
+            &c,
+            "navigator.userAgentData.brands.some(b => b.brand === 'RedVue' && b.version === '1')",
+        );
         ok(&c, "JSON.stringify(navigator.userAgentData) === JSON.stringify({ brands: navigator.userAgentData.brands, mobile: false, platform: navigator.userAgentData.platform })");
         #[cfg(target_os = "windows")]
         ok(&c, "navigator.userAgentData.platform === 'Windows'");
@@ -926,15 +1059,33 @@ mod tests {
     #[test]
     fn posix_and_apple_lists_parse() {
         let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
         };
-        assert_eq!(super::posix_languages(env(&[("LANG", "ru_RU.UTF-8")])), ["ru_RU.UTF-8"]);
         assert_eq!(
-            super::posix_languages(env(&[("LANGUAGE", "uk:ru"), ("LC_ALL", "uk_UA.UTF-8"), ("LANG", "en_US")])),
+            super::posix_languages(env(&[("LANG", "ru_RU.UTF-8")])),
+            ["ru_RU.UTF-8"]
+        );
+        assert_eq!(
+            super::posix_languages(env(&[
+                ("LANGUAGE", "uk:ru"),
+                ("LC_ALL", "uk_UA.UTF-8"),
+                ("LANG", "en_US")
+            ])),
             ["uk", "ru", "uk_UA.UTF-8"]
         );
-        assert!(super::posix_languages(env(&[("LANGUAGE", "de"), ("LANG", "C")])) == ["C"], "LANGUAGE is ignored under C");
-        assert_eq!(super::apple_languages("(\n    \"en-US\",\n    \"ru-RU\"\n)\n"), ["en-US", "ru-RU"]);
+        assert!(
+            super::posix_languages(env(&[("LANGUAGE", "de"), ("LANG", "C")])) == ["C"],
+            "LANGUAGE is ignored under C"
+        );
+        assert_eq!(
+            super::apple_languages("(\n    \"en-US\",\n    \"ru-RU\"\n)\n"),
+            ["en-US", "ru-RU"]
+        );
     }
 
     /// One test: the state is process-wide.
@@ -942,10 +1093,16 @@ mod tests {
     fn language_is_the_first_of_a_stable_frozen_languages() {
         let c = ctx();
         assert!(!super::system_languages().is_empty());
-        assert_eq!(s(&c, "navigator.languages.join()"), super::system_languages().join(","));
+        assert_eq!(
+            s(&c, "navigator.languages.join()"),
+            super::system_languages().join(",")
+        );
         ok(&c, "navigator.language === navigator.languages[0]");
         assert_eq!(s(&c, "[navigator.languages === navigator.languages, Object.isFrozen(navigator.languages), Array.isArray(navigator.languages)].join()"), "true,true,true");
-        ok(&c, "!Object.hasOwn(navigator, 'language') && !Object.hasOwn(navigator, 'languages')");
+        ok(
+            &c,
+            "!Object.hasOwn(navigator, 'language') && !Object.hasOwn(navigator, 'languages')",
+        );
         s(&c, "globalThis.__before = navigator.languages; 0");
 
         let list: Vec<u16> = "de_DE.UTF-8,C,de-de,fr".encode_utf16().collect();
@@ -955,13 +1112,24 @@ mod tests {
         let nothing_valid = s(&c, "navigator.languages.join()");
         unsafe { crate::ffi::redjs_navigator_set_languages(core::ptr::null(), 0) };
         assert_eq!(got, "de-DE|de-DE,fr|true");
-        assert_eq!(nothing_valid, super::system_languages().join(","), "no valid tag: the system's");
-        assert_eq!(s(&c, "navigator.languages.join()"), super::system_languages().join(","));
+        assert_eq!(
+            nothing_valid,
+            super::system_languages().join(","),
+            "no valid tag: the system's"
+        );
+        assert_eq!(
+            s(&c, "navigator.languages.join()"),
+            super::system_languages().join(",")
+        );
     }
 
     fn pump(c: &crate::api::Context) {
         unsafe {
-            crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut())
+            crate::web::pump(
+                c.raw(),
+                crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                core::ptr::null_mut(),
+            )
         };
     }
 
@@ -996,7 +1164,10 @@ mod tests {
         // No provider: `true`, Chromium's "cannot tell", said once.
         assert_eq!(super::on_line_state(), None);
         ok(&a, "navigator.onLine === true && 'ononline' in window && window.onoffline !== null && window.ononline === null");
-        assert!(super::ADVISED_NO_PROVIDER.load(Ordering::Acquire), "the no-provider read must advise");
+        assert!(
+            super::ADVISED_NO_PROVIDER.load(Ordering::Acquire),
+            "the no-provider read must advise"
+        );
         ok(&a, "!Object.hasOwn(navigator, 'onLine') && typeof Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine').get === 'function'");
         ok(&a, "(() => { try { Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine').get.call({}); return false; } \
                 catch (e) { return e instanceof TypeError; } })()");
@@ -1008,7 +1179,10 @@ mod tests {
         pump(&a);
         pump(&b);
         for c in [&a, &b] {
-            assert_eq!(s(c, "JSON.stringify(__ev)"), r#"[["offline",true,true,false]]"#);
+            assert_eq!(
+                s(c, "JSON.stringify(__ev)"),
+                r#"[["offline",true,true,false]]"#
+            );
         }
         // Saying it again is not a change; a second pump delivers nothing.
         super::set_on_line(Some(false));
@@ -1019,7 +1193,10 @@ mod tests {
         // Back online, through the C ABI this time.
         crate::ffi::redjs_navigator_set_on_line(1);
         pump(&a);
-        assert_eq!(s(&a, "JSON.stringify(__ev[1])"), r#"["online",true,true,true]"#);
+        assert_eq!(
+            s(&a, "JSON.stringify(__ev[1])"),
+            r#"["online",true,true,true]"#
+        );
 
         // `b` has not pumped since: it is owed `online`. Two more flips while
         // it still does not pump collapse into that one event.

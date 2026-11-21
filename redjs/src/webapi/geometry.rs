@@ -43,7 +43,9 @@ pub struct Mat {
 }
 
 pub const IDENTITY: Mat = Mat {
-    a: [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.],
+    a: [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+    ],
     is2d: true,
 };
 
@@ -89,7 +91,10 @@ impl Mat {
                 r[i * 4 + j] = s;
             }
         }
-        Mat { a: r, is2d: self.is2d && other.is2d }
+        Mat {
+            a: r,
+            is2d: self.is2d && other.is2d,
+        }
     }
 
     pub fn translate(tx: f64, ty: f64, tz: f64) -> Mat {
@@ -183,8 +188,10 @@ impl Mat {
     pub fn transform_point(&self, p: [f64; 4]) -> [f64; 4] {
         let mut out = [0.0f64; 4];
         for j in 0..4 {
-            out[j] =
-                self.a[j] * p[0] + self.a[4 + j] * p[1] + self.a[8 + j] * p[2] + self.a[12 + j] * p[3];
+            out[j] = self.a[j] * p[0]
+                + self.a[4 + j] * p[1]
+                + self.a[8 + j] * p[2]
+                + self.a[12 + j] * p[3];
         }
         out
     }
@@ -201,37 +208,69 @@ impl Mat {
         let m = &self.a;
         let mut inv = [0.0f64; 16];
         inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15]
-            + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+            + m[9] * m[7] * m[14]
+            + m[13] * m[6] * m[11]
+            - m[13] * m[7] * m[10];
         inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15]
-            - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+            - m[8] * m[7] * m[14]
+            - m[12] * m[6] * m[11]
+            + m[12] * m[7] * m[10];
         inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15]
-            + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+            + m[8] * m[7] * m[13]
+            + m[12] * m[5] * m[11]
+            - m[12] * m[7] * m[9];
         inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14]
-            - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+            - m[8] * m[6] * m[13]
+            - m[12] * m[5] * m[10]
+            + m[12] * m[6] * m[9];
         inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15]
-            - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+            - m[9] * m[3] * m[14]
+            - m[13] * m[2] * m[11]
+            + m[13] * m[3] * m[10];
         inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15]
-            + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+            + m[8] * m[3] * m[14]
+            + m[12] * m[2] * m[11]
+            - m[12] * m[3] * m[10];
         inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15]
-            - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+            - m[8] * m[3] * m[13]
+            - m[12] * m[1] * m[11]
+            + m[12] * m[3] * m[9];
         inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14]
-            + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+            + m[8] * m[2] * m[13]
+            + m[12] * m[1] * m[10]
+            - m[12] * m[2] * m[9];
         inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15]
-            + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+            + m[5] * m[3] * m[14]
+            + m[13] * m[2] * m[7]
+            - m[13] * m[3] * m[6];
         inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15]
-            - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+            - m[4] * m[3] * m[14]
+            - m[12] * m[2] * m[7]
+            + m[12] * m[3] * m[6];
         inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15]
-            + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+            + m[4] * m[3] * m[13]
+            + m[12] * m[1] * m[7]
+            - m[12] * m[3] * m[5];
         inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14]
-            - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+            - m[4] * m[2] * m[13]
+            - m[12] * m[1] * m[6]
+            + m[12] * m[2] * m[5];
         inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11]
-            - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+            - m[5] * m[3] * m[10]
+            - m[9] * m[2] * m[7]
+            + m[9] * m[3] * m[6];
         inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11]
-            + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+            + m[4] * m[3] * m[10]
+            + m[8] * m[2] * m[7]
+            - m[8] * m[3] * m[6];
         inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11]
-            - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+            - m[4] * m[3] * m[9]
+            - m[8] * m[1] * m[7]
+            + m[8] * m[3] * m[5];
         inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10]
-            + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+            + m[4] * m[2] * m[9]
+            + m[8] * m[1] * m[6]
+            - m[8] * m[2] * m[5];
 
         let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
         if det == 0.0 || !det.is_finite() {
@@ -240,7 +279,10 @@ impl Mat {
         for v in inv.iter_mut() {
             *v /= det;
         }
-        Some(Mat { a: inv, is2d: self.is2d })
+        Some(Mat {
+            a: inv,
+            is2d: self.is2d,
+        })
     }
 
     /// Spec §"stringification behavior": `matrix(a, b, c, d, e, f)` when 2D,
@@ -252,12 +294,21 @@ impl Mat {
         }
         let n = |v: f64| {
             let s = format!("{v}");
-            if s == "-0" { "0".to_string() } else { s }
+            if s == "-0" {
+                "0".to_string()
+            } else {
+                s
+            }
         };
         if self.is2d {
             Some(format!(
                 "matrix({}, {}, {}, {}, {}, {})",
-                n(self.a[0]), n(self.a[1]), n(self.a[4]), n(self.a[5]), n(self.a[12]), n(self.a[13])
+                n(self.a[0]),
+                n(self.a[1]),
+                n(self.a[4]),
+                n(self.a[5]),
+                n(self.a[12]),
+                n(self.a[13])
             ))
         } else {
             let parts: Vec<String> = self.a.iter().map(|&v| n(v)).collect();
@@ -303,7 +354,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static GeomClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static GeomClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::geometry not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::geometry not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -348,7 +404,11 @@ pub(crate) unsafe fn point_parts(g: *mut c_void, v: u64) -> Option<([f64; 4], bo
 
 pub(crate) unsafe fn create_point(g: *mut c_void, p: [f64; 4], read_only: bool) -> Option<u64> {
     let c = classes_opt(g)?;
-    let proto = if read_only { c.point_ro.proto } else { c.point_rw.proto };
+    let proto = if read_only {
+        c.point_ro.proto
+    } else {
+        c.point_rw.proto
+    };
     Some(host_create(g, c.point_class, proto, PointData { p }))
 }
 
@@ -396,10 +456,19 @@ pub unsafe fn mat_of(g: *mut c_void, v: u64) -> Option<Mat> {
     if get(g, v, "a") != UNDEF {
         let f = |k: &str, d: f64| {
             let got = get(g, v, k);
-            if got == UNDEF { d } else { read_number(g, got) }
+            if got == UNDEF {
+                d
+            } else {
+                read_number(g, got)
+            }
         };
         return Some(Mat::from_2d([
-            f("a", 1.), f("b", 0.), f("c", 0.), f("d", 1.), f("e", 0.), f("f", 0.),
+            f("a", 1.),
+            f("b", 0.),
+            f("c", 0.),
+            f("d", 1.),
+            f("e", 0.),
+            f("f", 0.),
         ]));
     }
     None
@@ -408,8 +477,16 @@ pub unsafe fn mat_of(g: *mut c_void, v: u64) -> Option<Mat> {
 /// Prototype for an instance under construction: new.target's, else the class
 /// default (spec OrdinaryCreateFromConstructor — subclassing works).
 unsafe fn ordinary_proto(g: *mut c_void, new_target: u64, fallback: u64) -> u64 {
-    let p = if is_cell(new_target) { get(g, new_target, "prototype") } else { UNDEF };
-    if is_cell(p) { p } else { fallback }
+    let p = if is_cell(new_target) {
+        get(g, new_target, "prototype")
+    } else {
+        UNDEF
+    };
+    if is_cell(p) {
+        p
+    } else {
+        fallback
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +569,14 @@ unsafe fn this_rect<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut RectD
 /// A `DOMRect` (the mutable flavour).
 pub unsafe fn new_rect(g: *mut c_void, x: f64, y: f64, width: f64, height: f64) -> u64 {
     let c = classes(g);
-    host_create(g, c.rect_class, c.rect_rw.proto, RectData { r: [x, y, width, height] })
+    host_create(
+        g,
+        c.rect_class,
+        c.rect_rw.proto,
+        RectData {
+            r: [x, y, width, height],
+        },
+    )
 }
 
 pub(crate) unsafe fn rect_parts(g: *mut c_void, v: u64) -> Option<([f64; 4], bool)> {
@@ -503,7 +587,11 @@ pub(crate) unsafe fn rect_parts(g: *mut c_void, v: u64) -> Option<([f64; 4], boo
 
 pub(crate) unsafe fn create_rect(g: *mut c_void, r: [f64; 4], read_only: bool) -> Option<u64> {
     let c = classes_opt(g)?;
-    let proto = if read_only { c.rect_ro.proto } else { c.rect_rw.proto };
+    let proto = if read_only {
+        c.rect_ro.proto
+    } else {
+        c.rect_rw.proto
+    };
     Some(host_create(g, c.rect_class, proto, RectData { r }))
 }
 
@@ -559,7 +647,12 @@ rect_edge!(rc_left, 3);
 #[crate::host_fn]
 unsafe fn rect_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
-    let r = [arg_num(g, cf, 0, 0.0), arg_num(g, cf, 1, 0.0), arg_num(g, cf, 2, 0.0), arg_num(g, cf, 3, 0.0)];
+    let r = [
+        arg_num(g, cf, 0, 0.0),
+        arg_num(g, cf, 1, 0.0),
+        arg_num(g, cf, 2, 0.0),
+        arg_num(g, cf, 3, 0.0),
+    ];
     let proto = ordinary_proto(g, cf_new_target(cf), c.rect_rw.proto);
     host_create(g, c.rect_class, proto, RectData { r })
 }
@@ -572,7 +665,16 @@ unsafe fn rect_to_json(g: *mut c_void, cf: *mut c_void) -> u64 {
     let [x, y, w, h] = rc.r;
     let [top, right, bottom, left] = edges(rc.r);
     let o = new_object(g, UNDEF);
-    for (k, v) in [("x", x), ("y", y), ("width", w), ("height", h), ("top", top), ("right", right), ("bottom", bottom), ("left", left)] {
+    for (k, v) in [
+        ("x", x),
+        ("y", y),
+        ("width", w),
+        ("height", h),
+        ("top", top),
+        ("right", right),
+        ("bottom", bottom),
+        ("left", left),
+    ] {
         define(g, o, k, enc_f64(v), 0);
     }
     o
@@ -583,7 +685,9 @@ unsafe fn rect_from(g: *mut c_void, cf: *mut c_void, read_only: bool) -> u64 {
     let mut r = [0.0; 4];
     if is_cell(d) {
         for (i, k) in ["x", "y", "width", "height"].into_iter().enumerate() {
-            let Ok(v) = try_get(g, d, k) else { return UNDEF };
+            let Ok(v) = try_get(g, d, k) else {
+                return UNDEF;
+            };
             if v != UNDEF {
                 let Ok(n) = to_number(g, v) else { return UNDEF };
                 r[i] = n;
@@ -664,18 +768,38 @@ matrix_accessors! {
 /// accessor table and the storage layout are asserted against each other by
 /// `the_accessor_table_matches_the_storage_layout` instead of by inspection.
 const COMPONENTS: &[(&str, usize, HostFn, HostFn)] = &[
-    ("m11", 0, g_m11, s_m11), ("m12", 1, g_m12, s_m12), ("m13", 2, g_m13, s_m13), ("m14", 3, g_m14, s_m14),
-    ("m21", 4, g_m21, s_m21), ("m22", 5, g_m22, s_m22), ("m23", 6, g_m23, s_m23), ("m24", 7, g_m24, s_m24),
-    ("m31", 8, g_m31, s_m31), ("m32", 9, g_m32, s_m32), ("m33", 10, g_m33, s_m33), ("m34", 11, g_m34, s_m34),
-    ("m41", 12, g_m41, s_m41), ("m42", 13, g_m42, s_m42), ("m43", 14, g_m43, s_m43), ("m44", 15, g_m44, s_m44),
-    ("a", 0, g_a, s_a), ("b", 1, g_b, s_b), ("c", 4, g_c, s_c),
-    ("d", 5, g_d, s_d), ("e", 12, g_e, s_e), ("f", 13, g_f, s_f),
+    ("m11", 0, g_m11, s_m11),
+    ("m12", 1, g_m12, s_m12),
+    ("m13", 2, g_m13, s_m13),
+    ("m14", 3, g_m14, s_m14),
+    ("m21", 4, g_m21, s_m21),
+    ("m22", 5, g_m22, s_m22),
+    ("m23", 6, g_m23, s_m23),
+    ("m24", 7, g_m24, s_m24),
+    ("m31", 8, g_m31, s_m31),
+    ("m32", 9, g_m32, s_m32),
+    ("m33", 10, g_m33, s_m33),
+    ("m34", 11, g_m34, s_m34),
+    ("m41", 12, g_m41, s_m41),
+    ("m42", 13, g_m42, s_m42),
+    ("m43", 14, g_m43, s_m43),
+    ("m44", 15, g_m44, s_m44),
+    ("a", 0, g_a, s_a),
+    ("b", 1, g_b, s_b),
+    ("c", 4, g_c, s_c),
+    ("d", 5, g_d, s_d),
+    ("e", 12, g_e, s_e),
+    ("f", 13, g_f, s_f),
 ];
 
 unsafe fn define_components(g: *mut c_void, proto: u64, writable: bool) {
     for (name, _, getf, setf) in COMPONENTS {
         let getter = make_fn(g, &format!("get {name}"), 0, *getf);
-        let setter = if writable { make_fn(g, &format!("set {name}"), 1, *setf) } else { UNDEF };
+        let setter = if writable {
+            make_fn(g, &format!("set {name}"), 1, *setf)
+        } else {
+            UNDEF
+        };
         let a = atom(g, name);
         glue::rjs_define_accessor(g, proto, a, getter, setter, 2);
         glue::rjs_atom_free(g, a);
@@ -704,7 +828,13 @@ unsafe fn mat_get_is_identity(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// Post-multiply `rhs` and either mutate `this` (the `*Self` methods on
 /// DOMMatrix) or return a fresh DOMMatrix (the read-only methods).
-unsafe fn finish(g: *mut c_void, cf: *mut c_void, mutate: bool, rhs: Option<Mat>, name: &str) -> u64 {
+unsafe fn finish(
+    g: *mut c_void,
+    cf: *mut c_void,
+    mutate: bool,
+    rhs: Option<Mat>,
+    name: &str,
+) -> u64 {
     let Some(rhs) = rhs else {
         return throw_type_error(g, &format!("DOMMatrix.{name}: invalid argument"));
     };
@@ -721,15 +851,27 @@ unsafe fn finish(g: *mut c_void, cf: *mut c_void, mutate: bool, rhs: Option<Mat>
 }
 
 unsafe fn build_translate(g: *mut c_void, cf: *mut c_void) -> Option<Mat> {
-    Some(Mat::translate(arg_num(g, cf, 0, 0.), arg_num(g, cf, 1, 0.), arg_num(g, cf, 2, 0.)))
+    Some(Mat::translate(
+        arg_num(g, cf, 0, 0.),
+        arg_num(g, cf, 1, 0.),
+        arg_num(g, cf, 2, 0.),
+    ))
 }
 
 unsafe fn build_scale(g: *mut c_void, cf: *mut c_void) -> Option<Mat> {
     // scale(sx, sy?, sz?, ox?, oy?, oz?) — sy defaults to sx (spec §"scale()").
     let sx = arg_num(g, cf, 0, 1.);
-    let sy = if cf_arg(cf, 1) == UNDEF { sx } else { read_number(g, cf_arg(cf, 1)) };
+    let sy = if cf_arg(cf, 1) == UNDEF {
+        sx
+    } else {
+        read_number(g, cf_arg(cf, 1))
+    };
     let sz = arg_num(g, cf, 2, 1.);
-    let (ox, oy, oz) = (arg_num(g, cf, 3, 0.), arg_num(g, cf, 4, 0.), arg_num(g, cf, 5, 0.));
+    let (ox, oy, oz) = (
+        arg_num(g, cf, 3, 0.),
+        arg_num(g, cf, 4, 0.),
+        arg_num(g, cf, 5, 0.),
+    );
     Some(
         Mat::translate(ox, oy, oz)
             .multiply(&Mat::scale(sx, sy, sz))
@@ -739,10 +881,18 @@ unsafe fn build_scale(g: *mut c_void, cf: *mut c_void) -> Option<Mat> {
 
 unsafe fn build_scale3d(g: *mut c_void, cf: *mut c_void) -> Option<Mat> {
     let s = arg_num(g, cf, 0, 1.);
-    let (ox, oy, oz) = (arg_num(g, cf, 1, 0.), arg_num(g, cf, 2, 0.), arg_num(g, cf, 3, 0.));
+    let (ox, oy, oz) = (
+        arg_num(g, cf, 1, 0.),
+        arg_num(g, cf, 2, 0.),
+        arg_num(g, cf, 3, 0.),
+    );
     let mut sc = Mat::scale(s, s, s);
     sc.is2d = false; // scale3d is a 3D operation by definition
-    Some(Mat::translate(ox, oy, oz).multiply(&sc).multiply(&Mat::translate(-ox, -oy, -oz)))
+    Some(
+        Mat::translate(ox, oy, oz)
+            .multiply(&sc)
+            .multiply(&Mat::translate(-ox, -oy, -oz)),
+    )
 }
 
 unsafe fn build_rotate(g: *mut c_void, cf: *mut c_void) -> Option<Mat> {
@@ -754,13 +904,21 @@ unsafe fn build_rotate(g: *mut c_void, cf: *mut c_void) -> Option<Mat> {
     } else {
         (a0, arg_num(g, cf, 1, 0.), arg_num(g, cf, 2, 0.))
     };
-    Some(Mat::rotate_z(rz).multiply(&Mat::rotate_y(ry)).multiply(&Mat::rotate_x(rx)))
+    Some(
+        Mat::rotate_z(rz)
+            .multiply(&Mat::rotate_y(ry))
+            .multiply(&Mat::rotate_x(rx)),
+    )
 }
 
 unsafe fn build_rotate_from_vector(g: *mut c_void, cf: *mut c_void) -> Option<Mat> {
     let (x, y) = (arg_num(g, cf, 0, 0.), arg_num(g, cf, 1, 0.));
     // Spec: the angle is 0 when x and y are both 0.
-    let deg = if x == 0.0 && y == 0.0 { 0.0 } else { y.atan2(x).to_degrees() };
+    let deg = if x == 0.0 && y == 0.0 {
+        0.0
+    } else {
+        y.atan2(x).to_degrees()
+    };
     Some(Mat::rotate_z(deg))
 }
 
@@ -827,12 +985,30 @@ transform_pair! {
 
 /// `(read-only name, mutating name, arity, ro fn, self fn)`.
 const TRANSFORMS: &[(&str, &str, u32, HostFn, HostFn)] = &[
-    ("translate", "translateSelf", 3, x_translate, x_translate_self),
+    (
+        "translate",
+        "translateSelf",
+        3,
+        x_translate,
+        x_translate_self,
+    ),
     ("scale", "scaleSelf", 6, x_scale, x_scale_self),
     ("scale3d", "scale3dSelf", 4, x_scale3d, x_scale3d_self),
     ("rotate", "rotateSelf", 3, x_rotate, x_rotate_self),
-    ("rotateFromVector", "rotateFromVectorSelf", 2, x_rot_vec, x_rot_vec_self),
-    ("rotateAxisAngle", "rotateAxisAngleSelf", 4, x_rot_axis, x_rot_axis_self),
+    (
+        "rotateFromVector",
+        "rotateFromVectorSelf",
+        2,
+        x_rot_vec,
+        x_rot_vec_self,
+    ),
+    (
+        "rotateAxisAngle",
+        "rotateAxisAngleSelf",
+        4,
+        x_rot_axis,
+        x_rot_axis_self,
+    ),
     ("skewX", "skewXSelf", 1, x_skew_x, x_skew_x_self),
     ("skewY", "skewYSelf", 1, x_skew_y, x_skew_y_self),
     ("multiply", "multiplySelf", 1, x_multiply, x_multiply_self),
@@ -859,7 +1035,10 @@ unsafe fn invert_impl(g: *mut c_void, cf: *mut c_void, mutate: bool) -> u64 {
     let Some(d) = this_mat(g, cf) else {
         return throw_type_error(g, "DOMMatrix.inverse called on a non-DOMMatrix");
     };
-    let result = d.m.inverse().unwrap_or(Mat { a: [f64::NAN; 16], is2d: false });
+    let result = d.m.inverse().unwrap_or(Mat {
+        a: [f64::NAN; 16],
+        is2d: false,
+    });
     if mutate {
         d.m = result;
         cf_this(cf)
@@ -887,7 +1066,11 @@ unsafe fn op_transform_point(g: *mut c_void, cf: *mut c_void) -> u64 {
             None => {
                 let f = |k: &str, d: f64| {
                     let v = get(g, arg, k);
-                    if v == UNDEF { d } else { read_number(g, v) }
+                    if v == UNDEF {
+                        d
+                    } else {
+                        read_number(g, v)
+                    }
                 };
                 [f("x", 0.), f("y", 0.), f("z", 0.), f("w", 1.)]
             }
@@ -896,7 +1079,10 @@ unsafe fn op_transform_point(g: *mut c_void, cf: *mut c_void) -> u64 {
         [0., 0., 0., 1.]
     };
     let Some(d) = this_mat(g, cf) else {
-        return throw_type_error(g, "DOMMatrixReadOnly.transformPoint called on a non-DOMMatrix");
+        return throw_type_error(
+            g,
+            "DOMMatrixReadOnly.transformPoint called on a non-DOMMatrix",
+        );
     };
     let out = d.m.transform_point(p);
     new_point(g, out)
@@ -904,7 +1090,10 @@ unsafe fn op_transform_point(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 unsafe fn to_typed(g: *mut c_void, cf: *mut c_void, kind: u32) -> u64 {
     let Some(d) = this_mat(g, cf) else {
-        return throw_type_error(g, "DOMMatrixReadOnly.toFloatNArray called on a non-DOMMatrix");
+        return throw_type_error(
+            g,
+            "DOMMatrixReadOnly.toFloatNArray called on a non-DOMMatrix",
+        );
     };
     let vals = d.m.a;
     let mut out = UNDEF;
@@ -1080,101 +1269,139 @@ unsafe fn static_from_array(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let point_class = make_host_class::<PointData>("DOMPoint");
-    let point_ro = define_class(g, &ClassSpec {
-        name: "DOMPointReadOnly",
-        arity: 4,
-        construct: Some(point_construct),
-        parent_proto: 0,
-        methods: &[("matrixTransform", 1, point_matrix_transform), ("toJSON", 0, point_to_json)],
-        getters: &[("x", pt_get_x), ("y", pt_get_y), ("z", pt_get_z), ("w", pt_get_w)],
-        accessors: &[],
-    });
-    let point_rw = define_class(g, &ClassSpec {
-        name: "DOMPoint",
-        arity: 4,
-        construct: Some(point_construct),
-        parent_proto: point_ro.proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[
-            ("x", pt_get_x, pt_set_x),
-            ("y", pt_get_y, pt_set_y),
-            ("z", pt_get_z, pt_set_z),
-            ("w", pt_get_w, pt_set_w),
-        ],
-    });
+    let point_ro = define_class(
+        g,
+        &ClassSpec {
+            name: "DOMPointReadOnly",
+            arity: 4,
+            construct: Some(point_construct),
+            parent_proto: 0,
+            methods: &[
+                ("matrixTransform", 1, point_matrix_transform),
+                ("toJSON", 0, point_to_json),
+            ],
+            getters: &[
+                ("x", pt_get_x),
+                ("y", pt_get_y),
+                ("z", pt_get_z),
+                ("w", pt_get_w),
+            ],
+            accessors: &[],
+        },
+    );
+    let point_rw = define_class(
+        g,
+        &ClassSpec {
+            name: "DOMPoint",
+            arity: 4,
+            construct: Some(point_construct),
+            parent_proto: point_ro.proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[
+                ("x", pt_get_x, pt_set_x),
+                ("y", pt_get_y, pt_set_y),
+                ("z", pt_get_z, pt_set_z),
+                ("w", pt_get_w, pt_set_w),
+            ],
+        },
+    );
 
     let rect_class = make_host_class::<RectData>("DOMRect");
-    let rect_ro = define_class(g, &ClassSpec {
-        name: "DOMRectReadOnly",
-        arity: 0,
-        construct: Some(rect_construct),
-        parent_proto: 0,
-        methods: &[("toJSON", 0, rect_to_json)],
-        getters: &[
-            ("x", rc_get_x),
-            ("y", rc_get_y),
-            ("width", rc_get_width),
-            ("height", rc_get_height),
-            ("top", rc_top),
-            ("right", rc_right),
-            ("bottom", rc_bottom),
-            ("left", rc_left),
-        ],
-        accessors: &[],
-    });
-    let rect_rw = define_class(g, &ClassSpec {
-        name: "DOMRect",
-        arity: 0,
-        construct: Some(rect_construct),
-        parent_proto: rect_ro.proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[
-            ("x", rc_get_x, rc_set_x),
-            ("y", rc_get_y, rc_set_y),
-            ("width", rc_get_width, rc_set_width),
-            ("height", rc_get_height, rc_set_height),
-        ],
-    });
-    define(g, rect_ro.ctor, "fromRect", make_fn(g, "fromRect", 0, rect_from_ro), 2);
-    define(g, rect_rw.ctor, "fromRect", make_fn(g, "fromRect", 0, rect_from_rw), 2);
+    let rect_ro = define_class(
+        g,
+        &ClassSpec {
+            name: "DOMRectReadOnly",
+            arity: 0,
+            construct: Some(rect_construct),
+            parent_proto: 0,
+            methods: &[("toJSON", 0, rect_to_json)],
+            getters: &[
+                ("x", rc_get_x),
+                ("y", rc_get_y),
+                ("width", rc_get_width),
+                ("height", rc_get_height),
+                ("top", rc_top),
+                ("right", rc_right),
+                ("bottom", rc_bottom),
+                ("left", rc_left),
+            ],
+            accessors: &[],
+        },
+    );
+    let rect_rw = define_class(
+        g,
+        &ClassSpec {
+            name: "DOMRect",
+            arity: 0,
+            construct: Some(rect_construct),
+            parent_proto: rect_ro.proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[
+                ("x", rc_get_x, rc_set_x),
+                ("y", rc_get_y, rc_set_y),
+                ("width", rc_get_width, rc_set_width),
+                ("height", rc_get_height, rc_set_height),
+            ],
+        },
+    );
+    define(
+        g,
+        rect_ro.ctor,
+        "fromRect",
+        make_fn(g, "fromRect", 0, rect_from_ro),
+        2,
+    );
+    define(
+        g,
+        rect_rw.ctor,
+        "fromRect",
+        make_fn(g, "fromRect", 0, rect_from_rw),
+        2,
+    );
 
     let matrix_class = make_host_class::<MatrixData>("DOMMatrix");
-    let ro = define_class(g, &ClassSpec {
-        name: "DOMMatrixReadOnly",
-        arity: 1,
-        construct: Some(matrix_construct_ro),
-        parent_proto: 0,
-        methods: &[
-            ("transformPoint", 1, op_transform_point),
-            ("inverse", 0, op_inverse),
-            ("toFloat32Array", 0, op_to_f32),
-            ("toFloat64Array", 0, op_to_f64),
-            ("toString", 0, op_to_string),
-            ("toJSON", 0, op_to_json),
-        ],
-        getters: &[("is2D", mat_get_is_2d), ("isIdentity", mat_get_is_identity)],
-        accessors: &[],
-    });
+    let ro = define_class(
+        g,
+        &ClassSpec {
+            name: "DOMMatrixReadOnly",
+            arity: 1,
+            construct: Some(matrix_construct_ro),
+            parent_proto: 0,
+            methods: &[
+                ("transformPoint", 1, op_transform_point),
+                ("inverse", 0, op_inverse),
+                ("toFloat32Array", 0, op_to_f32),
+                ("toFloat64Array", 0, op_to_f64),
+                ("toString", 0, op_to_string),
+                ("toJSON", 0, op_to_json),
+            ],
+            getters: &[("is2D", mat_get_is_2d), ("isIdentity", mat_get_is_identity)],
+            accessors: &[],
+        },
+    );
     define_components(g, ro.proto, false);
     for (name, _, arity, f, _) in TRANSFORMS {
         define(g, ro.proto, name, make_fn(g, name, *arity, *f), 2);
     }
 
-    let rw = define_class(g, &ClassSpec {
-        name: "DOMMatrix",
-        arity: 1,
-        construct: Some(matrix_construct_rw),
-        parent_proto: ro.proto,
-        methods: &[
-            ("preMultiplySelf", 1, op_pre_multiply_self),
-            ("invertSelf", 0, op_invert_self),
-            ("setMatrixValue", 1, op_set_matrix_value),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    let rw = define_class(
+        g,
+        &ClassSpec {
+            name: "DOMMatrix",
+            arity: 1,
+            construct: Some(matrix_construct_rw),
+            parent_proto: ro.proto,
+            methods: &[
+                ("preMultiplySelf", 1, op_pre_multiply_self),
+                ("invertSelf", 0, op_invert_self),
+                ("setMatrixValue", 1, op_set_matrix_value),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     // The mutable component accessors shadow the read-only ones inherited from
     // DOMMatrixReadOnly.prototype; the transform methods do NOT — `multiply`
     // still returns a new matrix on a DOMMatrix, which is why the chain is real
@@ -1185,13 +1412,40 @@ pub unsafe fn install(g: *mut c_void) {
     }
 
     for ctor in [ro.ctor, rw.ctor] {
-        define(g, ctor, "fromMatrix", make_fn(g, "fromMatrix", 1, static_from_matrix), 2);
-        define(g, ctor, "fromFloat32Array", make_fn(g, "fromFloat32Array", 1, static_from_array), 2);
-        define(g, ctor, "fromFloat64Array", make_fn(g, "fromFloat64Array", 1, static_from_array), 2);
+        define(
+            g,
+            ctor,
+            "fromMatrix",
+            make_fn(g, "fromMatrix", 1, static_from_matrix),
+            2,
+        );
+        define(
+            g,
+            ctor,
+            "fromFloat32Array",
+            make_fn(g, "fromFloat32Array", 1, static_from_array),
+            2,
+        );
+        define(
+            g,
+            ctor,
+            "fromFloat64Array",
+            make_fn(g, "fromFloat64Array", 1, static_from_array),
+            2,
+        );
     }
 
-    let boxed: &'static GeomClasses =
-        Box::leak(Box::new(GeomClasses { matrix_class, ro, rw, point_class, point_ro, point_rw, rect_class, rect_ro, rect_rw }));
+    let boxed: &'static GeomClasses = Box::leak(Box::new(GeomClasses {
+        matrix_class,
+        ro,
+        rw,
+        point_class,
+        point_ro,
+        point_rw,
+        rect_class,
+        rect_ro,
+        rect_rw,
+    }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 
@@ -1258,7 +1512,12 @@ mod tests {
         let a = Mat::rotate_axis_angle(0.0, 0.0, 1.0, 42.0);
         let b = Mat::rotate_z(42.0);
         for i in 0..16 {
-            assert!(close(a.a[i], b.a[i]), "component {i}: {} vs {}", a.a[i], b.a[i]);
+            assert!(
+                close(a.a[i], b.a[i]),
+                "component {i}: {} vs {}",
+                a.a[i],
+                b.a[i]
+            );
         }
     }
 
@@ -1270,7 +1529,10 @@ mod tests {
 
     #[test]
     fn the_two_d_serialization_is_the_css_matrix_function() {
-        assert_eq!(Mat::from_2d([1., 2., 3., 4., 5., 6.]).to_css().unwrap(), "matrix(1, 2, 3, 4, 5, 6)");
+        assert_eq!(
+            Mat::from_2d([1., 2., 3., 4., 5., 6.]).to_css().unwrap(),
+            "matrix(1, 2, 3, 4, 5, 6)"
+        );
     }
 
     #[test]
@@ -1298,8 +1560,12 @@ mod tests {
         }
         let expect = |name: &str| -> f64 {
             match name {
-                "a" => m.get(1, 1), "b" => m.get(1, 2), "c" => m.get(2, 1),
-                "d" => m.get(2, 2), "e" => m.get(4, 1), "f" => m.get(4, 2),
+                "a" => m.get(1, 1),
+                "b" => m.get(1, 2),
+                "c" => m.get(2, 1),
+                "d" => m.get(2, 2),
+                "e" => m.get(4, 1),
+                "f" => m.get(4, 2),
                 _ => {
                     let b = name.as_bytes();
                     m.get((b[1] - b'0') as usize, (b[2] - b'0') as usize)
@@ -1307,7 +1573,11 @@ mod tests {
             }
         };
         for (name, idx, _, _) in COMPONENTS {
-            assert_eq!(m.a[*idx], expect(name), "accessor {name} points at index {idx}");
+            assert_eq!(
+                m.a[*idx],
+                expect(name),
+                "accessor {name} points at index {idx}"
+            );
         }
     }
 
@@ -1345,7 +1615,10 @@ mod jsc_tests {
         ok(&c, "new DOMPoint() instanceof DOMPointReadOnly");
         // Inheritance, not two flat copies: the read-only method is found on the
         // parent prototype and still returns a NEW matrix from a DOMMatrix.
-        ok(&c, "!Object.getOwnPropertyNames(DOMMatrix.prototype).includes('translate')");
+        ok(
+            &c,
+            "!Object.getOwnPropertyNames(DOMMatrix.prototype).includes('translate')",
+        );
         ok(&c, "(m => m.translate(1,2) !== m)(new DOMMatrix())");
     }
 
@@ -1355,7 +1628,10 @@ mod jsc_tests {
         ok(&c, "(m => m.a===1&&m.b===2&&m.c===3&&m.d===4&&m.e===5&&m.f===6)(new DOMMatrix([1,2,3,4,5,6]))");
         ok(&c, "(m => m.m11===1&&m.m12===2&&m.m21===3&&m.m22===4&&m.m41===5&&m.m42===6)(new DOMMatrix([1,2,3,4,5,6]))");
         // The alias and the canonical name are ONE storage slot.
-        ok(&c, "(m => { m.a = 9; return m.m11 === 9; })(new DOMMatrix())");
+        ok(
+            &c,
+            "(m => { m.a = 9; return m.m11 === 9; })(new DOMMatrix())",
+        );
     }
 
     #[test]
@@ -1363,14 +1639,23 @@ mod jsc_tests {
         let c = ctx();
         // No setter on DOMMatrixReadOnly: a sloppy-mode assignment is silently
         // dropped, so assert the VALUE rather than expecting a throw.
-        ok(&c, "(m => { try { m.a = 5; } catch (e) {} return m.a === 1; })(new DOMMatrixReadOnly())");
+        ok(
+            &c,
+            "(m => { try { m.a = 5; } catch (e) {} return m.a === 1; })(new DOMMatrixReadOnly())",
+        );
     }
 
     #[test]
     fn self_methods_mutate_and_return_this_while_plain_ones_do_not() {
         let c = ctx();
-        ok(&c, "(m => m.translateSelf(10, 0) === m && m.e === 10)(new DOMMatrix())");
-        ok(&c, "(m => { m.translate(10, 0); return m.e === 0; })(new DOMMatrix())");
+        ok(
+            &c,
+            "(m => m.translateSelf(10, 0) === m && m.e === 10)(new DOMMatrix())",
+        );
+        ok(
+            &c,
+            "(m => { m.translate(10, 0); return m.e === 0; })(new DOMMatrix())",
+        );
     }
 
     #[test]
@@ -1409,14 +1694,20 @@ mod jsc_tests {
     #[test]
     fn an_accessor_on_a_foreign_object_is_a_type_error() {
         let c = ctx();
-        let msg = throws(&c, "Object.getOwnPropertyDescriptor(DOMMatrix.prototype,'a').get.call({})");
+        let msg = throws(
+            &c,
+            "Object.getOwnPropertyDescriptor(DOMMatrix.prototype,'a').get.call({})",
+        );
         assert!(msg.contains("non-DOMMatrix"), "{msg}");
     }
 
     #[test]
     fn a_singular_matrix_inverts_to_nan_rather_than_to_itself() {
         let c = ctx();
-        ok(&c, "Number.isNaN(new DOMMatrix().scaleSelf(0).inverse().m11)");
+        ok(
+            &c,
+            "Number.isNaN(new DOMMatrix().scaleSelf(0).inverse().m11)",
+        );
         ok(&c, "new DOMMatrix().scaleSelf(0).inverse().is2D === false");
     }
 
@@ -1429,10 +1720,16 @@ mod jsc_tests {
         );
         ok(&c, "(() => { const r = new DOMRect(); r.width = 5; return r.right === 5 && r instanceof DOMRectReadOnly; })()");
         ok(&c, "(() => { const r = new DOMRectReadOnly(1, 2, 3, 4); r.x = 9; return r.x === 1 && !(r instanceof DOMRect); })()");
-        assert_eq!(s(&c, "JSON.stringify(DOMRect.fromRect({ x: 1, width: 2 }))"), r#"{"x":1,"y":0,"width":2,"height":0,"top":0,"right":3,"bottom":0,"left":1}"#);
+        assert_eq!(
+            s(&c, "JSON.stringify(DOMRect.fromRect({ x: 1, width: 2 }))"),
+            r#"{"x":1,"y":0,"width":2,"height":0,"top":0,"right":3,"bottom":0,"left":1}"#
+        );
         ok(&c, "DOMRectReadOnly.fromRect() instanceof DOMRectReadOnly && !(DOMRectReadOnly.fromRect() instanceof DOMRect)");
         ok(&c, "(() => { const r = structuredClone(new DOMRect(1, 2, 3, 4)); return r instanceof DOMRect && r.bottom === 6; })()");
-        ok(&c, "!(structuredClone(new DOMRectReadOnly()) instanceof DOMRect)");
+        ok(
+            &c,
+            "!(structuredClone(new DOMRectReadOnly()) instanceof DOMRect)",
+        );
         ok(&c, "NodeFilter.SHOW_ELEMENT === 1 && NodeFilter.FILTER_SKIP === 3 && NodeFilter.SHOW_ALL === 4294967295");
     }
 }

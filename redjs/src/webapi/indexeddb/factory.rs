@@ -32,7 +32,9 @@ unsafe fn factory_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, F, "open") {
         return UNDEF;
     }
-    let Ok(name) = str16(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(name) = str16(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let v = cf_arg(cf, 1);
     let version = if cf_argc(cf) >= 2 && v != UNDEF {
         match enforce_range_u64(g, v, "Failed to execute 'open' on 'IDBFactory'") {
@@ -43,10 +45,19 @@ unsafe fn factory_open(g: *mut c_void, cf: *mut c_void) -> u64 {
         None
     };
     if version == Some(0) {
-        return throw_type_error(g, "Failed to execute 'open' on 'IDBFactory': The version provided must not be 0.");
+        return throw_type_error(
+            g,
+            "Failed to execute 'open' on 'IDBFactory': The version provided must not be 0.",
+        );
     }
     if denied(g) {
-        return fail(g, "SecurityError", F, "open", "Access to the Indexed Database API is denied in this context.");
+        return fail(
+            g,
+            "SecurityError",
+            F,
+            "open",
+            "Access to the Indexed Database API is denied in this context.",
+        );
     }
     let id = super::next_id();
     let req = new_request(g, id, true, NULL, NULL);
@@ -57,7 +68,12 @@ unsafe fn factory_open(g: *mut c_void, cf: *mut c_void) -> u64 {
         c.inflight += 1;
         c.ctx
     };
-    server::send(ToServer::Open { ctx, req: id, name, version });
+    server::send(ToServer::Open {
+        ctx,
+        req: id,
+        name,
+        version,
+    });
     req
 }
 
@@ -69,9 +85,17 @@ unsafe fn factory_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, F, "deleteDatabase") {
         return UNDEF;
     }
-    let Ok(name) = str16(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(name) = str16(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     if denied(g) {
-        return fail(g, "SecurityError", F, "deleteDatabase", "Access to the Indexed Database API is denied in this context.");
+        return fail(
+            g,
+            "SecurityError",
+            F,
+            "deleteDatabase",
+            "Access to the Indexed Database API is denied in this context.",
+        );
     }
     let id = super::next_id();
     let req = new_request(g, id, true, NULL, NULL);
@@ -87,7 +111,11 @@ unsafe fn factory_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// A promise settled by a server answer (`databases()`, `estimate()`).
-unsafe fn server_promise(g: *mut c_void, kind: PromiseKind, msg: impl FnOnce(crate::context::ContextId, u64) -> ToServer) -> u64 {
+unsafe fn server_promise(
+    g: *mut c_void,
+    kind: PromiseKind,
+    msg: impl FnOnce(crate::context::ContextId, u64) -> ToServer,
+) -> u64 {
     let (mut res, mut rej, mut p) = (0u64, 0u64, 0u64);
     if crate::ffi::redjs_promise_create(g, &mut res, &mut rej, &mut p) != 0 {
         return UNDEF;
@@ -116,9 +144,16 @@ unsafe fn factory_databases(g: *mut c_void, cf: *mut c_void) -> u64 {
         });
     }
     if denied(g) {
-        return domexception::rejected(g, "SecurityError", "Access to the Indexed Database API is denied in this context.");
+        return domexception::rejected(
+            g,
+            "SecurityError",
+            "Access to the Indexed Database API is denied in this context.",
+        );
     }
-    server_promise(g, PromiseKind::Databases, |ctx, req| ToServer::Databases { ctx, req })
+    server_promise(g, PromiseKind::Databases, |ctx, req| ToServer::Databases {
+        ctx,
+        req,
+    })
 }
 
 #[crate::host_fn]
@@ -129,8 +164,12 @@ unsafe fn factory_cmp(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 2, F, "cmp") {
         return UNDEF;
     }
-    let Ok(a) = conv_key(g, cf_arg(cf, 0), F, "cmp") else { return UNDEF };
-    let Ok(b) = conv_key(g, cf_arg(cf, 1), F, "cmp") else { return UNDEF };
+    let Ok(a) = conv_key(g, cf_arg(cf, 0), F, "cmp") else {
+        return UNDEF;
+    };
+    let Ok(b) = conv_key(g, cf_arg(cf, 1), F, "cmp") else {
+        return UNDEF;
+    };
     enc_i32(match a.encode().cmp(&b.encode()) {
         core::cmp::Ordering::Less => -1,
         core::cmp::Ordering::Equal => 0,
@@ -141,7 +180,6 @@ unsafe fn factory_cmp(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 // IDBRequest / IDBOpenDBRequest
 // ---------------------------------------------------------------------------
-
 
 unsafe fn is_request(g: *mut c_void, v: u64) -> bool {
     req_of(g, v).is_some()
@@ -154,9 +192,15 @@ unsafe fn is_open_request(g: *mut c_void, v: u64) -> bool {
 #[crate::host_fn]
 unsafe fn req_result(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
-    let Some(rd) = req_of(g, this) else { return illegal(g) };
+    let Some(rd) = req_of(g, this) else {
+        return illegal(g);
+    };
     if !rd.done {
-        return domexception::throw(g, "InvalidStateError", "Failed to read the 'result' property from 'IDBRequest': The request has not finished.");
+        return domexception::throw(
+            g,
+            "InvalidStateError",
+            "Failed to read the 'result' property from 'IDBRequest': The request has not finished.",
+        );
     }
     bget(g, this, "result")
 }
@@ -164,9 +208,15 @@ unsafe fn req_result(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn req_error(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
-    let Some(rd) = req_of(g, this) else { return illegal(g) };
+    let Some(rd) = req_of(g, this) else {
+        return illegal(g);
+    };
     if !rd.done {
-        return domexception::throw(g, "InvalidStateError", "Failed to read the 'error' property from 'IDBRequest': The request has not finished.");
+        return domexception::throw(
+            g,
+            "InvalidStateError",
+            "Failed to read the 'error' property from 'IDBRequest': The request has not finished.",
+        );
     }
     bget(g, this, "error")
 }
@@ -191,14 +241,31 @@ unsafe fn req_transaction(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn req_ready_state(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(rd) = req_of(g, cf_this(cf)) else { return illegal(g) };
+    let Some(rd) = req_of(g, cf_this(cf)) else {
+        return illegal(g);
+    };
     js_string(g, if rd.done { "done" } else { "pending" })
 }
 
-handler!(req_get_onsuccess, req_set_onsuccess, "onsuccess", is_request);
+handler!(
+    req_get_onsuccess,
+    req_set_onsuccess,
+    "onsuccess",
+    is_request
+);
 handler!(req_get_onerror, req_set_onerror, "onerror", is_request);
-handler!(req_get_onblocked, req_set_onblocked, "onblocked", is_open_request);
-handler!(req_get_onupgradeneeded, req_set_onupgradeneeded, "onupgradeneeded", is_open_request);
+handler!(
+    req_get_onblocked,
+    req_set_onblocked,
+    "onblocked",
+    is_open_request
+);
+handler!(
+    req_get_onupgradeneeded,
+    req_set_onupgradeneeded,
+    "onupgradeneeded",
+    is_open_request
+);
 
 // ---------------------------------------------------------------------------
 // IDBVersionChangeEvent
@@ -207,7 +274,10 @@ handler!(req_get_onupgradeneeded, req_set_onupgradeneeded, "onupgradeneeded", is
 #[crate::host_fn]
 unsafe fn vce_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to construct 'IDBVersionChangeEvent': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to construct 'IDBVersionChangeEvent': 1 argument required, but only 0 present.",
+        );
     }
     let c = cls(g);
     let obj = ordinary_create(g, cf_new_target(cf), c.vce_proto);
@@ -218,14 +288,22 @@ unsafe fn vce_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     events::init_event(g, obj, cf_arg(cf, 0), init, false);
     let (mut old, mut new) = (enc_i32(0), NULL);
     if is_object(g, init) {
-        let Ok(nv) = try_get(g, init, "newVersion") else { return UNDEF };
+        let Ok(nv) = try_get(g, init, "newVersion") else {
+            return UNDEF;
+        };
         if nv != UNDEF && nv != NULL {
-            let Ok(d) = to_number(g, nv) else { return UNDEF };
+            let Ok(d) = to_number(g, nv) else {
+                return UNDEF;
+            };
             new = enc_f64(to_u64_modulo(d));
         }
-        let Ok(ov) = try_get(g, init, "oldVersion") else { return UNDEF };
+        let Ok(ov) = try_get(g, init, "oldVersion") else {
+            return UNDEF;
+        };
         if ov != UNDEF {
-            let Ok(d) = to_number(g, ov) else { return UNDEF };
+            let Ok(d) = to_number(g, ov) else {
+                return UNDEF;
+            };
             old = enc_f64(to_u64_modulo(d));
         }
     }
@@ -237,7 +315,9 @@ unsafe fn vce_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn vce_field(g: *mut c_void, cf: *mut c_void, f: &str) -> u64 {
-    let Some(s) = events::state_of(g, cf_this(cf)) else { return illegal(g) };
+    let Some(s) = events::state_of(g, cf_this(cf)) else {
+        return illegal(g);
+    };
     let v = get(g, s, f);
     if v == UNDEF {
         return illegal(g);
@@ -261,7 +341,9 @@ unsafe fn vce_new(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn list_length(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(l) = list_of(g, cf_this(cf)) else { return illegal(g) };
+    let Some(l) = list_of(g, cf_this(cf)) else {
+        return illegal(g);
+    };
     enc_f64(l.items.len() as f64)
 }
 
@@ -274,9 +356,17 @@ unsafe fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, "DOMStringList", "item") {
         return UNDEF;
     }
-    let Ok(d) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
-    let i = if d.is_finite() { (d.trunc() % 4_294_967_296.0 + 4_294_967_296.0) % 4_294_967_296.0 } else { 0.0 } as usize;
-    let Some(l) = list_of(g, this) else { return NULL };
+    let Ok(d) = to_number(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let i = if d.is_finite() {
+        (d.trunc() % 4_294_967_296.0 + 4_294_967_296.0) % 4_294_967_296.0
+    } else {
+        0.0
+    } as usize;
+    let Some(l) = list_of(g, this) else {
+        return NULL;
+    };
     match l.items.get(i) {
         Some(s) => {
             let s = s.clone();
@@ -295,8 +385,14 @@ unsafe fn list_contains(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, "DOMStringList", "contains") {
         return UNDEF;
     }
-    let Ok(s) = str16(g, cf_arg(cf, 0)) else { return UNDEF };
-    enc_bool(list_of(g, this).map(|l| l.items.contains(&s)).unwrap_or(false))
+    let Ok(s) = str16(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    enc_bool(
+        list_of(g, this)
+            .map(|l| l.items.contains(&s))
+            .unwrap_or(false),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -305,15 +401,28 @@ unsafe fn list_contains(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 const K: &str = "IDBKeyRange";
 
-unsafe fn make_range(g: *mut c_void, lower: Option<(Key, bool)>, upper: Option<(Key, bool)>) -> u64 {
+unsafe fn make_range(
+    g: *mut c_void,
+    lower: Option<(Key, bool)>,
+    upper: Option<(Key, bool)>,
+) -> u64 {
     let b = |e: &Option<(Key, bool)>| match e {
         None => Bound::Unbounded,
         Some((k, true)) => Bound::Excl(k.encode()),
         Some((k, false)) => Bound::Incl(k.encode()),
     };
-    let range = Range { lower: b(&lower), upper: b(&upper) };
-    let lo = lower.as_ref().map(|(k, _)| key::to_js(g, k)).unwrap_or(UNDEF);
-    let hi = upper.as_ref().map(|(k, _)| key::to_js(g, k)).unwrap_or(UNDEF);
+    let range = Range {
+        lower: b(&lower),
+        upper: b(&upper),
+    };
+    let lo = lower
+        .as_ref()
+        .map(|(k, _)| key::to_js(g, k))
+        .unwrap_or(UNDEF);
+    let hi = upper
+        .as_ref()
+        .map(|(k, _)| key::to_js(g, k))
+        .unwrap_or(UNDEF);
     let c = cls(g);
     let obj = host_create(g, c.key_range, c.key_range_proto, RangeData { range });
     new_bag(g, obj);
@@ -327,7 +436,9 @@ unsafe fn kr_only(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, K, "only") {
         return UNDEF;
     }
-    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "only") else { return UNDEF };
+    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "only") else {
+        return UNDEF;
+    };
     make_range(g, Some((k.clone(), false)), Some((k, false)))
 }
 
@@ -337,7 +448,9 @@ unsafe fn kr_lower_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
         return UNDEF;
     }
     let open = glue::rjs_to_boolean(g, cf_arg(cf, 1)) != 0;
-    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "lowerBound") else { return UNDEF };
+    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "lowerBound") else {
+        return UNDEF;
+    };
     make_range(g, Some((k, open)), None)
 }
 
@@ -347,7 +460,9 @@ unsafe fn kr_upper_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
         return UNDEF;
     }
     let open = glue::rjs_to_boolean(g, cf_arg(cf, 1)) != 0;
-    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "upperBound") else { return UNDEF };
+    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "upperBound") else {
+        return UNDEF;
+    };
     make_range(g, None, Some((k, open)))
 }
 
@@ -358,14 +473,30 @@ unsafe fn kr_bound(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let lo_open = glue::rjs_to_boolean(g, cf_arg(cf, 2)) != 0;
     let hi_open = glue::rjs_to_boolean(g, cf_arg(cf, 3)) != 0;
-    let Ok(lo) = conv_key(g, cf_arg(cf, 0), K, "bound") else { return UNDEF };
-    let Ok(hi) = conv_key(g, cf_arg(cf, 1), K, "bound") else { return UNDEF };
+    let Ok(lo) = conv_key(g, cf_arg(cf, 0), K, "bound") else {
+        return UNDEF;
+    };
+    let Ok(hi) = conv_key(g, cf_arg(cf, 1), K, "bound") else {
+        return UNDEF;
+    };
     let (a, b) = (lo.encode(), hi.encode());
     if a > b {
-        return fail(g, "DataError", K, "bound", "The lower key is greater than the upper key.");
+        return fail(
+            g,
+            "DataError",
+            K,
+            "bound",
+            "The lower key is greater than the upper key.",
+        );
     }
     if a == b && (lo_open || hi_open) {
-        return fail(g, "DataError", K, "bound", "The lower key and upper key are equal and one of the bounds is open.");
+        return fail(
+            g,
+            "DataError",
+            K,
+            "bound",
+            "The lower key and upper key are equal and one of the bounds is open.",
+        );
     }
     make_range(g, Some((lo, lo_open)), Some((hi, hi_open)))
 }
@@ -379,8 +510,14 @@ unsafe fn kr_includes(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !args(g, cf, 1, K, "includes") {
         return UNDEF;
     }
-    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "includes") else { return UNDEF };
-    enc_bool(range_of(g, this).map(|r| r.range.contains(&k.encode())).unwrap_or(false))
+    let Ok(k) = conv_key(g, cf_arg(cf, 0), K, "includes") else {
+        return UNDEF;
+    };
+    enc_bool(
+        range_of(g, this)
+            .map(|r| r.range.contains(&k.encode()))
+            .unwrap_or(false),
+    )
 }
 
 #[crate::host_fn]
@@ -403,13 +540,17 @@ unsafe fn kr_upper(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn kr_lower_open(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(r) = range_of(g, cf_this(cf)) else { return illegal(g) };
+    let Some(r) = range_of(g, cf_this(cf)) else {
+        return illegal(g);
+    };
     enc_bool(bound_open(&r.range.lower))
 }
 
 #[crate::host_fn]
 unsafe fn kr_upper_open(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(r) = range_of(g, cf_this(cf)) else { return illegal(g) };
+    let Some(r) = range_of(g, cf_this(cf)) else {
+        return illegal(g);
+    };
     enc_bool(bound_open(&r.range.upper))
 }
 
@@ -433,7 +574,10 @@ unsafe fn sm_estimate(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_storage(g, cf_this(cf)) {
         return illegal_promise(g);
     }
-    server_promise(g, PromiseKind::Estimate, |ctx, req| ToServer::Estimate { ctx, req })
+    server_promise(g, PromiseKind::Estimate, |ctx, req| ToServer::Estimate {
+        ctx,
+        req,
+    })
 }
 
 /// A desktop app's data is never evicted by this runtime: `true` is the
@@ -472,7 +616,11 @@ unsafe fn sub_class(name: &str, parent: capi::JSClassRef) -> capi::JSClassRef {
 }
 
 unsafe fn inherit(g: *mut c_void, child: &Class, parent: &Class) {
-    capi::JSObjectSetPrototype(g, child.ctor as usize as capi::JSObjectRef, parent.ctor as usize as capi::JSValueRef);
+    capi::JSObjectSetPrototype(
+        g,
+        child.ctor as usize as capi::JSObjectRef,
+        parent.ctor as usize as capi::JSValueRef,
+    );
 }
 
 /// `define_class` gives every prototype its `@@toStringTag`.
@@ -486,78 +634,127 @@ pub(super) unsafe fn install_classes(g: *mut c_void, ev_proto: u64, et_proto: u6
     let global = glue::rjs_global(g);
     let event_target = get(g, global, "EventTarget");
     let event_ctor = get(g, global, "Event");
-    let et = Class { ctor: event_target, proto: et_proto };
-    let ev = Class { ctor: event_ctor, proto: ev_proto };
+    let et = Class {
+        ctor: event_target,
+        proto: et_proto,
+    };
+    let ev = Class {
+        ctor: event_ctor,
+        proto: ev_proto,
+    };
 
-    let factory = class(g, &ClassSpec {
-        name: "IDBFactory",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("open", 1, factory_open), ("deleteDatabase", 1, factory_delete), ("databases", 0, factory_databases), ("cmp", 2, factory_cmp)],
-        getters: &[],
-        accessors: &[],
-    });
+    let factory = class(
+        g,
+        &ClassSpec {
+            name: "IDBFactory",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("open", 1, factory_open),
+                ("deleteDatabase", 1, factory_delete),
+                ("databases", 0, factory_databases),
+                ("cmp", 2, factory_cmp),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
-    let request = class(g, &ClassSpec {
-        name: "IDBRequest",
-        arity: 0,
-        construct: None,
-        parent_proto: et_proto,
-        methods: &[],
-        getters: &[
-            ("result", req_result),
-            ("error", req_error),
-            ("source", req_source),
-            ("transaction", req_transaction),
-            ("readyState", req_ready_state),
-        ],
-        accessors: &[("onsuccess", req_get_onsuccess, req_set_onsuccess), ("onerror", req_get_onerror, req_set_onerror)],
-    });
+    let request = class(
+        g,
+        &ClassSpec {
+            name: "IDBRequest",
+            arity: 0,
+            construct: None,
+            parent_proto: et_proto,
+            methods: &[],
+            getters: &[
+                ("result", req_result),
+                ("error", req_error),
+                ("source", req_source),
+                ("transaction", req_transaction),
+                ("readyState", req_ready_state),
+            ],
+            accessors: &[
+                ("onsuccess", req_get_onsuccess, req_set_onsuccess),
+                ("onerror", req_get_onerror, req_set_onerror),
+            ],
+        },
+    );
     inherit(g, &request, &et);
 
-    let open_request = class(g, &ClassSpec {
-        name: "IDBOpenDBRequest",
-        arity: 0,
-        construct: None,
-        parent_proto: request.proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[("onblocked", req_get_onblocked, req_set_onblocked), ("onupgradeneeded", req_get_onupgradeneeded, req_set_onupgradeneeded)],
-    });
+    let open_request = class(
+        g,
+        &ClassSpec {
+            name: "IDBOpenDBRequest",
+            arity: 0,
+            construct: None,
+            parent_proto: request.proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[
+                ("onblocked", req_get_onblocked, req_set_onblocked),
+                (
+                    "onupgradeneeded",
+                    req_get_onupgradeneeded,
+                    req_set_onupgradeneeded,
+                ),
+            ],
+        },
+    );
     inherit(g, &open_request, &request);
 
     let database = class(g, &database::DATABASE);
-    capi::JSObjectSetPrototype(g, database.proto as usize as capi::JSObjectRef, et_proto as usize as capi::JSValueRef);
+    capi::JSObjectSetPrototype(
+        g,
+        database.proto as usize as capi::JSObjectRef,
+        et_proto as usize as capi::JSValueRef,
+    );
     inherit(g, &database, &et);
 
     let transaction = class(g, &database::TRANSACTION);
-    capi::JSObjectSetPrototype(g, transaction.proto as usize as capi::JSObjectRef, et_proto as usize as capi::JSValueRef);
+    capi::JSObjectSetPrototype(
+        g,
+        transaction.proto as usize as capi::JSObjectRef,
+        et_proto as usize as capi::JSValueRef,
+    );
     inherit(g, &transaction, &et);
 
     let store = class(g, &store::STORE);
     let index = class(g, &store::INDEX);
     let cursor = class(g, &cursor::CURSOR);
-    let cursor_value = class(g, &ClassSpec {
-        name: "IDBCursorWithValue",
-        arity: 0,
-        construct: None,
-        parent_proto: cursor.proto,
-        methods: &[],
-        getters: &[("value", cursor::value)],
-        accessors: &[],
-    });
+    let cursor_value = class(
+        g,
+        &ClassSpec {
+            name: "IDBCursorWithValue",
+            arity: 0,
+            construct: None,
+            parent_proto: cursor.proto,
+            methods: &[],
+            getters: &[("value", cursor::value)],
+            accessors: &[],
+        },
+    );
     inherit(g, &cursor_value, &cursor);
 
-    let key_range = class(g, &ClassSpec {
-        name: "IDBKeyRange",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("includes", 1, kr_includes)],
-        getters: &[("lower", kr_lower), ("upper", kr_upper), ("lowerOpen", kr_lower_open), ("upperOpen", kr_upper_open)],
-        accessors: &[],
-    });
+    let key_range = class(
+        g,
+        &ClassSpec {
+            name: "IDBKeyRange",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("includes", 1, kr_includes)],
+            getters: &[
+                ("lower", kr_lower),
+                ("upper", kr_upper),
+                ("lowerOpen", kr_lower_open),
+                ("upperOpen", kr_upper_open),
+            ],
+            accessors: &[],
+        },
+    );
     for (name, arity, f) in [
         ("only", 1u32, kr_only as HostFn),
         ("lowerBound", 1, kr_lower_bound),
@@ -567,41 +764,60 @@ pub(super) unsafe fn install_classes(g: *mut c_void, ev_proto: u64, et_proto: u6
         define(g, key_range.ctor, name, make_fn(g, name, arity, f), 2);
     }
 
-    let vce = class(g, &ClassSpec {
-        name: "IDBVersionChangeEvent",
-        arity: 1,
-        construct: Some(vce_construct),
-        parent_proto: ev_proto,
-        methods: &[],
-        getters: &[("oldVersion", vce_old), ("newVersion", vce_new)],
-        accessors: &[],
-    });
+    let vce = class(
+        g,
+        &ClassSpec {
+            name: "IDBVersionChangeEvent",
+            arity: 1,
+            construct: Some(vce_construct),
+            parent_proto: ev_proto,
+            methods: &[],
+            getters: &[("oldVersion", vce_old), ("newVersion", vce_new)],
+            accessors: &[],
+        },
+    );
     inherit(g, &vce, &ev);
 
-    let string_list = class(g, &ClassSpec {
-        name: "DOMStringList",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("item", 1, list_item), ("contains", 1, list_contains)],
-        getters: &[("length", list_length)],
-        accessors: &[],
-    });
+    let string_list = class(
+        g,
+        &ClassSpec {
+            name: "DOMStringList",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("item", 1, list_item), ("contains", 1, list_contains)],
+            getters: &[("length", list_length)],
+            accessors: &[],
+        },
+    );
     // An indexed getter + an integer `length`: WebIDL gives the interface
     // `@@iterator` = %Array.prototype.values% (Array.from / for…of work).
     let array_proto = get(g, get(g, global, "Array"), "prototype");
     let values = get(g, array_proto, "values");
-    glue::rjs_define(g, string_list.proto, glue::rjs_atom_wellknown(g, 0), values, 2);
+    glue::rjs_define(
+        g,
+        string_list.proto,
+        glue::rjs_atom_wellknown(g, 0),
+        values,
+        2,
+    );
 
-    let storage_manager = class(g, &ClassSpec {
-        name: "StorageManager",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("estimate", 0, sm_estimate), ("persist", 0, sm_persist), ("persisted", 0, sm_persist)],
-        getters: &[],
-        accessors: &[],
-    });
+    let storage_manager = class(
+        g,
+        &ClassSpec {
+            name: "StorageManager",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("estimate", 0, sm_estimate),
+                ("persist", 0, sm_persist),
+                ("persisted", 0, sm_persist),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
     let request_class = make_host_class::<ReqData>("IDBRequest");
     let cursor_class = make_host_class::<CursorData>("IDBCursor");

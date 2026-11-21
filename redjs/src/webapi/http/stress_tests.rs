@@ -42,17 +42,34 @@ pub(super) fn plan(seed: u64, slow: bool) -> Plan {
     let mut s = seed.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA5A5;
     let len = 1024 + (splitmix(&mut s) % 4097) as usize;
     let body: Vec<u8> = (0..len).map(|_| splitmix(&mut s) as u8).collect();
-    let head_delay_ms = if slow { 1000 + splitmix(&mut s) % 400 } else { 0 };
+    let head_delay_ms = if slow {
+        1000 + splitmix(&mut s) % 400
+    } else {
+        0
+    };
     let n = 1 + (splitmix(&mut s) % 4) as usize;
     let mut pieces = Vec::new();
     let mut left = len;
     for i in 0..n {
-        let take = if i == n - 1 { left } else { (left / (n - i)).max(1) };
-        let gap = if slow && i > 0 { splitmix(&mut s) % 250 } else { 0 };
+        let take = if i == n - 1 {
+            left
+        } else {
+            (left / (n - i)).max(1)
+        };
+        let gap = if slow && i > 0 {
+            splitmix(&mut s) % 250
+        } else {
+            0
+        };
         pieces.push((take, gap));
         left -= take;
     }
-    Plan { head_delay_ms, body, pieces, chunked: seed % 2 == 1 }
+    Plan {
+        head_delay_ms,
+        body,
+        pieces,
+        chunked: seed % 2 == 1,
+    }
 }
 
 pub(super) trait Duplex: std::io::Read + std::io::Write + Send {}
@@ -73,7 +90,11 @@ pub(super) fn read_request(s: &mut dyn Duplex) -> Option<String> {
             let head = String::from_utf8_lossy(&acc[..i]).into_owned();
             let len = head
                 .lines()
-                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                })
                 .unwrap_or(0);
             let mut have = acc.len() - (i + 4);
             while have < len {
@@ -124,16 +145,26 @@ pub(super) fn spawn_server(tls: bool) -> (u16, Arc<ServerStats>) {
                     let line = head.lines().next().unwrap_or("").to_string();
                     let path = line.split(' ').nth(1).unwrap_or("/");
                     let slow = path.starts_with("/slow/");
-                    let seed: u64 = path.rsplit('/').next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                    let seed: u64 = path
+                        .rsplit('/')
+                        .next()
+                        .and_then(|x| x.parse().ok())
+                        .unwrap_or(0);
                     let close = head.to_ascii_lowercase().contains("\r\nconnection: close");
                     let p = plan(seed, slow);
                     std::thread::sleep(Duration::from_millis(p.head_delay_ms));
                     let head = if p.chunked {
                         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_string()
                     } else {
-                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", p.body.len())
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                            p.body.len()
+                        )
                     };
-                    if s.write_all(head.as_bytes()).and_then(|_| s.flush()).is_err() {
+                    if s.write_all(head.as_bytes())
+                        .and_then(|_| s.flush())
+                        .is_err()
+                    {
                         return;
                     }
                     let mut at = 0;
@@ -173,7 +204,14 @@ pub(super) struct Outcome {
 }
 
 /// `total` requests from `threads` client threads, spread over `ports`.
-pub(super) fn drive(scheme: &str, ports: &[u16], total: usize, threads: usize, slow: bool, io_timeout: Duration) -> Outcome {
+pub(super) fn drive(
+    scheme: &str,
+    ports: &[u16],
+    total: usize,
+    threads: usize,
+    slow: bool,
+    io_timeout: Duration,
+) -> Outcome {
     let next = Arc::new(AtomicUsize::new(0));
     let ok = Arc::new(AtomicUsize::new(0));
     let bad = Arc::new(AtomicUsize::new(0));
@@ -181,7 +219,12 @@ pub(super) fn drive(scheme: &str, ports: &[u16], total: usize, threads: usize, s
     let started = Instant::now();
     let mut joins = Vec::new();
     for t in 0..threads {
-        let (next, ok, bad, errors) = (Arc::clone(&next), Arc::clone(&ok), Arc::clone(&bad), Arc::clone(&errors));
+        let (next, ok, bad, errors) = (
+            Arc::clone(&next),
+            Arc::clone(&ok),
+            Arc::clone(&bad),
+            Arc::clone(&errors),
+        );
         let port = ports[t % ports.len()];
         let scheme = scheme.to_string();
         joins.push(std::thread::spawn(move || loop {
@@ -217,7 +260,11 @@ pub(super) fn drive(scheme: &str, ports: &[u16], total: usize, threads: usize, s
                         plan(seed, slow).body.len()
                     ));
                 }
-                Err(e) => errors.lock().unwrap().push(format!("seed {seed} after {:?}: {}", t0.elapsed(), e.message)),
+                Err(e) => errors.lock().unwrap().push(format!(
+                    "seed {seed} after {:?}: {}",
+                    t0.elapsed(),
+                    e.message
+                )),
             }
         }));
     }
@@ -225,7 +272,12 @@ pub(super) fn drive(scheme: &str, ports: &[u16], total: usize, threads: usize, s
         j.join().unwrap();
     }
     let errors = std::mem::take(&mut *errors.lock().unwrap());
-    Outcome { ok: ok.load(Ordering::SeqCst), mismatched: bad.load(Ordering::SeqCst), errors, elapsed: started.elapsed() }
+    Outcome {
+        ok: ok.load(Ordering::SeqCst),
+        mismatched: bad.load(Ordering::SeqCst),
+        errors,
+        elapsed: started.elapsed(),
+    }
 }
 
 fn run_variant(name: &str, tls: bool, slice_ms: u64) {
@@ -233,9 +285,19 @@ fn run_variant(name: &str, tls: bool, slice_ms: u64) {
     let servers: Vec<_> = (0..4).map(|_| spawn_server(tls)).collect();
     let ports: Vec<u16> = servers.iter().map(|(p, _)| *p).collect();
     let connects_before = connections_opened();
-    let out = drive(if tls { "https" } else { "http" }, &ports, 500, 24, true, Duration::from_secs(8));
+    let out = drive(
+        if tls { "https" } else { "http" },
+        &ports,
+        500,
+        24,
+        true,
+        Duration::from_secs(8),
+    );
     TEST_POLL_MS.store(0, Ordering::SeqCst);
-    let conns: usize = servers.iter().map(|(_, s)| s.connections.load(Ordering::SeqCst)).sum();
+    let conns: usize = servers
+        .iter()
+        .map(|(_, s)| s.connections.load(Ordering::SeqCst))
+        .sum();
     println!(
         "[stress] {name}: ok {} / 500, mismatched {}, errors {}, server connections {}, client connects {}, {:?}",
         out.ok,
@@ -248,7 +310,13 @@ fn run_variant(name: &str, tls: bool, slice_ms: u64) {
     for e in out.errors.iter().take(12) {
         println!("[stress]   {e}");
     }
-    assert_eq!(out.ok, 500, "{name}: {} failed, first: {:?}", 500 - out.ok, out.errors.first());
+    assert_eq!(
+        out.ok,
+        500,
+        "{name}: {} failed, first: {:?}",
+        500 - out.ok,
+        out.errors.first()
+    );
 }
 
 #[test]
@@ -277,7 +345,8 @@ fn slow_responses_arrive_byte_exact_tls_1ms_slices() {
 
 // -- live, harmless: the discovery endpoint the client resolves at boot -------
 
-const LIVE_URL: &str = "https://api.argon.gl/api/discovery/resolve?email=sk-probe%40example.invalid";
+const LIVE_URL: &str =
+    "https://api.argon.gl/api/discovery/resolve?email=sk-probe%40example.invalid";
 
 fn live_req() -> Request {
     Request {
@@ -380,7 +449,13 @@ fn live_argon_discovery_sequential_and_parallel() {
             Err(e) => errors.push(format!("after {:?}: {}", t0.elapsed(), e.message)),
         }
     }
-    report("50 sequential", ms, &errors, connections_opened() - c0, &protos);
+    report(
+        "50 sequential",
+        ms,
+        &errors,
+        connections_opened() - c0,
+        &protos,
+    );
 
     // Parallel: 24 at once, released together.
     let c0 = connections_opened();
@@ -407,5 +482,11 @@ fn live_argon_discovery_sequential_and_parallel() {
             Err(e) => errors.push(e),
         }
     }
-    report("24 parallel", ms, &errors, connections_opened() - c0, &protos);
+    report(
+        "24 parallel",
+        ms,
+        &errors,
+        connections_opened() - c0,
+        &protos,
+    );
 }

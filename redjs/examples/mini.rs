@@ -39,7 +39,12 @@ fn run() {
         redjs::glue::rjs_layout(&mut l);
         step(&format!(
             "layout: abi={} argc@{} this@{} args@{} undef={:#x} numtag={:#x}",
-            l.abi_version, l.cf_argc_offset, l.cf_this_offset, l.cf_args_offset, l.value_undefined, l.tag_number
+            l.abi_version,
+            l.cf_argc_offset,
+            l.cf_this_offset,
+            l.cf_args_offset,
+            l.value_undefined,
+            l.tag_number
         ));
 
         step("eval 6*7...");
@@ -50,7 +55,14 @@ fn run() {
         step("eval [1,2,3]...");
         let mut js_arr = 0u64;
         let src = "[1,2,3]";
-        let rc = redjs::glue::rjs_eval8(g, src.as_ptr(), src.len(), core::ptr::null(), 0, &mut js_arr);
+        let rc = redjs::glue::rjs_eval8(
+            g,
+            src.as_ptr(),
+            src.len(),
+            core::ptr::null(),
+            0,
+            &mut js_arr,
+        );
         step(&format!("eval arr rc={rc}"));
 
         step("set_index on eval'd array...");
@@ -60,7 +72,10 @@ fn run() {
         step("rjs_array_create(3)...");
         let mut arr = 0u64;
         let rc = redjs::glue::rjs_array_create(g, 3, &mut arr);
-        step(&format!("array_create rc={rc} kind={}", redjs::glue::rjs_kind(g, arr)));
+        step(&format!(
+            "array_create rc={rc} kind={}",
+            redjs::glue::rjs_kind(g, arr)
+        ));
 
         step("get_index on fresh array...");
         let mut item = 0u64;

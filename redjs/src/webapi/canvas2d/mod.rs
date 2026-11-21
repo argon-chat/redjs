@@ -60,8 +60,8 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
 pub use surface::{
-    present, present_size, register_present, set_host, take_presented_changed, unregister_present, Backend, CanvasHost,
-    Options,
+    present, present_size, register_present, set_host, take_presented_changed, unregister_present,
+    Backend, CanvasHost, Options,
 };
 
 fn advised() -> &'static Mutex<(HashSet<String>, Vec<String>)> {
@@ -103,6 +103,10 @@ pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u
 #[cfg(test)]
 mod jsc_tests;
 
-pub(crate) unsafe fn external_pixels(g: *mut c_void, v: u64, depth: u8) -> Result<super::image::ExternalImage, ()> {
+pub(crate) unsafe fn external_pixels(
+    g: *mut c_void,
+    v: u64,
+    depth: u8,
+) -> Result<super::image::ExternalImage, ()> {
     context::external_pixels(g, v, depth)
 }

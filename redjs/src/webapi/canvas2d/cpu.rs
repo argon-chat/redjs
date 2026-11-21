@@ -15,11 +15,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use kurbo::{Affine, Rect};
-use peniko::{BlendMode, Color, Compose, Extend, Fill, ImageQuality, ImageSampler, InterpolationAlphaSpace, Mix};
-use vello_cpu::filter_effects::{Filter, FilterFunction, FilterPrimitive, EdgeMode};
+use peniko::{
+    BlendMode, Color, Compose, Extend, Fill, ImageQuality, ImageSampler, InterpolationAlphaSpace,
+    Mix,
+};
+use vello_cpu::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive};
 use vello_cpu::{
-    Image as VImage, ImageId, ImageSource, PaintType, PixelMetadata, Pixmap, RasterizerSettings, RenderContext,
-    Resources, TargetInit,
+    Image as VImage, ImageId, ImageSource, PaintType, PixelMetadata, Pixmap, RasterizerSettings,
+    RenderContext, Resources, TargetInit,
 };
 
 use super::cmd::{Clip, Cmd, CompositeOp, Draw, GradientKind, Image, ImageRef, Paint, Quality};
@@ -47,7 +50,13 @@ type Registered = HashMap<(u64, [u32; 4]), ImageId>;
 
 impl CpuBackend {
     pub fn new(width: u32, height: u32) -> CpuBackend {
-        CpuBackend { width, height, pix: Pixmap::new(width as u16, height as u16), ctx: None, res: Resources::new() }
+        CpuBackend {
+            width,
+            height,
+            pix: Pixmap::new(width as u16, height as u16),
+            ctx: None,
+            res: Resources::new(),
+        }
     }
 
     fn empty(&self) -> bool {
@@ -74,7 +83,10 @@ impl CpuBackend {
             let id = self.res.register_image(Arc::new(prev));
             ctx.set_transform(Affine::IDENTITY);
             ctx.set_paint_transform(Affine::IDENTITY);
-            ctx.set_paint(VImage { image: ImageSource::opaque_id(id), sampler: ImageSampler::new().with_quality(ImageQuality::Low) });
+            ctx.set_paint(VImage {
+                image: ImageSource::opaque_id(id),
+                sampler: ImageSampler::new().with_quality(ImageQuality::Low),
+            });
             ctx.fill_rect(&Rect::new(0.0, 0.0, w as f64, h as f64));
             backdrop = Some(id);
         }
@@ -83,7 +95,10 @@ impl CpuBackend {
         }
         ctx.flush();
         if plain {
-            let settings = RasterizerSettings { target_init: TargetInit::SrcOver, ..Default::default() };
+            let settings = RasterizerSettings {
+                target_init: TargetInit::SrcOver,
+                ..Default::default()
+            };
             ctx.render_with(&mut self.pix, &mut self.res, settings);
         } else {
             let mut out = Pixmap::new(w, h);
@@ -115,20 +130,44 @@ impl CpuBackend {
     }
 
     /// Sets `paint` (user space: the draw's transform applies to it), with `alpha` folded in.
-    fn set_paint(&mut self, ctx: &mut RenderContext, paint: &Paint, alpha: f32, reg: &mut Registered) {
+    fn set_paint(
+        &mut self,
+        ctx: &mut RenderContext,
+        paint: &Paint,
+        alpha: f32,
+        reg: &mut Registered,
+    ) {
         ctx.set_paint_transform(Affine::IDENTITY);
         match paint {
             Paint::Solid(c) => ctx.set_paint(color(*c, alpha)),
             Paint::Gradient(g) => {
-                let stops: Vec<peniko::ColorStop> = g.stops.iter().map(|(o, c)| (*o, color(*c, 1.0)).into()).collect();
+                let stops: Vec<peniko::ColorStop> = g
+                    .stops
+                    .iter()
+                    .map(|(o, c)| (*o, color(*c, 1.0)).into())
+                    .collect();
                 let pg = match g.kind {
-                    GradientKind::Linear { x0, y0, x1, y1 } => peniko::Gradient::new_linear((x0, y0), (x1, y1)),
-                    GradientKind::Radial { x0, y0, r0, x1, y1, r1 } => {
-                        peniko::Gradient::new_two_point_radial((x0, y0), r0 as f32, (x1, y1), r1 as f32)
+                    GradientKind::Linear { x0, y0, x1, y1 } => {
+                        peniko::Gradient::new_linear((x0, y0), (x1, y1))
                     }
-                    GradientKind::Conic { angle, x, y } => {
-                        peniko::Gradient::new_sweep((x, y), angle as f32, (angle + std::f64::consts::TAU) as f32)
-                    }
+                    GradientKind::Radial {
+                        x0,
+                        y0,
+                        r0,
+                        x1,
+                        y1,
+                        r1,
+                    } => peniko::Gradient::new_two_point_radial(
+                        (x0, y0),
+                        r0 as f32,
+                        (x1, y1),
+                        r1 as f32,
+                    ),
+                    GradientKind::Conic { angle, x, y } => peniko::Gradient::new_sweep(
+                        (x, y),
+                        angle as f32,
+                        (angle + std::f64::consts::TAU) as f32,
+                    ),
                 };
                 let pg = pg
                     .with_interpolation_alpha_space(InterpolationAlphaSpace::Unpremultiplied)
@@ -139,11 +178,22 @@ impl CpuBackend {
             Paint::Pattern(p) => {
                 let id = self.image_id(reg, &p.image, [0, 0, p.image.width, p.image.height]);
                 let sampler = ImageSampler::new()
-                    .with_x_extend(if p.repeat_x { Extend::Repeat } else { Extend::Pad })
-                    .with_y_extend(if p.repeat_y { Extend::Repeat } else { Extend::Pad })
+                    .with_x_extend(if p.repeat_x {
+                        Extend::Repeat
+                    } else {
+                        Extend::Pad
+                    })
+                    .with_y_extend(if p.repeat_y {
+                        Extend::Repeat
+                    } else {
+                        Extend::Pad
+                    })
                     .with_quality(ImageQuality::Medium)
                     .with_alpha(alpha);
-                ctx.set_paint(VImage { image: ImageSource::opaque_id(id), sampler });
+                ctx.set_paint(VImage {
+                    image: ImageSource::opaque_id(id),
+                    sampler,
+                });
                 ctx.set_paint_transform(p.transform);
             }
         }
@@ -151,13 +201,23 @@ impl CpuBackend {
 
     /// A no-repeat pattern paints its image's rect only.
     fn pattern_clip(ctx: &mut RenderContext, paint: &Paint, transform: Affine) -> bool {
-        let Paint::Pattern(p) = paint else { return false };
+        let Paint::Pattern(p) = paint else {
+            return false;
+        };
         if p.repeat_x && p.repeat_y {
             return false;
         }
         const FAR: f64 = 1.0e7;
-        let (x0, x1) = if p.repeat_x { (-FAR, FAR) } else { (0.0, p.image.width as f64) };
-        let (y0, y1) = if p.repeat_y { (-FAR, FAR) } else { (0.0, p.image.height as f64) };
+        let (x0, x1) = if p.repeat_x {
+            (-FAR, FAR)
+        } else {
+            (0.0, p.image.width as f64)
+        };
+        let (y0, y1) = if p.repeat_y {
+            (-FAR, FAR)
+        } else {
+            (0.0, p.image.height as f64)
+        };
         ctx.set_transform(transform * p.transform);
         ctx.set_fill_rule(Fill::NonZero);
         ctx.push_clip_path(&kurbo::Shape::to_path(&Rect::new(x0, y0, x1, y1), 0.1));
@@ -167,17 +227,35 @@ impl CpuBackend {
     fn encode(&mut self, ctx: &mut RenderContext, c: &Cmd, reg: &mut Registered) {
         let draw = match c {
             Cmd::Fill { draw, .. } | Cmd::Stroke { draw, .. } | Cmd::Image { draw, .. } => draw,
-            _ => { self.encode_plain(ctx, c, reg); return; }
+            _ => {
+                self.encode_plain(ctx, c, reg);
+                return;
+            }
         };
-        if draw.effects.is_empty() { self.encode_plain(ctx, c, reg); return; }
+        if draw.effects.is_empty() {
+            self.encode_plain(ctx, c, reg);
+            return;
+        }
         // HTML draws the shadow and filtered source separately with the chosen
         // operator. A fused drop-shadow would be wrong for copy/destination-in.
-        if draw.effects.shadow.is_some() { self.encode_effect_pass(ctx, c, draw, reg, true); }
+        if draw.effects.shadow.is_some() {
+            self.encode_effect_pass(ctx, c, draw, reg, true);
+        }
         self.encode_effect_pass(ctx, c, draw, reg, false);
     }
 
-    fn encode_effect_pass(&mut self, ctx: &mut RenderContext, c: &Cmd, draw: &Draw, reg: &mut Registered, shadow: bool) {
-        if draw.clip.is_none() { self.encode_effect(ctx, c, draw, reg, shadow); return; }
+    fn encode_effect_pass(
+        &mut self,
+        ctx: &mut RenderContext,
+        c: &Cmd,
+        draw: &Draw,
+        reg: &mut Registered,
+        shadow: bool,
+    ) {
+        if draw.clip.is_none() {
+            self.encode_effect(ctx, c, draw, reg, shadow);
+            return;
+        }
         // A clip must not discard source pixels before blur. Vello clip paths
         // also restrict the source of nested filter layers, so isolate this
         // exceptional path and clip its completed pixels at final composition.
@@ -192,13 +270,33 @@ impl CpuBackend {
         isolated.render(&mut layer.pix, &mut layer.res);
         let image = layer.snapshot();
         let bounds = Rect::new(0.0, 0.0, self.width as f64, self.height as f64);
-        self.encode_plain(ctx, &Cmd::Image {
-            image, src: bounds, dst: bounds, transform: Affine::IDENTITY, quality: Quality::Nearest,
-            draw: Draw { op: draw.op, alpha: 1.0, clip: draw.clip.clone(), effects: Default::default() },
-        }, reg);
+        self.encode_plain(
+            ctx,
+            &Cmd::Image {
+                image,
+                src: bounds,
+                dst: bounds,
+                transform: Affine::IDENTITY,
+                quality: Quality::Nearest,
+                draw: Draw {
+                    op: draw.op,
+                    alpha: 1.0,
+                    clip: draw.clip.clone(),
+                    effects: Default::default(),
+                },
+            },
+            reg,
+        );
     }
 
-    fn encode_effect(&mut self, ctx: &mut RenderContext, c: &Cmd, draw: &Draw, reg: &mut Registered, shadow: bool) {
+    fn encode_effect(
+        &mut self,
+        ctx: &mut RenderContext,
+        c: &Cmd,
+        draw: &Draw,
+        reg: &mut Registered,
+        shadow: bool,
+    ) {
         let depth = if draw.op.is_unbounded() {
             begin(ctx, draw)
         } else {
@@ -211,15 +309,32 @@ impl CpuBackend {
         ctx.set_blend_mode(BlendMode::default());
         if shadow {
             if let Some(s) = &draw.effects.shadow {
-                ctx.push_layer(None, None, None, None, Some(Filter::from_primitive(FilterPrimitive::DropShadowOnly {
-                    dx: s.x, dy: s.y, std_deviation: s.sigma,
-                    color: Color::new(s.color), edge_mode: EdgeMode::default(),
-                })));
+                ctx.push_layer(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(Filter::from_primitive(FilterPrimitive::DropShadowOnly {
+                        dx: s.x,
+                        dy: s.y,
+                        std_deviation: s.sigma,
+                        color: Color::new(s.color),
+                        edge_mode: EdgeMode::default(),
+                    })),
+                );
             }
         }
         // Nested filters run innermost first, in CSS declaration order.
         for radius in draw.effects.blurs.iter().rev() {
-            ctx.push_layer(None, None, None, None, Some(Filter::from_function(FilterFunction::Blur { radius: *radius })));
+            ctx.push_layer(
+                None,
+                None,
+                None,
+                None,
+                Some(Filter::from_function(FilterFunction::Blur {
+                    radius: *radius,
+                })),
+            );
         }
         let mut source = c.clone();
         let d = match &mut source {
@@ -230,27 +345,47 @@ impl CpuBackend {
         d.clip = None;
         d.effects = Default::default();
         self.encode_plain(ctx, &source, reg);
-        for _ in &draw.effects.blurs { ctx.pop_layer(); }
-        if shadow { ctx.pop_layer(); }
+        for _ in &draw.effects.blurs {
+            ctx.pop_layer();
+        }
+        if shadow {
+            ctx.pop_layer();
+        }
         ctx.pop_layer();
         pop_clips(ctx, depth);
     }
 
     fn encode_plain(&mut self, ctx: &mut RenderContext, c: &Cmd, reg: &mut Registered) {
         match c {
-            Cmd::Fill { path, even_odd, transform, paint, draw } => {
+            Cmd::Fill {
+                path,
+                even_odd,
+                transform,
+                paint,
+                draw,
+            } => {
                 let depth = begin(ctx, draw);
                 let pclip = Self::pattern_clip(ctx, paint, *transform);
                 self.set_paint(ctx, paint, draw.alpha, reg);
                 ctx.set_transform(*transform);
-                ctx.set_fill_rule(if *even_odd { Fill::EvenOdd } else { Fill::NonZero });
+                ctx.set_fill_rule(if *even_odd {
+                    Fill::EvenOdd
+                } else {
+                    Fill::NonZero
+                });
                 ctx.fill_path(path);
                 if pclip {
                     ctx.pop_clip();
                 }
                 end(ctx, draw, depth);
             }
-            Cmd::Stroke { path, style, transform, paint, draw } => {
+            Cmd::Stroke {
+                path,
+                style,
+                transform,
+                paint,
+                draw,
+            } => {
                 let depth = begin(ctx, draw);
                 let pclip = Self::pattern_clip(ctx, paint, *transform);
                 self.set_paint(ctx, paint, draw.alpha, reg);
@@ -262,8 +397,19 @@ impl CpuBackend {
                 }
                 end(ctx, draw, depth);
             }
-            Cmd::Image { image, src, dst, transform, quality, draw } => {
-                if image.width == 0 || image.height == 0 || src.width() <= 0.0 || src.height() <= 0.0 {
+            Cmd::Image {
+                image,
+                src,
+                dst,
+                transform,
+                quality,
+                draw,
+            } => {
+                if image.width == 0
+                    || image.height == 0
+                    || src.width() <= 0.0
+                    || src.height() <= 0.0
+                {
                     return;
                 }
                 // Sample only the source rect: crop to its pixel bounds, so a
@@ -296,7 +442,11 @@ impl CpuBackend {
                 ctx.fill_rect(dst);
                 end(ctx, draw, depth);
             }
-            Cmd::Clear { rect, transform, clip } => {
+            Cmd::Clear {
+                rect,
+                transform,
+                clip,
+            } => {
                 let depth = push_clips(ctx, clip);
                 ctx.set_transform(*transform);
                 ctx.set_paint_transform(Affine::IDENTITY);
@@ -334,7 +484,14 @@ impl CpuBackend {
 
     /// An axis-aligned, pixel-aligned, unclipped clear: zero the pixels.
     fn clear_direct(&mut self, c: &Cmd) -> bool {
-        let Cmd::Clear { rect, transform, clip: None } = c else { return false };
+        let Cmd::Clear {
+            rect,
+            transform,
+            clip: None,
+        } = c
+        else {
+            return false;
+        };
         let [a, b, cc, d, _, _] = transform.as_coeffs();
         if b != 0.0 || cc != 0.0 || a == 0.0 || d == 0.0 {
             return false;
@@ -360,7 +517,9 @@ impl CpuBackend {
 /// `source-over` and nothing that needs the old pixels inside the scene.
 fn is_plain(c: &Cmd) -> bool {
     match c {
-        Cmd::Fill { draw, .. } | Cmd::Stroke { draw, .. } | Cmd::Image { draw, .. } => draw.op == CompositeOp::SourceOver,
+        Cmd::Fill { draw, .. } | Cmd::Stroke { draw, .. } | Cmd::Image { draw, .. } => {
+            draw.op == CompositeOp::SourceOver
+        }
         Cmd::Clear { .. } | Cmd::Put { .. } => false,
     }
 }
@@ -376,7 +535,11 @@ fn push_clips(ctx: &mut RenderContext, clip: &Option<Arc<Clip>>) -> usize {
     let chain = Clip::chain(clip);
     for c in &chain {
         ctx.set_transform(Affine::IDENTITY);
-        ctx.set_fill_rule(if c.even_odd { Fill::EvenOdd } else { Fill::NonZero });
+        ctx.set_fill_rule(if c.even_odd {
+            Fill::EvenOdd
+        } else {
+            Fill::NonZero
+        });
         ctx.push_clip_path(&c.path);
     }
     chain.len()
@@ -412,8 +575,18 @@ fn begin(ctx: &mut RenderContext, draw: &Draw) -> usize {
                     ),
                 );
             }
-            ctx.set_fill_rule(if last.even_odd { Fill::EvenOdd } else { Fill::NonZero });
-            ctx.push_layer(Some(&last.path), Some(draw.op.blend_mode()), None, None, None);
+            ctx.set_fill_rule(if last.even_odd {
+                Fill::EvenOdd
+            } else {
+                Fill::NonZero
+            });
+            ctx.push_layer(
+                Some(&last.path),
+                Some(draw.op.blend_mode()),
+                None,
+                None,
+                None,
+            );
         }
         None => ctx.push_layer(None, Some(draw.op.blend_mode()), None, None, None),
     }
@@ -478,7 +651,12 @@ impl Backend for CpuBackend {
     }
 
     fn snapshot(&mut self) -> ImageRef {
-        Arc::new(Image::from_premul(self.width, self.height, self.pix.data_as_u8_slice().to_vec(), true))
+        Arc::new(Image::from_premul(
+            self.width,
+            self.height,
+            self.pix.data_as_u8_slice().to_vec(),
+            true,
+        ))
     }
 }
 
@@ -489,13 +667,24 @@ mod tests {
     use kurbo::{BezPath, Shape};
 
     fn draw(op: CompositeOp) -> Draw {
-        Draw { op, alpha: 1.0, clip: None, effects: Default::default() }
+        Draw {
+            op,
+            alpha: 1.0,
+            clip: None,
+            effects: Default::default(),
+        }
     }
     fn rect(x: f64, y: f64, w: f64, h: f64) -> BezPath {
         Rect::new(x, y, x + w, y + h).to_path(0.1)
     }
     fn fill(path: BezPath, c: [f32; 4], op: CompositeOp) -> Cmd {
-        Cmd::Fill { path, even_odd: false, transform: Affine::IDENTITY, paint: Paint::Solid(c), draw: draw(op) }
+        Cmd::Fill {
+            path,
+            even_odd: false,
+            transform: Affine::IDENTITY,
+            paint: Paint::Solid(c),
+            draw: draw(op),
+        }
     }
     fn px(b: &mut CpuBackend, x: u32, y: u32) -> [u8; 4] {
         let v = b.read(x, y, 1, 1);
@@ -508,7 +697,11 @@ mod tests {
     fn source_over_keeps_what_was_drawn_before() {
         let mut b = CpuBackend::new(8, 8);
         b.submit(&[fill(rect(0.0, 0.0, 4.0, 8.0), RED, CompositeOp::SourceOver)]);
-        b.submit(&[fill(rect(4.0, 0.0, 4.0, 8.0), BLUE, CompositeOp::SourceOver)]);
+        b.submit(&[fill(
+            rect(4.0, 0.0, 4.0, 8.0),
+            BLUE,
+            CompositeOp::SourceOver,
+        )]);
         assert_eq!(px(&mut b, 1, 1), [255, 0, 0, 255]);
         assert_eq!(px(&mut b, 6, 1), [0, 0, 255, 255]);
     }
@@ -517,9 +710,21 @@ mod tests {
     fn destination_in_clears_outside_the_shape() {
         let mut b = CpuBackend::new(8, 8);
         b.submit(&[fill(rect(0.0, 0.0, 8.0, 8.0), RED, CompositeOp::SourceOver)]);
-        b.submit(&[fill(rect(0.0, 0.0, 2.0, 2.0), BLUE, CompositeOp::DestinationIn)]);
-        assert_eq!(px(&mut b, 1, 1), [255, 0, 0, 255], "inside: the destination stays");
-        assert_eq!(px(&mut b, 5, 5), [0, 0, 0, 0], "outside: unbounded, cleared");
+        b.submit(&[fill(
+            rect(0.0, 0.0, 2.0, 2.0),
+            BLUE,
+            CompositeOp::DestinationIn,
+        )]);
+        assert_eq!(
+            px(&mut b, 1, 1),
+            [255, 0, 0, 255],
+            "inside: the destination stays"
+        );
+        assert_eq!(
+            px(&mut b, 5, 5),
+            [0, 0, 0, 0],
+            "outside: unbounded, cleared"
+        );
     }
 
     #[test]
@@ -539,7 +744,11 @@ mod tests {
             fill(rect(0.0, 0.0, 8.0, 8.0), BLUE, CompositeOp::SourceAtop),
         ]);
         assert_eq!(px(&mut b, 1, 1), [0, 0, 255, 255], "tinted");
-        assert_eq!(px(&mut b, 6, 1), [0, 0, 0, 0], "nothing there, nothing tinted");
+        assert_eq!(
+            px(&mut b, 6, 1),
+            [0, 0, 0, 0],
+            "nothing there, nothing tinted"
+        );
     }
 
     #[test]
@@ -547,39 +756,83 @@ mod tests {
         let mut b = CpuBackend::new(8, 8);
         b.submit(&[
             fill(rect(0.0, 0.0, 8.0, 8.0), RED, CompositeOp::SourceOver),
-            Cmd::Clear { rect: Rect::new(0.0, 0.0, 2.0, 2.0), transform: Affine::IDENTITY, clip: None },
-            Cmd::Clear { rect: Rect::new(0.0, 0.0, 1.0, 1.0), transform: Affine::translate((5.5, 5.5)), clip: None },
+            Cmd::Clear {
+                rect: Rect::new(0.0, 0.0, 2.0, 2.0),
+                transform: Affine::IDENTITY,
+                clip: None,
+            },
+            Cmd::Clear {
+                rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                transform: Affine::translate((5.5, 5.5)),
+                clip: None,
+            },
         ]);
         assert_eq!(px(&mut b, 1, 1), [0, 0, 0, 0]);
         assert_eq!(px(&mut b, 3, 3), [255, 0, 0, 255]);
         let half = px(&mut b, 5, 5);
-        assert!(half[3] > 100 && half[3] < 255, "a half-covered pixel is partly cleared: {half:?}");
+        assert!(
+            half[3] > 100 && half[3] < 255,
+            "a half-covered pixel is partly cleared: {half:?}"
+        );
     }
 
     #[test]
     fn a_clip_bounds_even_an_unbounded_op() {
         let mut b = CpuBackend::new(8, 8);
         b.submit(&[fill(rect(0.0, 0.0, 8.0, 8.0), RED, CompositeOp::SourceOver)]);
-        let clip = Some(Arc::new(Clip { path: rect(0.0, 0.0, 4.0, 8.0), even_odd: false, parent: None }));
+        let clip = Some(Arc::new(Clip {
+            path: rect(0.0, 0.0, 4.0, 8.0),
+            even_odd: false,
+            parent: None,
+        }));
         b.submit(&[Cmd::Fill {
             path: rect(0.0, 0.0, 1.0, 1.0),
             even_odd: false,
             transform: Affine::IDENTITY,
             paint: Paint::Solid(BLUE),
-            draw: Draw { op: CompositeOp::Copy, alpha: 1.0, clip, effects: Default::default() },
+            draw: Draw {
+                op: CompositeOp::Copy,
+                alpha: 1.0,
+                clip,
+                effects: Default::default(),
+            },
         }]);
         assert_eq!(px(&mut b, 0, 0), [0, 0, 255, 255]);
-        assert_eq!(px(&mut b, 2, 5), [0, 0, 0, 0], "inside the clip: copied (cleared)");
-        assert_eq!(px(&mut b, 6, 5), [255, 0, 0, 255], "outside the clip: untouched");
+        assert_eq!(
+            px(&mut b, 2, 5),
+            [0, 0, 0, 0],
+            "inside the clip: copied (cleared)"
+        );
+        assert_eq!(
+            px(&mut b, 6, 5),
+            [255, 0, 0, 255],
+            "outside the clip: untouched"
+        );
     }
 
     #[test]
     fn put_writes_pixels_as_they_are() {
         let mut b = CpuBackend::new(4, 4);
-        let img = Arc::new(Image::from_straight(2, 1, vec![10, 20, 30, 255, 255, 0, 0, 0], true));
-        b.submit(&[fill(rect(0.0, 0.0, 4.0, 4.0), BLUE, CompositeOp::SourceOver), Cmd::Put { x: 3, y: 1, image: img }]);
+        let img = Arc::new(Image::from_straight(
+            2,
+            1,
+            vec![10, 20, 30, 255, 255, 0, 0, 0],
+            true,
+        ));
+        b.submit(&[
+            fill(rect(0.0, 0.0, 4.0, 4.0), BLUE, CompositeOp::SourceOver),
+            Cmd::Put {
+                x: 3,
+                y: 1,
+                image: img,
+            },
+        ]);
         assert_eq!(px(&mut b, 3, 1), [10, 20, 30, 255]);
-        assert_eq!(px(&mut b, 2, 1), [0, 0, 255, 255], "cropped at the edge, nothing left of it moves");
+        assert_eq!(
+            px(&mut b, 2, 1),
+            [0, 0, 255, 255],
+            "cropped at the edge, nothing left of it moves"
+        );
     }
 
     #[test]
@@ -601,7 +854,15 @@ mod tests {
     #[test]
     fn a_linear_gradient_runs_from_stop_to_stop() {
         let mut b = CpuBackend::new(100, 1);
-        let g = Gradient { kind: GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 100.0, y1: 0.0 }, stops: vec![(0.0, RED), (1.0, BLUE)] };
+        let g = Gradient {
+            kind: GradientKind::Linear {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 100.0,
+                y1: 0.0,
+            },
+            stops: vec![(0.0, RED), (1.0, BLUE)],
+        };
         b.submit(&[Cmd::Fill {
             path: rect(0.0, 0.0, 100.0, 1.0),
             even_odd: false,

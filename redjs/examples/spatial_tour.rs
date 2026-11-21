@@ -20,7 +20,14 @@ fn eval(g: *mut core::ffi::c_void, src: &str) -> String {
         let s16: Vec<u16> = src.encode_utf16().collect();
         let url: Vec<u16> = "spatial-tour.js".encode_utf16().collect();
         let mut out = 0u64;
-        let rc = redjs::glue::rjs_eval16(g, s16.as_ptr(), s16.len(), url.as_ptr(), url.len(), &mut out);
+        let rc = redjs::glue::rjs_eval16(
+            g,
+            s16.as_ptr(),
+            s16.len(),
+            url.as_ptr(),
+            url.len(),
+            &mut out,
+        );
         let mut info = redjs::ffi::RjsStr::default();
         let sv = if rc != 0 {
             let (mut m, mut st) = (0u64, 0u64);
@@ -32,9 +39,14 @@ fn eval(g: *mut core::ffi::c_void, src: &str) -> String {
         let msg = if redjs::glue::rjs_string_info(g, sv, &mut info) == 0 {
             if info.is8bit != 0 {
                 core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize)
-                    .iter().map(|&b| b as char).collect()
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect()
             } else {
-                String::from_utf16_lossy(core::slice::from_raw_parts(info.ptr as *const u16, info.len as usize))
+                String::from_utf16_lossy(core::slice::from_raw_parts(
+                    info.ptr as *const u16,
+                    info.len as usize,
+                ))
             }
         } else {
             String::from("<non-string>")
@@ -71,9 +83,12 @@ fn run_phase(
                 next_quarter += 1;
             }
             let (x, y, z) = pos(theta);
-            eval(g, &format!(
+            eval(
+                g,
+                &format!(
                 "pan.positionX.value = {x}; pan.positionY.value = {y}; pan.positionZ.value = {z}; 0"
-            ));
+            ),
+            );
             unsafe { redjs::ffi::redjs_pump(g, 7, core::ptr::null_mut()) };
             std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
         }
@@ -89,12 +104,26 @@ fn main() {
         let g = redjs::ffi::redjs_context_create();
         assert!(!g.is_null());
         assert_eq!(redjs::ffi::redjs_web_install(g), 0);
-        let root: Vec<u16> = std::env::temp_dir().to_string_lossy().encode_utf16().collect();
-        assert_eq!(redjs::ffi::redjs_webshim_install(g, root.as_ptr(), root.len(), root.as_ptr(), root.len()), 0);
+        let root: Vec<u16> = std::env::temp_dir()
+            .to_string_lossy()
+            .encode_utf16()
+            .collect();
+        assert_eq!(
+            redjs::ffi::redjs_webshim_install(
+                g,
+                root.as_ptr(),
+                root.len(),
+                root.as_ptr(),
+                root.len()
+            ),
+            0
+        );
 
         // A pulsing beep is far easier to localize than a steady tone:
         // four 120 ms 880 Hz pips per second, looped.
-        eval(g, r#"
+        eval(
+            g,
+            r#"
             globalThis.ac = new AudioContext();
             const rate = ac.sampleRate;
             const buf = ac.createBuffer(1, rate, rate);
@@ -119,7 +148,8 @@ fn main() {
             pan.positionZ.value = -2; // start in front
             src.start();
             'started'
-        "#);
+        "#,
+        );
 
         for _ in 0..10 {
             redjs::ffi::redjs_pump(g, 7, core::ptr::null_mut());
@@ -133,19 +163,30 @@ fn main() {
 
         // Phase 1: horizontal circle in the X/Z plane (listener faces −z).
         // θ=0 front → θ=90° RIGHT (+x) → 180° behind (+z) → 270° LEFT (−x).
-        run_phase(g, "phase 1 · horizontal (X circle)", laps, secs,
+        run_phase(
+            g,
+            "phase 1 · horizontal (X circle)",
+            laps,
+            secs,
             ["front", "RIGHT →", "behind", "← LEFT"],
             |t| (RADIUS * t.sin(), 0.0, -RADIUS * t.cos()),
         );
 
         // Phase 2: vertical circle in the Y/Z plane.
         // θ=0 front → 90° ABOVE (+y) → 180° behind → 270° BELOW (−y, clamps at −45°).
-        run_phase(g, "phase 2 · vertical (Y circle)", laps, secs,
+        run_phase(
+            g,
+            "phase 2 · vertical (Y circle)",
+            laps,
+            secs,
             ["front", "ABOVE ↑", "behind", "BELOW ↓"],
             |t| (0.0, RADIUS * t.sin(), -RADIUS * t.cos()),
         );
 
-        eval(g, "pan.positionY.value = 0; pan.positionZ.value = -2; 'done'");
+        eval(
+            g,
+            "pan.positionY.value = 0; pan.positionZ.value = -2; 'done'",
+        );
         println!("[tour] done — front-center again. Did the beep truly orbit you?");
     }
 }

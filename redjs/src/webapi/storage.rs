@@ -175,7 +175,10 @@ impl Area {
     /// and every value. The count browsers use, so an app that fits in a
     /// browser fits here.
     fn size(&self) -> usize {
-        self.entries.iter().map(|(k, v)| utf16_bytes(k) + utf16_bytes(v)).sum()
+        self.entries
+            .iter()
+            .map(|(k, v)| utf16_bytes(k) + utf16_bytes(v))
+            .sum()
     }
 }
 
@@ -209,7 +212,9 @@ fn with_area<R>(local: bool, g: usize, f: impl FnOnce(&mut Area, usize) -> (R, b
                 None => advise_no_host(),
             }
         }
-        let quota = host().map(|h| h.quota_bytes()).unwrap_or(DEFAULT_QUOTA_BYTES);
+        let quota = host()
+            .map(|h| h.quota_bytes())
+            .unwrap_or(DEFAULT_QUOTA_BYTES);
         let (out, dirty) = f(&mut area, quota);
         if dirty {
             if let Some(h) = host() {
@@ -301,7 +306,11 @@ unsafe fn this_area(g: *mut c_void, cf: *mut c_void) -> Option<(bool, usize)> {
     if let Some(d) = host_data::<StorageData>(g, classes(g).storage_class, this) {
         return Some((d.local, d.g));
     }
-    proxies().lock().unwrap().get(&(g as usize, this)).map(|&local| (local, g as usize))
+    proxies()
+        .lock()
+        .unwrap()
+        .get(&(g as usize, this))
+        .map(|&local| (local, g as usize))
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +324,11 @@ macro_rules! this_storage {
             None => {
                 return throw_type_error(
                     $g,
-                    concat!("Storage.", $member, " called on an object that is not a Storage"),
+                    concat!(
+                        "Storage.",
+                        $member,
+                        " called on an object that is not a Storage"
+                    ),
                 )
             }
         }
@@ -336,7 +349,11 @@ unsafe fn storage_key(g: *mut c_void, cf: *mut c_void) -> u64 {
     // WebIDL `unsigned long`: NaN/undefined → 0, negatives wrap. Anything past
     // the end is `null`, which is also where a wrapped negative lands.
     let n = read_number(g, cf_arg(cf, 0));
-    let idx = if n.is_finite() && n >= 0.0 { n as u64 } else { 0 };
+    let idx = if n.is_finite() && n >= 0.0 {
+        n as u64
+    } else {
+        0
+    };
     let found = with_area(local, ctx, |a, _| {
         (a.entries.get(idx as usize).map(|(k, _)| k.clone()), false)
     });
@@ -349,9 +366,12 @@ unsafe fn storage_key(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn storage_get_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "getItem");
-    let Some(key) = read_string(g, cf_arg(cf, 0)) else { return UNDEF };
-    let found =
-        with_area(local, ctx, |a, _| (a.index_of(&key).map(|i| a.entries[i].1.clone()), false));
+    let Some(key) = read_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let found = with_area(local, ctx, |a, _| {
+        (a.index_of(&key).map(|i| a.entries[i].1.clone()), false)
+    });
     match found {
         Some(v) => js_string(g, &v),
         None => NULL,
@@ -365,8 +385,12 @@ unsafe fn storage_set_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     // behaviour every "I stored an object and got [object Object] back" bug
     // report depends on. A missing second argument really is the string
     // "undefined", not a removal.
-    let Some(key) = read_string(g, cf_arg(cf, 0)) else { return UNDEF };
-    let Some(value) = read_string(g, cf_arg(cf, 1)) else { return UNDEF };
+    let Some(key) = read_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let Some(value) = read_string(g, cf_arg(cf, 1)) else {
+        return UNDEF;
+    };
 
     enum Outcome {
         Unchanged,
@@ -379,8 +403,7 @@ unsafe fn storage_set_item(g: *mut c_void, cf: *mut c_void) -> u64 {
                 if a.entries[i].1 == value {
                     return (Outcome::Unchanged, false);
                 }
-                let after =
-                    a.size() - utf16_bytes(&a.entries[i].1) + utf16_bytes(&value);
+                let after = a.size() - utf16_bytes(&a.entries[i].1) + utf16_bytes(&value);
                 if after > quota {
                     return (Outcome::Quota(quota), false);
                 }
@@ -415,7 +438,9 @@ unsafe fn storage_set_item(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn storage_remove_item(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (local, ctx) = this_storage!(g, cf, "removeItem");
-    let Some(key) = read_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Some(key) = read_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     with_area(local, ctx, |a, _| match a.index_of(&key) {
         Some(i) => {
             a.entries.remove(i);
@@ -441,7 +466,10 @@ unsafe fn storage_clear(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// (WebIDL `QuotaExceededError`), `quota`/`requested` null as Web Storage
 /// leaves them.
 unsafe fn throw_quota_exceeded(g: *mut c_void, msg: &str) -> u64 {
-    glue::rjs_throw(g, super::domexception::create_quota_exceeded(g, msg, None, None));
+    glue::rjs_throw(
+        g,
+        super::domexception::create_quota_exceeded(g, msg, None, None),
+    );
     UNDEF
 }
 
@@ -464,7 +492,11 @@ unsafe fn storage_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     // `null` and an explicitly-passed `undefined` is… also null. WebIDL
     // nullable string conversion: `undefined` → the default.
     let member = |name: &str| {
-        let raw = if is_cell(init) { get(g, init, name) } else { UNDEF };
+        let raw = if is_cell(init) {
+            get(g, init, name)
+        } else {
+            UNDEF
+        };
         if raw == UNDEF || raw == NULL {
             NULL
         } else {
@@ -478,15 +510,31 @@ unsafe fn storage_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     define(g, slots, "oldValue", member("oldValue"), 0);
     define(g, slots, "newValue", member("newValue"), 0);
     // `url` is a plain `USVString` with a `""` default, not nullable.
-    let url = if is_cell(init) { get(g, init, "url") } else { UNDEF };
+    let url = if is_cell(init) {
+        get(g, init, "url")
+    } else {
+        UNDEF
+    };
     let url = if url == UNDEF {
         js_string(g, "")
     } else {
-        read_string(g, url).map(|s| js_string(g, &s)).unwrap_or_else(|| js_string(g, ""))
+        read_string(g, url)
+            .map(|s| js_string(g, &s))
+            .unwrap_or_else(|| js_string(g, ""))
     };
     define(g, slots, "url", url, 0);
-    let area = if is_cell(init) { get(g, init, "storageArea") } else { UNDEF };
-    define(g, slots, "storageArea", if is_cell(area) { area } else { NULL }, 0);
+    let area = if is_cell(init) {
+        get(g, init, "storageArea")
+    } else {
+        UNDEF
+    };
+    define(
+        g,
+        slots,
+        "storageArea",
+        if is_cell(area) { area } else { NULL },
+        0,
+    );
 
     glue::rjs_define(g, obj, c.s_ev, slots, 0);
     obj
@@ -547,7 +595,9 @@ fn listener_added(ty: &str) {
 
 unsafe fn invoke(g: *mut c_void, obj: u64, name: &str, args: &[u64]) -> Result<u64, ()> {
     let f = try_get(g, obj, name)?;
-    call(g, f, obj, args).map_err(|exception| { glue::rjs_throw(g, exception); })
+    call(g, f, obj, args).map_err(|exception| {
+        glue::rjs_throw(g, exception);
+    })
 }
 
 unsafe fn reflect(g: *mut c_void, name: &str, args: &[u64]) -> Result<u64, ()> {
@@ -560,7 +610,10 @@ unsafe fn is_symbol(g: *mut c_void, value: u64) -> bool {
 }
 
 unsafe fn builtin(g: *mut c_void, key: u64) -> Result<bool, ()> {
-    Ok(to_bool(g, reflect(g, "has", &[classes(g).storage.proto, key])?))
+    Ok(to_bool(
+        g,
+        reflect(g, "has", &[classes(g).storage.proto, key])?,
+    ))
 }
 
 #[crate::host_fn]
@@ -610,16 +663,24 @@ unsafe fn named_delete(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn named_keys(g: *mut c_void, cf: *mut c_void) -> u64 {
     let obj = cf_arg(cf, 0);
-    let Ok(length) = try_get(g, obj, "length") else { return UNDEF };
-    let Ok(ctor) = try_get(g, glue::rjs_global(g), "Array") else { return UNDEF };
+    let Ok(length) = try_get(g, obj, "length") else {
+        return UNDEF;
+    };
+    let Ok(ctor) = try_get(g, glue::rjs_global(g), "Array") else {
+        return UNDEF;
+    };
     let mut out = UNDEF;
     if glue::rjs_construct(g, ctor, &length, 1, &mut out) != 0 {
         glue::rjs_throw(g, out);
         return UNDEF;
     }
-    let Ok(count) = to_number(g, length) else { return UNDEF };
+    let Ok(count) = to_number(g, length) else {
+        return UNDEF;
+    };
     for i in 0..count.ceil() as u32 {
-        let Ok(key) = invoke(g, obj, "key", &[enc_f64(i as f64)]) else { return UNDEF };
+        let Ok(key) = invoke(g, obj, "key", &[enc_f64(i as f64)]) else {
+            return UNDEF;
+        };
         set_i(g, out, i, key);
     }
     out
@@ -631,10 +692,20 @@ unsafe fn named_descriptor(g: *mut c_void, cf: *mut c_void) -> u64 {
     if is_symbol(g, key) {
         return reflect(g, "getOwnPropertyDescriptor", &[obj, key]).unwrap_or(UNDEF);
     }
-    let Ok(v) = invoke(g, obj, "getItem", &[key]) else { return UNDEF };
-    if v == NULL { return UNDEF; }
+    let Ok(v) = invoke(g, obj, "getItem", &[key]) else {
+        return UNDEF;
+    };
+    if v == NULL {
+        return UNDEF;
+    }
     let out = new_object(g, UNDEF);
-    define_many(g, out, &["value", "writable", "enumerable", "configurable"], &[v, TRUE, TRUE, TRUE], 0);
+    define_many(
+        g,
+        out,
+        &["value", "writable", "enumerable", "configurable"],
+        &[v, TRUE, TRUE, TRUE],
+        0,
+    );
     out
 }
 
@@ -644,8 +715,12 @@ unsafe fn named_define(g: *mut c_void, cf: *mut c_void) -> u64 {
     if is_symbol(g, key) {
         return reflect(g, "defineProperty", &[obj, key, desc]).unwrap_or(UNDEF);
     }
-    if glue::rjs_has(g, desc, super::util::key(g, "value")) != 1 { return FALSE; }
-    let Ok(value) = try_get(g, desc, "value") else { return UNDEF };
+    if glue::rjs_has(g, desc, super::util::key(g, "value")) != 1 {
+        return FALSE;
+    }
+    let Ok(value) = try_get(g, desc, "value") else {
+        return UNDEF;
+    };
     invoke(g, obj, "setItem", &[key, value]).map_or(UNDEF, |_| TRUE)
 }
 
@@ -654,64 +729,89 @@ unsafe fn named_define(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn install(g: *mut c_void, event_proto: u64) -> i32 {
-    let storage = define_class(g, &ClassSpec {
-        name: "Storage",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[
-            ("key", 1, storage_key),
-            ("getItem", 1, storage_get_item),
-            ("setItem", 2, storage_set_item),
-            ("removeItem", 1, storage_remove_item),
-            ("clear", 0, storage_clear),
-        ],
-        getters: &[("length", storage_length)],
-        accessors: &[],
-    });
+    let storage = define_class(
+        g,
+        &ClassSpec {
+            name: "Storage",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("key", 1, storage_key),
+                ("getItem", 1, storage_get_item),
+                ("setItem", 2, storage_set_item),
+                ("removeItem", 1, storage_remove_item),
+                ("clear", 0, storage_clear),
+            ],
+            getters: &[("length", storage_length)],
+            accessors: &[],
+        },
+    );
 
-    let event = define_class(g, &ClassSpec {
-        name: "StorageEvent",
-        arity: 1,
-        construct: Some(storage_event_construct),
-        parent_proto: event_proto,
-        methods: &[],
-        getters: &[
-            ("key", ev_key),
-            ("oldValue", ev_old_value),
-            ("newValue", ev_new_value),
-            ("url", ev_url),
-            ("storageArea", ev_storage_area),
-        ],
-        accessors: &[],
-    });
+    let event = define_class(
+        g,
+        &ClassSpec {
+            name: "StorageEvent",
+            arity: 1,
+            construct: Some(storage_event_construct),
+            parent_proto: event_proto,
+            methods: &[],
+            getters: &[
+                ("key", ev_key),
+                ("oldValue", ev_old_value),
+                ("newValue", ev_new_value),
+                ("url", ev_url),
+                ("storageArea", ev_storage_area),
+            ],
+            accessors: &[],
+        },
+    );
 
     let storage_class = make_host_class::<StorageData>("Storage");
     let s_ev = atom_priv(g, "redjs#storageEvent");
-    let boxed: &'static StorageClasses =
-        Box::leak(Box::new(StorageClasses { storage_class, storage, event, s_ev }));
+    let boxed: &'static StorageClasses = Box::leak(Box::new(StorageClasses {
+        storage_class,
+        storage,
+        event,
+        s_ev,
+    }));
     classes_reg().lock().unwrap().insert(g as usize, boxed);
 
     let global = glue::rjs_global(g);
     let proxy = get(g, global, "Proxy");
     let handler = new_object(g, UNDEF);
     let traps: &[(&str, u32, HostFn)] = &[
-        ("get", 3, named_get), ("set", 4, named_set), ("has", 2, named_has),
-        ("deleteProperty", 2, named_delete), ("ownKeys", 1, named_keys),
-        ("getOwnPropertyDescriptor", 2, named_descriptor), ("defineProperty", 3, named_define),
+        ("get", 3, named_get),
+        ("set", 4, named_set),
+        ("has", 2, named_has),
+        ("deleteProperty", 2, named_delete),
+        ("ownKeys", 1, named_keys),
+        ("getOwnPropertyDescriptor", 2, named_descriptor),
+        ("defineProperty", 3, named_define),
     ];
     for &(name, arity, hook) in traps {
         define(g, handler, name, make_fn(g, name, arity, hook), 0);
     }
     for (name, local) in [("localStorage", true), ("sessionStorage", false)] {
-        let target = host_create(g, storage_class, boxed.storage.proto, StorageData { local, g: g as usize });
+        let target = host_create(
+            g,
+            storage_class,
+            boxed.storage.proto,
+            StorageData {
+                local,
+                g: g as usize,
+            },
+        );
         let args = [target, handler];
         let mut wrapped = UNDEF;
         if glue::rjs_construct(g, proxy, args.as_ptr(), 2, &mut wrapped) != 0 {
             return 1;
         }
         crate::ffi::redjs_protect(g, wrapped);
-        proxies().lock().unwrap().insert((g as usize, wrapped), local);
+        proxies()
+            .lock()
+            .unwrap()
+            .insert((g as usize, wrapped), local);
         define(g, global, name, wrapped, 1);
     }
     events::on_listener_added(listener_added);
@@ -799,7 +899,10 @@ mod tests {
             }
             fn store(&self, _: &[(String, String)]) {}
         }
-        assert!(!Bare.describe().is_empty(), "an advisory has to be able to name it");
+        assert!(
+            !Bare.describe().is_empty(),
+            "an advisory has to be able to name it"
+        );
     }
 
     #[test]
@@ -811,12 +914,18 @@ mod tests {
             writes: Mutex::new(Vec::new()),
             quota: 1024,
         };
-        let mut area = Area { entries: h.load(), loaded: true };
+        let mut area = Area {
+            entries: h.load(),
+            loaded: true,
+        };
         area.entries.push(("b".into(), "2".into()));
         h.store(&area.entries);
         let writes = h.writes.lock().unwrap();
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0], vec![("a".into(), "1".into()), ("b".into(), "2".into())]);
+        assert_eq!(
+            writes[0],
+            vec![("a".into(), "1".into()), ("b".into(), "2".into())]
+        );
     }
 }
 
@@ -871,7 +980,10 @@ mod jsc_tests {
         ok(&c, "localStorage instanceof Storage");
         ok(&c, "sessionStorage instanceof Storage");
         ok(&c, "localStorage !== sessionStorage");
-        ok(&c, "Object.prototype.toString.call(localStorage) === '[object Storage]'");
+        ok(
+            &c,
+            "Object.prototype.toString.call(localStorage) === '[object Storage]'",
+        );
         // Same object every time — a browser's `localStorage` is one object.
         ok(&c, "localStorage === localStorage");
         assert!(throws(&c, "new Storage()").contains("Illegal constructor"));
@@ -883,10 +995,16 @@ mod jsc_tests {
         assert_eq!(s(&c, "localStorage.length"), "0");
         assert_eq!(s(&c, "localStorage.getItem('nope')"), "null");
         assert_eq!(s(&c, "localStorage.key(0)"), "null");
-        s(&c, "localStorage.setItem('a', '1'); localStorage.setItem('b', '2')");
+        s(
+            &c,
+            "localStorage.setItem('a', '1'); localStorage.setItem('b', '2')",
+        );
         assert_eq!(s(&c, "localStorage.length"), "2");
         assert_eq!(s(&c, "localStorage.getItem('a')"), "1");
-        assert_eq!(s(&c, "localStorage.key(0) + ',' + localStorage.key(1)"), "a,b");
+        assert_eq!(
+            s(&c, "localStorage.key(0) + ',' + localStorage.key(1)"),
+            "a,b"
+        );
         assert_eq!(s(&c, "localStorage.key(2)"), "null");
         s(&c, "localStorage.removeItem('a')");
         assert_eq!(s(&c, "localStorage.getItem('a')"), "null");
@@ -924,7 +1042,10 @@ mod jsc_tests {
         ok(&c, "!('missing' in localStorage)");
         assert_eq!(s(&c, "localStorage.missing"), "undefined");
         assert_eq!(s(&c, "Object.keys(localStorage).join(',')"), "token,other");
-        assert_eq!(s(&c, "JSON.stringify(localStorage)"), r#"{"token":"abc","other":"x"}"#);
+        assert_eq!(
+            s(&c, "JSON.stringify(localStorage)"),
+            r#"{"token":"abc","other":"x"}"#
+        );
         s(&c, "delete localStorage.token");
         assert_eq!(s(&c, "localStorage.length"), "1");
         ok(&c, "!('token' in localStorage)");
@@ -941,7 +1062,10 @@ mod jsc_tests {
             Storage.prototype.key = () => 'overridden'; \
             [global.enumerable, global.writable, global.configurable, key.value, key.enumerable, \
              key.writable, key.configurable, value, symbol in store, Reflect.ownKeys(store)[0]].join(',')");
-        assert_eq!(result, "true,false,true,3,true,true,true,7,false,overridden");
+        assert_eq!(
+            result,
+            "true,false,true,3,true,true,true,7,false,overridden"
+        );
     }
 
     #[test]
@@ -966,7 +1090,10 @@ mod jsc_tests {
         assert_eq!(s(&c, "localStorage.getItem('k')"), "local");
         assert_eq!(s(&c, "sessionStorage.getItem('k')"), "session");
         // The host saw the localStorage write and only that one.
-        assert_eq!(SEED.lock().unwrap().clone(), vec![("k".to_string(), "local".to_string())]);
+        assert_eq!(
+            SEED.lock().unwrap().clone(),
+            vec![("k".to_string(), "local".to_string())]
+        );
     }
 
     #[test]
@@ -978,15 +1105,27 @@ mod jsc_tests {
         s(&c, "localStorage.setItem('a', '1')");
         assert_eq!(*WRITES.lock().unwrap(), 1);
         s(&c, "localStorage.setItem('a', '1')");
-        assert_eq!(*WRITES.lock().unwrap(), 1, "an identical write is not a write");
+        assert_eq!(
+            *WRITES.lock().unwrap(),
+            1,
+            "an identical write is not a write"
+        );
         s(&c, "localStorage.setItem('a', '2')");
         assert_eq!(*WRITES.lock().unwrap(), 2);
         s(&c, "localStorage.removeItem('zzz')");
-        assert_eq!(*WRITES.lock().unwrap(), 2, "removing nothing is not a write");
+        assert_eq!(
+            *WRITES.lock().unwrap(),
+            2,
+            "removing nothing is not a write"
+        );
         s(&c, "localStorage.clear()");
         assert_eq!(*WRITES.lock().unwrap(), 3);
         s(&c, "localStorage.clear()");
-        assert_eq!(*WRITES.lock().unwrap(), 3, "clearing an empty area is not a write");
+        assert_eq!(
+            *WRITES.lock().unwrap(),
+            3,
+            "clearing an empty area is not a write"
+        );
     }
 
     #[test]
@@ -1004,7 +1143,11 @@ mod jsc_tests {
         let (c, _g) = fresh();
         let msg = throws(&c, "localStorage.setItem('big', 'x'.repeat(1000))");
         assert!(msg.contains("exceeded the quota"), "{msg}");
-        assert_eq!(s(&c, "localStorage.length"), "0", "a refused write stores nothing");
+        assert_eq!(
+            s(&c, "localStorage.length"),
+            "0",
+            "a refused write stores nothing"
+        );
         // The check every real catch block does.
         assert_eq!(
             s(

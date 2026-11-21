@@ -186,7 +186,15 @@ pub mod tag {
 }
 
 /// HTML's Error names, in wire order.
-pub const ERROR_NAMES: [&str; 7] = ["Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError", "URIError"];
+pub const ERROR_NAMES: [&str; 7] = [
+    "Error",
+    "EvalError",
+    "RangeError",
+    "ReferenceError",
+    "SyntaxError",
+    "TypeError",
+    "URIError",
+];
 
 /// View constructors by `RjsTaKind` (index 0 unused).
 const VIEW_CTORS: [&str; 14] = [
@@ -223,14 +231,28 @@ pub struct Options<'a> {
 #[derive(Debug, Clone)]
 pub enum Attachment {
     /// A transferred ArrayBuffer's bytes; `max_byte_length` for a resizable one.
-    TransferredBuffer { bytes: Vec<u8>, max_byte_length: Option<u64> },
+    TransferredBuffer {
+        bytes: Vec<u8>,
+        max_byte_length: Option<u64>,
+    },
     /// An ImageBitmap's pixels (moved when transferred, copied when not).
-    Bitmap { width: u32, height: u32, rgba: Vec<u8> },
+    Bitmap {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
     /// A Blob, by reference: the same immutable source (bytes or a path),
     /// shared — nothing is read.
-    BlobRef { range: super::blob::Range, mime: String },
+    BlobRef {
+        range: super::blob::Range,
+        mime: String,
+    },
     /// A File, by reference: as `BlobRef`, plus what makes it a File.
-    FileRef { range: super::blob::Range, mime: String, file: super::blob::FileMeta },
+    FileRef {
+        range: super::blob::Range,
+        mime: String,
+        file: super::blob::FileMeta,
+    },
 }
 
 /// The output of [`serialize`]: no JSC value anywhere, hence `Send`.
@@ -248,10 +270,17 @@ pub struct Serialized {
 pub unsafe fn serialize(g: *mut c_void, v: u64, opts: &Options) -> Result<Serialized, u64> {
     let _lock = Locked::new(g);
     let Some(it) = intrinsics(g) else {
-        return Err(error_value(g, 1, "structured serialization is not installed in this context"));
+        return Err(error_value(
+            g,
+            1,
+            "structured serialization is not installed in this context",
+        ));
     };
     if opts.for_storage && !opts.transfer.is_empty() {
-        return Err(dce(g, "A value serialized for storage cannot transfer anything."));
+        return Err(dce(
+            g,
+            "A value serialized for storage cannot transfer anything.",
+        ));
     }
     let mut e = Enc {
         g,
@@ -272,7 +301,10 @@ pub unsafe fn serialize(g: *mut c_void, v: u64, opts: &Options) -> Result<Serial
     e.value(v, 0)?;
     e.transfer(opts.transfer)?;
     let bytes = core::mem::take(&mut e.out);
-    let attachments = core::mem::take(&mut e.attachments).into_iter().map(|a| a.expect("every attachment slot is filled")).collect();
+    let attachments = core::mem::take(&mut e.attachments)
+        .into_iter()
+        .map(|a| a.expect("every attachment slot is filled"))
+        .collect();
     Ok(Serialized { bytes, attachments })
 }
 
@@ -282,7 +314,12 @@ pub unsafe fn serialize(g: *mut c_void, v: u64, opts: &Options) -> Result<Serial
 /// As [`serialize`].
 pub unsafe fn deserialize(g: *mut c_void, s: Serialized) -> Result<u64, u64> {
     let Serialized { bytes, attachments } = s;
-    decode(g, &bytes, Source::Owned(attachments.into_iter().map(Some).collect()), false)
+    decode(
+        g,
+        &bytes,
+        Source::Owned(attachments.into_iter().map(Some).collect()),
+        false,
+    )
 }
 
 /// Deserializes without consuming — once per receiver (BroadcastChannel).
@@ -420,7 +457,12 @@ pub unsafe fn refuse_platform_prototype(g: *mut c_void, proto: u64, interface: &
 ///
 /// # Safety
 /// As [`refuse_platform_prototype`].
-pub unsafe fn serialize_platform_prototype(g: *mut c_void, proto: u64, interface: &str, codec: HostCodec) {
+pub unsafe fn serialize_platform_prototype(
+    g: *mut c_void,
+    proto: u64,
+    interface: &str,
+    codec: HostCodec,
+) {
     mark(g, proto, interface, Some(codec));
 }
 
@@ -429,8 +471,17 @@ unsafe fn mark(g: *mut c_void, proto: u64, interface: &str, codec: Option<HostCo
         return;
     }
     crate::ffi::redjs_protect(g, proto);
-    let m = Marked { proto, interface: interface.to_string(), codec };
-    refused().lock().unwrap().entry(g as usize).or_default().push(m);
+    let m = Marked {
+        proto,
+        interface: interface.to_string(),
+        codec,
+    };
+    refused()
+        .lock()
+        .unwrap()
+        .entry(g as usize)
+        .or_default()
+        .push(m);
     ANY_REFUSED.store(true, std::sync::atomic::Ordering::Release);
 }
 
@@ -447,7 +498,13 @@ unsafe fn marked_interface(g: *mut c_void, v: u64) -> Option<Marked> {
 /// This context's codec for `interface`, if its host registered one.
 fn codec_for(g: *mut c_void, interface: &str) -> Option<HostCodec> {
     let list = refused().lock().unwrap();
-    list.get(&(g as usize))?.iter().find_map(|m| if m.interface == interface { m.codec } else { None })
+    list.get(&(g as usize))?.iter().find_map(|m| {
+        if m.interface == interface {
+            m.codec
+        } else {
+            None
+        }
+    })
 }
 
 pub unsafe fn install(g: *mut c_void) {
@@ -463,9 +520,14 @@ pub unsafe fn install(g: *mut c_void) {
     // %MapIteratorPrototype%.next and %SetIteratorPrototype%.next: reachable
     // only through an iterator instance.
     let iter_next = |c: u64, make_iter: u64| -> u64 {
-        let Ok(inst) = construct(g, c, &[]) else { return UNDEF };
-        let Ok(iter) = call(g, make_iter, inst, &[]) else { return UNDEF };
-        let p = crate::capi::JSObjectGetPrototype(g, iter as usize as crate::capi::JSObjectRef) as usize as u64;
+        let Ok(inst) = construct(g, c, &[]) else {
+            return UNDEF;
+        };
+        let Ok(iter) = call(g, make_iter, inst, &[]) else {
+            return UNDEF;
+        };
+        let p = crate::capi::JSObjectGetPrototype(g, iter as usize as crate::capi::JSObjectRef)
+            as usize as u64;
         keep(get(g, p, "next"))
     };
 
@@ -473,7 +535,8 @@ pub unsafe fn install(g: *mut c_void) {
     let set = ctor("Set");
     let map_entries = proto_fn(map, "entries");
     let set_values = proto_fn(set, "values");
-    let streams = ["ReadableStream", "WritableStream", "TransformStream"].map(|n| keep(get(g, get(g, global, n), "prototype")));
+    let streams = ["ReadableStream", "WritableStream", "TransformStream"]
+        .map(|n| keep(get(g, get(g, global, n), "prototype")));
     let it = Intrinsics {
         date: ctor("Date"),
         regexp: ctor("RegExp"),
@@ -501,11 +564,21 @@ pub unsafe fn install(g: *mut c_void) {
         a_transfer: atom(g, "transfer"),
         a_iterator: glue::rjs_atom_wellknown(g, 0),
     };
-    registry().lock().unwrap().insert(g as usize, Box::leak(Box::new(it)));
+    registry()
+        .lock()
+        .unwrap()
+        .insert(g as usize, Box::leak(Box::new(it)));
 
     let n16: Vec<u16> = "structuredClone".encode_utf16().collect();
     let mut f = UNDEF;
-    glue::rjs_function_create(g, n16.as_ptr(), n16.len(), 1, structured_clone as *const c_void, &mut f);
+    glue::rjs_function_create(
+        g,
+        n16.as_ptr(),
+        n16.len(),
+        1,
+        structured_clone as *const c_void,
+        &mut f,
+    );
     // A WebIDL operation on the global: writable, enumerable, configurable.
     define(g, global, "structuredClone", f, 0);
 }
@@ -517,7 +590,10 @@ pub unsafe fn install(g: *mut c_void) {
 #[crate::host_fn]
 unsafe fn structured_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to execute 'structuredClone': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to execute 'structuredClone': 1 argument required, but only 0 present.",
+        );
     }
     let Some(it) = intrinsics(g) else {
         return throw_type_error(g, "structuredClone is not installed in this context");
@@ -530,7 +606,15 @@ unsafe fn structured_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
             return UNDEF;
         }
     };
-    let r = serialize(g, cf_arg(cf, 0), &Options { for_storage: false, transfer: &transfer }).and_then(|s| deserialize(g, s));
+    let r = serialize(
+        g,
+        cf_arg(cf, 0),
+        &Options {
+            for_storage: false,
+            transfer: &transfer,
+        },
+    )
+    .and_then(|s| deserialize(g, s));
     drop(keep);
     match r {
         Ok(v) => v,
@@ -542,19 +626,30 @@ unsafe fn structured_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// WebIDL: `StructuredSerializeOptions` → `sequence<object> transfer`.
-unsafe fn transfer_option(g: *mut c_void, it: &Intrinsics, options: u64, keep: &mut KeepAlive) -> Result<Vec<u64>, u64> {
+unsafe fn transfer_option(
+    g: *mut c_void,
+    it: &Intrinsics,
+    options: u64,
+    keep: &mut KeepAlive,
+) -> Result<Vec<u64>, u64> {
     const WHAT: &str = "Failed to execute 'structuredClone'";
     if options == UNDEF || options == NULL {
         return Ok(Vec::new());
     }
     if !is_object(g, options) {
-        return Err(error_value(g, 1, &format!("{WHAT}: The provided value is not of type 'StructuredSerializeOptions'.")));
+        return Err(error_value(
+            g,
+            1,
+            &format!("{WHAT}: The provided value is not of type 'StructuredSerializeOptions'."),
+        ));
     }
     let t = get_x(g, options, it.a_transfer)?;
     if t == UNDEF {
         return Ok(Vec::new());
     }
-    let not_seq = || error_value(g, 1, &format!("{WHAT}: Failed to read the 'transfer' property from 'StructuredSerializeOptions': The provided value cannot be converted to a sequence."));
+    let not_seq = || {
+        error_value(g, 1, &format!("{WHAT}: Failed to read the 'transfer' property from 'StructuredSerializeOptions': The provided value cannot be converted to a sequence."))
+    };
     if !is_object(g, t) {
         return Err(not_seq());
     }
@@ -564,11 +659,19 @@ unsafe fn transfer_option(g: *mut c_void, it: &Intrinsics, options: u64, keep: &
     }
     let iter = call(g, method, t, &[])?;
     if !is_object(g, iter) {
-        return Err(error_value(g, 1, "Result of the Symbol.iterator method is not an object"));
+        return Err(error_value(
+            g,
+            1,
+            "Result of the Symbol.iterator method is not an object",
+        ));
     }
     let next = get_x(g, iter, it.a_next)?;
     if glue::rjs_kind(g, next) != 9 {
-        return Err(error_value(g, 1, "The iterator's 'next' method is not callable"));
+        return Err(error_value(
+            g,
+            1,
+            "The iterator's 'next' method is not callable",
+        ));
     }
     let mut out = Vec::new();
     loop {
@@ -657,7 +760,9 @@ const DEPTH_FALLBACK: u32 = 2048;
 
 impl StackGuard {
     unsafe fn new(g: *mut c_void) -> StackGuard {
-        StackGuard { limit: glue::rjs_stack_soft_limit(g) }
+        StackGuard {
+            limit: glue::rjs_stack_soft_limit(g),
+        }
     }
 
     #[inline(never)]
@@ -881,21 +986,30 @@ impl Enc {
         let g = self.g;
         for (i, &t) in transfer.iter().enumerate() {
             if !is_object(g, t) {
-                return Err(dce(g, &format!("Value at index {i} of the transfer list is not an object.")));
+                return Err(dce(
+                    g,
+                    &format!("Value at index {i} of the transfer list is not an object."),
+                ));
             }
             let mut info = RjsBrandInfo::default();
             let b = glue::rjs_brand(g, t, &mut info);
             let tg = if b == brand::ARRAY_BUFFER {
                 tag::TRANSFERRED_BUFFER
             } else if b == brand::SHARED_ARRAY_BUFFER {
-                return Err(dce(g, &format!("SharedArrayBuffer at index {i} is not transferable.")));
+                return Err(dce(
+                    g,
+                    &format!("SharedArrayBuffer at index {i} is not transferable."),
+                ));
             } else if super::image::bitmap_of(g, t).is_some() {
                 tag::IMAGE_BITMAP
             } else if self.it.streams.iter().any(|&p| proto_chain_has(g, t, p)) {
                 advise_stream_transfer();
                 return Err(dce(g, &format!("Value at index {i} is a stream; transferring streams is not supported in this runtime.")));
             } else {
-                return Err(dce(g, &format!("Value at index {i} does not have a transferable type.")));
+                return Err(dce(
+                    g,
+                    &format!("Value at index {i} does not have a transferable type."),
+                ));
             };
             if self.attach_of.contains_key(&t) {
                 return Err(dce(g, &format!("Value at index {i} is a duplicate of an earlier entry in the transfer list.")));
@@ -916,7 +1030,10 @@ impl Enc {
                 let mut info = RjsBrandInfo::default();
                 glue::rjs_brand(g, t, &mut info);
                 if info.flags & brand::F_DETACHED != 0 {
-                    return Err(dce(g, &format!("ArrayBuffer at index {i} is already detached.")));
+                    return Err(dce(
+                        g,
+                        &format!("ArrayBuffer at index {i} is already detached."),
+                    ));
                 }
                 let n = info.byte_length as usize;
                 let bytes = if n == 0 || info.data.is_null() {
@@ -924,23 +1041,41 @@ impl Enc {
                 } else {
                     core::slice::from_raw_parts(info.data as *const u8, n).to_vec()
                 };
-                let max_byte_length = (info.flags & brand::F_RESIZABLE != 0).then_some(info.max_byte_length);
+                let max_byte_length =
+                    (info.flags & brand::F_RESIZABLE != 0).then_some(info.max_byte_length);
                 if glue::rjs_arraybuffer_detach(g, t) != 0 {
-                    return Err(error_value(g, 1, &format!("ArrayBuffer at index {i} cannot be detached.")));
+                    return Err(error_value(
+                        g,
+                        1,
+                        &format!("ArrayBuffer at index {i} cannot be detached."),
+                    ));
                 }
-                self.attachments[i] = Some(Attachment::TransferredBuffer { bytes, max_byte_length });
+                self.attachments[i] = Some(Attachment::TransferredBuffer {
+                    bytes,
+                    max_byte_length,
+                });
             } else {
                 let Some(b) = super::image::bitmap_of(g, t) else {
-                    return Err(dce(g, &format!("Value at index {i} does not have a transferable type.")));
+                    return Err(dce(
+                        g,
+                        &format!("Value at index {i} does not have a transferable type."),
+                    ));
                 };
                 if b.width == 0 || b.height == 0 {
-                    return Err(dce(g, &format!("ImageBitmap at index {i} is already detached.")));
+                    return Err(dce(
+                        g,
+                        &format!("ImageBitmap at index {i} is already detached."),
+                    ));
                 }
                 let rgba = core::mem::take(&mut b.rgba);
                 let (width, height) = (b.width, b.height);
                 b.width = 0;
                 b.height = 0;
-                self.attachments[i] = Some(Attachment::Bitmap { width, height, rgba });
+                self.attachments[i] = Some(Attachment::Bitmap {
+                    width,
+                    height,
+                    rgba,
+                });
             }
         }
         Ok(())
@@ -1172,12 +1307,19 @@ impl Enc {
         let mut binfo = RjsBrandInfo::default();
         glue::rjs_brand(g, buf, &mut binfo);
         if info.flags & brand::F_DETACHED != 0 || binfo.flags & brand::F_DETACHED != 0 {
-            return Err(dce(g, "An ArrayBuffer is detached and could not be cloned."));
+            return Err(dce(
+                g,
+                "An ArrayBuffer is detached and could not be cloned.",
+            ));
         }
         // IsArrayBufferViewOutOfBounds (a resizable buffer that shrank).
         let tracking = info.flags & brand::F_LENGTH_TRACKING != 0;
         let blen = binfo.byte_length;
-        let end = info.byte_offset.saturating_add(if tracking { 0 } else { info.length.saturating_mul(ELEM_SIZE[kind]) });
+        let end = info.byte_offset.saturating_add(if tracking {
+            0
+        } else {
+            info.length.saturating_mul(ELEM_SIZE[kind])
+        });
         if binfo.brand == brand::ARRAY_BUFFER && end > blen {
             return Err(dce(g, "A view that is out of bounds could not be cloned."));
         }
@@ -1243,7 +1385,9 @@ impl Enc {
         let name = get_x(g, v, it.a_name)?;
         let name_ix = match js_str(g, name) {
             Some(JsStr::Latin1(b)) => ERROR_NAMES.iter().position(|n| n.as_bytes() == b),
-            Some(JsStr::Utf16(u)) => ERROR_NAMES.iter().position(|n| n.encode_utf16().eq(u.iter().copied())),
+            Some(JsStr::Utf16(u)) => ERROR_NAMES
+                .iter()
+                .position(|n| n.encode_utf16().eq(u.iter().copied())),
             None => None,
         }
         .unwrap_or(0);
@@ -1265,7 +1409,11 @@ impl Enc {
         self.memo(v);
         self.put(tag::ERROR);
         self.put(name_ix as u8);
-        self.put((message.is_some() as u8) | ((stack.is_some() as u8) << 1) | ((cause.is_some() as u8) << 2));
+        self.put(
+            (message.is_some() as u8)
+                | ((stack.is_some() as u8) << 1)
+                | ((cause.is_some() as u8) << 2),
+        );
         if let Some(m) = message {
             self.string(m)?;
         }
@@ -1284,7 +1432,9 @@ impl Enc {
             return Err(dce(g, "This platform object could not be cloned."));
         };
         let stack = own_data(g, v, self.it.a_stack)?.filter(|&s| glue::rjs_kind(g, s) == 5);
-        let (q, r) = quota.map(|(q, r)| (dec_f64(q), dec_f64(r))).unwrap_or((None, None));
+        let (q, r) = quota
+            .map(|(q, r)| (dec_f64(q), dec_f64(r)))
+            .unwrap_or((None, None));
         self.memo(v);
         self.put(tag::DOMEXCEPTION);
         self.put(quota.is_some() as u8);
@@ -1306,7 +1456,10 @@ impl Enc {
     unsafe fn marked(&mut self, v: u64, m: Marked) -> R {
         let g = self.g;
         let Some(codec) = m.codec else {
-            return Err(dce(g, &format!("{} object could not be cloned.", m.interface)));
+            return Err(dce(
+                g,
+                &format!("{} object could not be cloned.", m.interface),
+            ));
         };
         let bytes = (codec.encode)(g, v).map_err(|msg| dce(g, &msg))?;
         self.memo(v);
@@ -1327,8 +1480,13 @@ impl Enc {
                 // Inline: the bytes now, read straight into the output, under
                 // the snapshot rule if the Blob is path-backed (see the module
                 // docs). Room for them first: too large is a DataCloneError.
-                if matches!(range.source, super::blob::Source::Disk(_)) && range.len > super::blob::SYNC_READ_ADVISORY_BYTES {
-                    super::blob::advise_sync_read("IndexedDB (a value written for storage)", range.len);
+                if matches!(range.source, super::blob::Source::Disk(_))
+                    && range.len > super::blob::SYNC_READ_ADVISORY_BYTES
+                {
+                    super::blob::advise_sync_read(
+                        "IndexedDB (a value written for storage)",
+                        range.len,
+                    );
                 }
                 self.memo(v);
                 self.put(if file.is_some() { tag::FILE } else { tag::BLOB });
@@ -1347,7 +1505,9 @@ impl Enc {
                 }
             } else {
                 match file {
-                    Some(file) => self.extra(v, tag::FILE_REF, Attachment::FileRef { range, mime, file }),
+                    Some(file) => {
+                        self.extra(v, tag::FILE_REF, Attachment::FileRef { range, mime, file })
+                    }
                     None => self.extra(v, tag::BLOB_REF, Attachment::BlobRef { range, mime }),
                 }
             }
@@ -1364,12 +1524,22 @@ impl Enc {
         }
         if let Some(b) = super::image::bitmap_of(g, v) {
             if b.width == 0 || b.height == 0 {
-                return Err(dce(g, "An ImageBitmap is detached and could not be cloned."));
+                return Err(dce(
+                    g,
+                    "An ImageBitmap is detached and could not be cloned.",
+                ));
             }
             if self.for_storage {
-                return Err(dce(g, "An ImageBitmap could not be serialized for storage."));
+                return Err(dce(
+                    g,
+                    "An ImageBitmap could not be serialized for storage.",
+                ));
             }
-            let a = Attachment::Bitmap { width: b.width, height: b.height, rgba: b.rgba.clone() };
+            let a = Attachment::Bitmap {
+                width: b.width,
+                height: b.height,
+                rgba: b.rgba.clone(),
+            };
             self.extra(v, tag::IMAGE_BITMAP, a);
             return Ok(());
         }
@@ -1454,13 +1624,31 @@ struct Dec<'a> {
 unsafe fn decode(g: *mut c_void, bytes: &[u8], src: Source, storage: bool) -> Result<u64, u64> {
     let _lock = Locked::new(g);
     let Some(it) = intrinsics(g) else {
-        return Err(error_value(g, 1, "structured serialization is not installed in this context"));
+        return Err(error_value(
+            g,
+            1,
+            "structured serialization is not installed in this context",
+        ));
     };
-    if bytes.len() < 5 || bytes[..3] != MAGIC || bytes[3] != VERSION || bytes[4] & !FLAG_STORAGE != 0 {
+    if bytes.len() < 5
+        || bytes[..3] != MAGIC
+        || bytes[3] != VERSION
+        || bytes[4] & !FLAG_STORAGE != 0
+    {
         return Err(corrupt(g));
     }
     let src = if storage { Source::None } else { src };
-    let mut d = Dec { g, it, buf: bytes, pos: 5, ids: Vec::new(), keep: KeepAlive::new(g), src, cache: HashMap::new(), stack: StackGuard::new(g) };
+    let mut d = Dec {
+        g,
+        it,
+        buf: bytes,
+        pos: 5,
+        ids: Vec::new(),
+        keep: KeepAlive::new(g),
+        src,
+        cache: HashMap::new(),
+        stack: StackGuard::new(g),
+    };
     let v = d.value(0)?;
     if d.pos != bytes.len() {
         return Err(corrupt(g));
@@ -1469,7 +1657,10 @@ unsafe fn decode(g: *mut c_void, bytes: &[u8], src: Source, storage: bool) -> Re
 }
 
 unsafe fn corrupt(g: *mut c_void) -> u64 {
-    dce(g, "The serialized data is corrupt and could not be deserialized.")
+    dce(
+        g,
+        "The serialized data is corrupt and could not be deserialized.",
+    )
 }
 
 impl<'a> Dec<'a> {
@@ -1550,7 +1741,10 @@ impl<'a> Dec<'a> {
             glue::rjs_string_latin1(self.g, b.as_ptr(), b.len(), &mut out);
         } else {
             let b = self.bytes(n.checked_mul(2).unwrap_or(u64::MAX))?;
-            let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = b
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
             glue::rjs_string16(self.g, units.as_ptr(), units.len(), &mut out);
         }
         Ok(out)
@@ -1603,7 +1797,9 @@ impl<'a> Dec<'a> {
                     _ => self.bad(),
                 }
             }
-            tag::TRANSFERRED_BUFFER | tag::IMAGE_BITMAP | tag::BLOB_REF | tag::FILE_REF => self.attachment(t),
+            tag::TRANSFERRED_BUFFER | tag::IMAGE_BITMAP | tag::BLOB_REF | tag::FILE_REF => {
+                self.attachment(t)
+            }
             _ => {
                 if !self.stack.ok(depth) {
                     return Err(stack_overflow(self.g));
@@ -1741,7 +1937,11 @@ impl<'a> Dec<'a> {
                     let m = self.string()?;
                     glue::rjs_define(g, e, it.a_message, m, 2);
                 }
-                let stack = if mask & 2 != 0 { Some(self.string()?) } else { None };
+                let stack = if mask & 2 != 0 {
+                    Some(self.string()?)
+                } else {
+                    None
+                };
                 self.set_stack(e, stack);
                 if mask & 4 != 0 {
                     let c = self.value(depth + 1)?;
@@ -1751,7 +1951,11 @@ impl<'a> Dec<'a> {
             }
             tag::ARRAY_BUFFER | tag::RESIZABLE_ARRAY_BUFFER => {
                 let n = self.varint()?;
-                let max = if t == tag::RESIZABLE_ARRAY_BUFFER { Some(self.varint()?) } else { None };
+                let max = if t == tag::RESIZABLE_ARRAY_BUFFER {
+                    Some(self.varint()?)
+                } else {
+                    None
+                };
                 if max.is_some_and(|m| m < n) {
                     return self.bad();
                 }
@@ -1807,7 +2011,12 @@ impl<'a> Dec<'a> {
                     offset: 0,
                     len,
                     mime,
-                    file: Some(super::blob::FileMeta { name, last_modified, relative_path, backed: false }),
+                    file: Some(super::blob::FileMeta {
+                        name,
+                        last_modified,
+                        relative_path,
+                        backed: false,
+                    }),
                 };
                 let f = super::file::from_data(g, data);
                 if !is_cell(f) {
@@ -1819,7 +2028,8 @@ impl<'a> Dec<'a> {
             tag::FILE_LIST => {
                 let slot = self.reserve();
                 let n = self.varint()?;
-                let mut files = Vec::with_capacity(n.min((self.buf.len() - self.pos) as u64) as usize);
+                let mut files =
+                    Vec::with_capacity(n.min((self.buf.len() - self.pos) as u64) as usize);
                 for _ in 0..n {
                     let f = self.value(depth + 1)?;
                     if !super::file::is_file(g, f) {
@@ -1842,7 +2052,9 @@ impl<'a> Dec<'a> {
                 }
                 let slot = self.reserve();
                 let data = self.value(depth + 1)?;
-                let Some(v) = super::platform::create_image_data(g, data, w, h) else { return self.bad() };
+                let Some(v) = super::platform::create_image_data(g, data, w, h) else {
+                    return self.bad();
+                };
                 self.fill(slot, v);
                 Ok(v)
             }
@@ -1856,7 +2068,9 @@ impl<'a> Dec<'a> {
                 for c in &mut p {
                     *c = self.f64()?;
                 }
-                let Some(v) = super::geometry::create_point(g, p, read_only) else { return self.bad() };
+                let Some(v) = super::geometry::create_point(g, p, read_only) else {
+                    return self.bad();
+                };
                 self.memo(v);
                 Ok(v)
             }
@@ -1870,7 +2084,9 @@ impl<'a> Dec<'a> {
                 for c in &mut r {
                     *c = self.f64()?;
                 }
-                let Some(v) = super::geometry::create_rect(g, r, read_only) else { return self.bad() };
+                let Some(v) = super::geometry::create_rect(g, r, read_only) else {
+                    return self.bad();
+                };
                 self.memo(v);
                 Ok(v)
             }
@@ -1893,7 +2109,9 @@ impl<'a> Dec<'a> {
                     }
                     super::geometry::Mat::from_16(v)
                 };
-                let Some(v) = super::geometry::create_matrix(g, m, read_only == 1) else { return self.bad() };
+                let Some(v) = super::geometry::create_matrix(g, m, read_only == 1) else {
+                    return self.bad();
+                };
                 self.memo(v);
                 Ok(v)
             }
@@ -1905,11 +2123,25 @@ impl<'a> Dec<'a> {
                 if kind > 1 || mask & !7 != 0 || (kind == 0 && mask & 6 != 0) {
                     return self.bad();
                 }
-                let stack = if mask & 1 != 0 { Some(self.string()?) } else { None };
-                let q = if mask & 2 != 0 { enc_f64(self.f64()?) } else { NULL };
-                let r = if mask & 4 != 0 { enc_f64(self.f64()?) } else { NULL };
+                let stack = if mask & 1 != 0 {
+                    Some(self.string()?)
+                } else {
+                    None
+                };
+                let q = if mask & 2 != 0 {
+                    enc_f64(self.f64()?)
+                } else {
+                    NULL
+                };
+                let r = if mask & 4 != 0 {
+                    enc_f64(self.f64()?)
+                } else {
+                    NULL
+                };
                 let quota = (kind == 1).then_some((q, r));
-                let Some(e) = super::domexception::from_raw(g, name, message, quota) else { return self.bad() };
+                let Some(e) = super::domexception::from_raw(g, name, message, quota) else {
+                    return self.bad();
+                };
                 self.memo(e);
                 self.set_stack(e, stack);
                 Ok(e)
@@ -1920,7 +2152,9 @@ impl<'a> Dec<'a> {
                 let n = self.varint()?;
                 let bytes = self.bytes(n)?;
                 // Blink's words where a receiver cannot make the interface.
-                let Some(codec) = codec_for(g, &interface) else { return Err(dce(g, "Unable to deserialize cloned data.")) };
+                let Some(codec) = codec_for(g, &interface) else {
+                    return Err(dce(g, "Unable to deserialize cloned data."));
+                };
                 let v = (codec.decode)(g, bytes).map_err(|msg| dce(g, &msg))?;
                 if !is_object(g, v) {
                     return self.bad();
@@ -1947,11 +2181,25 @@ impl<'a> Dec<'a> {
             Source::Borrowed(list) => list.get(ix).cloned(),
         };
         let v = match (t, a) {
-            (tag::TRANSFERRED_BUFFER, Some(Attachment::TransferredBuffer { bytes, max_byte_length })) => {
-                new_buffer(g, self.it, &bytes, max_byte_length).or_else(|_| self.bad())?
-            }
-            (tag::IMAGE_BITMAP, Some(Attachment::Bitmap { width, height, rgba })) => {
-                if width == 0 || height == 0 || rgba.len() as u64 != width as u64 * height as u64 * 4 {
+            (
+                tag::TRANSFERRED_BUFFER,
+                Some(Attachment::TransferredBuffer {
+                    bytes,
+                    max_byte_length,
+                }),
+            ) => new_buffer(g, self.it, &bytes, max_byte_length).or_else(|_| self.bad())?,
+            (
+                tag::IMAGE_BITMAP,
+                Some(Attachment::Bitmap {
+                    width,
+                    height,
+                    rgba,
+                }),
+            ) => {
+                if width == 0
+                    || height == 0
+                    || rgba.len() as u64 != width as u64 * height as u64 * 4
+                {
                     return self.bad();
                 }
                 super::image::create_bitmap(g, super::image::BitmapData::new(width, height, rgba))
@@ -1960,14 +2208,26 @@ impl<'a> Dec<'a> {
                 if !range.fits() {
                     return self.bad();
                 }
-                let data = super::blob::BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: None };
+                let data = super::blob::BlobData {
+                    source: range.source,
+                    offset: range.offset,
+                    len: range.len,
+                    mime,
+                    file: None,
+                };
                 super::blob::from_data(g, data)
             }
             (tag::FILE_REF, Some(Attachment::FileRef { range, mime, file })) => {
                 if !range.fits() {
                     return self.bad();
                 }
-                let data = super::blob::BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: Some(file) };
+                let data = super::blob::BlobData {
+                    source: range.source,
+                    offset: range.offset,
+                    len: range.len,
+                    mime,
+                    file: Some(file),
+                };
                 let f = super::file::from_data(g, data);
                 if !is_cell(f) {
                     return self.bad();
@@ -2024,14 +2284,23 @@ mod tests {
     #[test]
     fn a_refused_platform_prototype_is_a_data_clone_error() {
         let c = ctx();
-        s(&c, "globalThis.Reader = class Reader {}; globalThis.Sub = class extends Reader {}; 0");
+        s(
+            &c,
+            "globalThis.Reader = class Reader {}; globalThis.Sub = class extends Reader {}; 0",
+        );
         unsafe {
             let g = c.raw();
             let reader = get(g, glue::rjs_global(g), "Reader");
             super::refuse_platform_prototype(g, get(g, reader, "prototype"), "FileReader");
         }
-        assert_eq!(thrown(&c, "structuredClone(new Reader())"), "DOMException:DataCloneError/25");
-        assert_eq!(thrown(&c, "structuredClone({ inner: [new Sub()] })"), "DOMException:DataCloneError/25");
+        assert_eq!(
+            thrown(&c, "structuredClone(new Reader())"),
+            "DOMException:DataCloneError/25"
+        );
+        assert_eq!(
+            thrown(&c, "structuredClone({ inner: [new Sub()] })"),
+            "DOMException:DataCloneError/25"
+        );
         assert_eq!(
             s(&c, "(() => { try { structuredClone(new Reader()); } catch (e) { return e.message; } })()"),
             "FileReader object could not be cloned."
@@ -2050,9 +2319,11 @@ mod tests {
     }
 
     unsafe fn tok_decode(g: *mut c_void, bytes: &[u8]) -> Result<u64, String> {
-        let t = std::str::from_utf8(bytes).map_err(|_| "Unable to deserialize cloned data.".to_string())?;
+        let t = std::str::from_utf8(bytes)
+            .map_err(|_| "Unable to deserialize cloned data.".to_string())?;
         let make = get(g, glue::rjs_global(g), "makeTok");
-        call(g, make, UNDEF, &[js_string(g, t)]).map_err(|_| "Unable to deserialize cloned data.".to_string())
+        call(g, make, UNDEF, &[js_string(g, t)])
+            .map_err(|_| "Unable to deserialize cloned data.".to_string())
     }
 
     /// A host's script class for a [Serializable] interface (skathi's
@@ -2063,7 +2334,10 @@ mod tests {
         let c = ctx();
         s(&c, "globalThis.Tok = class Tok { constructor(t) { this.tok = t; } }; globalThis.SubTok = class extends Tok {}; \
                globalThis.makeTok = t => { const k = new SubTok(t); k.made = true; return k; }; 0");
-        let codec = HostCodec { encode: tok_encode, decode: tok_decode };
+        let codec = HostCodec {
+            encode: tok_encode,
+            decode: tok_decode,
+        };
         unsafe {
             let g = c.raw();
             let tok = get(g, glue::rjs_global(g), "Tok");
@@ -2074,7 +2348,10 @@ mod tests {
         // Own properties beside the host's state are the host's business: not copied.
         ok(&c, "(() => { const k = new Tok('b'); k.extra = 1; return !('extra' in structuredClone(k)); })()");
         // The codec's refusal is a DataCloneError with its message.
-        assert_eq!(thrown(&c, "structuredClone(new Tok(''))"), "DOMException:DataCloneError/25");
+        assert_eq!(
+            thrown(&c, "structuredClone(new Tok(''))"),
+            "DOMException:DataCloneError/25"
+        );
         assert_eq!(s(&c, "(() => { try { structuredClone(new Tok('')); } catch (e) { return e.message; } })()"), "Tok object could not be cloned.");
         unsafe {
             let g = c.raw();
@@ -2083,19 +2360,28 @@ mod tests {
             assert!(st.bytes.contains(&tag::HOST_OBJECT));
             let v = deserialize_storage(g, &st.bytes).unwrap();
             define(g, glue::rjs_global(g), "fromDisk", v, 0);
-            ok(&c, "fromDisk.k instanceof Tok && fromDisk.k.tok === 'disk' && fromDisk.n === 1");
+            ok(
+                &c,
+                "fromDisk.k instanceof Tok && fromDisk.k.tok === 'disk' && fromDisk.n === 1",
+            );
             #[cfg(feature = "indexeddb")]
             {
                 use crate::webapi::indexeddb::{key::Key, keypath::KeyPath, svalue::Parsed};
                 let p = Parsed::parse(&st.bytes).expect("key paths parse around it");
-                assert_eq!(p.extract(&KeyPath::String("n".encode_utf16().collect())), Ok(Some(Key::Number(1.0))));
+                assert_eq!(
+                    p.extract(&KeyPath::String("n".encode_utf16().collect())),
+                    Ok(Some(Key::Number(1.0)))
+                );
             }
 
             // A context whose host registered no codec for the interface.
             let other = ctx();
             let e = deserialize_storage(other.raw(), &st.bytes).expect_err("decoded with no codec");
             define(other.raw(), glue::rjs_global(other.raw()), "noCodec", e, 0);
-            assert_eq!(s(&other, "noCodec.name + ': ' + noCodec.message"), "DataCloneError: Unable to deserialize cloned data.");
+            assert_eq!(
+                s(&other, "noCodec.name + ': ' + noCodec.message"),
+                "DataCloneError: Unable to deserialize cloned data."
+            );
         }
     }
 
@@ -2243,9 +2529,21 @@ mod tests {
         // Resizable transfers stay resizable.
         ok(&c, "(() => { const b = new ArrayBuffer(2, { maxByteLength: 8 }); const r = structuredClone(b, { transfer: [b] }); return b.byteLength === 0 && r.resizable && r.maxByteLength === 8 && r.byteLength === 2; })()");
         // Refusals, and a failed serialize detaches nothing.
-        assert_eq!(thrown(&c, "const b = new ArrayBuffer(1); structuredClone(0, { transfer: [b, b] })"), "DOMException:DataCloneError/25");
-        assert_eq!(thrown(&c, "structuredClone(0, { transfer: [{}] })"), "DOMException:DataCloneError/25");
-        assert_eq!(thrown(&c, "structuredClone(0, { transfer: [new Uint8Array(1)] })"), "DOMException:DataCloneError/25");
+        assert_eq!(
+            thrown(
+                &c,
+                "const b = new ArrayBuffer(1); structuredClone(0, { transfer: [b, b] })"
+            ),
+            "DOMException:DataCloneError/25"
+        );
+        assert_eq!(
+            thrown(&c, "structuredClone(0, { transfer: [{}] })"),
+            "DOMException:DataCloneError/25"
+        );
+        assert_eq!(
+            thrown(&c, "structuredClone(0, { transfer: [new Uint8Array(1)] })"),
+            "DOMException:DataCloneError/25"
+        );
         ok(&c, "(() => { const b = new ArrayBuffer(4); try { structuredClone({ b, f() {} }, { transfer: [b] }); } catch (e) {} return b.byteLength === 4; })()");
         // Detached mid-walk by a getter → DataCloneError at the detach step.
         assert_eq!(
@@ -2255,11 +2553,29 @@ mod tests {
         // WebIDL conversion of the options.
         assert_eq!(thrown(&c, "structuredClone()"), "TypeError/-");
         assert_eq!(thrown(&c, "structuredClone(1, 5)"), "TypeError/-");
-        assert_eq!(thrown(&c, "structuredClone(1, { transfer: 5 })"), "TypeError/-");
-        assert_eq!(thrown(&c, "structuredClone(1, { transfer: [1] })"), "TypeError/-");
-        assert_eq!(s(&c, "structuredClone(7, null) + structuredClone(1, { transfer: undefined })"), "8");
+        assert_eq!(
+            thrown(&c, "structuredClone(1, { transfer: 5 })"),
+            "TypeError/-"
+        );
+        assert_eq!(
+            thrown(&c, "structuredClone(1, { transfer: [1] })"),
+            "TypeError/-"
+        );
+        assert_eq!(
+            s(
+                &c,
+                "structuredClone(7, null) + structuredClone(1, { transfer: undefined })"
+            ),
+            "8"
+        );
         // A stream in the list: refused, with the one-shot advisory.
-        assert_eq!(thrown(&c, "structuredClone(0, { transfer: [new ReadableStream()] })"), "DOMException:DataCloneError/25");
+        assert_eq!(
+            thrown(
+                &c,
+                "structuredClone(0, { transfer: [new ReadableStream()] })"
+            ),
+            "DOMException:DataCloneError/25"
+        );
     }
 
     #[test]
@@ -2307,18 +2623,39 @@ mod tests {
         let c = ctx();
         unsafe {
             let g = c.raw();
-            let bm = super::super::image::create_bitmap(g, super::super::image::BitmapData::new(1, 1, vec![1, 2, 3, 4]));
+            let bm = super::super::image::create_bitmap(
+                g,
+                super::super::image::BitmapData::new(1, 1, vec![1, 2, 3, 4]),
+            );
             define(g, glue::rjs_global(g), "bm", bm, 0);
         }
         ok(&c, "(() => { const r = structuredClone(bm); return r instanceof ImageBitmap && r !== bm && r.width === 1 && bm.width === 1; })()");
-        ok(&c, "(() => { const r = structuredClone({ a: bm, b: bm }); return r.a === r.b; })()");
+        ok(
+            &c,
+            "(() => { const r = structuredClone({ a: bm, b: bm }); return r.a === r.b; })()",
+        );
         ok(&c, "(() => { const r = structuredClone(bm, { transfer: [bm] }); return r.width === 1 && bm.width === 0; })()");
-        assert_eq!(thrown(&c, "structuredClone(bm)"), "DOMException:DataCloneError/25");
+        assert_eq!(
+            thrown(&c, "structuredClone(bm)"),
+            "DOMException:DataCloneError/25"
+        );
     }
 
-    unsafe fn ser(c: &crate::api::Context, src: &str, for_storage: bool) -> Result<Serialized, String> {
+    unsafe fn ser(
+        c: &crate::api::Context,
+        src: &str,
+        for_storage: bool,
+    ) -> Result<Serialized, String> {
         let v = c.eval(src).unwrap();
-        serialize(c.raw(), v.0, &Options { for_storage, transfer: &[] }).map_err(|e| c.error_info(crate::api::Value(e)).0)
+        serialize(
+            c.raw(),
+            v.0,
+            &Options {
+                for_storage,
+                transfer: &[],
+            },
+        )
+        .map_err(|e| c.error_info(crate::api::Value(e)).0)
     }
 
     #[test]
@@ -2328,10 +2665,18 @@ mod tests {
             let got = ser(&c, "({ a: 1, b: [true] })", false).unwrap();
             assert_eq!(
                 got.bytes,
-                [b'R', b'J', b'S', 1, 0, 0x11, 0x08, 1, b'a', 0x05, 2, 0x08, 1, b'b', 0x12, 1, 0x0A, 0, 0x04, 0x0F, 0x0F]
+                [
+                    b'R', b'J', b'S', 1, 0, 0x11, 0x08, 1, b'a', 0x05, 2, 0x08, 1, b'b', 0x12, 1,
+                    0x0A, 0, 0x04, 0x0F, 0x0F
+                ]
             );
             assert!(got.attachments.is_empty());
-            let got = ser(&c, "(() => { const o = {}; return [o, o, -1, 'é\\u0100', 2n, new Date(0)]; })()", true).unwrap();
+            let got = ser(
+                &c,
+                "(() => { const o = {}; return [o, o, -1, 'é\\u0100', 2n, new Date(0)]; })()",
+                true,
+            )
+            .unwrap();
             let mut want = vec![b'R', b'J', b'S', 1, FLAG_STORAGE, 0x12, 6];
             want.extend([0x0A, 0, 0x11, 0x0F]); // [0] = {} (id 1; the array is id 0)
             want.extend([0x0A, 1, 0x10, 1]); // [1] = ref 1
@@ -2350,13 +2695,21 @@ mod tests {
         let c = ctx();
         unsafe {
             let g = c.raw();
-            let s = ser(&c, "({ b: new Blob(['xyz'], { type: 'a/b' }), m: new Map([[1, new Set([2])]]) })", true).unwrap();
+            let s = ser(
+                &c,
+                "({ b: new Blob(['xyz'], { type: 'a/b' }), m: new Map([[1, new Set([2])]]) })",
+                true,
+            )
+            .unwrap();
             assert!(s.attachments.is_empty());
             let v = deserialize_storage(g, &s.bytes).unwrap();
             define(g, glue::rjs_global(g), "fromDisk", v, 0);
             ok(&c, "fromDisk.b instanceof Blob && fromDisk.b.type === 'a/b' && fromDisk.b.size === 3 && fromDisk.m.get(1).has(2)");
 
-            let bm = super::super::image::create_bitmap(g, super::super::image::BitmapData::new(1, 1, vec![0; 4]));
+            let bm = super::super::image::create_bitmap(
+                g,
+                super::super::image::BitmapData::new(1, 1, vec![0; 4]),
+            );
             define(g, glue::rjs_global(g), "bm2", bm, 0);
             let e = ser(&c, "({ bm2 })", true).unwrap_err();
             assert!(e.contains("storage"), "{e}");
@@ -2395,7 +2748,10 @@ mod tests {
             for bad in &cases {
                 let e = deserialize_storage(g, bad).expect_err("corrupt bytes decoded");
                 define(g, glue::rjs_global(g), "corruptErr", e, 0);
-                ok(&c, "corruptErr instanceof DOMException && corruptErr.name === 'DataCloneError'");
+                ok(
+                    &c,
+                    "corruptErr instanceof DOMException && corruptErr.name === 'DataCloneError'",
+                );
             }
             // A NaN with a payload reads as the one NaN.
             let mut nan = b"RJS\x01\x00\x06".to_vec();

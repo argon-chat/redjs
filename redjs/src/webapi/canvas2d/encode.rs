@@ -8,7 +8,13 @@
 use image::ImageEncoder;
 
 /// The type this produces for `requested`, and its bytes, for straight RGBA.
-pub fn encode(rgba: &[u8], width: u32, height: u32, requested: &str, quality: Option<f64>) -> (String, Vec<u8>) {
+pub fn encode(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    requested: &str,
+    quality: Option<f64>,
+) -> (String, Vec<u8>) {
     let ty = requested.trim().to_ascii_lowercase();
     let q = quality.filter(|q| (0.0..=1.0).contains(q));
     let mut out = Vec::new();
@@ -45,17 +51,31 @@ pub fn encode(rgba: &[u8], width: u32, height: u32, requested: &str, quality: Op
         return (ty, out);
     }
     out.clear();
-    let _ = image::codecs::png::PngEncoder::new(&mut out).write_image(rgba, width, height, image::ExtendedColorType::Rgba8);
+    let _ = image::codecs::png::PngEncoder::new(&mut out).write_image(
+        rgba,
+        width,
+        height,
+        image::ExtendedColorType::Rgba8,
+    );
     ("image/png".to_string(), out)
 }
 
 /// `toDataURL`: `"data:,"` for an empty bitmap, as HTML has it.
-pub fn data_url(rgba: &[u8], width: u32, height: u32, requested: &str, quality: Option<f64>) -> String {
+pub fn data_url(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    requested: &str,
+    quality: Option<f64>,
+) -> String {
     if width == 0 || height == 0 {
         return "data:,".to_string();
     }
     let (ty, bytes) = encode(rgba, width, height, requested, quality);
-    format!("data:{ty};base64,{}", super::super::fsutil::b64_encode(&bytes))
+    format!(
+        "data:{ty};base64,{}",
+        super::super::fsutil::b64_encode(&bytes)
+    )
 }
 
 #[cfg(test)]

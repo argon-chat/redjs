@@ -26,7 +26,10 @@ fn wait_flags(c: &Context, flags: u32, ms: u64) -> (String, u32) {
             break r;
         }
         if Instant::now() > deadline {
-            break format!("TIMEOUT; log: {}", s(c, "JSON.stringify(globalThis.__log || [])"));
+            break format!(
+                "TIMEOUT; log: {}",
+                s(c, "JSON.stringify(globalThis.__log || [])")
+            );
         }
         std::thread::sleep(Duration::from_millis(1));
     };
@@ -120,7 +123,10 @@ fn error_events_cancel_or_abort() {
          db.close();
          return globalThis.__log.join() + '|' + v + '|' + other;",
     );
-    assert_eq!(r, "ConstraintError,complete,aborted ConstraintError,db saw abort of true|1|undefined");
+    assert_eq!(
+        r,
+        "ConstraintError,complete,aborted ConstraintError,db saw abort of true|1|undefined"
+    );
 }
 
 #[test]
@@ -247,7 +253,10 @@ fn file_values_snapshot_into_the_store() {
          db.close();
          return [threw, v.f instanceof File, v.f.name, v.f.type, await v.f.text(), byLm, byLmd].join();",
     );
-    assert_eq!(r, "NotReadableError,true,idb.txt,text/plain,picked bytes,1,1");
+    assert_eq!(
+        r,
+        "NotReadableError,true,idb.txt,text/plain,picked bytes,1,1"
+    );
 }
 
 #[test]
@@ -281,22 +290,47 @@ fn a_dropped_connection_still_gets_versionchange() {
 fn second_instance_on_the_same_folder_is_unknown_error_and_advised() {
     let c = ctx();
     let name: Vec<u16> = "t-locked".encode_utf16().collect();
-    super::memory::fail_next_open(&name, super::backend::BackendError::Locked("pid 4242".into()));
+    super::memory::fail_next_open(
+        &name,
+        super::backend::BackendError::Locked("pid 4242".into()),
+    );
     let r = run(&c, "try { await req(indexedDB.open('t-locked', 1)); return 'opened'; } catch (e) { return e.name + ': ' + e.message; }");
-    assert!(r.starts_with("UnknownError: ") && r.contains("another instance"), "{r}");
-    assert!(advised("\"t-locked\" is open in another instance"), "{:?}", super::advisories());
+    assert!(
+        r.starts_with("UnknownError: ") && r.contains("another instance"),
+        "{r}"
+    );
+    assert!(
+        advised("\"t-locked\" is open in another instance"),
+        "{:?}",
+        super::advisories()
+    );
     // The lock is per attempt: the next open works.
-    assert_eq!(run(&c, "const db = await req(indexedDB.open('t-locked', 1)); db.close(); return 'ok';"), "ok");
+    assert_eq!(
+        run(
+            &c,
+            "const db = await req(indexedDB.open('t-locked', 1)); db.close(); return 'ok';"
+        ),
+        "ok"
+    );
 }
 
 #[test]
 fn late_config_change_is_advised_once() {
     let c = ctx();
     // Make sure the server has started (latched).
-    assert_eq!(run(&c, "const db = await req(indexedDB.open('t-latch', 1)); db.close(); return 'ok';"), "ok");
+    assert_eq!(
+        run(
+            &c,
+            "const db = await req(indexedDB.open('t-latch', 1)); db.close(); return 'ok';"
+        ),
+        "ok"
+    );
     super::config_changed();
     super::config_changed();
-    let n = super::advisories().iter().filter(|a| a.contains("applies at the next start")).count();
+    let n = super::advisories()
+        .iter()
+        .filter(|a| a.contains("applies at the next start"))
+        .count();
     assert_eq!(n, 1, "{:?}", super::advisories());
 }
 
@@ -306,7 +340,10 @@ fn opaque_origin_is_a_security_error() {
     unsafe { super::set_opaque_origin(c.raw(), true) };
     ok(&c, "(() => { try { indexedDB.open('x'); return false; } catch (e) { return e.name === 'SecurityError'; } })()");
     ok(&c, "(() => { try { indexedDB.deleteDatabase('x'); return false; } catch (e) { return e.name === 'SecurityError'; } })()");
-    let r = run(&c, "try { await indexedDB.databases(); return 'listed'; } catch (e) { return e.name; }");
+    let r = run(
+        &c,
+        "try { await indexedDB.databases(); return 'listed'; } catch (e) { return e.name; }",
+    );
     assert_eq!(r, "SecurityError");
 }
 
@@ -335,7 +372,13 @@ fn a_gone_context_releases_its_connections() {
     // context's connection, so another context's upgrade is not blocked.
     let a = ctx();
     let b = ctx();
-    assert_eq!(run(&a, "globalThis.keep = await req(indexedDB.open('t-gone', 1)); return 'held';"), "held");
+    assert_eq!(
+        run(
+            &a,
+            "globalThis.keep = await req(indexedDB.open('t-gone', 1)); return 'held';"
+        ),
+        "held"
+    );
     let r = s(
         &b,
         "globalThis.__r = undefined;
@@ -352,7 +395,11 @@ fn a_gone_context_releases_its_connections() {
         std::thread::sleep(Duration::from_millis(1));
     }
     unsafe { crate::ffi::redjs_unlock(b.raw()) };
-    assert_eq!(s(&b, "String(globalThis.__r)"), "undefined", "the upgrade must wait for a");
+    assert_eq!(
+        s(&b, "String(globalThis.__r)"),
+        "undefined",
+        "the upgrade must wait for a"
+    );
     // Tear a down: no JS runs, the server forgets its connection.
     crate::context::forget(a.raw());
     assert_eq!(wait(&b), "v2");
@@ -362,12 +409,27 @@ fn a_gone_context_releases_its_connections() {
 fn surface_and_brands() {
     let c = ctx();
     ok(&c, "typeof indexedDB === 'object' && indexedDB instanceof IDBFactory && indexedDB === globalThis.indexedDB");
-    ok(&c, "Object.prototype.toString.call(indexedDB) === '[object IDBFactory]'");
+    ok(
+        &c,
+        "Object.prototype.toString.call(indexedDB) === '[object IDBFactory]'",
+    );
     ok(&c, "Object.getPrototypeOf(IDBOpenDBRequest.prototype) === IDBRequest.prototype && Object.getPrototypeOf(IDBOpenDBRequest) === IDBRequest");
-    ok(&c, "Object.getPrototypeOf(IDBRequest.prototype) === EventTarget.prototype");
-    ok(&c, "Object.getPrototypeOf(IDBCursorWithValue.prototype) === IDBCursor.prototype");
-    ok(&c, "Object.getPrototypeOf(IDBVersionChangeEvent.prototype) === Event.prototype");
-    ok(&c, "'onsuccess' in IDBRequest.prototype && 'onupgradeneeded' in IDBOpenDBRequest.prototype");
+    ok(
+        &c,
+        "Object.getPrototypeOf(IDBRequest.prototype) === EventTarget.prototype",
+    );
+    ok(
+        &c,
+        "Object.getPrototypeOf(IDBCursorWithValue.prototype) === IDBCursor.prototype",
+    );
+    ok(
+        &c,
+        "Object.getPrototypeOf(IDBVersionChangeEvent.prototype) === Event.prototype",
+    );
+    ok(
+        &c,
+        "'onsuccess' in IDBRequest.prototype && 'onupgradeneeded' in IDBOpenDBRequest.prototype",
+    );
     ok(&c, "(() => { try { new IDBFactory(); return false; } catch (e) { return e instanceof TypeError; } })()");
     ok(&c, "(() => { const e = new IDBVersionChangeEvent('versionchange', {oldVersion: 1, newVersion: 2}); return e.oldVersion === 1 && e.newVersion === 2 && e.type === 'versionchange'; })()");
     ok(&c, "new IDBVersionChangeEvent('x').newVersion === null");

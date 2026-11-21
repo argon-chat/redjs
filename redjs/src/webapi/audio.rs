@@ -87,13 +87,13 @@ use firewheel::nodes::stream::{
     ResamplingChannelConfig,
 };
 
+use super::audio_worklet::{NativeKind, NativeMessage, NativeNode, NativeShared};
 use super::hrtf::{HrtfDatabase, PannerRoute, WebPannerConfig, WebPannerNode};
 use super::mediadevices;
 use super::osc::{OscNode, OscShared, Wave};
 use super::pcm::{self, PcmStreamConfig};
 use super::util::*;
 use crate::glue;
-use super::audio_worklet::{NativeKind, NativeMessage, NativeNode, NativeShared};
 
 #[cfg(test)]
 mod channel_tests;
@@ -102,11 +102,11 @@ mod mixing;
 mod native_worklet;
 pub mod output;
 
-use mixing::{CountMode, Interp};
 pub use mixing::speaker;
+use mixing::{CountMode, Interp};
 pub use output::{
-    object_model, set_output_backend, ObjectBlock, ObjectPlacement, OutputBackend, OutputOpen, OutputRequest,
-    OutputStream, Renderer,
+    object_model, set_output_backend, ObjectBlock, ObjectPlacement, OutputBackend, OutputOpen,
+    OutputRequest, OutputStream, Renderer,
 };
 use output::{RedBackend, RedConfig};
 
@@ -201,7 +201,10 @@ impl SourceCtl {
         }
         let (ls, le) = (self.loop_start(), self.loop_end());
         if ls >= 0.0 && le > 0.0 && ls < le {
-            let (a, b) = (secs_to_frames(ls, rate).min(len), secs_to_frames(le, rate).min(len));
+            let (a, b) = (
+                secs_to_frames(ls, rate).min(len),
+                secs_to_frames(le, rate).min(len),
+            );
             if a < b {
                 return Some((a, b));
             }
@@ -241,7 +244,14 @@ impl SourceSample {
     const UNBOUNDED: u64 = u64::MAX / 4;
 
     fn new(buf: Arc<PlanarBuffer>, ctl: Arc<SourceCtl>, start: u64, len: u64) -> Self {
-        Self { buf, ctl, start, len, next_v: AtomicU64::new(0), pos: AtomicU64::new(start) }
+        Self {
+            buf,
+            ctl,
+            start,
+            len,
+            next_v: AtomicU64::new(0),
+            pos: AtomicU64::new(start),
+        }
     }
 
     fn rate(&self) -> f64 {
@@ -257,7 +267,11 @@ impl SourceSample {
             Some((a, b)) => {
                 // Starting at or past `loopEnd` begins at `loopStart`.
                 let p = if self.start >= b { a } else { self.start }.saturating_add(v);
-                if p < b { p } else { a + (p - b) % (b - a) }
+                if p < b {
+                    p
+                } else {
+                    a + (p - b) % (b - a)
+                }
             }
         }
     }
@@ -278,7 +292,12 @@ impl SampleResourceInfo for SourceSample {
 }
 
 impl SampleResource for SourceSample {
-    fn fill_buffers(&self, buffers: &mut [&mut [f32]], buffer_range: Range<usize>, start_frame: u64) {
+    fn fill_buffers(
+        &self,
+        buffers: &mut [&mut [f32]],
+        buffer_range: Range<usize>,
+        start_frame: u64,
+    ) {
         let frames = buffer_range.len();
         let blen = self.buf.len_frames();
         let rate = self.rate();
@@ -332,14 +351,27 @@ impl SampleResource for SourceSample {
 
 #[derive(Clone, Copy)]
 enum Tl {
-    Set { t: f64, v: f64 },
-    Lin { t: f64, v: f64 },
+    Set {
+        t: f64,
+        v: f64,
+    },
+    Lin {
+        t: f64,
+        v: f64,
+    },
     /// `exponentialRampToValueAtTime` — a real geometric ramp, not a linear
     /// stand-in. It matters for exactly the thing it is used for: a gain fade
     /// that sounds even to the ear is exponential in amplitude, and a linear
     /// substitute is audibly back-loaded.
-    Exp { t: f64, v: f64 },
-    Target { t: f64, v: f64, tau: f64 },
+    Exp {
+        t: f64,
+        v: f64,
+    },
+    Target {
+        t: f64,
+        v: f64,
+        tau: f64,
+    },
 }
 
 impl Tl {
@@ -381,7 +413,11 @@ impl Timeline {
                         cur_t = t;
                     } else {
                         let t0 = cur_t.max(0.0);
-                        let k = if t > t0 { ((now - t0) / (t - t0)).clamp(0.0, 1.0) } else { 1.0 };
+                        let k = if t > t0 {
+                            ((now - t0) / (t - t0)).clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
                         return (cur + (v - cur) * k, false);
                     }
                 }
@@ -391,13 +427,21 @@ impl Timeline {
                         cur_t = t;
                     } else {
                         let t0 = cur_t.max(0.0);
-                        let k = if t > t0 { ((now - t0) / (t - t0)).clamp(0.0, 1.0) } else { 1.0 };
+                        let k = if t > t0 {
+                            ((now - t0) / (t - t0)).clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
                         // v(t) = v0 · (v1/v0)^k. Defined only for a same-signed
                         // pair of non-zero endpoints; the spec leaves the rest
                         // undefined and every browser degrades to linear rather
                         // than producing a NaN, so we do too.
                         let ok = (cur > 0.0 && v > 0.0) || (cur < 0.0 && v < 0.0);
-                        let val = if ok { cur * (v / cur).powf(k) } else { cur + (v - cur) * k };
+                        let val = if ok {
+                            cur * (v / cur).powf(k)
+                        } else {
+                            cur + (v - cur) * k
+                        };
                         return (val, false);
                     }
                 }
@@ -446,7 +490,9 @@ impl MonitorRing {
         let ring = Self {
             samples: (0..MONITOR_WINDOW).map(|_| AtomicU32::new(0)).collect(),
             cursor: AtomicUsize::new(0),
-            mix: (0..mixing::MAX_CHANNELS).map(|_| AtomicU32::new(0)).collect(),
+            mix: (0..mixing::MAX_CHANNELS)
+                .map(|_| AtomicU32::new(0))
+                .collect(),
         };
         ring.set_mix(&mixing::web_mix(2, 1, Interp::Speakers));
         ring
@@ -454,7 +500,11 @@ impl MonitorRing {
 
     fn set_mix(&self, m: &mixing::Matrix) {
         for (port, g) in self.mix.iter().enumerate() {
-            let gain = m.iter().find(|e| e.0 as usize == port).map(|e| e.2).unwrap_or(0.0);
+            let gain = m
+                .iter()
+                .find(|e| e.0 as usize == port)
+                .map(|e| e.2)
+                .unwrap_or(0.0);
             g.store(gain.to_bits(), Ordering::Relaxed);
         }
     }
@@ -465,7 +515,8 @@ impl MonitorRing {
         let n = out.len().min(MONITOR_WINDOW);
         let start = cur.wrapping_sub(n);
         for (i, slot) in out.iter_mut().take(n).enumerate() {
-            let bits = self.samples[start.wrapping_add(i) & (MONITOR_WINDOW - 1)].load(Ordering::Relaxed);
+            let bits =
+                self.samples[start.wrapping_add(i) & (MONITOR_WINDOW - 1)].load(Ordering::Relaxed);
             *slot = f32::from_bits(bits);
         }
     }
@@ -484,7 +535,10 @@ impl firewheel::node::AudioNode for MonitorNode {
         let n = firewheel::channel_config::ChannelCount::new(self.channels).unwrap();
         firewheel::node::AudioNodeInfo::new()
             .debug_name("webaudio_analyser")
-            .channel_config(firewheel::channel_config::ChannelConfig { num_inputs: n, num_outputs: n })
+            .channel_config(firewheel::channel_config::ChannelConfig {
+                num_inputs: n,
+                num_outputs: n,
+            })
     }
 
     fn construct_processor(
@@ -492,7 +546,9 @@ impl firewheel::node::AudioNode for MonitorNode {
         _config: &Self::Configuration,
         _cx: firewheel::node::ConstructProcessorContext,
     ) -> impl firewheel::node::AudioNodeProcessor {
-        MonitorProcessor { ring: ArcGc::clone(&self.ring) }
+        MonitorProcessor {
+            ring: ArcGc::clone(&self.ring),
+        }
     }
 }
 
@@ -564,12 +620,12 @@ impl firewheel::node::AudioNode for RefTapNode {
     type Configuration = firewheel::node::EmptyConfig;
 
     fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
-        firewheel::node::AudioNodeInfo::new().debug_name("render_reference").channel_config(
-            firewheel::channel_config::ChannelConfig {
+        firewheel::node::AudioNodeInfo::new()
+            .debug_name("render_reference")
+            .channel_config(firewheel::channel_config::ChannelConfig {
                 num_inputs: firewheel::channel_config::ChannelCount::STEREO,
                 num_outputs: firewheel::channel_config::ChannelCount::ZERO,
-            },
-        )
+            })
     }
 
     fn construct_processor(
@@ -616,9 +672,14 @@ impl firewheel::node::AudioNodeProcessor for RefTapProcessor {
         firewheel::node::ProcessStatus::ClearAllOutputs
     }
 
-    fn new_stream(&mut self, stream_info: &firewheel::StreamInfo, _context: &mut firewheel::node::ProcStreamCtx) {
+    fn new_stream(
+        &mut self,
+        stream_info: &firewheel::StreamInfo,
+        _context: &mut firewheel::node::ProcStreamCtx,
+    ) {
         self.rate = stream_info.sample_rate.get();
-        self.scratch.resize(stream_info.max_block_frames.get() as usize * 2, 0.0);
+        self.scratch
+            .resize(stream_info.max_block_frames.get() as usize * 2, 0.0);
     }
 }
 
@@ -689,14 +750,20 @@ impl firewheel::node::AudioNodeProcessor for TapProcessor {
                 };
             }
         }
-        self.source.deliver(&self.scratch[..frames * 2], 2, self.rate);
+        self.source
+            .deliver(&self.scratch[..frames * 2], 2, self.rate);
         firewheel::node::ProcessStatus::ClearAllOutputs
     }
 
-    fn new_stream(&mut self, stream_info: &firewheel::StreamInfo, _context: &mut firewheel::node::ProcStreamCtx) {
+    fn new_stream(
+        &mut self,
+        stream_info: &firewheel::StreamInfo,
+        _context: &mut firewheel::node::ProcStreamCtx,
+    ) {
         // Off the audio thread: allocating here is fine.
         self.rate = stream_info.sample_rate.get();
-        self.scratch.resize(stream_info.max_block_frames.get() as usize * 2, 0.0);
+        self.scratch
+            .resize(stream_info.max_block_frames.get() as usize * 2, 0.0);
         self.source.set_format(2, self.rate);
     }
 }
@@ -743,7 +810,10 @@ impl firewheel::node::AudioNode for SplitterNode {
         let n = firewheel::channel_config::ChannelCount::new(self.n).unwrap();
         firewheel::node::AudioNodeInfo::new()
             .debug_name("webaudio_channel_splitter")
-            .channel_config(firewheel::channel_config::ChannelConfig { num_inputs: n, num_outputs: n })
+            .channel_config(firewheel::channel_config::ChannelConfig {
+                num_inputs: n,
+                num_outputs: n,
+            })
     }
 
     fn construct_processor(
@@ -796,7 +866,9 @@ impl firewheel::node::AudioNode for MergerNode {
         _config: &Self::Configuration,
         _cx: firewheel::node::ConstructProcessorContext,
     ) -> impl firewheel::node::AudioNodeProcessor {
-        MergerProcessor { discrete: ArcGc::clone(&self.discrete) }
+        MergerProcessor {
+            discrete: ArcGc::clone(&self.discrete),
+        }
     }
 }
 
@@ -858,7 +930,11 @@ fn merge_block(
                 }
             }
             (false, false) => {
-                for ((o, &a), &b) in out.iter_mut().zip(&inputs[l][..frames]).zip(&inputs[r][..frames]) {
+                for ((o, &a), &b) in out
+                    .iter_mut()
+                    .zip(&inputs[l][..frames])
+                    .zip(&inputs[r][..frames])
+                {
                     *o = 0.5 * (a + b);
                 }
             }
@@ -944,7 +1020,11 @@ enum Params {
     /// OscillatorNode: params shared with the audio thread (webapi/osc.rs).
     Osc(ArcGc<OscShared>),
     /// Precompiled native DSP, with a bounded audio-thread -> VM mailbox.
-    Native { kind: NativeKind, shared: ArcGc<NativeShared>, discrete: bool },
+    Native {
+        kind: NativeKind,
+        shared: ArcGc<NativeShared>,
+        discrete: bool,
+    },
     /// RedStreamSourceNode: the graph end of a streaming-PCM push (webapi/pcm.rs).
     /// The producer end lives in `pcm`'s own registry, keyed by the node handle.
     PcmStream(PcmStreamConfig),
@@ -952,7 +1032,10 @@ enum Params {
     Splitter(u32),
     /// ChannelMergerNode with `n` inputs (see [`MergerNode`]); `discrete`
     /// is the processor's copy of `channelInterpretation`.
-    Merger { n: u32, discrete: ArcGc<AtomicBool> },
+    Merger {
+        n: u32,
+        discrete: ArcGc<AtomicBool>,
+    },
     /// The media-element source's silent pass-through
     /// (`ctx_create_media_element_source`): no inputs, audio passes untouched.
     Passthrough,
@@ -1054,14 +1137,24 @@ impl NodeRec {
         let (ch_count, ch_mode, ch_interp) = match &params {
             Params::Dest | Params::MediaDest(_) => (2, CountMode::Explicit, Interp::Speakers),
             Params::Pan(_) | Params::Spatial(_) => (2, CountMode::ClampedMax, Interp::Speakers),
-            Params::Native { discrete, .. } => {
-                (2, CountMode::Explicit, if *discrete { Interp::Discrete } else { Interp::Speakers })
-            }
+            Params::Native { discrete, .. } => (
+                2,
+                CountMode::Explicit,
+                if *discrete {
+                    Interp::Discrete
+                } else {
+                    Interp::Speakers
+                },
+            ),
             Params::Splitter(n) => (*n, CountMode::Explicit, Interp::Discrete),
             Params::Merger { discrete, .. } => (
                 1,
                 CountMode::Explicit,
-                if discrete.load(Ordering::Relaxed) { Interp::Discrete } else { Interp::Speakers },
+                if discrete.load(Ordering::Relaxed) {
+                    Interp::Discrete
+                } else {
+                    Interp::Speakers
+                },
             ),
             _ => (2, CountMode::Max, Interp::Speakers),
         };
@@ -1190,13 +1283,20 @@ const SINK_SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_milli
 /// `currentTime` stays monotonic and the `AudioParam` timelines keyed on it
 /// (which store absolute times) keep their meaning across the switch. The
 /// caller rewires the destination with `graph::resync` afterwards.
-fn restart_stream(eng: &mut Engine, device: Option<firewheel::cpal::cpal::DeviceId>) -> Result<(), String> {
+fn restart_stream(
+    eng: &mut Engine,
+    device: Option<firewheel::cpal::cpal::DeviceId>,
+) -> Result<(), String> {
     // Not the default device in its place: that would resolve `setSinkId`
     // while the audio came out of a device the user did not choose.
     open_output(eng, device, false)
 }
 
-fn open_output(eng: &mut Engine, device: Option<firewheel::cpal::cpal::DeviceId>, fallback: bool) -> Result<(), String> {
+fn open_output(
+    eng: &mut Engine,
+    device: Option<firewheel::cpal::cpal::DeviceId>,
+    fallback: bool,
+) -> Result<(), String> {
     if eng.fw.is_audio_stream_running() {
         eng.fw.stop_stream();
     }
@@ -1253,12 +1353,17 @@ fn follow_default_output(eng: &mut Engine, generation: u64) -> bool {
         return false;
     }
     eng.default_seen = generation;
-    if eng.state == ST_CLOSED || !(eng.sink_id.is_empty() || eng.sink_id == mediadevices::DEFAULT_SINK) {
+    if eng.state == ST_CLOSED
+        || !(eng.sink_id.is_empty() || eng.sink_id == mediadevices::DEFAULT_SINK)
+    {
         return false;
     }
     match restart_stream(eng, None) {
         Ok(()) => {
-            eprintln!("[audio] the system default output moved: the context follows it ({} Hz)", eng.sample_rate);
+            eprintln!(
+                "[audio] the system default output moved: the context follows it ({} Hz)",
+                eng.sample_rate
+            );
             true
         }
         Err(e) => {
@@ -1410,7 +1515,12 @@ fn class_registry() -> &'static Mutex<HashMap<usize, &'static AudioClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static AudioClasses {
-    class_registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::audio not installed")
+    class_registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::audio not installed")
 }
 
 /// `crate::context` fan-out. A gone context's engines are silenced and detached
@@ -1490,13 +1600,17 @@ pub fn busy(g: *mut c_void) -> bool {
         if kind >= P_L_POS_X {
             running.contains(&node)
         } else {
-            gl.nodes.get(&node).is_some_and(|r| running.contains(&r.engine))
+            gl.nodes
+                .get(&node)
+                .is_some_and(|r| running.contains(&r.engine))
         }
     };
     gl.timelines.keys().any(|&(node, kind)| owned(node, kind))
         || gl.nodes.values().any(|r| {
             running.contains(&r.engine)
-                && (r.pending_start.is_some() || r.pending_stop.is_some() || (r.started && !r.ended))
+                && (r.pending_start.is_some()
+                    || r.pending_stop.is_some()
+                    || (r.started && !r.ended))
         })
 }
 
@@ -1509,7 +1623,11 @@ pub fn busy(g: *mut c_void) -> bool {
 pub fn close_all(g: *mut c_void) -> usize {
     let mut gl = glob().lock().unwrap();
     let mut n = 0;
-    for eng in gl.engines.values_mut().filter(|e| e.g == g as usize && e.state != ST_CLOSED) {
+    for eng in gl
+        .engines
+        .values_mut()
+        .filter(|e| e.g == g as usize && e.state != ST_CLOSED)
+    {
         if eng.fw.is_audio_stream_running() {
             eng.fw.stop_stream();
         }
@@ -1608,7 +1726,11 @@ fn distance_gain(model: DistModel, dist: f32, ref_d: f32, max_d: f32, rolloff: f
 /// LISTENER's basis (right = fwd×up; azimuth 0 = front, +90 = right) and the
 /// combined distance × cone gain — then diff-push. `mutate` applies attribute
 /// writes (panningModel etc.) first so everything lands in one event batch.
-fn update_spatial_with(eng: &mut Engine, rec: &mut NodeRec, mutate: impl FnOnce(&mut WebPannerNode)) {
+fn update_spatial_with(
+    eng: &mut Engine,
+    rec: &mut NodeRec,
+    mutate: impl FnOnce(&mut WebPannerNode),
+) {
     let (pos, orient, cone) = (rec.pos, rec.orient, rec.cone);
     let (dist_model, dist_params) = (rec.dist_model, rec.dist);
     if let Params::Spatial(p) = &mut rec.params {
@@ -1634,15 +1756,25 @@ fn update_spatial_with(eng: &mut Engine, rec: &mut NodeRec, mutate: impl FnOnce(
         };
 
         let to_listener = [-d[0], -d[1], -d[2]];
-        p.gain = distance_gain(dist_model, dist, dist_params[0], dist_params[1], dist_params[2])
-            * cone_gain(to_listener, orient, cone);
+        p.gain = distance_gain(
+            dist_model,
+            dist,
+            dist_params[0],
+            dist_params[1],
+            dist_params[2],
+        ) * cone_gain(to_listener, orient, cone);
         // The object model renders with HRTF while the panner has no object.
-        p.hrtf = rec.panning == Panning::Hrtf || (rec.panning == Panning::Objects && rec.object == 0);
+        p.hrtf =
+            rec.panning == Panning::Hrtf || (rec.panning == Panning::Objects && rec.object == 0);
 
         unsafe { queue_diff(&mut eng.fw, rec.id, &old, p) };
 
         if rec.object != 0 {
-            let bus = eng.objects.as_ref().and_then(|o| o.bus.as_ref()).and_then(|b| b.get());
+            let bus = eng
+                .objects
+                .as_ref()
+                .and_then(|o| o.bus.as_ref())
+                .and_then(|b| b.get());
             if let Some(bus) = bus {
                 bus.place(
                     rec.object as usize - 1,
@@ -1684,9 +1816,17 @@ fn gain_volume(v: f32) -> Volume {
     Volume::Linear(v.abs().sqrt())
 }
 
-fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRec>, handle: u64, kind: u8, v: f64) {
+fn set_param(
+    engines: &mut HashMap<u64, Engine>,
+    nodes: &mut HashMap<u64, NodeRec>,
+    handle: u64,
+    kind: u8,
+    v: f64,
+) {
     if kind >= P_L_POS_X {
-        let Some(eng) = engines.get_mut(&handle) else { return };
+        let Some(eng) = engines.get_mut(&handle) else {
+            return;
+        };
         let i = (kind - P_L_POS_X) as usize;
         match i {
             0..=2 => eng.listener[i] = v as f32,
@@ -1699,9 +1839,13 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
         }
         return;
     }
-    let Some(rec) = nodes.get_mut(&handle) else { return };
+    let Some(rec) = nodes.get_mut(&handle) else {
+        return;
+    };
     let eh = rec.engine;
-    let Some(eng) = engines.get_mut(&eh) else { return };
+    let Some(eng) = engines.get_mut(&eh) else {
+        return;
+    };
     let mut resend = false;
     unsafe {
         match (&mut rec.params, kind) {
@@ -1739,8 +1883,12 @@ fn set_param(engines: &mut HashMap<u64, Engine>, nodes: &mut HashMap<u64, NodeRe
             }
             // Oscillator params are plain atomic stores — no event round-trip,
             // and readable back by `param_current` for `.value`.
-            (Params::Native { shared, .. }, P_NATIVE_ENABLED) => shared.set_enabled(v.clamp(0.0, 1.0) as f32),
-            (Params::Native { shared, .. }, P_NATIVE_THRESHOLD) => shared.set_threshold(v.clamp(-100.0, 0.0) as f32),
+            (Params::Native { shared, .. }, P_NATIVE_ENABLED) => {
+                shared.set_enabled(v.clamp(0.0, 1.0) as f32)
+            }
+            (Params::Native { shared, .. }, P_NATIVE_THRESHOLD) => {
+                shared.set_threshold(v.clamp(-100.0, 0.0) as f32)
+            }
             (Params::Osc(sh), P_FREQ) => sh.set_frequency(v as f32),
             (Params::Osc(sh), P_DETUNE) => sh.set_detune(v as f32),
             (Params::Spatial(_), P_POS_X..=P_POS_Z) => {
@@ -1769,7 +1917,9 @@ fn do_start(eng: &mut Engine, rec: &mut NodeRec, offset: f64, duration: Option<f
         sh.start();
         return;
     }
-    let Params::Sampler(s) = &mut rec.params else { return };
+    let Params::Sampler(s) = &mut rec.params else {
+        return;
+    };
     alog!(
         "do_start node={:?} buffer_frames={:?} loop={} speed={} offset={offset} duration={duration:?}",
         rec.id,
@@ -1802,7 +1952,9 @@ fn arm_source(
         // exactly what the sampler counts.
         let rate = buf.sample_rate.max(1) as f64;
         let start = secs_to_frames(offset, rate).min(buf.len_frames());
-        let len = duration.map(|d| secs_to_frames(d, rate)).unwrap_or(SourceSample::UNBOUNDED);
+        let len = duration
+            .map(|d| secs_to_frames(d, rate))
+            .unwrap_or(SourceSample::UNBOUNDED);
         let looping = ctl.region(buf.len_frames(), rate).is_some();
         if len == 0 || (!looping && start >= buf.len_frames()) {
             // Nothing to play: the sampler would finish without ever being
@@ -1810,7 +1962,9 @@ fn arm_source(
             ctl.done.store(true, Ordering::Relaxed);
         }
         let view = SourceSample::new(buf.clone(), ctl.clone(), start, len);
-        s.set_sample(ArcGc::new_unsized(|| Arc::new(view) as Arc<dyn SampleResource>));
+        s.set_sample(ArcGc::new_unsized(|| {
+            Arc::new(view) as Arc<dyn SampleResource>
+        }));
     }
     // The view does the looping; the sampler plays it once from its start.
     s.repeat_mode = RepeatMode::PlayOnce;
@@ -1822,7 +1976,9 @@ fn do_stop(eng: &mut Engine, rec: &mut NodeRec) {
         sh.stop();
         return;
     }
-    let Params::Sampler(s) = &mut rec.params else { return };
+    let Params::Sampler(s) = &mut rec.params else {
+        return;
+    };
     let baseline = (**s).clone();
     s.stop();
     unsafe { queue_diff(&mut eng.fw, rec.id, &baseline, &**s) };
@@ -1862,7 +2018,10 @@ unsafe fn node_class_for(g: *mut c_void, proto: u64) -> crate::capi::JSClassRef 
         return base;
     };
     static SUBCLASSES: OnceLock<Mutex<HashMap<(usize, String), usize>>> = OnceLock::new();
-    let mut map = SUBCLASSES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    let mut map = SUBCLASSES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
     let key = (base as usize, name);
     if let Some(&cls) = map.get(&key) {
         return cls as crate::capi::JSClassRef;
@@ -1886,7 +2045,16 @@ unsafe fn wrap_node(g: *mut c_void, proto: u64, handle: u64, params: &[(&str, u8
     let slots = new_object(g, UNDEF);
     glue::rjs_define(g, obj, c.s_audio, slots, 0);
     for &(name, kind, initial) in params {
-        let p = host_create(g, c.param_cls, c.param.proto, ParamRef { node: handle, kind, last: initial });
+        let p = host_create(
+            g,
+            c.param_cls,
+            c.param.proto,
+            ParamRef {
+                node: handle,
+                kind,
+                last: initial,
+            },
+        );
         define(g, slots, name, p, 0);
     }
     obj
@@ -1949,7 +2117,10 @@ unsafe fn release_downstream(g: *mut c_void, src_obj: u64, src: u64) {
     }
     let still: Vec<u64> = {
         let gl = glob().lock().unwrap();
-        gl.nodes.get(&src).map(|r| r.outs.iter().map(|k| k.dst).collect()).unwrap_or_default()
+        gl.nodes
+            .get(&src)
+            .map(|r| r.outs.iter().map(|k| k.dst).collect())
+            .unwrap_or_default()
     };
     let cls = classes(g).node_cls;
     for i in 0..array_len(g, held) {
@@ -1971,9 +2142,10 @@ unsafe fn release_downstream(g: *mut c_void, src_obj: u64, src: u64) {
 /// the `FirewheelContext` and the node's custom state are both reachable. After
 /// this returns, pushes never touch the graph again (see webapi/pcm.rs).
 fn open_pcm_channel(eng: &mut Engine, id: NodeID, handle: u64, cfg: PcmStreamConfig) -> bool {
-    let (Some(in_rate), Some(out_rate)) =
-        (NonZeroU32::new(cfg.sample_rate), NonZeroU32::new(eng.sample_rate))
-    else {
+    let (Some(in_rate), Some(out_rate)) = (
+        NonZeroU32::new(cfg.sample_rate),
+        NonZeroU32::new(eng.sample_rate),
+    ) else {
         return false;
     };
     let chan = ResamplingChannelConfig {
@@ -1982,8 +2154,12 @@ fn open_pcm_channel(eng: &mut Engine, id: NodeID, handle: u64, cfg: PcmStreamCon
         ..Default::default()
     };
     let (ev, producer) = {
-        let Some(st) = eng.fw.node_state_mut::<StreamWriterState>(id) else { return false };
-        let Ok(ev) = st.start_stream(in_rate, out_rate, chan) else { return false };
+        let Some(st) = eng.fw.node_state_mut::<StreamWriterState>(id) else {
+            return false;
+        };
+        let Ok(ev) = st.start_stream(in_rate, out_rate, chan) else {
+            return false;
+        };
         // The clone shares the producer `Arc` and the atomics with the state
         // the node owns, so either side closing the stream closes it for both.
         // That is the intent: `close()` from JS and the node's own death must
@@ -2014,27 +2190,60 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
         // None (decode failure) degrades HRTF mode to equal-power inside the node.
         Params::Spatial(p) => eng.fw.add_node(
             *p,
-            Some(WebPannerConfig { db: HrtfDatabase::for_rate(eng.sample_rate) }),
+            Some(WebPannerConfig {
+                db: HrtfDatabase::for_rate(eng.sample_rate),
+            }),
         ),
         Params::Svf(p) => eng.fw.add_node((**p).clone(), None),
-        Params::Sampler(s) => eng.fw.add_node((**s).clone(), Some(SamplerConfig::default())),
-        Params::Analyser { ring, .. } => eng.fw.add_node(MonitorNode { ring: ArcGc::clone(ring), channels: 2 }, None),
-        Params::Osc(sh) => eng.fw.add_node(OscNode { shared: ArcGc::clone(sh) }, None),
-        Params::Native { kind, shared, .. } => eng.fw.add_node(NativeNode { kind: *kind, shared: ArcGc::clone(shared) }, None),
+        Params::Sampler(s) => eng
+            .fw
+            .add_node((**s).clone(), Some(SamplerConfig::default())),
+        Params::Analyser { ring, .. } => eng.fw.add_node(
+            MonitorNode {
+                ring: ArcGc::clone(ring),
+                channels: 2,
+            },
+            None,
+        ),
+        Params::Osc(sh) => eng.fw.add_node(
+            OscNode {
+                shared: ArcGc::clone(sh),
+            },
+            None,
+        ),
+        Params::Native { kind, shared, .. } => eng.fw.add_node(
+            NativeNode {
+                kind: *kind,
+                shared: ArcGc::clone(shared),
+            },
+            None,
+        ),
         Params::PcmStream(cfg) => {
             let ch = firewheel::channel_config::NonZeroChannelCount::new(cfg.channels as u32)
                 .unwrap_or(firewheel::channel_config::NonZeroChannelCount::STEREO);
             eng.fw.add_node(
                 StreamWriterNode,
-                Some(StreamWriterConfig { channels: ch, check_for_silence: true }),
+                Some(StreamWriterConfig {
+                    channels: ch,
+                    check_for_silence: true,
+                }),
             )
         }
         Params::Splitter(n) => eng.fw.add_node(SplitterNode { n: *n }, None),
-        Params::Merger { n, discrete } => {
-            eng.fw.add_node(MergerNode { n: *n, discrete: ArcGc::clone(discrete) }, None)
-        }
+        Params::Merger { n, discrete } => eng.fw.add_node(
+            MergerNode {
+                n: *n,
+                discrete: ArcGc::clone(discrete),
+            },
+            None,
+        ),
         Params::Passthrough => eng.fw.add_node(VolumeNode::default(), None),
-        Params::MediaDest(source) => eng.fw.add_node(TapNode { source: Arc::clone(source) }, None),
+        Params::MediaDest(source) => eng.fw.add_node(
+            TapNode {
+                source: Arc::clone(source),
+            },
+            None,
+        ),
         Params::Dest => eng.master,
     };
 
@@ -2046,7 +2255,10 @@ fn alloc_node(gl: &mut Glob, engine: u64, params: Params) -> Option<u64> {
             // The channel could not be opened (no output stream yet, or the
             // node state vanished). Keep the node — it renders silence — but
             // say so, because "connected and mute" is otherwise indetectable.
-            alog!("RedStreamSourceNode {handle}: no producer channel (running={})", eng.running);
+            alog!(
+                "RedStreamSourceNode {handle}: no producer channel (running={})",
+                eng.running
+            );
         }
     }
 
@@ -2103,8 +2315,12 @@ unsafe fn node_connect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(dst) = host_data::<NodeHandle>(g, c.node_cls, dst_v).map(|h| h.0) else {
         return throw_type_error(g, "AudioNode.connect: destination is not an AudioNode");
     };
-    let Ok(output) = idl_u32(g, cf_arg(cf, 1), 0) else { return UNDEF };
-    let Ok(input) = idl_u32(g, cf_arg(cf, 2), 0) else { return UNDEF };
+    let Ok(output) = idl_u32(g, cf_arg(cf, 1), 0) else {
+        return UNDEF;
+    };
+    let Ok(input) = idl_u32(g, cf_arg(cf, 2), 0) else {
+        return UNDEF;
+    };
 
     let step: Result<(), Refusal> = 'step: {
         let mut guard = glob().lock().unwrap();
@@ -2186,20 +2402,28 @@ unsafe fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u64 {
     enum Sel {
         All,
         Output(u32),
-        To { dst: u64, output: Option<u32>, input: Option<u32> },
+        To {
+            dst: u64,
+            output: Option<u32>,
+            input: Option<u32>,
+        },
         Param,
     }
     let sel = if argc == 0 {
         Sel::All
     } else if let Some(dst) = dest {
         let output = if argc >= 2 {
-            let Ok(o) = idl_u32(g, cf_arg(cf, 1), 0) else { return UNDEF };
+            let Ok(o) = idl_u32(g, cf_arg(cf, 1), 0) else {
+                return UNDEF;
+            };
             Some(o)
         } else {
             None
         };
         let input = if argc >= 3 {
-            let Ok(i) = idl_u32(g, cf_arg(cf, 2), 0) else { return UNDEF };
+            let Ok(i) = idl_u32(g, cf_arg(cf, 2), 0) else {
+                return UNDEF;
+            };
             Some(i)
         } else {
             None
@@ -2213,14 +2437,18 @@ unsafe fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u64 {
             "Failed to execute 'disconnect' on 'AudioNode': parameter 1 is not of type 'AudioNode'.",
         );
     } else {
-        let Ok(o) = idl_u32(g, a0, 0) else { return UNDEF };
+        let Ok(o) = idl_u32(g, a0, 0) else {
+            return UNDEF;
+        };
         Sel::Output(o)
     };
 
     let refusal = {
         let mut gl = glob().lock().unwrap();
         let gl = &mut *gl;
-        let Some(sr) = gl.nodes.get(&src) else { return UNDEF };
+        let Some(sr) = gl.nodes.get(&src) else {
+            return UNDEF;
+        };
         let outputs = sr.web_outputs();
         let past_outputs = |o: u32| {
             Refusal::Dom(
@@ -2285,7 +2513,8 @@ unsafe fn node_disconnect(g: *mut c_void, cf: *mut c_void) -> u64 {
             Err(r) => Some(r),
             Ok(gone) => {
                 let engine = sr.engine;
-                if let (Some(sr), Some(eng)) = (gl.nodes.get_mut(&src), gl.engines.get_mut(&engine)) {
+                if let (Some(sr), Some(eng)) = (gl.nodes.get_mut(&src), gl.engines.get_mut(&engine))
+                {
                     sr.outs.retain(|k| !gone.contains(k));
                     for k in &gone {
                         if let Some(w) = sr.wires.remove(k) {
@@ -2347,7 +2576,9 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
         }
         return fallback;
     }
-    let Some(rec) = gl.nodes.get(&node) else { return fallback };
+    let Some(rec) = gl.nodes.get(&node) else {
+        return fallback;
+    };
     match (&rec.params, kind) {
         (Params::Gain(_), P_GAIN) => rec.gain as f64,
         (Params::Pan(p), P_PAN) => p.pan as f64,
@@ -2359,7 +2590,9 @@ fn param_current(gl: &Glob, node: u64, kind: u8, fallback: f64) -> f64 {
         (Params::Osc(sh), P_FREQ) => sh.frequency() as f64,
         (Params::Osc(sh), P_DETUNE) => sh.detune() as f64,
         (Params::Spatial(_), P_POS_X..=P_POS_Z) => rec.pos[(kind - P_POS_X) as usize] as f64,
-        (Params::Spatial(_), P_ORIENT_X..=P_ORIENT_Z) => rec.orient[(kind - P_ORIENT_X) as usize] as f64,
+        (Params::Spatial(_), P_ORIENT_X..=P_ORIENT_Z) => {
+            rec.orient[(kind - P_ORIENT_X) as usize] as f64
+        }
         _ => fallback,
     }
 }
@@ -2377,12 +2610,19 @@ unsafe fn param_get_value(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn param_set_value(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let native = this_param(g, cf).is_some_and(|p| matches!(p.kind, P_NATIVE_ENABLED | P_NATIVE_THRESHOLD));
+    let native =
+        this_param(g, cf).is_some_and(|p| matches!(p.kind, P_NATIVE_ENABLED | P_NATIVE_THRESHOLD));
     let v = if native {
-        let Ok(v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF; };
-        if !v.is_finite() { return throw_type_error(g, "Native audio parameters must be finite"); }
+        let Ok(v) = to_number(g, cf_arg(cf, 0)) else {
+            return UNDEF;
+        };
+        if !v.is_finite() {
+            return throw_type_error(g, "Native audio parameters must be finite");
+        }
         v
-    } else { dec_f64(cf_arg(cf, 0)).unwrap_or(0.0) };
+    } else {
+        dec_f64(cf_arg(cf, 0)).unwrap_or(0.0)
+    };
     let Some(p) = this_param(g, cf) else {
         return throw_type_error(g, "AudioParam.value on wrong this");
     };
@@ -2396,13 +2636,25 @@ unsafe fn param_set_value(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn param_schedule(g: *mut c_void, cf: *mut c_void, mk: impl FnOnce(f64, f64) -> Tl) -> u64 {
-    let native = this_param(g, cf).is_some_and(|p| matches!(p.kind, P_NATIVE_ENABLED | P_NATIVE_THRESHOLD));
+    let native =
+        this_param(g, cf).is_some_and(|p| matches!(p.kind, P_NATIVE_ENABLED | P_NATIVE_THRESHOLD));
     let (v, t) = if native {
-        let Ok(v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF; };
-        let Ok(t) = to_number(g, cf_arg(cf, 1)) else { return UNDEF; };
-        if !v.is_finite() || !t.is_finite() { return throw_type_error(g, "Native audio automation values/times must be finite"); }
+        let Ok(v) = to_number(g, cf_arg(cf, 0)) else {
+            return UNDEF;
+        };
+        let Ok(t) = to_number(g, cf_arg(cf, 1)) else {
+            return UNDEF;
+        };
+        if !v.is_finite() || !t.is_finite() {
+            return throw_type_error(g, "Native audio automation values/times must be finite");
+        }
         (v, t)
-    } else { (dec_f64(cf_arg(cf, 0)).unwrap_or(0.0), dec_f64(cf_arg(cf, 1)).unwrap_or(0.0)) };
+    } else {
+        (
+            dec_f64(cf_arg(cf, 0)).unwrap_or(0.0),
+            dec_f64(cf_arg(cf, 1)).unwrap_or(0.0),
+        )
+    };
     let this = cf_this(cf);
     let Some(p) = this_param(g, cf) else {
         return throw_type_error(g, "AudioParam method on wrong this");
@@ -2412,10 +2664,24 @@ unsafe fn param_schedule(g: *mut c_void, cf: *mut c_void, mk: impl FnOnce(f64, f
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
     // The context's time: listener params key by engine handle.
-    let engine = if kind >= P_L_POS_X { Some(node) } else { gl.nodes.get(&node).map(|r| r.engine) };
-    let now = engine.and_then(|e| gl.engines.get(&e)).map(|e| e.now()).unwrap_or(0.0);
+    let engine = if kind >= P_L_POS_X {
+        Some(node)
+    } else {
+        gl.nodes.get(&node).map(|r| r.engine)
+    };
+    let now = engine
+        .and_then(|e| gl.engines.get(&e))
+        .map(|e| e.now())
+        .unwrap_or(0.0);
     let cur = param_current(gl, node, kind, v);
-    let tl = gl.timelines.entry((node, kind)).or_insert_with(|| Timeline { evs: Vec::new(), start_v: cur, start_t: now });
+    let tl = gl
+        .timelines
+        .entry((node, kind))
+        .or_insert_with(|| Timeline {
+            evs: Vec::new(),
+            start_v: cur,
+            start_t: now,
+        });
     let ev = mk(v, t);
     // keep sorted by time (stable for equal timestamps)
     let at = tl.evs.partition_point(|e| e.time() <= ev.time());
@@ -2526,7 +2792,11 @@ unsafe fn buf_get_channel_data(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "AudioBuffer.getChannelData on wrong this");
     };
     let Some(ch) = b.buf.data.get(i) else {
-        return throw_error(g, 2, "AudioBuffer.getChannelData: channel index out of range");
+        return throw_error(
+            g,
+            2,
+            "AudioBuffer.getChannelData: channel index out of range",
+        );
     };
     // A copy, not the live store (spec returns the live buffer; the engine
     // only reads decoded data, and copies keep the sampler race-free).
@@ -2551,7 +2821,10 @@ unsafe fn buf_copy_to_channel(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let mut ta = crate::ffi::RjsTaInfo::default();
     if glue::rjs_typedarray_info(g, src, &mut ta) != 0 || ta.data.is_null() || ta.kind != 8 {
-        return throw_type_error(g, "AudioBuffer.copyToChannel: source must be a Float32Array");
+        return throw_type_error(
+            g,
+            "AudioBuffer.copyToChannel: source must be a Float32Array",
+        );
     }
     let src_slice = core::slice::from_raw_parts(ta.data as *const f32, ta.length as usize);
     // Playing samplers hold Arc clones; make_mut keeps them race-free.
@@ -2566,7 +2839,10 @@ unsafe fn buf_copy_to_channel(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 impl Clone for PlanarBuffer {
     fn clone(&self) -> Self {
-        Self { data: self.data.clone(), sample_rate: self.sample_rate }
+        Self {
+            data: self.data.clone(),
+            sample_rate: self.sample_rate,
+        }
     }
 }
 
@@ -2608,7 +2884,12 @@ unsafe fn src_get_loop(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "AudioBufferSourceNode.loop on wrong this");
     };
     let gl = glob().lock().unwrap();
-    enc_bool(gl.nodes.get(&handle).map(|r| r.src.looping.load(Ordering::Relaxed)).unwrap_or(false))
+    enc_bool(
+        gl.nodes
+            .get(&handle)
+            .map(|r| r.src.looping.load(Ordering::Relaxed))
+            .unwrap_or(false),
+    )
 }
 
 /// `loop` — read by the playing [`SourceSample`] on every block, so setting it
@@ -2635,7 +2916,9 @@ unsafe fn src_loop_point(g: *mut c_void, cf: *mut c_void, end: bool) -> u64 {
     let gl = glob().lock().unwrap();
     let ctl = gl.nodes.get(&handle).map(|r| r.src.clone());
     drop(gl);
-    let v = ctl.map(|c| if end { c.loop_end() } else { c.loop_start() }).unwrap_or(0.0);
+    let v = ctl
+        .map(|c| if end { c.loop_end() } else { c.loop_start() })
+        .unwrap_or(0.0);
     enc_f64(v)
 }
 
@@ -2645,7 +2928,9 @@ unsafe fn src_set_loop_point(g: *mut c_void, cf: *mut c_void, end: bool) -> u64 
         return throw_type_error(g, &format!("AudioBufferSourceNode.{name} on wrong this"));
     };
     // WebIDL `double`: ToNumber, then a non-finite value is a TypeError.
-    let Ok(v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(v) = to_number(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     if !v.is_finite() {
         return throw_type_error(
             g,
@@ -2654,7 +2939,11 @@ unsafe fn src_set_loop_point(g: *mut c_void, cf: *mut c_void, end: bool) -> u64 
     }
     let gl = glob().lock().unwrap();
     if let Some(rec) = gl.nodes.get(&handle) {
-        let slot = if end { &rec.src.loop_end } else { &rec.src.loop_start };
+        let slot = if end {
+            &rec.src.loop_end
+        } else {
+            &rec.src.loop_start
+        };
         slot.store(v.to_bits(), Ordering::Relaxed);
     }
     UNDEF
@@ -2709,12 +2998,24 @@ unsafe fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
-    let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
+    let Some(rec) = gl.nodes.get_mut(&handle) else {
+        return UNDEF;
+    };
     // Spec: a negative `when` is a RangeError, and so is a negative `offset`
     // or `duration` on a buffer source (an oscillator's `start` has neither).
     let (iface, checks) = match rec.params {
-        Params::Sampler(_) => ("AudioBufferSourceNode", [("when", when), ("offset", offset), ("duration", duration.unwrap_or(0.0))]),
-        _ => ("OscillatorNode", [("when", when), ("offset", 0.0), ("duration", 0.0)]),
+        Params::Sampler(_) => (
+            "AudioBufferSourceNode",
+            [
+                ("when", when),
+                ("offset", offset),
+                ("duration", duration.unwrap_or(0.0)),
+            ],
+        ),
+        _ => (
+            "OscillatorNode",
+            [("when", when), ("offset", 0.0), ("duration", 0.0)],
+        ),
     };
     if let Some((name, v)) = checks.into_iter().find(|&(_, v)| v < 0.0) {
         return throw_error(
@@ -2726,13 +3027,19 @@ unsafe fn src_start(g: *mut c_void, cf: *mut c_void) -> u64 {
     if rec.started {
         // Spec: InvalidStateError. A source is start-once, restarting it means
         // creating another one — cheap, by design.
-        return super::domexception::throw(g, "InvalidStateError", "start() has already been called on this source");
+        return super::domexception::throw(
+            g,
+            "InvalidStateError",
+            "start() has already been called on this source",
+        );
     }
     rec.started = true;
     // Spec: a playing source is kept alive even without JS references.
     rec.js_obj = this;
     crate::ffi::redjs_protect(g, this);
-    let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
+    let Some(eng) = gl.engines.get_mut(&rec.engine) else {
+        return UNDEF;
+    };
     if when <= eng.now() || !eng.running {
         do_start(eng, rec, offset, duration);
     } else {
@@ -2749,8 +3056,12 @@ unsafe fn src_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
-    let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
-    let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
+    let Some(rec) = gl.nodes.get_mut(&handle) else {
+        return UNDEF;
+    };
+    let Some(eng) = gl.engines.get_mut(&rec.engine) else {
+        return UNDEF;
+    };
     if when <= eng.now() || !eng.running {
         rec.pending_start = None;
         do_stop(eng, rec);
@@ -2830,7 +3141,10 @@ unsafe fn stream_push(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let mut ta = crate::ffi::RjsTaInfo::default();
     if glue::rjs_typedarray_info(g, src, &mut ta) != 0 || ta.data.is_null() || ta.kind != 8 {
-        return throw_type_error(g, "RedStreamSourceNode.push: expected an interleaved Float32Array");
+        return throw_type_error(
+            g,
+            "RedStreamSourceNode.push: expected an interleaved Float32Array",
+        );
     }
     let data = core::slice::from_raw_parts(ta.data as *const f32, ta.length as usize);
     let frames = data.len() / sink.channels().max(1) as usize;
@@ -2919,8 +3233,12 @@ unsafe fn biquad_set_type(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
-    let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
-    let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
+    let Some(rec) = gl.nodes.get_mut(&handle) else {
+        return UNDEF;
+    };
+    let Some(eng) = gl.engines.get_mut(&rec.engine) else {
+        return UNDEF;
+    };
     if let Params::Svf(p) = &mut rec.params {
         let old = (**p).clone();
         p.filter_type = match ty.as_str() {
@@ -2959,8 +3277,12 @@ unsafe fn panner_write(g: *mut c_void, cf: *mut c_void, apply: impl FnOnce(&mut 
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
-    let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
-    let Some(eng) = gl.engines.get_mut(&rec.engine) else { return UNDEF };
+    let Some(rec) = gl.nodes.get_mut(&handle) else {
+        return UNDEF;
+    };
+    let Some(eng) = gl.engines.get_mut(&rec.engine) else {
+        return UNDEF;
+    };
     apply(rec);
     update_spatial(eng, rec);
     UNDEF
@@ -2980,12 +3302,32 @@ macro_rules! panner_f32_accessor {
         }
     };
 }
-panner_f32_accessor!(panner_get_ref, panner_set_ref, dist, 0, |v: f32| v.max(1e-4));
+panner_f32_accessor!(panner_get_ref, panner_set_ref, dist, 0, |v: f32| v
+    .max(1e-4));
 panner_f32_accessor!(panner_get_max, panner_set_max, dist, 1, |v: f32| v.max(0.0));
-panner_f32_accessor!(panner_get_rolloff, panner_set_rolloff, dist, 2, |v: f32| v.max(0.0));
-panner_f32_accessor!(panner_get_cone_inner, panner_set_cone_inner, cone, 0, |v: f32| v);
-panner_f32_accessor!(panner_get_cone_outer, panner_set_cone_outer, cone, 1, |v: f32| v);
-panner_f32_accessor!(panner_get_cone_gain, panner_set_cone_gain, cone, 2, |v: f32| v);
+panner_f32_accessor!(panner_get_rolloff, panner_set_rolloff, dist, 2, |v: f32| v
+    .max(0.0));
+panner_f32_accessor!(
+    panner_get_cone_inner,
+    panner_set_cone_inner,
+    cone,
+    0,
+    |v: f32| v
+);
+panner_f32_accessor!(
+    panner_get_cone_outer,
+    panner_set_cone_outer,
+    cone,
+    1,
+    |v: f32| v
+);
+panner_f32_accessor!(
+    panner_get_cone_gain,
+    panner_set_cone_gain,
+    cone,
+    2,
+    |v: f32| v
+);
 
 #[crate::host_fn]
 unsafe fn panner_get_distance_model(g: *mut c_void, cf: *mut c_void) -> u64 {
@@ -3036,7 +3378,9 @@ unsafe fn panner_set_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(handle) = this_node_handle(g, cf) else {
         return throw_type_error(g, "PannerNode.panningModel on wrong this");
     };
-    let Ok(v) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(v) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let ty = read_string(g, v).unwrap_or_default();
     let panning = match ty.as_str() {
         "equalpower" => Panning::EqualPower,
@@ -3047,13 +3391,17 @@ unsafe fn panner_set_panning_model(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let mut gl = glob().lock().unwrap();
     let gl = &mut *gl;
-    let Some(rec) = gl.nodes.get_mut(&handle) else { return UNDEF };
+    let Some(rec) = gl.nodes.get_mut(&handle) else {
+        return UNDEF;
+    };
     if !matches!(rec.params, Params::Spatial(_)) || rec.panning == panning {
         return UNDEF;
     }
     rec.panning = panning;
     let eh = rec.engine;
-    let Some(eng) = gl.engines.get_mut(&eh) else { return UNDEF };
+    let Some(eng) = gl.engines.get_mut(&eh) else {
+        return UNDEF;
+    };
     update_spatial(eng, rec);
     if panning == Panning::Objects && !eng.wants_objects && eng.state != ST_CLOSED {
         // Only a page that asks for objects gets the backend's output: a plain stereo mix played
@@ -3076,7 +3424,10 @@ unsafe fn analyser_out<'a, T>(g: *mut c_void, cf: *mut c_void, kind: u32) -> Opt
     let arr = cf_arg(cf, 0);
     let mut ta = crate::ffi::RjsTaInfo::default();
     if glue::rjs_typedarray_info(g, arr, &mut ta) == 0 && !ta.data.is_null() && ta.kind == kind {
-        Some(core::slice::from_raw_parts_mut(ta.data as *mut T, ta.length as usize))
+        Some(core::slice::from_raw_parts_mut(
+            ta.data as *mut T,
+            ta.length as usize,
+        ))
     } else {
         None
     }
@@ -3120,8 +3471,12 @@ unsafe fn analyser_spectrum(g: *mut c_void, cf: *mut c_void) -> Option<Vec<f32>>
     let tau = analyser_slot_f64(g, cf, "smoothingTimeConstant", 0.8).clamp(0.0, 1.0) as f32;
 
     let mut gl = glob().lock().unwrap();
-    let Some(rec) = gl.nodes.get_mut(&handle) else { return None };
-    let Params::Analyser { ring, smooth } = &mut rec.params else { return None };
+    let Some(rec) = gl.nodes.get_mut(&handle) else {
+        return None;
+    };
+    let Params::Analyser { ring, smooth } = &mut rec.params else {
+        return None;
+    };
 
     let mut re = vec![0.0f32; n];
     ring.read_latest(&mut re);
@@ -3144,7 +3499,9 @@ unsafe fn analyser_spectrum(g: *mut c_void, cf: *mut c_void) -> Option<Vec<f32>>
 
 #[crate::host_fn]
 unsafe fn analyser_float_time(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(out) = analyser_out::<f32>(g, cf, 8) else { return UNDEF };
+    let Some(out) = analyser_out::<f32>(g, cf, 8) else {
+        return UNDEF;
+    };
     match analyser_time_domain(g, cf) {
         Some(data) => {
             let n = out.len().min(data.len());
@@ -3157,7 +3514,9 @@ unsafe fn analyser_float_time(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn analyser_byte_time(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(out) = analyser_out::<u8>(g, cf, 2) else { return UNDEF };
+    let Some(out) = analyser_out::<u8>(g, cf, 2) else {
+        return UNDEF;
+    };
     match analyser_time_domain(g, cf) {
         Some(data) => {
             for (o, &v) in out.iter_mut().zip(data.iter()) {
@@ -3171,7 +3530,9 @@ unsafe fn analyser_byte_time(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn analyser_float_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(out) = analyser_out::<f32>(g, cf, 8) else { return UNDEF };
+    let Some(out) = analyser_out::<f32>(g, cf, 8) else {
+        return UNDEF;
+    };
     match analyser_spectrum(g, cf) {
         Some(mags) => {
             for (o, &m) in out.iter_mut().zip(mags.iter()) {
@@ -3188,7 +3549,9 @@ unsafe fn analyser_byte_freq(g: *mut c_void, cf: *mut c_void) -> u64 {
     let min_db = analyser_slot_f64(g, cf, "minDecibels", -100.0) as f32;
     let max_db = analyser_slot_f64(g, cf, "maxDecibels", -30.0) as f32;
     let range = (max_db - min_db).max(1e-6);
-    let Some(out) = analyser_out::<u8>(g, cf, 2) else { return UNDEF };
+    let Some(out) = analyser_out::<u8>(g, cf, 2) else {
+        return UNDEF;
+    };
     match analyser_spectrum(g, cf) {
         Some(mags) => {
             for (o, &m) in out.iter_mut().zip(mags.iter()) {
@@ -3210,7 +3573,10 @@ unsafe fn analyser_get_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn analyser_set_fft(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = dec_f64(cf_arg(cf, 0)).unwrap_or(f64::NAN);
     if valid_fft_size(v).is_none() {
-        return throw_type_error(g, "AnalyserNode.fftSize must be a power of two in [32, 4096]");
+        return throw_type_error(
+            g,
+            "AnalyserNode.fftSize must be a power of two in [32, 4096]",
+        );
     }
     let slots = slots_of(g, cf_this(cf));
     define(g, slots, "fftSize", cf_arg(cf, 0), 0);
@@ -3237,9 +3603,24 @@ macro_rules! analyser_slot_accessor {
         }
     };
 }
-analyser_slot_accessor!(analyser_get_smoothing, analyser_set_smoothing, "smoothingTimeConstant", 0.8);
-analyser_slot_accessor!(analyser_get_min_db, analyser_set_min_db, "minDecibels", -100.0);
-analyser_slot_accessor!(analyser_get_max_db, analyser_set_max_db, "maxDecibels", -30.0);
+analyser_slot_accessor!(
+    analyser_get_smoothing,
+    analyser_set_smoothing,
+    "smoothingTimeConstant",
+    0.8
+);
+analyser_slot_accessor!(
+    analyser_get_min_db,
+    analyser_set_min_db,
+    "minDecibels",
+    -100.0
+);
+analyser_slot_accessor!(
+    analyser_get_max_db,
+    analyser_set_max_db,
+    "maxDecibels",
+    -30.0
+);
 
 // ---------------------------------------------------------------------------
 // Slot getters (AudioParam / object properties)
@@ -3290,7 +3671,8 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     // As wide as any output can be, fixed: `set_graph_channel_config` resizes the graph's input
     // node in place of its output node (firewheel-graph 0.10.2). Unused outputs stay silent.
     let mut fw = FirewheelContext::new(firewheel::FirewheelConfig {
-        num_graph_outputs: firewheel::channel_config::ChannelCount::new(mixing::MAX_CHANNELS).unwrap(),
+        num_graph_outputs: firewheel::channel_config::ChannelCount::new(mixing::MAX_CHANNELS)
+            .unwrap(),
         ..Default::default()
     });
     let master = fw.add_node(VolumeNode::default(), None);
@@ -3328,7 +3710,12 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if eng.sample_rate == 0 {
         eng.sample_rate = 48_000;
     }
-    alog!("AudioContext created: running={} rate={} channels={}", eng.running, eng.sample_rate, eng.device_channels);
+    alog!(
+        "AudioContext created: running={} rate={} channels={}",
+        eng.running,
+        eng.sample_rate,
+        eng.device_channels
+    );
 
     let (engine_handle, dest_handle) = {
         let mut gl = glob().lock().unwrap();
@@ -3342,7 +3729,11 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
 
     let nt = cf_new_target(cf);
-    let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    let mut proto = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
     if !is_cell(proto) {
         proto = c.ctx.proto;
     }
@@ -3356,7 +3747,12 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     // The listener: a host object owned by this context, its params write
     // through to the engine's listener position.
-    let listener = host_create(g, c.listener_cls, c.listener.proto, ListenerHandle(engine_handle));
+    let listener = host_create(
+        g,
+        c.listener_cls,
+        c.listener.proto,
+        ListenerHandle(engine_handle),
+    );
     let lslots = new_object(g, UNDEF);
     glue::rjs_define(g, listener, c.s_audio, lslots, 0);
     let lparams: &[(&str, u8, f64)] = &[
@@ -3371,7 +3767,16 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         ("upZ", P_L_UP_Z, 0.0),
     ];
     for &(name, kind, initial) in lparams {
-        let p = host_create(g, c.param_cls, c.param.proto, ParamRef { node: engine_handle, kind, last: initial });
+        let p = host_create(
+            g,
+            c.param_cls,
+            c.param.proto,
+            ParamRef {
+                node: engine_handle,
+                kind,
+                last: initial,
+            },
+        );
         define(g, lslots, name, p, 0);
     }
     define(g, slots, "listener", listener, 0);
@@ -3417,7 +3822,11 @@ unsafe fn ctx_get_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "AudioContext.sinkId on wrong this");
     };
     let gl = glob().lock().unwrap();
-    let id = gl.engines.get(&h).map(|e| e.sink_id.clone()).unwrap_or_default();
+    let id = gl
+        .engines
+        .get(&h)
+        .map(|e| e.sink_id.clone())
+        .unwrap_or_default();
     drop(gl);
     js_string(g, &id)
 }
@@ -3509,9 +3918,11 @@ unsafe fn ctx_set_sink_id(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     match outcome {
         Outcome::Ok => resolved_promise(g, UNDEF),
-        Outcome::Closed => {
-            super::domexception::rejected(g, "InvalidStateError", "AudioContext.setSinkId: the context is closed")
-        }
+        Outcome::Closed => super::domexception::rejected(
+            g,
+            "InvalidStateError",
+            "AudioContext.setSinkId: the context is closed",
+        ),
         Outcome::Failed(e) => rejected_promise(
             g,
             0,
@@ -3570,7 +3981,13 @@ unsafe fn ctx_close(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// Shared body of the create* factories.
-unsafe fn ctx_create_node(g: *mut c_void, cf: *mut c_void, params: Params, proto: u64, jsparams: &[(&str, u8, f64)]) -> u64 {
+unsafe fn ctx_create_node(
+    g: *mut c_void,
+    cf: *mut c_void,
+    params: Params,
+    proto: u64,
+    jsparams: &[(&str, u8, f64)],
+) -> u64 {
     let Some(h) = this_engine_handle(g, cf) else {
         return throw_type_error(g, "AudioContext factory called on wrong this");
     };
@@ -3579,7 +3996,13 @@ unsafe fn ctx_create_node(g: *mut c_void, cf: *mut c_void, params: Params, proto
 
 /// A node on context `engine`, wrapped — the factories' and the node
 /// constructors' common end.
-unsafe fn create_node_on(g: *mut c_void, engine: u64, params: Params, proto: u64, jsparams: &[(&str, u8, f64)]) -> u64 {
+unsafe fn create_node_on(
+    g: *mut c_void,
+    engine: u64,
+    params: Params,
+    proto: u64,
+    jsparams: &[(&str, u8, f64)],
+) -> u64 {
     let handle = {
         let mut gl = glob().lock().unwrap();
         match alloc_node(&mut gl, engine, params) {
@@ -3593,13 +4016,25 @@ unsafe fn create_node_on(g: *mut c_void, engine: u64, params: Params, proto: u64
 #[crate::host_fn]
 unsafe fn ctx_create_gain(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
-    ctx_create_node(g, cf, Params::Gain(VolumeNode::default()), c.gain.proto, &[("gain", P_GAIN, 1.0)])
+    ctx_create_node(
+        g,
+        cf,
+        Params::Gain(VolumeNode::default()),
+        c.gain.proto,
+        &[("gain", P_GAIN, 1.0)],
+    )
 }
 
 #[crate::host_fn]
 unsafe fn ctx_create_stereo_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
-    ctx_create_node(g, cf, Params::Pan(VolumePanNode::default()), c.stereo.proto, &[("pan", P_PAN, 0.0)])
+    ctx_create_node(
+        g,
+        cf,
+        Params::Pan(VolumePanNode::default()),
+        c.stereo.proto,
+        &[("pan", P_PAN, 0.0)],
+    )
 }
 
 #[crate::host_fn]
@@ -3627,7 +4062,10 @@ unsafe fn ctx_create_panner(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
-    let svf = SvfNode::<2> { cutoff_hz: 350.0, ..Default::default() };
+    let svf = SvfNode::<2> {
+        cutoff_hz: 350.0,
+        ..Default::default()
+    };
     ctx_create_node(
         g,
         cf,
@@ -3645,7 +4083,10 @@ unsafe fn ctx_create_biquad(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
-    let params = Params::Analyser { ring: ArcGc::new(MonitorRing::new()), smooth: Vec::new() };
+    let params = Params::Analyser {
+        ring: ArcGc::new(MonitorRing::new()),
+        smooth: Vec::new(),
+    };
     ctx_create_node(g, cf, params, c.analyser.proto, &[])
 }
 
@@ -3716,7 +4157,9 @@ unsafe fn ctx_create_red_stream_source(g: *mut c_void, cf: *mut c_void) -> u64 {
     let opts = cf_arg(cf, 0);
     let num = |name: &str, dflt: f64| -> f64 {
         if is_cell(opts) {
-            dec_f64(get(g, opts, name)).filter(|v| v.is_finite()).unwrap_or(dflt)
+            dec_f64(get(g, opts, name))
+                .filter(|v| v.is_finite())
+                .unwrap_or(dflt)
         } else {
             dflt
         }
@@ -3758,13 +4201,23 @@ unsafe fn engine_of(g: *mut c_void, v: u64) -> Option<u64> {
 #[crate::host_fn]
 pub(crate) unsafe fn ms_source_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(engine) = engine_of(g, cf_arg(cf, 0)) else {
-        return throw_type_error(g, "MediaStreamAudioSourceNode: parameter 1 is not of type 'AudioContext'.");
+        return throw_type_error(
+            g,
+            "MediaStreamAudioSourceNode: parameter 1 is not of type 'AudioContext'.",
+        );
     };
     let Some(track) = super::mediastream::handle_id(g, cf_arg(cf, 1)) else {
-        return throw_type_error(g, "MediaStreamAudioSourceNode: the track is not a MediaStreamTrack.");
+        return throw_type_error(
+            g,
+            "MediaStreamAudioSourceNode: the track is not a MediaStreamTrack.",
+        );
     };
     let Some(info) = super::mediastream::info(track) else {
-        return super::domexception::throw(g, "InvalidStateError", "MediaStreamAudioSourceNode: the track is gone.");
+        return super::domexception::throw(
+            g,
+            "InvalidStateError",
+            "MediaStreamAudioSourceNode: the track is gone.",
+        );
     };
     // A live device: a short queue keeps the monitor latency near a
     // browser's. A network track arrives in the network's bursts and needs
@@ -3802,7 +4255,9 @@ pub(crate) fn reaches_destination(start: u64) -> bool {
         if !seen.insert(n) {
             continue;
         }
-        let Some(rec) = gl.nodes.get(&n) else { continue };
+        let Some(rec) = gl.nodes.get(&n) else {
+            continue;
+        };
         if matches!(rec.params, Params::Dest) {
             return true;
         }
@@ -3816,9 +4271,18 @@ pub(crate) fn reaches_destination(start: u64) -> bool {
 #[crate::host_fn]
 pub(crate) unsafe fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(engine) = engine_of(g, cf_arg(cf, 0)) else {
-        return throw_type_error(g, "MediaStreamAudioDestinationNode: parameter 1 is not of type 'AudioContext'.");
+        return throw_type_error(
+            g,
+            "MediaStreamAudioDestinationNode: parameter 1 is not of type 'AudioContext'.",
+        );
     };
-    let rate = glob().lock().unwrap().engines.get(&engine).map(|e| e.sample_rate).unwrap_or(48_000);
+    let rate = glob()
+        .lock()
+        .unwrap()
+        .engines
+        .get(&engine)
+        .map(|e| e.sample_rate)
+        .unwrap_or(48_000);
     let source = super::mediastream::Source::new(
         super::mediastream::SourceKind::Graph,
         "MediaStreamAudioDestinationNode".into(),
@@ -3826,7 +4290,13 @@ pub(crate) unsafe fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {
         rate,
         super::mediastream::Settings::default(),
     );
-    let obj = create_node_on(g, engine, Params::MediaDest(Arc::clone(&source)), cf_arg(cf, 1), &[]);
+    let obj = create_node_on(
+        g,
+        engine,
+        Params::MediaDest(Arc::clone(&source)),
+        cf_arg(cf, 1),
+        &[],
+    );
     if !is_cell(obj) {
         return obj; // the context is closed: already thrown
     }
@@ -3864,7 +4334,13 @@ unsafe fn ctx_create_buffer(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_engine_handle(g, cf).is_none() {
         return throw_type_error(g, "AudioContext.createBuffer on wrong this");
     }
-    wrap_buffer(g, Arc::new(PlanarBuffer { data: vec![vec![0.0; length]; channels], sample_rate: rate }))
+    wrap_buffer(
+        g,
+        Arc::new(PlanarBuffer {
+            data: vec![vec![0.0; length]; channels],
+            sample_rate: rate,
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -3893,8 +4369,11 @@ const INTERPRETATIONS: &[&str] = &["speakers", "discrete"];
 /// The IndexSizeError text for a `numberOfOutputs` / `numberOfInputs` outside
 /// 1..=32 (Chromium's wording); `None` when it is in range.
 fn count_out_of_range(n: u32, what: &str) -> Option<String> {
-    (!(1..=MAX_SPLIT_CHANNELS).contains(&n))
-        .then(|| format!("The number of {what} provided ({n}) is outside the range [1, {MAX_SPLIT_CHANNELS}]."))
+    (!(1..=MAX_SPLIT_CHANNELS).contains(&n)).then(|| {
+        format!(
+            "The number of {what} provided ({n}) is outside the range [1, {MAX_SPLIT_CHANNELS}]."
+        )
+    })
 }
 
 /// What a splitter / merger `this` is, for the pinned attributes.
@@ -3925,7 +4404,11 @@ impl Pinned {
         if v == self.count() {
             Ok(())
         } else {
-            Err(format!("{}: channelCount cannot be changed from {}", self.who(), self.count()))
+            Err(format!(
+                "{}: channelCount cannot be changed from {}",
+                self.who(),
+                self.count()
+            ))
         }
     }
 
@@ -3933,15 +4416,18 @@ impl Pinned {
         if mode == "explicit" {
             Ok(())
         } else {
-            Err(format!("{}: channelCountMode cannot be changed from 'explicit'", self.who()))
+            Err(format!(
+                "{}: channelCountMode cannot be changed from 'explicit'",
+                self.who()
+            ))
         }
     }
 
     fn check_interpretation(self, interp: &str) -> Result<(), String> {
         match self {
-            Pinned::Splitter(_) if interp != "discrete" => {
-                Err("ChannelSplitter: channelInterpretation cannot be changed from 'discrete'".into())
-            }
+            Pinned::Splitter(_) if interp != "discrete" => Err(
+                "ChannelSplitter: channelInterpretation cannot be changed from 'discrete'".into(),
+            ),
             _ => Ok(()),
         }
     }
@@ -3952,7 +4438,12 @@ unsafe fn pinned_of(g: *mut c_void, cf: *mut c_void) -> Option<(u64, Pinned)> {
     let gl = glob().lock().unwrap();
     match gl.nodes.get(&h).map(|r| &r.params) {
         Some(Params::Splitter(n)) => Some((h, Pinned::Splitter(*n))),
-        Some(Params::Merger { discrete, .. }) => Some((h, Pinned::Merger { discrete: discrete.load(Ordering::Relaxed) })),
+        Some(Params::Merger { discrete, .. }) => Some((
+            h,
+            Pinned::Merger {
+                discrete: discrete.load(Ordering::Relaxed),
+            },
+        )),
         _ => None,
     }
 }
@@ -3986,7 +4477,9 @@ unsafe fn pinned_set_count(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some((_, p)) = pinned_of(g, cf) else {
         return throw_type_error(g, "AudioNode.channelCount on wrong this");
     };
-    let Ok(v) = idl_u32(g, cf_arg(cf, 0), 0) else { return UNDEF };
+    let Ok(v) = idl_u32(g, cf_arg(cf, 0), 0) else {
+        return UNDEF;
+    };
     match p.check_count(v) {
         Ok(()) => UNDEF,
         Err(m) => set_refused(g, "channelCount", &m),
@@ -4055,7 +4548,11 @@ unsafe fn pinned_set_interpretation(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Read one of the three attributes of `this` under the graph lock.
-unsafe fn channel_attr<T>(g: *mut c_void, cf: *mut c_void, read: impl FnOnce(&NodeRec) -> T) -> Option<T> {
+unsafe fn channel_attr<T>(
+    g: *mut c_void,
+    cf: *mut c_void,
+    read: impl FnOnce(&NodeRec) -> T,
+) -> Option<T> {
     let h = this_node_handle(g, cf)?;
     let gl = glob().lock().unwrap();
     gl.nodes.get(&h).map(read)
@@ -4076,9 +4573,13 @@ unsafe fn channel_write(
     let refusal = {
         let mut gl = glob().lock().unwrap();
         let gl = &mut *gl;
-        let Some(rec) = gl.nodes.get_mut(&h) else { return UNDEF };
+        let Some(rec) = gl.nodes.get_mut(&h) else {
+            return UNDEF;
+        };
         let eh = rec.engine;
-        let Some(eng) = gl.engines.get(&eh) else { return UNDEF };
+        let Some(eng) = gl.engines.get(&eh) else {
+            return UNDEF;
+        };
         match check(rec, eng) {
             Err(r) => Some(r),
             Ok(()) => {
@@ -4089,9 +4590,11 @@ unsafe fn channel_write(
         }
     };
     match refusal {
-        Some((name, msg)) => {
-            super::domexception::throw(g, name, &format!("Failed to set the '{attr}' property on 'AudioNode': {msg}"))
-        }
+        Some((name, msg)) => super::domexception::throw(
+            g,
+            name,
+            &format!("Failed to set the '{attr}' property on 'AudioNode': {msg}"),
+        ),
         None => UNDEF,
     }
 }
@@ -4114,7 +4617,9 @@ unsafe fn node_get_channel_count(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn node_set_channel_count(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(v) = idl_u32(g, cf_arg(cf, 0), 0) else { return UNDEF };
+    let Ok(v) = idl_u32(g, cf_arg(cf, 0), 0) else {
+        return UNDEF;
+    };
     channel_write(
         g,
         cf,
@@ -4123,12 +4628,18 @@ unsafe fn node_set_channel_count(g: *mut c_void, cf: *mut c_void) -> u64 {
             if matches!(rec.params, Params::Dest) && (v == 0 || v > eng.device_channels) {
                 return Err((
                     "IndexSizeError",
-                    format!("The provided value ({v}) is outside the range [1, {}].", eng.device_channels),
+                    format!(
+                        "The provided value ({v}) is outside the range [1, {}].",
+                        eng.device_channels
+                    ),
                 ));
             }
             let limit = host_channel_limit(rec);
             if v == 0 || v > limit {
-                return Err(("NotSupportedError", format!("The channel count provided ({v}) is outside the range [1, {limit}].")));
+                return Err((
+                    "NotSupportedError",
+                    format!("The channel count provided ({v}) is outside the range [1, {limit}]."),
+                ));
             }
             Ok(())
         },
@@ -4155,9 +4666,10 @@ unsafe fn node_set_channel_count_mode(g: *mut c_void, cf: *mut c_void) -> u64 {
         cf,
         "channelCountMode",
         |rec, _| match rec.params {
-            Params::Pan(_) | Params::Spatial(_) if mode == CountMode::Max => {
-                Err(("NotSupportedError", "a panner's channelCountMode cannot be 'max'.".into()))
-            }
+            Params::Pan(_) | Params::Spatial(_) if mode == CountMode::Max => Err((
+                "NotSupportedError",
+                "a panner's channelCountMode cannot be 'max'.".into(),
+            )),
             _ => Ok(()),
         },
         |rec| rec.ch_mode = mode,
@@ -4178,7 +4690,13 @@ unsafe fn node_set_channel_interpretation(g: *mut c_void, cf: *mut c_void) -> u6
         Err(()) | Ok(None) => return UNDEF,
         Ok(Some(i)) => Interp::parse(&i).unwrap(),
     };
-    channel_write(g, cf, "channelInterpretation", |_, _| Ok(()), |rec| rec.ch_interp = interp)
+    channel_write(
+        g,
+        cf,
+        "channelInterpretation",
+        |_, _| Ok(()),
+        |rec| rec.ch_interp = interp,
+    )
 }
 
 /// `AudioDestinationNode.maxChannelCount`: the channels the output opened with.
@@ -4188,7 +4706,11 @@ unsafe fn dest_get_max_channel_count(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "AudioDestinationNode.maxChannelCount on wrong this");
     };
     let gl = glob().lock().unwrap();
-    let n = gl.nodes.get(&h).and_then(|r| gl.engines.get(&r.engine)).map_or(2, |e| e.device_channels);
+    let n = gl
+        .nodes
+        .get(&h)
+        .and_then(|r| gl.engines.get(&r.engine))
+        .map_or(2, |e| e.device_channels);
     enc_i32(n as i32)
 }
 
@@ -4198,7 +4720,9 @@ unsafe fn ctx_create_channel_splitter(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_engine_handle(g, cf).is_none() {
         return throw_type_error(g, "AudioContext.createChannelSplitter on wrong this");
     }
-    let Ok(n) = idl_u32(g, cf_arg(cf, 0), 6) else { return UNDEF };
+    let Ok(n) = idl_u32(g, cf_arg(cf, 0), 6) else {
+        return UNDEF;
+    };
     if let Some(m) = count_out_of_range(n, "outputs") {
         return super::domexception::throw(
             g,
@@ -4215,7 +4739,9 @@ unsafe fn ctx_create_channel_merger(g: *mut c_void, cf: *mut c_void) -> u64 {
     if this_engine_handle(g, cf).is_none() {
         return throw_type_error(g, "AudioContext.createChannelMerger on wrong this");
     }
-    let Ok(n) = idl_u32(g, cf_arg(cf, 0), 6) else { return UNDEF };
+    let Ok(n) = idl_u32(g, cf_arg(cf, 0), 6) else {
+        return UNDEF;
+    };
     if let Some(m) = count_out_of_range(n, "inputs") {
         return super::domexception::throw(
             g,
@@ -4223,7 +4749,10 @@ unsafe fn ctx_create_channel_merger(g: *mut c_void, cf: *mut c_void) -> u64 {
             &format!("Failed to execute 'createChannelMerger' on 'BaseAudioContext': {m}"),
         );
     }
-    let params = Params::Merger { n, discrete: ArcGc::new(AtomicBool::new(false)) };
+    let params = Params::Merger {
+        n,
+        discrete: ArcGc::new(AtomicBool::new(false)),
+    };
     ctx_create_node(g, cf, params, c.merger.proto, &[])
 }
 
@@ -4237,7 +4766,14 @@ struct PinnedOptions {
 
 /// An enum dictionary member: absent → `None`; a value outside the enum is a
 /// TypeError (a dictionary, unlike an attribute, does not ignore it).
-unsafe fn enum_member(g: *mut c_void, dict: u64, member: &str, allowed: &[&str], ty: &str, iface: &str) -> Result<Option<String>, ()> {
+unsafe fn enum_member(
+    g: *mut c_void,
+    dict: u64,
+    member: &str,
+    allowed: &[&str],
+    ty: &str,
+    iface: &str,
+) -> Result<Option<String>, ()> {
     let v = try_get(g, dict, member)?;
     if v == UNDEF {
         return Ok(None);
@@ -4261,21 +4797,49 @@ unsafe fn enum_member(g: *mut c_void, dict: u64, member: &str, allowed: &[&str],
 /// `AudioNodeOptions` members first, then `numberOfOutputs` / `numberOfInputs`,
 /// each dictionary's members in lexicographic order. `undefined` / `null` are
 /// the empty dictionary.
-unsafe fn pinned_options(g: *mut c_void, v: u64, n_member: &str, iface: &str, dict: &str) -> Result<PinnedOptions, ()> {
-    let mut o = PinnedOptions { count: None, mode: None, interpretation: None, n: 6 };
+unsafe fn pinned_options(
+    g: *mut c_void,
+    v: u64,
+    n_member: &str,
+    iface: &str,
+    dict: &str,
+) -> Result<PinnedOptions, ()> {
+    let mut o = PinnedOptions {
+        count: None,
+        mode: None,
+        interpretation: None,
+        n: 6,
+    };
     if v == UNDEF || v == NULL {
         return Ok(o);
     }
     if !super::blob::is_object(g, v) {
-        throw_type_error(g, &format!("Failed to construct '{iface}': The provided value is not of type '{dict}'."));
+        throw_type_error(
+            g,
+            &format!("Failed to construct '{iface}': The provided value is not of type '{dict}'."),
+        );
         return Err(());
     }
     let count = try_get(g, v, "channelCount")?;
     if count != UNDEF {
         o.count = Some(idl_u32(g, count, 0)?);
     }
-    o.mode = enum_member(g, v, "channelCountMode", COUNT_MODES, "ChannelCountMode", iface)?;
-    o.interpretation = enum_member(g, v, "channelInterpretation", INTERPRETATIONS, "ChannelInterpretation", iface)?;
+    o.mode = enum_member(
+        g,
+        v,
+        "channelCountMode",
+        COUNT_MODES,
+        "ChannelCountMode",
+        iface,
+    )?;
+    o.interpretation = enum_member(
+        g,
+        v,
+        "channelInterpretation",
+        INTERPRETATIONS,
+        "ChannelInterpretation",
+        iface,
+    )?;
     o.n = idl_u32(g, try_get(g, v, n_member)?, 6)?;
     Ok(o)
 }
@@ -4287,36 +4851,78 @@ unsafe fn pinned_options(g: *mut c_void, v: u64, n_member: &str, iface: &str, di
 unsafe fn construct_pinned(g: *mut c_void, cf: *mut c_void, splitter: bool) -> u64 {
     let c = classes(g);
     let (iface, dict, n_member, what) = if splitter {
-        ("ChannelSplitterNode", "ChannelSplitterOptions", "numberOfOutputs", "outputs")
+        (
+            "ChannelSplitterNode",
+            "ChannelSplitterOptions",
+            "numberOfOutputs",
+            "outputs",
+        )
     } else {
-        ("ChannelMergerNode", "ChannelMergerOptions", "numberOfInputs", "inputs")
+        (
+            "ChannelMergerNode",
+            "ChannelMergerOptions",
+            "numberOfInputs",
+            "inputs",
+        )
     };
     let Some(engine) = host_data::<CtxHandle>(g, c.ctx_cls, cf_arg(cf, 0)).map(|h| h.0) else {
-        return throw_type_error(g, &format!("Failed to construct '{iface}': parameter 1 is not of type 'BaseAudioContext'."));
+        return throw_type_error(
+            g,
+            &format!(
+                "Failed to construct '{iface}': parameter 1 is not of type 'BaseAudioContext'."
+            ),
+        );
     };
-    let Ok(o) = pinned_options(g, cf_arg(cf, 1), n_member, iface, dict) else { return UNDEF };
+    let Ok(o) = pinned_options(g, cf_arg(cf, 1), n_member, iface, dict) else {
+        return UNDEF;
+    };
     if let Some(m) = count_out_of_range(o.n, what) {
-        return super::domexception::throw(g, "IndexSizeError", &format!("Failed to construct '{iface}': {m}"));
+        return super::domexception::throw(
+            g,
+            "IndexSizeError",
+            &format!("Failed to construct '{iface}': {m}"),
+        );
     }
-    let p = if splitter { Pinned::Splitter(o.n) } else { Pinned::Merger { discrete: false } };
+    let p = if splitter {
+        Pinned::Splitter(o.n)
+    } else {
+        Pinned::Merger { discrete: false }
+    };
     let checks = [
         o.count.map(|v| p.check_count(v)),
         o.mode.as_deref().map(|m| p.check_mode(m)),
-        o.interpretation.as_deref().map(|i| p.check_interpretation(i)),
+        o.interpretation
+            .as_deref()
+            .map(|i| p.check_interpretation(i)),
     ];
     if let Some(refused) = checks.into_iter().flatten().find_map(Result::err) {
-        return super::domexception::throw(g, "InvalidStateError", &format!("Failed to construct '{iface}': {refused}"));
+        return super::domexception::throw(
+            g,
+            "InvalidStateError",
+            &format!("Failed to construct '{iface}': {refused}"),
+        );
     }
     let nt = cf_new_target(cf);
-    let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    let mut proto = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
     if !is_cell(proto) {
-        proto = if splitter { c.splitter.proto } else { c.merger.proto };
+        proto = if splitter {
+            c.splitter.proto
+        } else {
+            c.merger.proto
+        };
     }
     let params = if splitter {
         Params::Splitter(o.n)
     } else {
         let discrete = o.interpretation.as_deref() == Some("discrete");
-        Params::Merger { n: o.n, discrete: ArcGc::new(AtomicBool::new(discrete)) }
+        Params::Merger {
+            n: o.n,
+            discrete: ArcGc::new(AtomicBool::new(discrete)),
+        }
     };
     create_node_on(g, engine, params, proto, &[])
 }
@@ -4342,8 +4948,16 @@ pub fn supported_decode_formats() -> &'static [&'static str] {
     #[cfg(feature = "audio-codecs-extra")]
     {
         &[
-            "WAV/RIFF (PCM, IEEE float)", "AIFF", "CAF", "FLAC", "MP3", "OGG/Vorbis", "MP4/M4A (AAC-LC)",
-            "MKV", "ALAC", "ADPCM",
+            "WAV/RIFF (PCM, IEEE float)",
+            "AIFF",
+            "CAF",
+            "FLAC",
+            "MP3",
+            "OGG/Vorbis",
+            "MP4/M4A (AAC-LC)",
+            "MKV",
+            "ALAC",
+            "ADPCM",
         ]
     }
     #[cfg(not(feature = "audio-codecs-extra"))]
@@ -4352,7 +4966,10 @@ pub fn supported_decode_formats() -> &'static [&'static str] {
     }
 }
 
-pub(crate) fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<PlanarBuffer, String> {
+pub(crate) fn decode_bytes(
+    bytes: Vec<u8>,
+    target_rate: Option<u32>,
+) -> Result<PlanarBuffer, String> {
     static LOADER: OnceLock<Mutex<symphonium::SymphoniumLoader>> = OnceLock::new();
     let loader = LOADER.get_or_init(|| Mutex::new(symphonium::SymphoniumLoader::new()));
     let mut loader = loader.lock().unwrap();
@@ -4379,7 +4996,10 @@ pub(crate) fn decode_bytes(bytes: Vec<u8>, target_rate: Option<u32>) -> Result<P
         let _ = decoded.fill_channel(ch, 0, &mut v);
         data.push(v);
     }
-    Ok(PlanarBuffer { data, sample_rate: decoded.sample_rate().get() })
+    Ok(PlanarBuffer {
+        data,
+        sample_rate: decoded.sample_rate().get(),
+    })
 }
 
 #[crate::host_fn]
@@ -4397,7 +5017,10 @@ unsafe fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let target_rate = {
         let gl = glob().lock().unwrap();
-        gl.engines.get(&h).filter(|e| e.running).map(|e| e.sample_rate)
+        gl.engines
+            .get(&h)
+            .filter(|e| e.running)
+            .map(|e| e.sample_rate)
     };
 
     let (mut res, mut rej, mut p) = (0u64, 0u64, 0u64);
@@ -4414,30 +5037,34 @@ unsafe fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     // Spec: decoding is async. The decode itself runs on the pump tick
     // (native task), which for short sound effects is a couple of milliseconds.
-    crate::web::schedule_native(g, 0.0, Box::new(move |g| {
-        match decode_bytes(bytes, target_rate) {
-            Ok(buf) => {
-                let js_buf = wrap_buffer(g, Arc::new(buf));
-                if is_cell(success_cb) {
-                    let _ = call(g, success_cb, UNDEF, &[js_buf]);
+    crate::web::schedule_native(
+        g,
+        0.0,
+        Box::new(move |g| {
+            match decode_bytes(bytes, target_rate) {
+                Ok(buf) => {
+                    let js_buf = wrap_buffer(g, Arc::new(buf));
+                    if is_cell(success_cb) {
+                        let _ = call(g, success_cb, UNDEF, &[js_buf]);
+                    }
+                    let _ = call(g, res, UNDEF, &[js_buf]);
                 }
-                let _ = call(g, res, UNDEF, &[js_buf]);
-            }
-            Err(msg) => {
-                // Spec: "an EncodingError DOMException".
-                let err = super::domexception::create(g, "EncodingError", &msg);
-                if is_cell(error_cb) {
-                    let _ = call(g, error_cb, UNDEF, &[err]);
+                Err(msg) => {
+                    // Spec: "an EncodingError DOMException".
+                    let err = super::domexception::create(g, "EncodingError", &msg);
+                    if is_cell(error_cb) {
+                        let _ = call(g, error_cb, UNDEF, &[err]);
+                    }
+                    let _ = call(g, rej, UNDEF, &[err]);
                 }
-                let _ = call(g, rej, UNDEF, &[err]);
             }
-        }
-        for v in [res, rej, success_cb, error_cb] {
-            if is_cell(v) {
-                crate::ffi::redjs_unprotect(g, v);
+            for v in [res, rej, success_cb, error_cb] {
+                if is_cell(v) {
+                    crate::ffi::redjs_unprotect(g, v);
+                }
             }
-        }
-    }));
+        }),
+    );
     p
 }
 
@@ -4505,7 +5132,12 @@ pub unsafe fn pump(g: *mut c_void) {
             }
         }
 
-        let Glob { engines, nodes, timelines, .. } = gl;
+        let Glob {
+            engines,
+            nodes,
+            timelines,
+            ..
+        } = gl;
 
         let handles: Vec<u64> = engines
             .iter()
@@ -4529,7 +5161,11 @@ pub unsafe fn pump(g: *mut c_void) {
             if moved {
                 graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
                 graph::resync(engines, nodes, eh);
-            } else if engines[&eh].objects.as_ref().is_some_and(|o| o.lost_changed()) {
+            } else if engines[&eh]
+                .objects
+                .as_ref()
+                .is_some_and(|o| o.lost_changed())
+            {
                 graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
             }
 
@@ -4597,7 +5233,10 @@ pub unsafe fn pump(g: *mut c_void) {
                 if rec.started && !rec.ended && matches!(rec.params, Params::Sampler(_)) {
                     // Playback state lives on the node's SamplerState handle
                     // (shared with the audio thread), not on the param struct.
-                    if let Some(st) = eng.fw.node_state::<firewheel::nodes::sampler::SamplerState>(rec.id) {
+                    if let Some(st) = eng
+                        .fw
+                        .node_state::<firewheel::nodes::sampler::SamplerState>(rec.id)
+                    {
                         if st.playing() {
                             rec.saw_playing = true;
                         }
@@ -4648,7 +5287,8 @@ pub unsafe fn pump(g: *mut c_void) {
                 Err(firewheel::error::UpdateError::StreamStoppedUnexpectedly(e)) => {
                     eprintln!(
                         "[audio] the output stopped ({}); reopening it",
-                        e.map(|e| e.0).unwrap_or_else(|| "the audio thread ended".into())
+                        e.map(|e| e.0)
+                            .unwrap_or_else(|| "the audio thread ended".into())
                     );
                     eng.running = false;
                     eng.retry_at = Some(std::time::Instant::now());
@@ -4690,273 +5330,379 @@ pub unsafe fn install(g: *mut c_void) {
     let buffer_cls = make_host_class::<BufData>("AudioBuffer");
     let listener_cls = make_host_class::<ListenerHandle>("AudioListener");
 
-    let node_base = define_class(g, &ClassSpec {
-        name: "AudioNode",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("connect", 1, node_connect), ("disconnect", 0, node_disconnect)],
-        getters: &[("numberOfInputs", node_get_number_of_inputs), ("numberOfOutputs", node_get_number_of_outputs)],
-        accessors: &[
-            ("channelCount", node_get_channel_count, node_set_channel_count),
-            ("channelCountMode", node_get_channel_count_mode, node_set_channel_count_mode),
-            ("channelInterpretation", node_get_channel_interpretation, node_set_channel_interpretation),
-        ],
-    });
+    let node_base = define_class(
+        g,
+        &ClassSpec {
+            name: "AudioNode",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("connect", 1, node_connect),
+                ("disconnect", 0, node_disconnect),
+            ],
+            getters: &[
+                ("numberOfInputs", node_get_number_of_inputs),
+                ("numberOfOutputs", node_get_number_of_outputs),
+            ],
+            accessors: &[
+                (
+                    "channelCount",
+                    node_get_channel_count,
+                    node_set_channel_count,
+                ),
+                (
+                    "channelCountMode",
+                    node_get_channel_count_mode,
+                    node_set_channel_count_mode,
+                ),
+                (
+                    "channelInterpretation",
+                    node_get_channel_interpretation,
+                    node_set_channel_interpretation,
+                ),
+            ],
+        },
+    );
 
-    let param = define_class(g, &ClassSpec {
-        name: "AudioParam",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[
-            ("setValueAtTime", 2, param_set_value_at),
-            ("linearRampToValueAtTime", 2, param_linear_ramp),
-            ("exponentialRampToValueAtTime", 2, param_exp_ramp),
-            ("setTargetAtTime", 3, param_set_target),
-            ("cancelScheduledValues", 1, param_cancel),
-        ],
-        getters: &[],
-        accessors: &[("value", param_get_value, param_set_value)],
-    });
+    let param = define_class(
+        g,
+        &ClassSpec {
+            name: "AudioParam",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("setValueAtTime", 2, param_set_value_at),
+                ("linearRampToValueAtTime", 2, param_linear_ramp),
+                ("exponentialRampToValueAtTime", 2, param_exp_ramp),
+                ("setTargetAtTime", 3, param_set_target),
+                ("cancelScheduledValues", 1, param_cancel),
+            ],
+            getters: &[],
+            accessors: &[("value", param_get_value, param_set_value)],
+        },
+    );
 
-    let buffer = define_class(g, &ClassSpec {
-        name: "AudioBuffer",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("getChannelData", 1, buf_get_channel_data), ("copyToChannel", 2, buf_copy_to_channel)],
-        getters: &[
-            ("sampleRate", buf_get_sample_rate),
-            ("length", buf_get_length),
-            ("duration", buf_get_duration),
-            ("numberOfChannels", buf_get_channels),
-        ],
-        accessors: &[],
-    });
+    let buffer = define_class(
+        g,
+        &ClassSpec {
+            name: "AudioBuffer",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[
+                ("getChannelData", 1, buf_get_channel_data),
+                ("copyToChannel", 2, buf_copy_to_channel),
+            ],
+            getters: &[
+                ("sampleRate", buf_get_sample_rate),
+                ("length", buf_get_length),
+                ("duration", buf_get_duration),
+                ("numberOfChannels", buf_get_channels),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let dest = define_class(g, &ClassSpec {
-        name: "AudioDestinationNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[],
-        getters: &[("maxChannelCount", dest_get_max_channel_count)],
-        accessors: &[],
-    });
+    let dest = define_class(
+        g,
+        &ClassSpec {
+            name: "AudioDestinationNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[],
+            getters: &[("maxChannelCount", dest_get_max_channel_count)],
+            accessors: &[],
+        },
+    );
 
-    let listener = define_class(g, &ClassSpec {
-        name: "AudioListener",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[],
-        getters: &[
-            ("positionX", get_slot_pos_x),
-            ("positionY", get_slot_pos_y),
-            ("positionZ", get_slot_pos_z),
-            ("forwardX", get_slot_forward_x),
-            ("forwardY", get_slot_forward_y),
-            ("forwardZ", get_slot_forward_z),
-            ("upX", get_slot_up_x),
-            ("upY", get_slot_up_y),
-            ("upZ", get_slot_up_z),
-        ],
-        accessors: &[],
-    });
+    let listener = define_class(
+        g,
+        &ClassSpec {
+            name: "AudioListener",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[],
+            getters: &[
+                ("positionX", get_slot_pos_x),
+                ("positionY", get_slot_pos_y),
+                ("positionZ", get_slot_pos_z),
+                ("forwardX", get_slot_forward_x),
+                ("forwardY", get_slot_forward_y),
+                ("forwardZ", get_slot_forward_z),
+                ("upX", get_slot_up_x),
+                ("upY", get_slot_up_y),
+                ("upZ", get_slot_up_z),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let gain = define_class(g, &ClassSpec {
-        name: "GainNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[],
-        getters: &[("gain", get_slot_gain)],
-        accessors: &[],
-    });
+    let gain = define_class(
+        g,
+        &ClassSpec {
+            name: "GainNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[],
+            getters: &[("gain", get_slot_gain)],
+            accessors: &[],
+        },
+    );
 
-    let stereo = define_class(g, &ClassSpec {
-        name: "StereoPannerNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[],
-        getters: &[("pan", get_slot_pan)],
-        accessors: &[],
-    });
+    let stereo = define_class(
+        g,
+        &ClassSpec {
+            name: "StereoPannerNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[],
+            getters: &[("pan", get_slot_pan)],
+            accessors: &[],
+        },
+    );
 
-    let panner = define_class(g, &ClassSpec {
-        name: "PannerNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[],
-        getters: &[
-            ("positionX", get_slot_pos_x),
-            ("positionY", get_slot_pos_y),
-            ("positionZ", get_slot_pos_z),
-            ("orientationX", get_slot_orient_x),
-            ("orientationY", get_slot_orient_y),
-            ("orientationZ", get_slot_orient_z),
-        ],
-        accessors: &[
-            ("distanceModel", panner_get_distance_model, panner_set_distance_model),
-            ("panningModel", panner_get_panning_model, panner_set_panning_model),
-            ("refDistance", panner_get_ref, panner_set_ref),
-            ("maxDistance", panner_get_max, panner_set_max),
-            ("rolloffFactor", panner_get_rolloff, panner_set_rolloff),
-            ("coneInnerAngle", panner_get_cone_inner, panner_set_cone_inner),
-            ("coneOuterAngle", panner_get_cone_outer, panner_set_cone_outer),
-            ("coneOuterGain", panner_get_cone_gain, panner_set_cone_gain),
-        ],
-    });
+    let panner = define_class(
+        g,
+        &ClassSpec {
+            name: "PannerNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[],
+            getters: &[
+                ("positionX", get_slot_pos_x),
+                ("positionY", get_slot_pos_y),
+                ("positionZ", get_slot_pos_z),
+                ("orientationX", get_slot_orient_x),
+                ("orientationY", get_slot_orient_y),
+                ("orientationZ", get_slot_orient_z),
+            ],
+            accessors: &[
+                (
+                    "distanceModel",
+                    panner_get_distance_model,
+                    panner_set_distance_model,
+                ),
+                (
+                    "panningModel",
+                    panner_get_panning_model,
+                    panner_set_panning_model,
+                ),
+                ("refDistance", panner_get_ref, panner_set_ref),
+                ("maxDistance", panner_get_max, panner_set_max),
+                ("rolloffFactor", panner_get_rolloff, panner_set_rolloff),
+                (
+                    "coneInnerAngle",
+                    panner_get_cone_inner,
+                    panner_set_cone_inner,
+                ),
+                (
+                    "coneOuterAngle",
+                    panner_get_cone_outer,
+                    panner_set_cone_outer,
+                ),
+                ("coneOuterGain", panner_get_cone_gain, panner_set_cone_gain),
+            ],
+        },
+    );
 
-    let biquad = define_class(g, &ClassSpec {
-        name: "BiquadFilterNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[],
-        getters: &[
-            ("frequency", get_slot_frequency),
-            ("Q", get_slot_q),
-            ("gain", get_slot_gain),
-            ("detune", get_slot_detune),
-        ],
-        accessors: &[("type", biquad_get_type, biquad_set_type)],
-    });
+    let biquad = define_class(
+        g,
+        &ClassSpec {
+            name: "BiquadFilterNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[],
+            getters: &[
+                ("frequency", get_slot_frequency),
+                ("Q", get_slot_q),
+                ("gain", get_slot_gain),
+                ("detune", get_slot_detune),
+            ],
+            accessors: &[("type", biquad_get_type, biquad_set_type)],
+        },
+    );
 
-    let analyser = define_class(g, &ClassSpec {
-        name: "AnalyserNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[
-            ("getByteFrequencyData", 1, analyser_byte_freq),
-            ("getFloatFrequencyData", 1, analyser_float_freq),
-            ("getByteTimeDomainData", 1, analyser_byte_time),
-            ("getFloatTimeDomainData", 1, analyser_float_time),
-        ],
-        getters: &[("frequencyBinCount", analyser_bin_count)],
-        accessors: &[
-            ("fftSize", analyser_get_fft, analyser_set_fft),
-            ("smoothingTimeConstant", analyser_get_smoothing, analyser_set_smoothing),
-            ("minDecibels", analyser_get_min_db, analyser_set_min_db),
-            ("maxDecibels", analyser_get_max_db, analyser_set_max_db),
-        ],
-    });
+    let analyser = define_class(
+        g,
+        &ClassSpec {
+            name: "AnalyserNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[
+                ("getByteFrequencyData", 1, analyser_byte_freq),
+                ("getFloatFrequencyData", 1, analyser_float_freq),
+                ("getByteTimeDomainData", 1, analyser_byte_time),
+                ("getFloatTimeDomainData", 1, analyser_float_time),
+            ],
+            getters: &[("frequencyBinCount", analyser_bin_count)],
+            accessors: &[
+                ("fftSize", analyser_get_fft, analyser_set_fft),
+                (
+                    "smoothingTimeConstant",
+                    analyser_get_smoothing,
+                    analyser_set_smoothing,
+                ),
+                ("minDecibels", analyser_get_min_db, analyser_set_min_db),
+                ("maxDecibels", analyser_get_max_db, analyser_set_max_db),
+            ],
+        },
+    );
 
-    let source = define_class(g, &ClassSpec {
-        name: "AudioBufferSourceNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[("start", 0, src_start), ("stop", 0, src_stop)],
-        getters: &[("playbackRate", get_slot_playback_rate), ("detune", get_slot_detune)],
-        accessors: &[
-            ("buffer", src_get_buffer, src_set_buffer),
-            ("loop", src_get_loop, src_set_loop),
-            ("loopStart", src_get_loop_start, src_set_loop_start),
-            ("loopEnd", src_get_loop_end, src_set_loop_end),
-            ("onended", src_get_onended, src_set_onended),
-        ],
-    });
+    let source = define_class(
+        g,
+        &ClassSpec {
+            name: "AudioBufferSourceNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[("start", 0, src_start), ("stop", 0, src_stop)],
+            getters: &[
+                ("playbackRate", get_slot_playback_rate),
+                ("detune", get_slot_detune),
+            ],
+            accessors: &[
+                ("buffer", src_get_buffer, src_set_buffer),
+                ("loop", src_get_loop, src_set_loop),
+                ("loopStart", src_get_loop_start, src_set_loop_start),
+                ("loopEnd", src_get_loop_end, src_set_loop_end),
+                ("onended", src_get_onended, src_set_onended),
+            ],
+        },
+    );
 
     // `start`/`stop`/`onended` are the AudioScheduledSourceNode surface, shared
     // verbatim with the sampler — `src_start`/`src_stop` dispatch on the node's
     // `Params`, so one implementation drives both.
-    let osc = define_class(g, &ClassSpec {
-        name: "OscillatorNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[("start", 1, src_start), ("stop", 1, src_stop)],
-        getters: &[("frequency", get_slot_frequency), ("detune", get_slot_detune)],
-        accessors: &[("type", osc_get_type, osc_set_type), ("onended", src_get_onended, src_set_onended)],
-    });
+    let osc = define_class(
+        g,
+        &ClassSpec {
+            name: "OscillatorNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[("start", 1, src_start), ("stop", 1, src_stop)],
+            getters: &[
+                ("frequency", get_slot_frequency),
+                ("detune", get_slot_detune),
+            ],
+            accessors: &[
+                ("type", osc_get_type, osc_set_type),
+                ("onended", src_get_onended, src_set_onended),
+            ],
+        },
+    );
 
-    let stream_src = define_class(g, &ClassSpec {
-        name: "RedStreamSourceNode",
-        arity: 0,
-        construct: None,
-        parent_proto: node_base.proto,
-        methods: &[("push", 1, stream_push), ("close", 0, stream_close)],
-        getters: &[
-            ("streamId", get_slot_stream_id),
-            ("sampleRate", get_slot_stream_rate),
-            ("channelCount", get_slot_stream_channels),
-            ("queuedSeconds", stream_get_queued),
-            ("availableFrames", stream_get_available),
-            ("underflowed", stream_get_underflowed),
-            ("overflowed", stream_get_overflowed),
-            ("ready", stream_get_ready),
-        ],
-        accessors: &[],
-    });
+    let stream_src = define_class(
+        g,
+        &ClassSpec {
+            name: "RedStreamSourceNode",
+            arity: 0,
+            construct: None,
+            parent_proto: node_base.proto,
+            methods: &[("push", 1, stream_push), ("close", 0, stream_close)],
+            getters: &[
+                ("streamId", get_slot_stream_id),
+                ("sampleRate", get_slot_stream_rate),
+                ("channelCount", get_slot_stream_channels),
+                ("queuedSeconds", stream_get_queued),
+                ("availableFrames", stream_get_available),
+                ("underflowed", stream_get_underflowed),
+                ("overflowed", stream_get_overflowed),
+                ("ready", stream_get_ready),
+            ],
+            accessors: &[],
+        },
+    );
 
     // The three attributes the spec pins on these two (see `Pinned`).
     let pinned: &[(&str, HostFn, HostFn)] = &[
         ("channelCount", pinned_get_count, pinned_set_count),
         ("channelCountMode", pinned_get_mode, pinned_set_mode),
-        ("channelInterpretation", pinned_get_interpretation, pinned_set_interpretation),
+        (
+            "channelInterpretation",
+            pinned_get_interpretation,
+            pinned_set_interpretation,
+        ),
     ];
-    let splitter = define_class(g, &ClassSpec {
-        name: "ChannelSplitterNode",
-        arity: 1,
-        construct: Some(splitter_construct),
-        parent_proto: node_base.proto,
-        methods: &[],
-        getters: &[],
-        accessors: pinned,
-    });
-    let merger = define_class(g, &ClassSpec {
-        name: "ChannelMergerNode",
-        arity: 1,
-        construct: Some(merger_construct),
-        parent_proto: node_base.proto,
-        methods: &[],
-        getters: &[],
-        accessors: pinned,
-    });
+    let splitter = define_class(
+        g,
+        &ClassSpec {
+            name: "ChannelSplitterNode",
+            arity: 1,
+            construct: Some(splitter_construct),
+            parent_proto: node_base.proto,
+            methods: &[],
+            getters: &[],
+            accessors: pinned,
+        },
+    );
+    let merger = define_class(
+        g,
+        &ClassSpec {
+            name: "ChannelMergerNode",
+            arity: 1,
+            construct: Some(merger_construct),
+            parent_proto: node_base.proto,
+            methods: &[],
+            getters: &[],
+            accessors: pinned,
+        },
+    );
 
     let (worklet, worklet_port, worklet_port_cls) = native_worklet::install(g, node_base.proto);
 
-    let ctx = define_class(g, &ClassSpec {
-        name: "AudioContext",
-        arity: 0,
-        construct: Some(ctx_construct),
-        parent_proto: 0,
-        methods: &[
-            ("loadNativeAudioWorklet", 1, native_worklet::load),
-            ("createGain", 0, ctx_create_gain),
-            ("createStereoPanner", 0, ctx_create_stereo_panner),
-            ("createPanner", 0, ctx_create_panner),
-            ("createBiquadFilter", 0, ctx_create_biquad),
-            ("createAnalyser", 0, ctx_create_analyser),
-            ("createBufferSource", 0, ctx_create_buffer_source),
-            ("createOscillator", 0, ctx_create_oscillator),
-            ("createChannelSplitter", 0, ctx_create_channel_splitter),
-            ("createChannelMerger", 0, ctx_create_channel_merger),
-            ("createBuffer", 3, ctx_create_buffer),
-            ("createMediaElementSource", 1, ctx_create_media_element_source),
-            // Non-standard by name on purpose — see ctx_create_red_stream_source.
-            ("createRedStreamSource", 1, ctx_create_red_stream_source),
-            ("decodeAudioData", 1, ctx_decode_audio_data),
-            ("setSinkId", 1, ctx_set_sink_id),
-            ("resume", 0, ctx_resume),
-            ("suspend", 0, ctx_suspend),
-            ("close", 0, ctx_close),
-        ],
-        getters: &[
-            ("currentTime", ctx_get_current_time),
-            ("sampleRate", ctx_get_sample_rate),
-            ("state", ctx_get_state),
-            ("sinkId", ctx_get_sink_id),
-            ("destination", get_slot_destination),
-            ("listener", get_slot_listener),
-        ],
-        accessors: &[],
-    });
+    let ctx = define_class(
+        g,
+        &ClassSpec {
+            name: "AudioContext",
+            arity: 0,
+            construct: Some(ctx_construct),
+            parent_proto: 0,
+            methods: &[
+                ("loadNativeAudioWorklet", 1, native_worklet::load),
+                ("createGain", 0, ctx_create_gain),
+                ("createStereoPanner", 0, ctx_create_stereo_panner),
+                ("createPanner", 0, ctx_create_panner),
+                ("createBiquadFilter", 0, ctx_create_biquad),
+                ("createAnalyser", 0, ctx_create_analyser),
+                ("createBufferSource", 0, ctx_create_buffer_source),
+                ("createOscillator", 0, ctx_create_oscillator),
+                ("createChannelSplitter", 0, ctx_create_channel_splitter),
+                ("createChannelMerger", 0, ctx_create_channel_merger),
+                ("createBuffer", 3, ctx_create_buffer),
+                (
+                    "createMediaElementSource",
+                    1,
+                    ctx_create_media_element_source,
+                ),
+                // Non-standard by name on purpose — see ctx_create_red_stream_source.
+                ("createRedStreamSource", 1, ctx_create_red_stream_source),
+                ("decodeAudioData", 1, ctx_decode_audio_data),
+                ("setSinkId", 1, ctx_set_sink_id),
+                ("resume", 0, ctx_resume),
+                ("suspend", 0, ctx_suspend),
+                ("close", 0, ctx_close),
+            ],
+            getters: &[
+                ("currentTime", ctx_get_current_time),
+                ("sampleRate", ctx_get_sample_rate),
+                ("state", ctx_get_state),
+                ("sinkId", ctx_get_sink_id),
+                ("destination", get_slot_destination),
+                ("listener", get_slot_listener),
+            ],
+            accessors: &[],
+        },
+    );
 
     // webkitAudioContext alias (older engine feature-detection paths).
     let ctor = ctx.ctor;
@@ -5034,7 +5780,10 @@ mod jsc_tests {
     fn the_harness_can_report_a_stall() {
         // Every async test below rests on `<pending>` being observable.
         let c = ctx();
-        assert_eq!(run(&c, "await new Promise(() => {}); return 1;"), "<pending>");
+        assert_eq!(
+            run(&c, "await new Promise(() => {}); return 1;"),
+            "<pending>"
+        );
     }
 
     #[test]
@@ -5099,8 +5848,14 @@ mod jsc_tests {
                      finally {{ a.close(); }}"
                 ),
             );
-            assert!(got.starts_with("ERROR:"), "setSinkId({arg}) did not reject: {got}");
-            assert!(got.contains("must be a device id string"), "setSinkId({arg}): {got}");
+            assert!(
+                got.starts_with("ERROR:"),
+                "setSinkId({arg}) did not reject: {got}"
+            );
+            assert!(
+                got.contains("must be a device id string"),
+                "setSinkId({arg}): {got}"
+            );
         }
     }
 
@@ -5151,7 +5906,10 @@ mod jsc_tests {
              return 'ok:' + ids.length;",
         );
         assert!(got.starts_with("ok:"), "{got}");
-        eprintln!("[setSinkId] round-tripped {} real output device(s)", &got[3..]);
+        eprintln!(
+            "[setSinkId] round-tripped {} real output device(s)",
+            &got[3..]
+        );
     }
 
     #[test]
@@ -5174,7 +5932,11 @@ mod jsc_tests {
             let gl = super::glob().lock().unwrap();
             gl.nodes
                 .values()
-                .filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize))
+                .filter(|r| {
+                    gl.engines
+                        .get(&r.engine)
+                        .is_some_and(|e| e.g == c.raw() as usize)
+                })
                 .filter_map(|r| match &r.params {
                     super::Params::Gain(p) => Some(p.volume.amp()),
                     _ => None,
@@ -5184,10 +5946,17 @@ mod jsc_tests {
         let now = gains();
         assert_eq!(now.len(), 1);
         // 0 at `now`, at most the ramp's 0.075 if the clock ticked meanwhile.
-        assert!(now[0] <= 0.075 + 1e-6, "the gain ships at {}, not the envelope's value", now[0]);
+        assert!(
+            now[0] <= 0.075 + 1e-6,
+            "the gain ships at {}, not the envelope's value",
+            now[0]
+        );
 
         // A value scheduled for later holds the current one until then.
-        s(&c, "__g.gain.setValueAtTime(0.5, __d.currentTime + 60); 'ok'");
+        s(
+            &c,
+            "__g.gain.setValueAtTime(0.5, __d.currentTime + 60); 'ok'",
+        );
         assert!(gains()[0] <= 0.075 + 1e-6);
         s(&c, "__d.close(); 'ok'");
     }
@@ -5209,7 +5978,11 @@ mod jsc_tests {
             let gl = super::glob().lock().unwrap();
             gl.nodes
                 .values()
-                .filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize))
+                .filter(|r| {
+                    gl.engines
+                        .get(&r.engine)
+                        .is_some_and(|e| e.g == c.raw() as usize)
+                })
                 .filter_map(|r| match &r.params {
                     super::Params::Gain(p) => Some((r.gain, p.volume.amp())),
                     _ => None,
@@ -5219,7 +5992,10 @@ mod jsc_tests {
         amps.sort_by(|a, b| a.0.total_cmp(&b.0));
         assert_eq!(amps.len(), 5);
         for (set, amp) in amps {
-            assert!((amp - set.abs()).abs() <= 1e-6 * set.abs().max(1.0), "gain {set} plays at {amp}");
+            assert!(
+                (amp - set.abs()).abs() <= 1e-6 * set.abs().max(1.0),
+                "gain {set} plays at {amp}"
+            );
         }
         s(&c, "__d.close(); 'ok'");
     }
@@ -5248,7 +6024,11 @@ mod jsc_tests {
         // Nodes of this context, by kind: (panners, gains, filters).
         let census = || -> (usize, usize, usize) {
             let gl = super::glob().lock().unwrap();
-            let mine = gl.nodes.values().filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize));
+            let mine = gl.nodes.values().filter(|r| {
+                gl.engines
+                    .get(&r.engine)
+                    .is_some_and(|e| e.g == c.raw() as usize)
+            });
             let (mut p, mut g, mut f) = (0, 0, 0);
             for r in mine {
                 match &r.params {
@@ -5268,14 +6048,25 @@ mod jsc_tests {
         let (p, g, f) = census();
         // The collector is conservative, so a stray stack word may keep one
         // of the loose gains; most of them must go.
-        assert!(g < 33, "the unreferenced gains were not collected ({g} left), so this proves nothing");
-        assert_eq!((p, f), (1, 1), "the panner or the filter after a playing oscillator was collected");
+        assert!(
+            g < 33,
+            "the unreferenced gains were not collected ({g} left), so this proves nothing"
+        );
+        assert_eq!(
+            (p, f),
+            (1, 1),
+            "the panner or the filter after a playing oscillator was collected"
+        );
         assert!(g >= 1, "the gain after a playing oscillator was collected");
         let chain_gain = {
             let gl = super::glob().lock().unwrap();
             gl.nodes
                 .values()
-                .filter(|r| gl.engines.get(&r.engine).is_some_and(|e| e.g == c.raw() as usize))
+                .filter(|r| {
+                    gl.engines
+                        .get(&r.engine)
+                        .is_some_and(|e| e.g == c.raw() as usize)
+                })
                 .any(|r| matches!(&r.params, super::Params::Gain(_)) && r.gain == 0.0)
         };
         assert!(chain_gain, "the chain's own gain (set to 0) was collected");
@@ -5288,9 +6079,17 @@ mod jsc_tests {
         // other tests' contexts are not reopened under them. The reopen itself
         // is `restart_stream`, which the setSinkId tests above cover.
         let c = ctx();
-        s(&c, "globalThis.__a = new AudioContext(); globalThis.__b = new AudioContext(); 'ok'");
+        s(
+            &c,
+            "globalThis.__a = new AudioContext(); globalThis.__b = new AudioContext(); 'ok'",
+        );
         let mut gl = super::glob().lock().unwrap();
-        let mut mine: Vec<u64> = gl.engines.iter().filter(|(_, e)| e.g == c.raw() as usize).map(|(&h, _)| h).collect();
+        let mut mine: Vec<u64> = gl
+            .engines
+            .iter()
+            .filter(|(_, e)| e.g == c.raw() as usize)
+            .map(|(&h, _)| h)
+            .collect();
         mine.sort_unstable();
         assert_eq!(mine.len(), 2);
         let (a, b) = (mine[0], mine[1]);
@@ -5304,18 +6103,30 @@ mod jsc_tests {
         let reopened = super::follow_default_output(ea, next);
         // Hardware-conditional: with no output device, the reopen fails and
         // the context keeps running silent, as it was created.
-        assert_eq!(reopened, had_device, "a default-sink context reopens on the new default");
+        assert_eq!(
+            reopened, had_device,
+            "a default-sink context reopens on the new default"
+        );
         assert_eq!(ea.default_seen, next);
-        assert!(!super::follow_default_output(ea, next), "the same move is followed once");
+        assert!(
+            !super::follow_default_output(ea, next),
+            "the same move is followed once"
+        );
 
         let eb = gl.engines.get_mut(&b).unwrap();
         let next_b = eb.default_seen + 1;
-        assert!(!super::follow_default_output(eb, next_b), "a chosen sink stays where it is");
+        assert!(
+            !super::follow_default_output(eb, next_b),
+            "a chosen sink stays where it is"
+        );
         assert_eq!(eb.default_seen, next_b);
 
         eb.sink_id = super::mediadevices::DEFAULT_SINK.into();
         eb.state = super::ST_CLOSED;
-        assert!(!super::follow_default_output(eb, next_b + 1), "a closed context is not reopened");
+        assert!(
+            !super::follow_default_output(eb, next_b + 1),
+            "a closed context is not reopened"
+        );
         drop(gl);
         s(&c, "__a.close(); __b.close(); 'ok'");
     }
@@ -5354,7 +6165,11 @@ mod jsc_tests {
     /// not yet mean those frames are done; the clock moving once more does
     /// (callbacks run one after another).
     pub(super) fn pump_until_rendered(c: &Context, t: f64, cap_ms: u64) -> bool {
-        let now = || s(c, "globalThis.__ctx.currentTime").parse::<f64>().unwrap_or(0.0);
+        let now = || {
+            s(c, "globalThis.__ctx.currentTime")
+                .parse::<f64>()
+                .unwrap_or(0.0)
+        };
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(cap_ms);
         let mut reached = None;
         loop {
@@ -5395,7 +6210,10 @@ mod jsc_tests {
     #[test]
     fn an_oscillator_exists_and_has_the_spec_shape() {
         let c = ctx();
-        ok(&c, "typeof AudioContext.prototype.createOscillator === 'function'");
+        ok(
+            &c,
+            "typeof AudioContext.prototype.createOscillator === 'function'",
+        );
         ok(
             &c,
             "{ const a = new AudioContext(); const o = a.createOscillator();
@@ -5430,7 +6248,10 @@ mod jsc_tests {
                try { o.type = 'custom'; } finally { a.close(); } }",
         );
         assert!(msg.contains("custom"), "{msg}");
-        assert!(msg.contains("createPeriodicWave"), "the refusal must name what is missing: {msg}");
+        assert!(
+            msg.contains("createPeriodicWave"),
+            "the refusal must name what is missing: {msg}"
+        );
         let msg = throws(
             &c,
             "{ const a = new AudioContext(); const o = a.createOscillator();
@@ -5472,7 +6293,10 @@ mod jsc_tests {
         );
         let live = pump_for(&c, 300);
         let (pre, post) = (analyser_rms(&c, "__pre"), analyser_rms(&c, "__post"));
-        assert!(pre.is_finite() && post.is_finite(), "analyser returned {pre} / {post}");
+        assert!(
+            pre.is_finite() && post.is_finite(),
+            "analyser returned {pre} / {post}"
+        );
         if !live {
             eprintln!("[oscillator] no output stream on this machine — signal assertions skipped");
             s(&c, "__ctx.close(); 'closed'");
@@ -5480,12 +6304,21 @@ mod jsc_tests {
         }
         // A full-scale square through a unity path: RMS ~1. Anything above a
         // tenth proves signal, and proves it is not the analyser's zero-fill.
-        assert!(pre > 0.1, "the oscillator produced no signal at the pre-gain tap (RMS {pre})");
-        assert!(post < 1e-3, "gain 0 did not silence the signal: post-gain RMS {post}");
+        assert!(
+            pre > 0.1,
+            "the oscillator produced no signal at the pre-gain tap (RMS {pre})"
+        );
+        assert!(
+            post < 1e-3,
+            "gain 0 did not silence the signal: post-gain RMS {post}"
+        );
 
         s(&c, "__osc.stop(); 'stopped'");
         pump_for(&c, 100);
-        assert!(analyser_rms(&c, "__pre") < 1e-3, "stop() left the oscillator running");
+        assert!(
+            analyser_rms(&c, "__pre") < 1e-3,
+            "stop() left the oscillator running"
+        );
         s(&c, "__ctx.close(); 'closed'");
     }
 
@@ -5496,7 +6329,10 @@ mod jsc_tests {
     #[test]
     fn a_stream_source_is_a_connectable_node_with_an_id() {
         let c = ctx();
-        ok(&c, "typeof AudioContext.prototype.createRedStreamSource === 'function'");
+        ok(
+            &c,
+            "typeof AudioContext.prototype.createRedStreamSource === 'function'",
+        );
         ok(
             &c,
             "{ const a = new AudioContext();
@@ -5609,12 +6445,17 @@ mod jsc_tests {
         if !live {
             // Headless: the processor never runs, so the channel never starts
             // and every push is correctly refused. That IS the contract.
-            eprintln!("[stream] no output stream — pushed {accepted_total} frames, playout not asserted");
+            eprintln!(
+                "[stream] no output stream — pushed {accepted_total} frames, playout not asserted"
+            );
             s(&c, "__ctx.close(); 'closed'");
             return;
         }
         assert!(accepted_total > 0.0, "the stream accepted no frames at all");
-        assert!(rms > 0.1, "pushed PCM never reached the analyser (RMS {rms})");
+        assert!(
+            rms > 0.1,
+            "pushed PCM never reached the analyser (RMS {rms})"
+        );
         s(&c, "__ctx.close(); 'closed'");
     }
 
@@ -5669,14 +6510,23 @@ mod jsc_tests {
     }
 
     fn as_js_bytes(v: &[u8]) -> String {
-        v.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+        v.iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     #[test]
     fn decode_audio_data_decodes_a_wav_and_the_samples_are_real() {
         let c = ctx();
         let wav = wav_fixture(48_000, 4_800);
-        s(&c, &format!("globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'", as_js_bytes(&wav)));
+        s(
+            &c,
+            &format!(
+                "globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'",
+                as_js_bytes(&wav)
+            ),
+        );
 
         let got = run(
             &c,
@@ -5697,8 +6547,14 @@ mod jsc_tests {
         // a decoder that returned zeros, or halved the amplitude, would fail.
         assert!(got.contains(r#""ch":1"#), "{got}");
         if got.contains(r#""rate":48000"#) {
-            assert!(got.contains(r#""peak":0.732"#), "decoded amplitude is wrong: {got}");
-            assert!(got.contains(r#""rms":0.732"#), "a decoded square must have RMS == peak: {got}");
+            assert!(
+                got.contains(r#""peak":0.732"#),
+                "decoded amplitude is wrong: {got}"
+            );
+            assert!(
+                got.contains(r#""rms":0.732"#),
+                "a decoded square must have RMS == peak: {got}"
+            );
         } else {
             // The buffer comes at the context's rate (the output device's, e.g.
             // 44.1 kHz on a CI Mac), and band-limited resampling of a square
@@ -5707,7 +6563,10 @@ mod jsc_tests {
                 let at = got.find(&format!("\"{k}\":")).unwrap() + k.len() + 3;
                 got[at..].split([',', '}']).next().unwrap().parse().unwrap()
             };
-            assert!((field("rms") - 0.732).abs() < 0.01, "decoded energy is wrong: {got}");
+            assert!(
+                (field("rms") - 0.732).abs() < 0.01,
+                "decoded energy is wrong: {got}"
+            );
             assert!(field("peak") >= 0.72, "decoded amplitude is wrong: {got}");
         }
     }
@@ -5724,8 +6583,14 @@ mod jsc_tests {
         );
         assert!(got.starts_with("ERROR"), "garbage decoded?! {got}");
         assert!(got.contains("DOMException EncodingError"), "{got}");
-        assert!(got.contains("WAV"), "the rejection must list what IS decodable: {got}");
-        assert!(got.contains("Opus"), "the rejection must name the notable absences: {got}");
+        assert!(
+            got.contains("WAV"),
+            "the rejection must list what IS decodable: {got}"
+        );
+        assert!(
+            got.contains("Opus"),
+            "the rejection must name the notable absences: {got}"
+        );
     }
 
     #[test]
@@ -5733,7 +6598,13 @@ mod jsc_tests {
         // AudioBuffer → AudioBufferSourceNode → analyser, output muted.
         let c = ctx();
         let wav = wav_fixture(48_000, 48_000);
-        s(&c, &format!("globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'", as_js_bytes(&wav)));
+        s(
+            &c,
+            &format!(
+                "globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'",
+                as_js_bytes(&wav)
+            ),
+        );
         let started = run(
             &c,
             "globalThis.__ctx = new AudioContext();
@@ -5755,7 +6626,10 @@ mod jsc_tests {
             s(&c, "__ctx.close(); 'closed'");
             return;
         }
-        assert!(rms > 0.1, "the decoded buffer never reached the analyser (RMS {rms})");
+        assert!(
+            rms > 0.1,
+            "the decoded buffer never reached the analyser (RMS {rms})"
+        );
         s(&c, "__ctx.close(); 'closed'");
     }
 
@@ -5800,12 +6674,18 @@ mod jsc_tests {
         // close (a looping ringtone stops with them), already-closed ones are
         // not counted, and the page that comes next starts its own.
         let c = ctx();
-        s(&c, "globalThis.__a = new AudioContext(); globalThis.__b = new AudioContext();
-               globalThis.__z = new AudioContext(); __z.close(); 0");
+        s(
+            &c,
+            "globalThis.__a = new AudioContext(); globalThis.__b = new AudioContext();
+               globalThis.__z = new AudioContext(); __z.close(); 0",
+        );
         assert_eq!(super::close_all(c.raw()), 2);
         ok(&c, "__a.state === 'closed' && __b.state === 'closed'");
         assert_eq!(super::close_all(c.raw()), 0);
-        ok(&c, "{ const n = new AudioContext(); const r = n.state !== 'closed'; n.close(); r }");
+        ok(
+            &c,
+            "{ const n = new AudioContext(); const r = n.state !== 'closed'; n.close(); r }",
+        );
     }
 
     #[test]
@@ -5814,7 +6694,13 @@ mod jsc_tests {
         // the 20 ms slice, not after the rest of the buffer. Output muted.
         let c = ctx();
         let wav = wav_fixture(48_000, 48_000);
-        s(&c, &format!("globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'", as_js_bytes(&wav)));
+        s(
+            &c,
+            &format!(
+                "globalThis.__wav = new Uint8Array([{}]).buffer; 'ok'",
+                as_js_bytes(&wav)
+            ),
+        );
         let started = run(
             &c,
             "globalThis.__ctx = new AudioContext();
@@ -6069,14 +6955,20 @@ mod jsc_tests {
         s(&c, "__d.connect(__m, 0, 1); __d.disconnect(__m, 0, 1); 0");
         dom_throw(&c, "__d.disconnect(__m, 0, 1)", "InvalidAccessError");
         // disconnect(output) takes only that output.
-        s(&c, "__d.connect(__g, 0); __d.connect(__g, 1); __d.disconnect(1); 0");
+        s(
+            &c,
+            "__d.connect(__g, 0); __d.connect(__g, 1); __d.disconnect(1); 0",
+        );
         dom_throw(&c, "__d.disconnect(__g, 1)", "InvalidAccessError");
         s(&c, "__d.disconnect(__g, 0); 0");
         dom_throw(&c, "__g.disconnect(__o)", "InvalidAccessError");
         dom_throw(&c, "__g.disconnect(__g.gain)", "InvalidAccessError");
         dom_throw(&c, "{ const b = new AudioContext(); try { __g.connect(b.destination); } finally { b.close(); } }", "InvalidAccessError");
         // disconnect() still takes everything, and is then a no-op.
-        ok(&c, "{ __m.disconnect(); __m.disconnect(); __d.disconnect(); true }");
+        ok(
+            &c,
+            "{ __m.disconnect(); __m.disconnect(); __d.disconnect(); true }",
+        );
         s(&c, "__a.close(); 0");
     }
 
@@ -6114,10 +7006,22 @@ mod jsc_tests {
             s(&c, "__ctx.close(); 'closed'");
             return;
         }
-        assert!((l - 0.5).abs() < 0.02, "left channel's analyser: RMS {l}, want 0.5");
-        assert!((r - 0.25).abs() < 0.02, "right channel's analyser: RMS {r}, want 0.25");
-        assert!((l2 - 0.25).abs() < 0.02, "merged-swapped left: RMS {l2}, want 0.25");
-        assert!((r2 - 0.5).abs() < 0.02, "merged-swapped right: RMS {r2}, want 0.5");
+        assert!(
+            (l - 0.5).abs() < 0.02,
+            "left channel's analyser: RMS {l}, want 0.5"
+        );
+        assert!(
+            (r - 0.25).abs() < 0.02,
+            "right channel's analyser: RMS {r}, want 0.25"
+        );
+        assert!(
+            (l2 - 0.25).abs() < 0.02,
+            "merged-swapped left: RMS {l2}, want 0.25"
+        );
+        assert!(
+            (r2 - 0.5).abs() < 0.02,
+            "merged-swapped right: RMS {r2}, want 0.5"
+        );
         s(&c, "__ctx.close(); 'closed'");
     }
 }
@@ -6190,7 +7094,11 @@ mod split_merge_graph_tests {
     /// The known stereo signal, by sample clock: L a ±0.5 square of period 64,
     /// R a sawtooth over [-0.25, 0.24].
     fn left(t: u64) -> f32 {
-        if (t / 32) % 2 == 0 { 0.5 } else { -0.5 }
+        if (t / 32) % 2 == 0 {
+            0.5
+        } else {
+            -0.5
+        }
     }
 
     fn right(t: u64) -> f32 {
@@ -6204,12 +7112,12 @@ mod split_merge_graph_tests {
         type Configuration = firewheel::node::EmptyConfig;
 
         fn info(&self, _config: &Self::Configuration) -> firewheel::node::AudioNodeInfo {
-            firewheel::node::AudioNodeInfo::new().debug_name("test_known_stereo").channel_config(
-                firewheel::channel_config::ChannelConfig {
+            firewheel::node::AudioNodeInfo::new()
+                .debug_name("test_known_stereo")
+                .channel_config(firewheel::channel_config::ChannelConfig {
                     num_inputs: firewheel::channel_config::ChannelCount::ZERO,
                     num_outputs: firewheel::channel_config::ChannelCount::STEREO,
-                },
-            )
+                })
         }
 
         fn construct_processor(
@@ -6258,7 +7166,16 @@ mod split_merge_graph_tests {
 
     fn merger(fw: &mut Fw, n: u32, discrete: bool) -> NodeRec {
         let d = ArcGc::new(AtomicBool::new(discrete));
-        let mut r = rec(fw.add_node(MergerNode { n, discrete: ArcGc::clone(&d) }, None), Params::Merger { n, discrete: d });
+        let mut r = rec(
+            fw.add_node(
+                MergerNode {
+                    n,
+                    discrete: ArcGc::clone(&d),
+                },
+                None,
+            ),
+            Params::Merger { n, discrete: d },
+        );
         r.lout = n;
         r
     }
@@ -6268,8 +7185,20 @@ mod split_merge_graph_tests {
     fn monitor(fw: &mut Fw, channels: u32) -> (NodeRec, ArcGc<MonitorRing>) {
         let ring = ArcGc::new(MonitorRing::new());
         ring.set_mix(&mixing::web_mix(channels, 1, Interp::Speakers));
-        let id = fw.add_node(MonitorNode { ring: ArcGc::clone(&ring), channels: 2 }, None);
-        let mut r = rec(id, Params::Analyser { ring: ArcGc::clone(&ring), smooth: Vec::new() });
+        let id = fw.add_node(
+            MonitorNode {
+                ring: ArcGc::clone(&ring),
+                channels: 2,
+            },
+            None,
+        );
+        let mut r = rec(
+            id,
+            Params::Analyser {
+                ring: ArcGc::clone(&ring),
+                smooth: Vec::new(),
+            },
+        );
         r.lin = channels;
         (r, ring)
     }
@@ -6278,14 +7207,19 @@ mod split_merge_graph_tests {
     fn wire(fw: &mut Fw, src: &NodeRec, output: u32, dst: &NodeRec, input: u32) {
         match graph::plan(src, output, dst, input) {
             mixing::Route::Ports(ports) => {
-                fw.connect(src.id, dst.id, &ports, true).unwrap_or_else(|e| panic!("connect {ports:?}: {e:?}"));
+                fw.connect(src.id, dst.id, &ports, true)
+                    .unwrap_or_else(|e| panic!("connect {ports:?}: {e:?}"));
             }
             r => panic!("a stereo graph took a mixer: {r:?}"),
         }
     }
 
     fn tap(fw: &mut Fw, src: &NodeRec, output: u32) -> ArcGc<MonitorRing> {
-        let channels = if matches!(src.params, Params::Splitter(_)) { 1 } else { src.lout };
+        let channels = if matches!(src.params, Params::Splitter(_)) {
+            1
+        } else {
+            src.lout
+        };
         let (m, ring) = monitor(fw, channels);
         wire(fw, src, output, &m, 0);
         ring
@@ -6295,7 +7229,12 @@ mod split_merge_graph_tests {
         let mut out = vec![0.0f32; BLOCK * 2];
         for b in 0..blocks {
             fw.update().expect("firewheel update");
-            let p = fw.active_backend_mut().unwrap().processor.as_mut().expect("the processor was handed over");
+            let p = fw
+                .active_backend_mut()
+                .unwrap()
+                .processor
+                .as_mut()
+                .expect("the processor was handed over");
             p.process_interleaved(
                 &[],
                 &mut out,
@@ -6304,7 +7243,9 @@ mod split_merge_graph_tests {
                     num_out_channels: 2,
                     frames: BLOCK,
                     process_timestamp: (),
-                    duration_since_stream_start: Duration::from_secs_f64((b * BLOCK) as f64 / RATE as f64),
+                    duration_since_stream_start: Duration::from_secs_f64(
+                        (b * BLOCK) as f64 / RATE as f64,
+                    ),
                     input_stream_status: StreamStatus::empty(),
                     output_stream_status: StreamStatus::empty(),
                     dropped_frames: 0,
@@ -6315,7 +7256,11 @@ mod split_merge_graph_tests {
 
     /// The last 1024 samples `ring` saw, against `want(t)` on the sample clock.
     fn assert_signal(ring: &MonitorRing, total: u64, what: &str, want: impl Fn(u64) -> f32) {
-        assert_eq!(ring.cursor.load(Ordering::Acquire) as u64, total, "{what}: the monitor missed frames");
+        assert_eq!(
+            ring.cursor.load(Ordering::Acquire) as u64,
+            total,
+            "{what}: the monitor missed frames"
+        );
         let n = 1024usize;
         let mut got = vec![0.0f32; n];
         ring.read_latest(&mut got);
@@ -6385,9 +7330,13 @@ mod split_merge_graph_tests {
         assert_signal(&split_r, total, "splitter output 1", right);
         assert_signal(&swapped_l, total, "merged back swapped, channel 0", right);
         assert_signal(&swapped_r, total, "merged back swapped, channel 1", left);
-        assert_signal(&speakers_mix, total, "speakers down-mix", |t| 0.5 * (left(t) + right(t)));
+        assert_signal(&speakers_mix, total, "speakers down-mix", |t| {
+            0.5 * (left(t) + right(t))
+        });
         assert_signal(&discrete_mix, total, "discrete down-mix", left);
-        assert_signal(&sum, total, "two connections into one input", |t| left(t) + right(t));
+        assert_signal(&sum, total, "two connections into one input", |t| {
+            left(t) + right(t)
+        });
         assert_signal(&narrow_0, total, "one-output splitter", left);
         assert_signal(&half_0, total, "unconnected merger input", |_| 0.0);
         assert_signal(&half_1, total, "connected merger input", right);
@@ -6421,7 +7370,10 @@ mod split_merge_graph_tests {
     /// rendered sample names the buffer frame it came from, and frame 0 is not
     /// silence.
     fn ramp(frames: u64) -> Arc<PlanarBuffer> {
-        Arc::new(PlanarBuffer { data: vec![(0..frames).map(ramp_at).collect()], sample_rate: RATE })
+        Arc::new(PlanarBuffer {
+            data: vec![(0..frames).map(ramp_at).collect()],
+            sample_rate: RATE,
+        })
     }
 
     fn ramp_at(frame: u64) -> f32 {
@@ -6441,7 +7393,10 @@ mod split_merge_graph_tests {
         duration: Option<f64>,
         speed: f64,
     ) -> ArcGc<MonitorRing> {
-        let mut s = SamplerNode { speed, ..SamplerNode::default() };
+        let mut s = SamplerNode {
+            speed,
+            ..SamplerNode::default()
+        };
         let id = fw.add_node(s.clone(), Some(SamplerConfig::default()));
         let baseline = s.clone();
         arm_source(&mut s, Some(buffer), ctl, offset, duration);
@@ -6459,7 +7414,11 @@ mod split_merge_graph_tests {
     /// monitor window).
     fn recorded(ring: &MonitorRing, total: usize) -> Vec<f32> {
         assert!(total <= MONITOR_WINDOW);
-        assert_eq!(ring.cursor.load(Ordering::Acquire), total, "the monitor missed frames");
+        assert_eq!(
+            ring.cursor.load(Ordering::Acquire),
+            total,
+            "the monitor missed frames"
+        );
         let mut got = vec![0.0f32; total];
         ring.read_latest(&mut got);
         got
@@ -6479,10 +7438,21 @@ mod split_merge_graph_tests {
         render(&mut fw, blocks);
         let got = recorded(&ring, blocks * BLOCK);
         for (t, &v) in got.iter().enumerate() {
-            let want = if t < 500 { ramp_at(1_000 + t as u64) } else { 0.0 };
-            assert!((v - want).abs() < 1e-6, "frame {t}: {v}, want {want} (buffer frame {})", v * 8192.0 - 1.0);
+            let want = if t < 500 {
+                ramp_at(1_000 + t as u64)
+            } else {
+                0.0
+            };
+            assert!(
+                (v - want).abs() < 1e-6,
+                "frame {t}: {v}, want {want} (buffer frame {})",
+                v * 8192.0 - 1.0
+            );
         }
-        assert!(ctl.done.load(Ordering::Relaxed), "the walk did not report its end");
+        assert!(
+            ctl.done.load(Ordering::Relaxed),
+            "the walk did not report its end"
+        );
     }
 
     #[test]
@@ -6503,11 +7473,17 @@ mod split_merge_graph_tests {
             if v != 0.0 {
                 // Linear interpolation may blend toward the silence after the
                 // slice on its very last frame, never past the slice's end.
-                assert!(v <= hi + 1e-6 && (v >= lo - 1e-6 || t >= 248), "frame {t}: {v} is outside the slice");
+                assert!(
+                    v <= hi + 1e-6 && (v >= lo - 1e-6 || t >= 248),
+                    "frame {t}: {v} is outside the slice"
+                );
                 last = t;
             }
         }
-        assert!((245..=252).contains(&last), "the slice should last ~250 output frames, last sound at {last}");
+        assert!(
+            (245..=252).contains(&last),
+            "the slice should last ~250 output frames, last sound at {last}"
+        );
     }
 
     #[test]
@@ -6518,7 +7494,8 @@ mod split_merge_graph_tests {
         let atlas = ramp(4_000);
         let ctl = Arc::new(SourceCtl::default());
         ctl.looping.store(true, Ordering::Relaxed);
-        ctl.loop_start.store(secs(1_000).to_bits(), Ordering::Relaxed);
+        ctl.loop_start
+            .store(secs(1_000).to_bits(), Ordering::Relaxed);
         ctl.loop_end.store(secs(1_200).to_bits(), Ordering::Relaxed);
         let ring = source(&mut fw, &atlas, &ctl, secs(900), None, 1.0);
         fw.start_stream(()).expect("the offline stream starts");
@@ -6527,11 +7504,21 @@ mod split_merge_graph_tests {
         let got = recorded(&ring, blocks * BLOCK);
         for (t, &v) in got.iter().enumerate() {
             let t = t as u64;
-            let frame = if t < 300 { 900 + t } else { 1_000 + (t - 300) % 200 };
+            let frame = if t < 300 {
+                900 + t
+            } else {
+                1_000 + (t - 300) % 200
+            };
             let want = ramp_at(frame);
-            assert!((v - want).abs() < 1e-6, "frame {t}: {v}, want buffer frame {frame}");
+            assert!(
+                (v - want).abs() < 1e-6,
+                "frame {t}: {v}, want buffer frame {frame}"
+            );
         }
-        assert!(!ctl.done.load(Ordering::Relaxed), "a loop without a duration never ends by itself");
+        assert!(
+            !ctl.done.load(Ordering::Relaxed),
+            "a loop without a duration never ends by itself"
+        );
     }
 }
 
@@ -6545,7 +7532,10 @@ mod source_walk_tests {
 
     /// Frame `i` holds `i + 1`, so silence (0.0) reads back as frame `-1`.
     fn ramp(frames: usize) -> Arc<PlanarBuffer> {
-        Arc::new(PlanarBuffer { data: vec![(0..frames).map(|i| (i + 1) as f32).collect()], sample_rate: RATE })
+        Arc::new(PlanarBuffer {
+            data: vec![(0..frames).map(|i| (i + 1) as f32).collect()],
+            sample_rate: RATE,
+        })
     }
 
     fn secs(frames: u64) -> f64 {
@@ -6560,12 +7550,16 @@ mod source_walk_tests {
             let mut bufs: [&mut [f32]; 1] = [&mut out];
             view.fill_buffers(&mut bufs, 0..frames, v);
         }
-        assert!(out.iter().all(|x| !x.is_nan()), "frames left unwritten: {out:?}");
+        assert!(
+            out.iter().all(|x| !x.is_nan()),
+            "frames left unwritten: {out:?}"
+        );
         out.iter().map(|&x| x as i64 - 1).collect()
     }
 
     fn looping(ctl: &SourceCtl, start: u64, end: u64) {
-        ctl.loop_start.store(secs(start).to_bits(), Ordering::Relaxed);
+        ctl.loop_start
+            .store(secs(start).to_bits(), Ordering::Relaxed);
         ctl.loop_end.store(secs(end).to_bits(), Ordering::Relaxed);
         ctl.looping.store(true, Ordering::Relaxed);
     }
@@ -6618,7 +7612,11 @@ mod source_walk_tests {
             let ctl = Arc::new(SourceCtl::default());
             looping(&ctl, a, b);
             let view = SourceSample::new(ramp(4), ctl.clone(), 1, SourceSample::UNBOUNDED);
-            assert_eq!(read(&view, 0, 7), [1, 2, 3, 0, 1, 2, 3], "loopStart {a}, loopEnd {b}");
+            assert_eq!(
+                read(&view, 0, 7),
+                [1, 2, 3, 0, 1, 2, 3],
+                "loopStart {a}, loopEnd {b}"
+            );
         }
     }
 
@@ -6638,7 +7636,10 @@ mod source_walk_tests {
         let ctl = Arc::new(SourceCtl::default());
         let view = SourceSample::new(ramp(6), ctl.clone(), 3, SourceSample::UNBOUNDED);
         assert_eq!(read(&view, 0, 5), [3, 4, 5, -1, -1]);
-        assert!(ctl.done.load(Ordering::Relaxed), "past the end without loop is the end");
+        assert!(
+            ctl.done.load(Ordering::Relaxed),
+            "past the end without loop is the end"
+        );
     }
 }
 
@@ -6649,7 +7650,11 @@ mod timeline_tests {
     /// `Timeline::eval` is the whole of `AudioParam` automation, and it is pure
     /// arithmetic — so it is testable without a JS context or an audio device.
     fn tl(start: f64, evs: Vec<Tl>) -> Timeline {
-        Timeline { evs, start_v: start, start_t: 0.0 }
+        Timeline {
+            evs,
+            start_v: start,
+            start_t: 0.0,
+        }
     }
 
     #[test]
@@ -6657,7 +7662,11 @@ mod timeline_tests {
         // Scheduled at t = 100 with the value at 1: a ramp to 0 over 1 s is
         // halfway at 100.5. Measured from t = 0 instead, it was already at 0.005
         // the moment it was scheduled, which is a jump, not a fade.
-        let t = Timeline { evs: vec![Tl::Lin { t: 101.0, v: 0.0 }], start_v: 1.0, start_t: 100.0 };
+        let t = Timeline {
+            evs: vec![Tl::Lin { t: 101.0, v: 0.0 }],
+            start_v: 1.0,
+            start_t: 100.0,
+        };
         assert_eq!(t.eval(100.0), (1.0, false));
         assert!((t.eval(100.5).0 - 0.5).abs() < 1e-9);
         assert_eq!(t.eval(101.0), (0.0, true));
@@ -6665,7 +7674,10 @@ mod timeline_tests {
 
     #[test]
     fn a_linear_ramp_is_linear() {
-        let t = tl(0.0, vec![Tl::Set { t: 0.0, v: 0.0 }, Tl::Lin { t: 1.0, v: 1.0 }]);
+        let t = tl(
+            0.0,
+            vec![Tl::Set { t: 0.0, v: 0.0 }, Tl::Lin { t: 1.0, v: 1.0 }],
+        );
         for (now, want) in [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75)] {
             let (v, done) = t.eval(now);
             assert!((v - want).abs() < 1e-6, "at {now}: {v}, want {want}");
@@ -6680,11 +7692,17 @@ mod timeline_tests {
         // LINEAR event. Both curves share their endpoints, so only the middle
         // tells them apart — at the halfway point an exponential 0.001→1 ramp
         // is at sqrt(0.001) ≈ 0.0316, a line is at ~0.5.
-        let t = tl(0.001, vec![Tl::Set { t: 0.0, v: 0.001 }, Tl::Exp { t: 1.0, v: 1.0 }]);
+        let t = tl(
+            0.001,
+            vec![Tl::Set { t: 0.0, v: 0.001 }, Tl::Exp { t: 1.0, v: 1.0 }],
+        );
         let (v, _) = t.eval(0.5);
         let want = 0.001f64 * (1.0f64 / 0.001).powf(0.5);
         assert!((v - want).abs() < 1e-6, "midpoint {v}, want {want}");
-        assert!(v < 0.05, "an exponential ramp must not be halfway up at halfway: {v}");
+        assert!(
+            v < 0.05,
+            "an exponential ramp must not be halfway up at halfway: {v}"
+        );
 
         // Endpoints still land exactly.
         assert!((t.eval(0.0).0 - 0.001).abs() < 1e-9);
@@ -6696,22 +7714,38 @@ mod timeline_tests {
         // The spec leaves 0 and sign changes undefined; a NaN escaping into a
         // gain param is silence-or-worse, so this must be a defined value.
         for (from, to) in [(0.0, 1.0), (1.0, 0.0), (-1.0, 1.0)] {
-            let t = tl(from, vec![Tl::Set { t: 0.0, v: from }, Tl::Exp { t: 1.0, v: to }]);
+            let t = tl(
+                from,
+                vec![Tl::Set { t: 0.0, v: from }, Tl::Exp { t: 1.0, v: to }],
+            );
             let (v, _) = t.eval(0.5);
             assert!(v.is_finite(), "{from} → {to} produced {v}");
-            assert!((v - (from + (to - from) * 0.5)).abs() < 1e-6, "{from} → {to}: {v}");
+            assert!(
+                (v - (from + (to - from) * 0.5)).abs() < 1e-6,
+                "{from} → {to}: {v}"
+            );
         }
     }
 
     #[test]
     fn set_target_decays_toward_its_target_and_reports_done() {
-        let t = tl(1.0, vec![Tl::Target { t: 0.0, v: 0.0, tau: 0.1 }]);
+        let t = tl(
+            1.0,
+            vec![Tl::Target {
+                t: 0.0,
+                v: 0.0,
+                tau: 0.1,
+            }],
+        );
         let (early, done_early) = t.eval(0.05);
         assert!(early > 0.5 && early < 1.0, "{early}");
         assert!(!done_early);
         let (late, done_late) = t.eval(2.0);
         assert!(late.abs() < 1e-3, "{late}");
-        assert!(done_late, "a settled setTargetAtTime must retire its timeline");
+        assert!(
+            done_late,
+            "a settled setTargetAtTime must retire its timeline"
+        );
     }
 
     #[test]

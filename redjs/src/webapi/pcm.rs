@@ -78,8 +78,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub use firewheel::nodes::stream::writer::StreamWriterState;
 use firewheel::nodes::stream::writer::PushStatus;
+pub use firewheel::nodes::stream::writer::StreamWriterState;
 
 /// What a push did. A flattened `fixed_resample::PushStatus` so callers do not
 /// need that crate in their dependency graph.
@@ -115,7 +115,12 @@ pub struct PcmStreamConfig {
 
 impl Default for PcmStreamConfig {
     fn default() -> Self {
-        Self { sample_rate: 48_000, channels: 2, latency_seconds: 0.15, capacity_seconds: 0.4 }
+        Self {
+            sample_rate: 48_000,
+            channels: 2,
+            latency_seconds: 0.15,
+            capacity_seconds: 0.4,
+        }
     }
 }
 
@@ -126,7 +131,9 @@ impl PcmStreamConfig {
         self.channels = self.channels.clamp(1, 16);
         self.latency_seconds = self.latency_seconds.clamp(0.005, 30.0);
         // The crate's own guidance: capacity should be at least twice latency.
-        self.capacity_seconds = self.capacity_seconds.clamp(self.latency_seconds * 2.0, 60.0);
+        self.capacity_seconds = self
+            .capacity_seconds
+            .clamp(self.latency_seconds * 2.0, 60.0);
         self
     }
 }
@@ -149,7 +156,13 @@ fn sinks() -> &'static Mutex<HashMap<u64, Entry>> {
 /// Publish a started `StreamWriterState` under `id`. Called by `audio.rs` on
 /// the JS thread when the node is created.
 pub(crate) fn register(id: u64, state: StreamWriterState, cfg: PcmStreamConfig) {
-    sinks().lock().unwrap().insert(id, Entry { state: Arc::new(Mutex::new(state)), cfg });
+    sinks().lock().unwrap().insert(
+        id,
+        Entry {
+            state: Arc::new(Mutex::new(state)),
+            cfg,
+        },
+    );
 }
 
 /// Drop the producer half. Later pushes return `NotReady`.
@@ -175,7 +188,11 @@ pub struct PcmSink {
 pub fn sink(stream_id: u64) -> Option<PcmSink> {
     let map = sinks().lock().unwrap();
     let e = map.get(&stream_id)?;
-    Some(PcmSink { id: stream_id, state: Arc::clone(&e.state), cfg: e.cfg })
+    Some(PcmSink {
+        id: stream_id,
+        state: Arc::clone(&e.state),
+        cfg: e.cfg,
+    })
 }
 
 /// Every live streaming-PCM node id, newest last. Diagnostics.
@@ -216,12 +233,14 @@ impl PcmSink {
         match st.push_interleaved(&data[..usable]) {
             PushStatus::Ok => PushOutcome::Ok,
             PushStatus::OutputNotReady => PushOutcome::NotReady,
-            PushStatus::OverflowOccurred { num_frames_pushed } => {
-                PushOutcome::Overflow { frames_pushed: num_frames_pushed }
-            }
-            PushStatus::UnderflowCorrected { num_zero_frames_pushed } => {
-                PushOutcome::UnderflowCorrected { zero_frames: num_zero_frames_pushed }
-            }
+            PushStatus::OverflowOccurred { num_frames_pushed } => PushOutcome::Overflow {
+                frames_pushed: num_frames_pushed,
+            },
+            PushStatus::UnderflowCorrected {
+                num_zero_frames_pushed,
+            } => PushOutcome::UnderflowCorrected {
+                zero_frames: num_zero_frames_pushed,
+            },
         }
     }
 

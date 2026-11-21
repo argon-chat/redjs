@@ -91,7 +91,10 @@ struct Scheduler {
 pub(crate) fn schedule_native(g: *mut c_void, delay_ms: f64, task: NativeTask) {
     let deadline = now_ms() + delay_ms.max(0.0);
     let mut reg = registry().lock().unwrap();
-    reg.entry(g as usize).or_default().native.push((deadline, task));
+    reg.entry(g as usize)
+        .or_default()
+        .native
+        .push((deadline, task));
 }
 
 /// [`schedule_native`] from ANOTHER thread, for the context `id` that asked.
@@ -102,7 +105,12 @@ pub(crate) fn schedule_native(g: *mut c_void, delay_ms: f64, task: NativeTask) {
 /// The check runs under the registry lock, so a teardown cannot slip between
 /// it and the push. `id: None` (a context nobody registered) behaves like
 /// [`schedule_native`].
-pub(crate) fn schedule_native_from(g: *mut c_void, id: Option<crate::context::ContextId>, delay_ms: f64, task: NativeTask) {
+pub(crate) fn schedule_native_from(
+    g: *mut c_void,
+    id: Option<crate::context::ContextId>,
+    delay_ms: f64,
+    task: NativeTask,
+) {
     let deadline = now_ms() + delay_ms.max(0.0);
     let mut reg = registry().lock().unwrap();
     if id.is_some() && crate::context::id_of(g) != id {
@@ -110,7 +118,10 @@ pub(crate) fn schedule_native_from(g: *mut c_void, id: Option<crate::context::Co
         drop(task);
         return;
     }
-    reg.entry(g as usize).or_default().native.push((deadline, task));
+    reg.entry(g as usize)
+        .or_default()
+        .native
+        .push((deadline, task));
     drop(reg);
     notify_embedder();
 }
@@ -140,7 +151,11 @@ pub fn next_work_ms(g: *mut c_void) -> Option<f64> {
     let polled = crate::webapi::mediadevices::next_poll_ms(g);
     #[cfg(not(feature = "audio"))]
     let polled = None;
-    next_scheduled_ms(g).into_iter().chain(gc).chain(polled).reduce(f64::min)
+    next_scheduled_ms(g)
+        .into_iter()
+        .chain(gc)
+        .chain(polled)
+        .reduce(f64::min)
 }
 
 fn next_scheduled_ms(g: *mut c_void) -> Option<f64> {
@@ -163,7 +178,7 @@ fn registry() -> &'static Mutex<HashMap<usize, Scheduler>> {
 pub(crate) fn forget(gone: crate::context::Gone) {
     let dropped = registry().lock().unwrap().remove(&gone.key);
     drop(dropped); // outside the lock: native tasks may own Arcs with Drop impls
-    // Wakers are keyed by id, so a late `wake` for this id finds nothing.
+                   // Wakers are keyed by id, so a late `wake` for this id finds nothing.
     let w = wakers().lock().unwrap().remove(&gone.id.0);
     drop(w);
 }
@@ -272,7 +287,13 @@ unsafe fn timer_set(g: *mut c_void, cf: *mut c_void, repeating: bool) -> u64 {
 
 /// `delay_override`: fixed delay ignoring arg 1 (setImmediate). `args_from`:
 /// first callback-argument index (2 for setTimeout, 1 for setImmediate).
-unsafe fn timer_set_inner(g: *mut c_void, cf: *mut c_void, repeating: bool, delay_override: Option<f64>, args_from: u32) -> u64 {
+unsafe fn timer_set_inner(
+    g: *mut c_void,
+    cf: *mut c_void,
+    repeating: bool,
+    delay_override: Option<f64>,
+    args_from: u32,
+) -> u64 {
     let cb = cf_arg(cf, 0);
     if !is_cell(cb) {
         return enc_int32(0);
@@ -292,7 +313,16 @@ unsafe fn timer_set_inner(g: *mut c_void, cf: *mut c_void, repeating: bool, dela
     let s = reg.entry(g as usize).or_default();
     s.timer_next_id += 1;
     let id = s.timer_next_id;
-    s.timers.insert(id, Timer { cb, args, next_fire: now + delay, interval, repeating });
+    s.timers.insert(
+        id,
+        Timer {
+            cb,
+            args,
+            next_fire: now + delay,
+            interval,
+            repeating,
+        },
+    );
     enc_int32(id as i32)
 }
 
@@ -319,7 +349,9 @@ unsafe fn immediate_set(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn queue_microtask(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cb = cf_arg(cf, 0);
     if glue::rjs_queue_microtask(g, cb) != 0 {
-        let m: Vec<u16> = "queueMicrotask: argument must be callable".encode_utf16().collect();
+        let m: Vec<u16> = "queueMicrotask: argument must be callable"
+            .encode_utf16()
+            .collect();
         let mut err = ENC_UNDEFINED;
         glue::rjs_error_create(g, 1, m.as_ptr(), m.len(), &mut err);
         glue::rjs_throw(g, err);
@@ -401,7 +433,13 @@ unsafe fn unprotect_timer(g: *mut c_void, t: &Timer) {
 // Install
 // ---------------------------------------------------------------------------
 
-unsafe fn define_native(g: *mut c_void, target: u64, name: &str, arity: u32, f: *const c_void) -> i32 {
+unsafe fn define_native(
+    g: *mut c_void,
+    target: u64,
+    name: &str,
+    arity: u32,
+    f: *const c_void,
+) -> i32 {
     let name16: Vec<u16> = name.encode_utf16().collect();
     let mut func = 0u64;
     let rc = glue::rjs_function_create(g, name16.as_ptr(), name16.len(), arity, f, &mut func);
@@ -495,7 +533,14 @@ unsafe fn fire(g: *mut c_void, cb: u64, args: &[u64], flags: u32, label: &'stati
     let prev = COALESCED_CALLBACK.with(|c| c.replace(!per_task));
     let rc = {
         let _profile = crate::profiling::js_span(g, cb, label);
-        glue::rjs_call(g, cb, ENC_UNDEFINED, args.as_ptr(), args.len() as u32, &mut out)
+        glue::rjs_call(
+            g,
+            cb,
+            ENC_UNDEFINED,
+            args.as_ptr(),
+            args.len() as u32,
+            &mut out,
+        )
     };
     COALESCED_CALLBACK.with(|c| c.set(prev));
     if rc == 1 {
@@ -546,7 +591,9 @@ pub struct Waker {
 
 impl Waker {
     fn new() -> Waker {
-        Waker { sys: wake_sys::Event::new() }
+        Waker {
+            sys: wake_sys::Event::new(),
+        }
     }
 
     /// Wakes the waiter (or the next wait, if nobody is waiting yet).
@@ -569,7 +616,12 @@ fn wakers() -> &'static Mutex<HashMap<u64, std::sync::Arc<Waker>>> {
 
 /// The waker of context `id`, created on first ask.
 pub fn waker(id: crate::context::ContextId) -> std::sync::Arc<Waker> {
-    wakers().lock().unwrap().entry(id.0).or_insert_with(|| std::sync::Arc::new(Waker::new())).clone()
+    wakers()
+        .lock()
+        .unwrap()
+        .entry(id.0)
+        .or_insert_with(|| std::sync::Arc::new(Waker::new()))
+        .clone()
 }
 
 /// Wakes context `id` from any thread. A no-op for an id that never asked
@@ -624,7 +676,8 @@ pub fn register_pump_source(src: PumpSource) {
 /// of the refresh interval, capped here) — the wall-clock latency of a chain
 /// then stays the same at 60 and 144 Hz, and so does the frame's share.
 pub const DEFAULT_PUMP_BUDGET_US: u32 = 4000;
-static PUMP_BUDGET_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(DEFAULT_PUMP_BUDGET_US);
+static PUMP_BUDGET_US: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(DEFAULT_PUMP_BUDGET_US);
 
 /// Sets the per-pump delivery budget, process-wide. 0 = deliver what is
 /// already queued and never wait (a worker loop's setting: its own wait on the
@@ -707,10 +760,27 @@ mod wake_sys {
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn CreateEventW(attrs: *mut c_void, manual_reset: i32, initial: i32, name: *const u16) -> Handle;
+        fn CreateEventW(
+            attrs: *mut c_void,
+            manual_reset: i32,
+            initial: i32,
+            name: *const u16,
+        ) -> Handle;
         fn SetEvent(h: Handle) -> i32;
-        fn CreateWaitableTimerExW(attrs: *mut c_void, name: *const u16, flags: u32, access: u32) -> Handle;
-        fn SetWaitableTimer(h: Handle, due: *const i64, period: i32, cb: *mut c_void, arg: *mut c_void, resume: i32) -> i32;
+        fn CreateWaitableTimerExW(
+            attrs: *mut c_void,
+            name: *const u16,
+            flags: u32,
+            access: u32,
+        ) -> Handle;
+        fn SetWaitableTimer(
+            h: Handle,
+            due: *const i64,
+            period: i32,
+            cb: *mut c_void,
+            arg: *mut c_void,
+            resume: i32,
+        ) -> i32;
         fn CancelWaitableTimer(h: Handle) -> i32;
         fn WaitForMultipleObjects(n: u32, handles: *const Handle, wait_all: i32, ms: u32) -> u32;
         fn WaitForSingleObject(h: Handle, ms: u32) -> u32;
@@ -740,7 +810,12 @@ mod wake_sys {
                 );
                 if timer.is_null() {
                     // Before Windows 10 1803: a timer at the system tick.
-                    timer = CreateWaitableTimerExW(core::ptr::null_mut(), core::ptr::null(), 0, TIMER_ALL_ACCESS);
+                    timer = CreateWaitableTimerExW(
+                        core::ptr::null_mut(),
+                        core::ptr::null(),
+                        0,
+                        TIMER_ALL_ACCESS,
+                    );
                 }
                 Event { ev, timer }
             }
@@ -760,7 +835,14 @@ mod wake_sys {
                 }
                 // Relative due time, in 100 ns units, as a negative number.
                 let due: i64 = -((timeout.as_nanos() / 100).max(1) as i64);
-                SetWaitableTimer(self.timer, &due, 0, core::ptr::null_mut(), core::ptr::null_mut(), 0);
+                SetWaitableTimer(
+                    self.timer,
+                    &due,
+                    0,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                    0,
+                );
                 let hs = [self.ev, self.timer];
                 let r = WaitForMultipleObjects(2, hs.as_ptr(), 0, INFINITE);
                 CancelWaitableTimer(self.timer);
@@ -795,7 +877,10 @@ mod wake_sys {
 
     impl Event {
         pub fn new() -> Event {
-            Event { set: Mutex::new(false), cv: Condvar::new() }
+            Event {
+                set: Mutex::new(false),
+                cv: Condvar::new(),
+            }
         }
 
         pub fn set(&self) {
@@ -907,7 +992,11 @@ pub unsafe fn checkpoint(g: *mut c_void) -> Checkpoint {
         }
     }
     CHECKPOINTING.with(|c| c.borrow_mut().retain(|&k| k != key));
-    if full { Checkpoint::Full } else { Checkpoint::DrainedInJs }
+    if full {
+        Checkpoint::Full
+    } else {
+        Checkpoint::DrainedInJs
+    }
 }
 
 extern "C" {
@@ -1002,7 +1091,10 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
             due
         };
         for task in due_native {
-            { let _profile = crate::profiling::span("native", "Async native task"); task(g); }
+            {
+                let _profile = crate::profiling::span("native", "Async native task");
+                task(g);
+            }
             if per_task {
                 checkpoint(g);
             }
@@ -1017,7 +1109,16 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
                 .timers
                 .iter()
                 .filter(|(_, t)| now >= t.next_fire)
-                .map(|(id, t)| (*id, t.cb, t.args.clone(), t.interval, t.repeating, t.next_fire))
+                .map(|(id, t)| {
+                    (
+                        *id,
+                        t.cb,
+                        t.args.clone(),
+                        t.interval,
+                        t.repeating,
+                        t.next_fire,
+                    )
+                })
                 .collect();
             // Browser ordering: earliest deadline first, registration order ties.
             due.sort_by(|a, b| a.5.total_cmp(&b.5).then(a.0.cmp(&b.0)));
@@ -1026,11 +1127,27 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
 
         for (id, cb, args, interval, repeating, _deadline) in due {
             // Skip if a callback earlier in this drain cleared it.
-            let still_there = registry().lock().unwrap().entry(key).or_default().timers.contains_key(&id);
+            let still_there = registry()
+                .lock()
+                .unwrap()
+                .entry(key)
+                .or_default()
+                .timers
+                .contains_key(&id);
             if !still_there {
                 continue;
             }
-            fire(g, cb, &args, flags, if repeating { "setInterval callback" } else { "setTimeout callback" });
+            fire(
+                g,
+                cb,
+                &args,
+                flags,
+                if repeating {
+                    "setInterval callback"
+                } else {
+                    "setTimeout callback"
+                },
+            );
             timers_fired += 1;
 
             let removed = {
@@ -1087,7 +1204,14 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
             glue::rjs_atom_free(g, a);
             let name: Vec<u16> = "timeRemaining".encode_utf16().collect();
             let mut trf = ENC_UNDEFINED;
-            glue::rjs_function_create(g, name.as_ptr(), name.len(), 0, idle_time_remaining as *const c_void, &mut trf);
+            glue::rjs_function_create(
+                g,
+                name.as_ptr(),
+                name.len(),
+                0,
+                idle_time_remaining as *const c_void,
+                &mut trf,
+            );
             let a = glue::rjs_atom8(g, "timeRemaining".as_ptr(), 13);
             glue::rjs_define(g, deadline, a, trf, 2);
             glue::rjs_atom_free(g, a);
@@ -1167,7 +1291,11 @@ pub unsafe fn pump(g: *mut c_void, flags: u32, stats: *mut RjsPumpStats) {
                 .values()
                 .map(|t| t.next_fire)
                 .fold(f64::INFINITY, f64::min);
-            (s.raf.len() as u32, s.timers.len() as u32, if next.is_finite() { next } else { -1.0 })
+            (
+                s.raf.len() as u32,
+                s.timers.len() as u32,
+                if next.is_finite() { next } else { -1.0 },
+            )
         };
         *stats = RjsPumpStats {
             now,
@@ -1205,17 +1333,32 @@ mod checkpoint_tests {
         *hook_runs().lock().unwrap().entry(g as usize).or_default() += 1;
     }
     fn runs(c: &Context) -> u32 {
-        hook_runs().lock().unwrap().get(&(c.raw() as usize)).copied().unwrap_or(0)
+        hook_runs()
+            .lock()
+            .unwrap()
+            .get(&(c.raw() as usize))
+            .copied()
+            .unwrap_or(0)
     }
     fn outcomes(c: &Context) -> Vec<Checkpoint> {
-        seen().lock().unwrap().get(&(c.raw() as usize)).cloned().unwrap_or_default()
+        seen()
+            .lock()
+            .unwrap()
+            .get(&(c.raw() as usize))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// `__cp()` — a host function that asks for a checkpoint from inside JS.
     #[crate::host_fn]
     unsafe fn cp_from_js(g: *mut c_void, _cf: *mut c_void) -> u64 {
         let r = checkpoint(g);
-        seen().lock().unwrap().entry(g as usize).or_default().push(r);
+        seen()
+            .lock()
+            .unwrap()
+            .entry(g as usize)
+            .or_default()
+            .push(r);
         ENC_UNDEFINED
     }
 
@@ -1225,7 +1368,13 @@ mod checkpoint_tests {
         unsafe {
             install(c.raw());
             let g = c.raw();
-            define(g, glue::rjs_global(g), "__cp", make_fn(g, "__cp", 0, cp_from_js), 2);
+            define(
+                g,
+                glue::rjs_global(g),
+                "__cp",
+                make_fn(g, "__cp", 0, cp_from_js),
+                2,
+            );
         }
         c
     }
@@ -1233,7 +1382,10 @@ mod checkpoint_tests {
     #[test]
     fn a_checkpoint_from_rust_drains_and_runs_the_hooks() {
         let c = ctx();
-        s(&c, "globalThis.x = 0; Promise.resolve().then(() => { x = 1; }); 0");
+        s(
+            &c,
+            "globalThis.x = 0; Promise.resolve().then(() => { x = 1; }); 0",
+        );
         let before = runs(&c);
         assert_eq!(unsafe { checkpoint(c.raw()) }, Checkpoint::Full);
         ok(&c, "x === 1");
@@ -1249,7 +1401,10 @@ mod checkpoint_tests {
         // hook here would deactivate a transaction the calling script just made.
         let c = ctx();
         let before = runs(&c);
-        ok(&c, "globalThis.y = 0; Promise.resolve().then(() => { y = 1; }); __cp(); y === 1");
+        ok(
+            &c,
+            "globalThis.y = 0; Promise.resolve().then(() => { y = 1; }); __cp(); y === 1",
+        );
         assert_eq!(outcomes(&c), vec![Checkpoint::DrainedInJs]);
         assert_eq!(runs(&c), before, "no hook while JS is on the stack");
     }
@@ -1263,7 +1418,12 @@ mod checkpoint_tests {
     unsafe fn reentering_hook(g: *mut c_void) {
         if probes().lock().unwrap().contains(&(g as usize)) {
             let r = checkpoint(g);
-            seen().lock().unwrap().entry(g as usize).or_default().push(r);
+            seen()
+                .lock()
+                .unwrap()
+                .entry(g as usize)
+                .or_default()
+                .push(r);
         }
     }
 
@@ -1277,7 +1437,11 @@ mod checkpoint_tests {
         assert_eq!(unsafe { checkpoint(c.raw()) }, Checkpoint::Full);
         probes().lock().unwrap().retain(|&k| k != c.raw() as usize);
         assert_eq!(outcomes(&c), vec![Checkpoint::Nested]);
-        assert_eq!(runs(&c), before + 1, "the nested call ran no hooks of its own");
+        assert_eq!(
+            runs(&c),
+            before + 1,
+            "the nested call ran no hooks of its own"
+        );
         // The flag is per context and cleared on the way out.
         assert_eq!(unsafe { checkpoint(c.raw()) }, Checkpoint::Full);
     }
@@ -1287,7 +1451,10 @@ mod checkpoint_tests {
         // HTML: the microtask a timer queues runs before the NEXT timer.
         // Without the flag the pump keeps its one-drain-at-the-end shape.
         for (flags, expect) in [
-            (PUMP_TIMERS | PUMP_MICROTASKS | PUMP_CHECKPOINT_PER_TASK, "a,micro,b"),
+            (
+                PUMP_TIMERS | PUMP_MICROTASKS | PUMP_CHECKPOINT_PER_TASK,
+                "a,micro,b",
+            ),
             (PUMP_TIMERS | PUMP_MICROTASKS, "a,b,micro"),
         ] {
             let c = ctx();
@@ -1335,7 +1502,11 @@ mod native_from_tests {
         let held = std::sync::Arc::clone(&owned);
         schedule_native_from(g, old, 0.0, Box::new(move |_| drop(held)));
         assert!(!has_scheduler(g), "nothing re-created for the old context");
-        assert_eq!(std::sync::Arc::strong_count(&owned), 1, "the task was dropped, not parked");
+        assert_eq!(
+            std::sync::Arc::strong_count(&owned),
+            1,
+            "the task was dropped, not parked"
+        );
     }
 
     /// An embedder that stops pumping while idle is told when the next work is due, and woken for
@@ -1357,14 +1528,19 @@ mod native_from_tests {
         assert!(next_work_ms(g).expect("the timer") <= due);
         crate::webapi::testing::s(&c, "globalThis.junk = []; for (let i = 0; i < 200000; i++) junk.push({ i }); junk = null; 0");
         let gc = unsafe { glue::rjs_gc_timers_due_s(g) };
-        assert!(gc >= 0.0 && gc < 60.0, "a GC timer is armed after allocating: {gc}");
+        assert!(
+            gc >= 0.0 && gc < 60.0,
+            "a GC timer is armed after allocating: {gc}"
+        );
 
         let before = WOKEN.load(Ordering::SeqCst);
         let id = crate::context::id_of(g);
         let addr = g as usize;
-        std::thread::spawn(move || schedule_native_from(addr as *mut c_void, id, 0.0, Box::new(|_| {})))
-            .join()
-            .unwrap();
+        std::thread::spawn(move || {
+            schedule_native_from(addr as *mut c_void, id, 0.0, Box::new(|_| {}))
+        })
+        .join()
+        .unwrap();
         assert!(WOKEN.load(Ordering::SeqCst) > before, "woken");
         assert!(next_work_ms(g).expect("the task") <= now_ms());
 

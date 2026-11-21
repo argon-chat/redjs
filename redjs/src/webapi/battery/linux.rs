@@ -16,7 +16,14 @@ struct DisplayDevice {
 
 impl Default for DisplayDevice {
     fn default() -> Self {
-        Self { present: false, kind: 0, state: 0, percentage: f64::NAN, time_to_empty: 0, time_to_full: 0 }
+        Self {
+            present: false,
+            kind: 0,
+            state: 0,
+            percentage: f64::NAN,
+            time_to_empty: 0,
+            time_to_full: 0,
+        }
     }
 }
 
@@ -91,21 +98,50 @@ pub(super) mod native {
     }
 
     async fn snapshot(connection: &Connection) -> zbus::Result<BatteryState> {
-        let reply = connection.call_method(Some(SERVICE), DISPLAY, Some(PROPERTIES), "GetAll", &(DEVICE,)).await?;
+        let reply = connection
+            .call_method(
+                Some(SERVICE),
+                DISPLAY,
+                Some(PROPERTIES),
+                "GetAll",
+                &(DEVICE,),
+            )
+            .await?;
         let props = reply.body().deserialize::<HashMap<String, OwnedValue>>()?;
         Ok(DisplayDevice {
-            present: props.get("IsPresent").and_then(|v| bool::try_from(v).ok()).unwrap_or(false),
-            kind: props.get("Type").and_then(|v| u32::try_from(v).ok()).unwrap_or(0),
-            state: props.get("State").and_then(|v| u32::try_from(v).ok()).unwrap_or(0),
-            percentage: props.get("Percentage").and_then(|v| f64::try_from(v).ok()).unwrap_or(f64::NAN),
-            time_to_empty: props.get("TimeToEmpty").and_then(|v| i64::try_from(v).ok()).unwrap_or(0),
-            time_to_full: props.get("TimeToFull").and_then(|v| i64::try_from(v).ok()).unwrap_or(0),
+            present: props
+                .get("IsPresent")
+                .and_then(|v| bool::try_from(v).ok())
+                .unwrap_or(false),
+            kind: props
+                .get("Type")
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(0),
+            state: props
+                .get("State")
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(0),
+            percentage: props
+                .get("Percentage")
+                .and_then(|v| f64::try_from(v).ok())
+                .unwrap_or(f64::NAN),
+            time_to_empty: props
+                .get("TimeToEmpty")
+                .and_then(|v| i64::try_from(v).ok())
+                .unwrap_or(0),
+            time_to_full: props
+                .get("TimeToFull")
+                .and_then(|v| i64::try_from(v).ok())
+                .unwrap_or(0),
         }
         .into())
     }
 
     async fn monitor(id: ContextId) -> zbus::Result<()> {
-        let connection = zbus::connection::Builder::system()?.method_timeout(Duration::from_secs(3)).build().await?;
+        let connection = zbus::connection::Builder::system()?
+            .method_timeout(Duration::from_secs(3))
+            .build()
+            .await?;
         let property_rule = MatchRule::builder()
             .msg_type(Type::Signal)
             .sender(SERVICE)?
@@ -123,7 +159,8 @@ pub(super) mod native {
             .build();
         // Subscribe before reading, so a change during the initial GetAll is
         // observed. The two bounded streams also cover daemon exit / restart.
-        let properties = MessageStream::for_match_rule(property_rule, &connection, Some(16)).await?;
+        let properties =
+            MessageStream::for_match_rule(property_rule, &connection, Some(16)).await?;
         let owners = MessageStream::for_match_rule(owner_rule, &connection, Some(4)).await?;
         let mut changes = stream::or(properties, owners);
         publish(id, snapshot(&connection).await.unwrap_or_default());
@@ -166,17 +203,37 @@ pub(super) mod native {
 mod tests {
     use super::*;
     fn device(state: u32) -> DisplayDevice {
-        DisplayDevice { present: true, kind: 2, state, percentage: 49.6, time_to_empty: 7200, time_to_full: 1800 }
+        DisplayDevice {
+            present: true,
+            kind: 2,
+            state,
+            percentage: 49.6,
+            time_to_empty: 7200,
+            time_to_full: 1800,
+        }
     }
     #[test]
     fn upower_states_and_seconds() {
         let dc = BatteryState::from(device(2));
-        assert_eq!(dc, BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 7200.0, level: 0.5 });
+        assert_eq!(
+            dc,
+            BatteryState {
+                charging: false,
+                charging_time: f64::INFINITY,
+                discharging_time: 7200.0,
+                level: 0.5
+            }
+        );
         assert_eq!(BatteryState::from(device(6)), dc);
         for state in [1, 5] {
             assert_eq!(
                 BatteryState::from(device(state)),
-                BatteryState { charging: true, charging_time: 1800.0, discharging_time: f64::INFINITY, level: 0.5 }
+                BatteryState {
+                    charging: true,
+                    charging_time: 1800.0,
+                    discharging_time: f64::INFINITY,
+                    level: 0.5
+                }
             );
         }
         assert_eq!(BatteryState::from(device(4)), BatteryState::default());
@@ -185,19 +242,66 @@ mod tests {
     }
     #[test]
     fn upower_absent_peripheral_and_ups() {
-        assert_eq!(BatteryState::from(DisplayDevice::default()), BatteryState::default());
-        assert_eq!(BatteryState::from(DisplayDevice { present: false, ..device(2) }), BatteryState::default());
-        assert_eq!(BatteryState::from(DisplayDevice { kind: 5, ..device(2) }), BatteryState::default());
-        assert_eq!(BatteryState::from(DisplayDevice { kind: 3, ..device(2) }), BatteryState::from(device(2)));
+        assert_eq!(
+            BatteryState::from(DisplayDevice::default()),
+            BatteryState::default()
+        );
+        assert_eq!(
+            BatteryState::from(DisplayDevice {
+                present: false,
+                ..device(2)
+            }),
+            BatteryState::default()
+        );
+        assert_eq!(
+            BatteryState::from(DisplayDevice {
+                kind: 5,
+                ..device(2)
+            }),
+            BatteryState::default()
+        );
+        assert_eq!(
+            BatteryState::from(DisplayDevice {
+                kind: 3,
+                ..device(2)
+            }),
+            BatteryState::from(device(2))
+        );
     }
     #[test]
     fn upower_missing_and_invalid_values_do_not_become_zero_estimates() {
-        let s = BatteryState::from(DisplayDevice { percentage: f64::NAN, time_to_empty: 0, ..device(2) });
+        let s = BatteryState::from(DisplayDevice {
+            percentage: f64::NAN,
+            time_to_empty: 0,
+            ..device(2)
+        });
         assert!(!s.charging && s.level == 1.0 && s.discharging_time.is_infinite());
-        let s = BatteryState::from(DisplayDevice { time_to_full: -1, ..device(1) });
+        let s = BatteryState::from(DisplayDevice {
+            time_to_full: -1,
+            ..device(1)
+        });
         assert!(s.charging_time.is_infinite());
-        assert_eq!(BatteryState::from(DisplayDevice { percentage: -10.0, ..device(2) }).level, 0.0);
-        assert_eq!(BatteryState::from(DisplayDevice { percentage: 150.0, ..device(1) }).level, 1.0);
-        assert!(BatteryState::from(DisplayDevice { percentage: f64::INFINITY, ..device(0) }).level.is_finite());
+        assert_eq!(
+            BatteryState::from(DisplayDevice {
+                percentage: -10.0,
+                ..device(2)
+            })
+            .level,
+            0.0
+        );
+        assert_eq!(
+            BatteryState::from(DisplayDevice {
+                percentage: 150.0,
+                ..device(1)
+            })
+            .level,
+            1.0
+        );
+        assert!(BatteryState::from(DisplayDevice {
+            percentage: f64::INFINITY,
+            ..device(0)
+        })
+        .level
+        .is_finite());
     }
 }

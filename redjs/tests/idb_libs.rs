@@ -33,8 +33,13 @@ fn backend() -> &'static str {
         #[cfg(feature = "indexeddb-sqlite")]
         if want.starts_with("sqlite") {
             use redjs::webapi::indexeddb::{set_backend_factory, sqlite, IdbEncryption};
-            let dir = std::path::PathBuf::from(std::env::var("REDJS_IDB_DIR").expect("REDJS_IDB_DIR"));
-            let enc = if want == "sqlite-encrypted" { IdbEncryption::Encrypted([0x24; 32]) } else { IdbEncryption::Plaintext };
+            let dir =
+                std::path::PathBuf::from(std::env::var("REDJS_IDB_DIR").expect("REDJS_IDB_DIR"));
+            let enc = if want == "sqlite-encrypted" {
+                IdbEncryption::Encrypted([0x24; 32])
+            } else {
+                IdbEncryption::Plaintext
+            };
             set_backend_factory(sqlite::factory(dir, enc, 1 << 30));
         }
         want
@@ -42,7 +47,10 @@ fn backend() -> &'static str {
 }
 
 fn lib(path: &str) -> String {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("libs").join(path);
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("libs")
+        .join(path);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
@@ -50,7 +58,10 @@ fn ctx(libs: &[&str]) -> Context {
     backend();
     // The per-pump delivery budget the benchmark runs under (default: the
     // pump's 4 ms) — how the budget policy is measured.
-    if let Some(us) = std::env::var("REDJS_IDB_BUDGET_US").ok().and_then(|v| v.parse().ok()) {
+    if let Some(us) = std::env::var("REDJS_IDB_BUDGET_US")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
         ffi::redjs_idb_set_budget_us(us);
     }
     let c = Context::new();
@@ -130,7 +141,13 @@ fn run(c: &Context, body: &str) -> Run {
         std::thread::sleep(Duration::from_millis(1));
     };
     unsafe { ffi::redjs_unlock(c.raw()) };
-    Run { out, pumps, ms: start.elapsed().as_secs_f64() * 1000.0, pump_max_ms, pump_total_ms }
+    Run {
+        out,
+        pumps,
+        ms: start.elapsed().as_secs_f64() * 1000.0,
+        pump_max_ms,
+        pump_total_ms,
+    }
 }
 
 fn expect(r: &Run, want: &str) {
@@ -194,7 +211,12 @@ fn dexie_schema_bulk_queries_transactions() {
          return [count, between === wantBetween, tagged === wantTagged, after, bulk, fresh, byLast === wantByLast, verno,
                  names.includes(name), exists].join('|');",
     );
-    eprintln!("[bench:{}] Dexie bulkPut(10 000): {} ms (scenario: {})", backend(), eval(&c, "Math.round(globalThis.__bulk)", "b.js"), r.line());
+    eprintln!(
+        "[bench:{}] Dexie bulkPut(10 000): {} ms (scenario: {})",
+        backend(),
+        eval(&c, "Math.round(globalThis.__bulk)", "b.js"),
+        r.line()
+    );
     expect(&r, "10000|true|true|1000|BulkError:1|2|true|2|true|false");
 }
 
@@ -250,7 +272,10 @@ fn dexie_collections_cursors_and_versionchange() {
          await db2.delete();
          return [ann, anyOfIc, page, pks, modified, upper, removed, bulkGet, left, firstClosed, v].join('|');",
     );
-    expect(&r, "ANNIKA,Ann,anna|2|25,24,23|3,4,5|2|true|1|Ann,none,none|5|true|2");
+    expect(
+        &r,
+        "ANNIKA,Ann,anna|2|25,24,23|3,4,5|2|true|1|Ann,none,none|5|true|2",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +365,10 @@ fn localforage_blobs_keys_iterate() {
          const after = await lf.getItem('n');
          return [driver, b instanceof Blob, b.type, await b.text(), ks, it.join(','), len, String(after)].join('|');",
     );
-    expect(&r, "asyncStorage|true|text/plain|abc|blob,n,o|blob@1,n@2,o@3|3|null");
+    expect(
+        &r,
+        "asyncStorage|true|text/plain|abc|blob,n,o|blob@1,n@2,o@3|3|null",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -421,9 +449,17 @@ fn bench_sequential_gets_take_few_pumps() {
          globalThis.__ms = performance.now() - t0;
          return String(sum);",
     );
-    eprintln!("[bench:{}] 1000 sequential awaited gets, a transaction each: {}", backend(), r.line());
+    eprintln!(
+        "[bench:{}] 1000 sequential awaited gets, a transaction each: {}",
+        backend(),
+        r.line()
+    );
     expect(&r, "499500");
-    assert!(pumps_ok(r.pumps), "1000 sequential gets took {} pumps (guard: <= 30)", r.pumps);
+    assert!(
+        pumps_ok(r.pumps),
+        "1000 sequential gets took {} pumps (guard: <= 30)",
+        r.pumps
+    );
 
     // One transaction, every get awaited in turn (idb's shape).
     let r = run(
@@ -434,9 +470,17 @@ fn bench_sequential_gets_take_few_pumps() {
          for (let i = 0; i < 1000; i++) sum += (await get(i)).i;
          return String(sum);",
     );
-    eprintln!("[bench:{}] 1000 sequential awaited gets, one transaction: {}", backend(), r.line());
+    eprintln!(
+        "[bench:{}] 1000 sequential awaited gets, one transaction: {}",
+        backend(),
+        r.line()
+    );
     expect(&r, "499500");
-    assert!(pumps_ok(r.pumps), "1000 sequential gets in one transaction took {} pumps (guard: <= 30)", r.pumps);
+    assert!(
+        pumps_ok(r.pumps),
+        "1000 sequential gets in one transaction took {} pumps (guard: <= 30)",
+        r.pumps
+    );
 
     // Pipelined: 1000 gets issued at once, then awaited together.
     let r = run(
@@ -446,7 +490,11 @@ fn bench_sequential_gets_take_few_pumps() {
          await new Promise((res) => { qs[qs.length - 1].onsuccess = res; });
          return String(qs.reduce((a, q) => a + q.result.i, 0));",
     );
-    eprintln!("[bench:{}] 1000 pipelined gets (one listener): {}", backend(), r.line());
+    eprintln!(
+        "[bench:{}] 1000 pipelined gets (one listener): {}",
+        backend(),
+        r.line()
+    );
     expect(&r, "499500");
 
     // 10 000 puts in one readwrite transaction (no listeners but the last).
@@ -458,7 +506,11 @@ fn bench_sequential_gets_take_few_pumps() {
          await new Promise((res, rej) => { tx.oncomplete = res; tx.onabort = () => rej(tx.error); });
          return 'ok';",
     );
-    eprintln!("[bench:{}] 10 000 puts in one transaction: {}", backend(), r.line());
+    eprintln!(
+        "[bench:{}] 10 000 puts in one transaction: {}",
+        backend(),
+        r.line()
+    );
     expect(&r, "ok");
 
     // getAll over 11 000 records.
@@ -468,7 +520,11 @@ fn bench_sequential_gets_take_few_pumps() {
          const all = await new Promise((res) => { q.onsuccess = () => res(q.result); });
          return String(all.length);",
     );
-    eprintln!("[bench:{}] getAll() of 11 000 records: {}", backend(), r.line());
+    eprintln!(
+        "[bench:{}] getAll() of 11 000 records: {}",
+        backend(),
+        r.line()
+    );
     expect(&r, "11000");
 }
 
@@ -493,7 +549,11 @@ fn bench_awaited_commits() {
                  return String(n);"
             ),
         );
-        eprintln!("[bench:{}] 200 sequential awaited readwrite transactions, {durability}: {}", backend(), r.line());
+        eprintln!(
+            "[bench:{}] 200 sequential awaited readwrite transactions, {durability}: {}",
+            backend(),
+            r.line()
+        );
         expect(&r, "200");
     }
 }
@@ -508,18 +568,30 @@ fn every_scenario_again_on_sqlite() {
     }
     let exe = std::env::current_exe().unwrap();
     for variant in ["sqlite", "sqlite-encrypted"] {
-        let dir = std::env::temp_dir().join(format!("redjs-idb-libs-{}-{variant}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("redjs-idb-libs-{}-{variant}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let out = std::process::Command::new(&exe)
             .env("REDJS_IDB_BACKEND", variant)
             .env("REDJS_IDB_DIR", &dir)
             // One at a time: the server is one thread per process, and a
             // Dexie bulkPut next door would be measured as the benchmark's.
-            .args(["--skip", "every_scenario_again_on_sqlite", "--nocapture", "--test-threads=1"])
+            .args([
+                "--skip",
+                "every_scenario_again_on_sqlite",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .output()
             .expect("spawn the sqlite pass");
-        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        for l in text.lines().filter(|l| l.starts_with("[bench") || l.starts_with("test ") || l.starts_with("test result")) {
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for l in text.lines().filter(|l| {
+            l.starts_with("[bench") || l.starts_with("test ") || l.starts_with("test result")
+        }) {
             eprintln!("  [{variant}] {l}");
         }
         let _ = std::fs::remove_dir_all(&dir);

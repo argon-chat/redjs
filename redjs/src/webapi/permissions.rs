@@ -120,7 +120,10 @@ impl Capability {
     /// Parse a `PermissionName`. `None` is a `TypeError` at the JS boundary,
     /// exactly as an unknown enum value is in a browser.
     pub fn from_web_name(name: &str) -> Option<Capability> {
-        Capability::ALL.iter().copied().find(|c| c.web_name() == name)
+        Capability::ALL
+            .iter()
+            .copied()
+            .find(|c| c.web_name() == name)
     }
 }
 
@@ -393,7 +396,12 @@ fn classes_reg() -> &'static Mutex<HashMap<usize, &'static PermClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static PermClasses {
-    classes_reg().lock().unwrap().get(&(g as usize)).copied().expect("webapi::permissions not installed")
+    classes_reg()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::permissions not installed")
 }
 
 /// One live `PermissionStatus`, and the state it last reported.
@@ -454,7 +462,9 @@ unsafe fn status_cap(g: *mut c_void, obj: u64) -> Option<Capability> {
     if !is_cell(slots) {
         return None;
     }
-    read_string(g, get(g, slots, "name")).as_deref().and_then(Capability::from_web_name)
+    read_string(g, get(g, slots, "name"))
+        .as_deref()
+        .and_then(Capability::from_web_name)
 }
 
 #[crate::host_fn]
@@ -477,7 +487,13 @@ unsafe fn status_get_state(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn status_for(g: *mut c_void, cap: Capability) -> u64 {
-    if let Some(l) = live().lock().unwrap().get(&(g as usize)).and_then(|m| m.get(&cap)).copied() {
+    if let Some(l) = live()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .and_then(|m| m.get(&cap))
+        .copied()
+    {
         return l.obj;
     }
     let seen = status_of(cap);
@@ -488,7 +504,12 @@ unsafe fn status_for(g: *mut c_void, cap: Capability) -> u64 {
     glue::rjs_define(g, obj, c.s_perm, slots, 0);
     // Held for the life of the context so `pump` can dispatch onto it.
     crate::ffi::redjs_protect(g, obj);
-    live().lock().unwrap().entry(g as usize).or_default().insert(cap, Live { obj, seen });
+    live()
+        .lock()
+        .unwrap()
+        .entry(g as usize)
+        .or_default()
+        .insert(cap, Live { obj, seen });
     obj
 }
 
@@ -569,7 +590,9 @@ unsafe fn perms_query(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// matter which of them pumps first.
 pub unsafe fn pump(g: *mut c_void) {
     let Some(h) = host() else { return };
-    let Some(id) = crate::context::id_of(g) else { return };
+    let Some(id) = crate::context::id_of(g) else {
+        return;
+    };
     let mine = {
         let mut pend = pending().lock().unwrap();
         // Drained under the lock, so two threads pumping two contexts cannot
@@ -591,14 +614,24 @@ pub unsafe fn pump(g: *mut c_void) {
     for cap in mine {
         // Only capabilities somebody has queried have a status object; a change
         // nobody subscribed to is not an event.
-        let l = live().lock().unwrap().get(&(g as usize)).and_then(|m| m.get(&cap)).copied();
+        let l = live()
+            .lock()
+            .unwrap()
+            .get(&(g as usize))
+            .and_then(|m| m.get(&cap))
+            .copied();
         let Some(l) = l else { continue };
         // Nor is one that left the state where this object last saw it.
         let now = status_of(cap);
         if now == l.seen {
             continue;
         }
-        if let Some(entry) = live().lock().unwrap().get_mut(&(g as usize)).and_then(|m| m.get_mut(&cap)) {
+        if let Some(entry) = live()
+            .lock()
+            .unwrap()
+            .get_mut(&(g as usize))
+            .and_then(|m| m.get_mut(&cap))
+        {
             entry.seen = now;
         }
         let ev = events::new_trusted_event(g, "change");
@@ -613,25 +646,31 @@ pub unsafe fn pump(g: *mut c_void) {
 pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     let s_perm = atom_priv(g, "redjs#permissionStatus");
 
-    let status = define_class(g, &ClassSpec {
-        name: "PermissionStatus",
-        arity: 0,
-        construct: None,
-        parent_proto: event_target_proto,
-        methods: &[],
-        getters: &[("name", status_get_name), ("state", status_get_state)],
-        accessors: &[],
-    });
+    let status = define_class(
+        g,
+        &ClassSpec {
+            name: "PermissionStatus",
+            arity: 0,
+            construct: None,
+            parent_proto: event_target_proto,
+            methods: &[],
+            getters: &[("name", status_get_name), ("state", status_get_state)],
+            accessors: &[],
+        },
+    );
 
-    let perms_class = define_class(g, &ClassSpec {
-        name: "Permissions",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("query", 1, perms_query)],
-        getters: &[],
-        accessors: &[],
-    });
+    let perms_class = define_class(
+        g,
+        &ClassSpec {
+            name: "Permissions",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("query", 1, perms_query)],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
     let boxed: &'static PermClasses = Box::leak(Box::new(PermClasses { status, s_perm }));
     classes_reg().lock().unwrap().insert(g as usize, boxed);
@@ -666,7 +705,11 @@ mod tests {
         // The name table is the contract with `query()`; a capability whose
         // name does not parse back is one no application can ask about.
         for cap in Capability::ALL {
-            assert_eq!(Capability::from_web_name(cap.web_name()), Some(*cap), "{cap:?}");
+            assert_eq!(
+                Capability::from_web_name(cap.web_name()),
+                Some(*cap),
+                "{cap:?}"
+            );
         }
         assert_eq!(Capability::ALL.len(), 7);
     }
@@ -687,8 +730,19 @@ mod tests {
 
     #[test]
     fn unknown_names_do_not_parse() {
-        for bad in ["Microphone", "mic", "displayCapture", "clipboard", "", "midi"] {
-            assert_eq!(Capability::from_web_name(bad), None, "{bad:?} must not parse");
+        for bad in [
+            "Microphone",
+            "mic",
+            "displayCapture",
+            "clipboard",
+            "",
+            "midi",
+        ] {
+            assert_eq!(
+                Capability::from_web_name(bad),
+                None,
+                "{bad:?} must not parse"
+            );
         }
     }
 
@@ -712,7 +766,11 @@ mod tests {
             "test"
         }
         fn status(&self, cap: Capability) -> PermissionState {
-            self.0.iter().find(|(c, _)| *c == cap).map(|(_, s)| *s).unwrap_or(PermissionState::Unsupported)
+            self.0
+                .iter()
+                .find(|(c, _)| *c == cap)
+                .map(|(_, s)| *s)
+                .unwrap_or(PermissionState::Unsupported)
         }
     }
 
@@ -724,8 +782,14 @@ mod tests {
             (Capability::Microphone, PermissionState::Granted),
             (Capability::Camera, PermissionState::Denied),
         ]);
-        assert_eq!(h.request(Capability::Microphone), RequestOutcome::Settled(PermissionState::Granted));
-        assert_eq!(h.request(Capability::Camera), RequestOutcome::Settled(PermissionState::Denied));
+        assert_eq!(
+            h.request(Capability::Microphone),
+            RequestOutcome::Settled(PermissionState::Granted)
+        );
+        assert_eq!(
+            h.request(Capability::Camera),
+            RequestOutcome::Settled(PermissionState::Denied)
+        );
         assert_eq!(
             h.request(Capability::Geolocation),
             RequestOutcome::Settled(PermissionState::Unsupported)
@@ -749,7 +813,10 @@ mod tests {
         fn request(&self, _: Capability) -> RequestOutcome {
             let mut n = self.next.lock().unwrap();
             *n += 1;
-            self.settled.lock().unwrap().push((*n, PermissionState::Granted));
+            self.settled
+                .lock()
+                .unwrap()
+                .push((*n, PermissionState::Granted));
             RequestOutcome::Pending(*n)
         }
         fn drain_settled(&self) -> Vec<(u32, PermissionState)> {
@@ -762,15 +829,33 @@ mod tests {
         // One host queue, two askers: getUserMedia (the runtime) and the
         // embedder's own request API. Whichever drains first, each gets its
         // own settlement and never the other's.
-        let h = QueueHost { next: Mutex::new(0), settled: Mutex::new(Vec::new()) };
+        let h = QueueHost {
+            next: Mutex::new(0),
+            settled: Mutex::new(Vec::new()),
+        };
         let mut s = Settlements::default();
-        assert_eq!(s.request(&h, Capability::Microphone), RequestOutcome::Pending(1));
+        assert_eq!(
+            s.request(&h, Capability::Microphone),
+            RequestOutcome::Pending(1)
+        );
         // The embedder's request, made directly on the host.
-        assert_eq!(h.request(Capability::Microphone), RequestOutcome::Pending(2));
-        assert_eq!(s.request(&h, Capability::Microphone), RequestOutcome::Pending(3));
+        assert_eq!(
+            h.request(Capability::Microphone),
+            RequestOutcome::Pending(2)
+        );
+        assert_eq!(
+            s.request(&h, Capability::Microphone),
+            RequestOutcome::Pending(3)
+        );
         s.drain(&h);
-        assert_eq!(core::mem::take(&mut s.for_runtime), vec![(1, PermissionState::Granted), (3, PermissionState::Granted)]);
-        assert_eq!(core::mem::take(&mut s.for_embedder), vec![(2, PermissionState::Granted)]);
+        assert_eq!(
+            core::mem::take(&mut s.for_runtime),
+            vec![(1, PermissionState::Granted), (3, PermissionState::Granted)]
+        );
+        assert_eq!(
+            core::mem::take(&mut s.for_embedder),
+            vec![(2, PermissionState::Granted)]
+        );
         assert!(s.runtime.is_empty(), "a settled runtime token is forgotten");
         // Nothing is delivered twice.
         s.drain(&h);
@@ -779,29 +864,50 @@ mod tests {
 
     #[test]
     fn capped_embedder_delivery_preserves_every_waiter_across_waves() {
-        let h = QueueHost { next: Mutex::new(0), settled: Mutex::new(Vec::new()) };
+        let h = QueueHost {
+            next: Mutex::new(0),
+            settled: Mutex::new(Vec::new()),
+        };
         let mut s = Settlements::default();
         let mut expected = Vec::new();
         for i in 0..19 {
-            let RequestOutcome::Pending(token) = h.request(Capability::Microphone) else { panic!("pending"); };
+            let RequestOutcome::Pending(token) = h.request(Capability::Microphone) else {
+                panic!("pending");
+            };
             expected.push((token, PermissionState::Granted));
             if i == 8 {
-                assert_eq!(s.request(&h, Capability::Microphone), RequestOutcome::Pending(10));
+                assert_eq!(
+                    s.request(&h, Capability::Microphone),
+                    RequestOutcome::Pending(10)
+                );
             }
         }
         s.drain(&h);
         let mut delivered = s.take_embedder(16);
         assert_eq!(delivered, expected[..16]);
         assert_eq!(s.for_embedder, expected[16..]);
-        assert!(s.take_embedder(0).is_empty(), "a zero budget leaves the backlog alone");
+        assert!(
+            s.take_embedder(0).is_empty(),
+            "a zero budget leaves the backlog alone"
+        );
         // A later answer must queue behind the old tail, not replace it.
-        assert_eq!(h.request(Capability::Microphone), RequestOutcome::Pending(21));
+        assert_eq!(
+            h.request(Capability::Microphone),
+            RequestOutcome::Pending(21)
+        );
         expected.push((21, PermissionState::Granted));
         s.drain(&h);
         delivered.extend(s.take_embedder(16));
         assert_eq!(delivered, expected);
-        assert!(s.take_embedder(16).is_empty(), "each token is delivered exactly once");
-        assert_eq!(s.for_runtime, vec![(10, PermissionState::Granted)], "the runtime's request never enters the embedder wave");
+        assert!(
+            s.take_embedder(16).is_empty(),
+            "each token is delivered exactly once"
+        );
+        assert_eq!(
+            s.for_runtime,
+            vec![(10, PermissionState::Granted)],
+            "the runtime's request never enters the embedder wave"
+        );
     }
 
     #[test]
@@ -875,7 +981,11 @@ mod jsc_tests {
 
     unsafe fn pump_all(c: &Context) {
         // Permission delivery rides the TIMERS phase of the pump.
-        crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+        crate::web::pump(
+            c.raw(),
+            crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+            core::ptr::null_mut(),
+        );
     }
 
     #[test]
@@ -993,19 +1103,31 @@ mod jsc_tests {
         // The failure mode this prevents: `query({name:'mic'})` quietly
         // resolving "denied" and the app disabling a feature that works.
         let c = ctx();
-        let got = run(&c, "const s = await navigator.permissions.query({ name: 'mic' }); return s.state;");
+        let got = run(
+            &c,
+            "const s = await navigator.permissions.query({ name: 'mic' }); return s.state;",
+        );
         assert!(got.starts_with("ERROR:"), "{got}");
         assert!(got.contains("not a valid enum value"), "{got}");
-        assert!(got.contains("microphone"), "the message must list the known names: {got}");
+        assert!(
+            got.contains("microphone"),
+            "the message must list the known names: {got}"
+        );
 
-        let got = run(&c, "return (await navigator.permissions.query('microphone')).state;");
+        let got = run(
+            &c,
+            "return (await navigator.permissions.query('microphone')).state;",
+        );
         assert!(got.contains("PermissionDescriptor"), "{got}");
 
         let got = run(&c, "return (await navigator.permissions.query({})).state;");
         assert!(got.contains("Required member is undefined"), "{got}");
 
         // …and an explicit `undefined` is the same error, not an invalid-enum one.
-        let got = run(&c, "return (await navigator.permissions.query({ name: undefined })).state;");
+        let got = run(
+            &c,
+            "return (await navigator.permissions.query({ name: undefined })).state;",
+        );
         assert!(got.contains("Required member is undefined"), "{got}");
     }
 

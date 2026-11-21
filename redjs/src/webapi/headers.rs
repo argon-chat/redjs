@@ -48,7 +48,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static HeadersClass>> {
 }
 
 fn classes(g: *mut c_void) -> &'static HeadersClass {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::headers not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::headers not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -88,7 +93,9 @@ pub fn valid_value(value: &str) -> bool {
 
 /// Spec: values are stripped of leading/trailing HTTP whitespace on the way in.
 fn normalize_value(value: &str) -> String {
-    value.trim_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n').to_string()
+    value
+        .trim_matches(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        .to_string()
 }
 
 /// Reads a `HeadersInit`: a `Headers` instance, a sequence of `[name, value]`
@@ -114,7 +121,9 @@ pub unsafe fn from_init(g: *mut c_void, v: u64) -> Result<Vec<(String, String)>,
         for i in 0..n {
             let pair = get_i(g, v, i);
             if !is_cell(pair) || array_len(g, pair) != 2 {
-                return Err(format!("headers init entry {i} is not a [name, value] pair"));
+                return Err(format!(
+                    "headers init entry {i} is not a [name, value] pair"
+                ));
             }
             let name = read_string(g, get_i(g, pair, 0)).unwrap_or_default();
             let value = read_string(g, get_i(g, pair, 1)).unwrap_or_default();
@@ -131,7 +140,9 @@ pub unsafe fn from_init(g: *mut c_void, v: u64) -> Result<Vec<(String, String)>,
     let n = array_len(g, keys);
     for i in 0..n {
         let k = get_i(g, keys, i);
-        let Some(name) = read_string(g, k) else { continue };
+        let Some(name) = read_string(g, k) else {
+            continue;
+        };
         let value = read_string(g, get(g, v, &name)).unwrap_or_default();
         push_validated(&mut out, &name, &value)?;
     }
@@ -144,7 +155,9 @@ fn push_validated(out: &mut Vec<(String, String)>, name: &str, value: &str) -> R
         return Err(format!("{name:?} is not a valid header name"));
     }
     if !valid_value(&value) {
-        return Err(format!("{value:?} is not a valid value for header {name:?}"));
+        return Err(format!(
+            "{value:?} is not a valid value for header {name:?}"
+        ));
     }
     out.push((name.to_ascii_lowercase(), value));
     Ok(())
@@ -168,8 +181,11 @@ pub fn sorted_combined(list: &[(String, String)]) -> Vec<(String, String)> {
             }
             continue;
         }
-        let joined: Vec<&str> =
-            list.iter().filter(|(k, _)| *k == name).map(|(_, v)| v.as_str()).collect();
+        let joined: Vec<&str> = list
+            .iter()
+            .filter(|(k, _)| *k == name)
+            .map(|(_, v)| v.as_str())
+            .collect();
         out.push((name, joined.join(", ")));
     }
     out
@@ -193,8 +209,16 @@ unsafe fn h_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let proto = {
         let nt = cf_new_target(cf);
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(p) { p } else { c.class.proto }
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(p) {
+            p
+        } else {
+            c.class.proto
+        }
     };
     host_create(g, c.cls, proto, HeadersData { list })
 }
@@ -207,7 +231,12 @@ unsafe fn h_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = this_data(g, cf) else {
         return throw_type_error(g, "Headers.get called on a non-Headers");
     };
-    let values: Vec<&str> = d.list.iter().filter(|(k, _)| *k == name).map(|(_, v)| v.as_str()).collect();
+    let values: Vec<&str> = d
+        .list
+        .iter()
+        .filter(|(k, _)| *k == name)
+        .map(|(_, v)| v.as_str())
+        .collect();
     if values.is_empty() {
         return NULL;
     }
@@ -220,8 +249,12 @@ unsafe fn h_get_set_cookie(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(d) = this_data(g, cf) else {
         return throw_type_error(g, "Headers.getSetCookie called on a non-Headers");
     };
-    let values: Vec<String> =
-        d.list.iter().filter(|(k, _)| k == "set-cookie").map(|(_, v)| v.clone()).collect();
+    let values: Vec<String> = d
+        .list
+        .iter()
+        .filter(|(k, _)| k == "set-cookie")
+        .map(|(_, v)| v.clone())
+        .collect();
     let arr = new_array(g);
     for (i, v) in values.iter().enumerate() {
         set_i(g, arr, i as u32, js_string(g, v));
@@ -247,7 +280,10 @@ unsafe fn h_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let value = normalize_value(&read_string(g, cf_arg(cf, 1)).unwrap_or_default());
     if !valid_value(&value) {
-        return throw_type_error(g, &format!("Headers.set: {value:?} is not a valid header value"));
+        return throw_type_error(
+            g,
+            &format!("Headers.set: {value:?} is not a valid header value"),
+        );
     }
     let Some(d) = this_data(g, cf) else {
         return throw_type_error(g, "Headers.set called on a non-Headers");
@@ -264,7 +300,10 @@ unsafe fn h_append(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let value = normalize_value(&read_string(g, cf_arg(cf, 1)).unwrap_or_default());
     if !valid_value(&value) {
-        return throw_type_error(g, &format!("Headers.append: {value:?} is not a valid header value"));
+        return throw_type_error(
+            g,
+            &format!("Headers.append: {value:?} is not a valid header value"),
+        );
     }
     let Some(d) = this_data(g, cf) else {
         return throw_type_error(g, "Headers.append called on a non-Headers");
@@ -346,26 +385,29 @@ unsafe fn h_values(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let cls = make_host_class::<HeadersData>("Headers");
-    let class = define_class(g, &ClassSpec {
-        name: "Headers",
-        arity: 0,
-        construct: Some(h_construct),
-        parent_proto: 0,
-        methods: &[
-            ("get", 1, h_get),
-            ("getSetCookie", 0, h_get_set_cookie),
-            ("has", 1, h_has),
-            ("set", 2, h_set),
-            ("append", 2, h_append),
-            ("delete", 1, h_delete),
-            ("forEach", 1, h_for_each),
-            ("entries", 0, h_entries),
-            ("keys", 0, h_keys),
-            ("values", 0, h_values),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "Headers",
+            arity: 0,
+            construct: Some(h_construct),
+            parent_proto: 0,
+            methods: &[
+                ("get", 1, h_get),
+                ("getSetCookie", 0, h_get_set_cookie),
+                ("has", 1, h_has),
+                ("set", 2, h_set),
+                ("append", 2, h_append),
+                ("delete", 1, h_delete),
+                ("forEach", 1, h_for_each),
+                ("entries", 0, h_entries),
+                ("keys", 0, h_keys),
+                ("values", 0, h_values),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
     // `for (const [k, v] of headers)`.
     let a = glue::rjs_atom_iterator(g);
@@ -393,7 +435,10 @@ mod tests {
         ];
         assert_eq!(
             sorted_combined(&list),
-            vec![("x-a".to_string(), "1".to_string()), ("x-b".to_string(), "2, 3".to_string())]
+            vec![
+                ("x-a".to_string(), "1".to_string()),
+                ("x-b".to_string(), "2, 3".to_string())
+            ]
         );
     }
 

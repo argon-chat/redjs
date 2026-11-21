@@ -22,9 +22,9 @@
 //!   ignoring alpha and op;
 //! * `Put` writes pixels as they are, ignoring transform, alpha, op and clip.
 
+pub use super::effects::{Effects, Shadow};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-pub use super::effects::{Effects, Shadow};
 
 use kurbo::{Affine, BezPath, Rect, Stroke};
 use peniko::{BlendMode, Compose, Mix};
@@ -49,7 +49,13 @@ pub type ImageRef = Arc<Image>;
 impl Image {
     pub fn from_premul(width: u32, height: u32, data: Vec<u8>, origin_clean: bool) -> Image {
         debug_assert_eq!(data.len(), width as usize * height as usize * 4);
-        Image { id: NEXT_IMAGE.fetch_add(1, Ordering::Relaxed), width, height, data, origin_clean }
+        Image {
+            id: NEXT_IMAGE.fetch_add(1, Ordering::Relaxed),
+            width,
+            height,
+            data,
+            origin_clean,
+        }
     }
 
     pub fn from_straight(width: u32, height: u32, mut rgba: Vec<u8>, origin_clean: bool) -> Image {
@@ -165,7 +171,10 @@ impl CompositeOp {
     }
 
     pub fn name(self) -> &'static str {
-        OPS.iter().find(|(_, op)| *op == self).map(|(n, _)| *n).unwrap_or("source-over")
+        OPS.iter()
+            .find(|(_, op)| *op == self)
+            .map(|(n, _)| *n)
+            .unwrap_or("source-over")
     }
 
     /// The Porter-Duff operator and separable/non-separable blend as peniko spells them.
@@ -223,10 +232,26 @@ pub type Rgba = [f32; 4];
 
 #[derive(Clone, Debug)]
 pub enum GradientKind {
-    Linear { x0: f64, y0: f64, x1: f64, y1: f64 },
-    Radial { x0: f64, y0: f64, r0: f64, x1: f64, y1: f64, r1: f64 },
+    Linear {
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+    },
+    Radial {
+        x0: f64,
+        y0: f64,
+        r0: f64,
+        x1: f64,
+        y1: f64,
+        r1: f64,
+    },
     /// `createConicGradient(angle, x, y)`: clockwise from `angle` radians.
-    Conic { angle: f64, x: f64, y: f64 },
+    Conic {
+        angle: f64,
+        x: f64,
+        y: f64,
+    },
 }
 
 /// A gradient as it was when the draw was recorded (its stops are copied: a
@@ -299,14 +324,37 @@ pub enum Quality {
 #[derive(Clone, Debug)]
 pub enum Cmd {
     /// `path` is in user space; `transform` maps it (and the paint) to device space.
-    Fill { path: BezPath, even_odd: bool, transform: Affine, paint: Paint, draw: Draw },
+    Fill {
+        path: BezPath,
+        even_odd: bool,
+        transform: Affine,
+        paint: Paint,
+        draw: Draw,
+    },
     /// `path` and `style` in user space, stroked there, then transformed.
-    Stroke { path: BezPath, style: Stroke, transform: Affine, paint: Paint, draw: Draw },
+    Stroke {
+        path: BezPath,
+        style: Stroke,
+        transform: Affine,
+        paint: Paint,
+        draw: Draw,
+    },
     /// The `src` rect of `image` (image pixels, inside the image) onto the
     /// `dst` rect (user space), then `transform`.
-    Image { image: ImageRef, src: Rect, dst: Rect, transform: Affine, quality: Quality, draw: Draw },
+    Image {
+        image: ImageRef,
+        src: Rect,
+        dst: Rect,
+        transform: Affine,
+        quality: Quality,
+        draw: Draw,
+    },
     /// `clearRect`: `rect` in user space, then `transform`; honours `clip` only.
-    Clear { rect: Rect, transform: Affine, clip: Option<Arc<Clip>> },
+    Clear {
+        rect: Rect,
+        transform: Affine,
+        clip: Option<Arc<Clip>>,
+    },
     /// `putImageData`: `image` written at device pixel (x, y), cropped to the bitmap.
     Put { x: i32, y: i32, image: ImageRef },
 }
@@ -318,9 +366,16 @@ impl Cmd {
     pub fn covers_all(&self, w: u32, h: u32) -> bool {
         let full = Rect::new(0.0, 0.0, w as f64, h as f64);
         match self {
-            Cmd::Clear { rect, transform, clip: None } => covers(rect, transform, full),
+            Cmd::Clear {
+                rect,
+                transform,
+                clip: None,
+            } => covers(rect, transform, full),
             Cmd::Put { x, y, image } => {
-                *x <= 0 && *y <= 0 && *x as i64 + image.width as i64 >= w as i64 && *y as i64 + image.height as i64 >= h as i64
+                *x <= 0
+                    && *y <= 0
+                    && *x as i64 + image.width as i64 >= w as i64
+                    && *y as i64 + image.height as i64 >= h as i64
             }
             _ => false,
         }
@@ -365,7 +420,11 @@ mod tests {
 
     #[test]
     fn a_full_clear_covers_and_a_rotated_one_does_not() {
-        let clear = |t: Affine| Cmd::Clear { rect: Rect::new(0.0, 0.0, 10.0, 10.0), transform: t, clip: None };
+        let clear = |t: Affine| Cmd::Clear {
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            transform: t,
+            clip: None,
+        };
         assert!(clear(Affine::IDENTITY).covers_all(10, 10));
         assert!(!clear(Affine::IDENTITY).covers_all(11, 10));
         assert!(clear(Affine::scale(2.0)).covers_all(20, 20));

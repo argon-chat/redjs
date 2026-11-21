@@ -138,7 +138,8 @@ impl OscShared {
         // Nyquist is the hard limit; the spec clamps to [-sampleRate/2,
         // sampleRate/2] and we do not know the rate here, so the generous
         // audio-rate bound below is refined again in the processor.
-        self.freq.store(hz.clamp(-192_000.0, 192_000.0).to_bits(), Ordering::Relaxed);
+        self.freq
+            .store(hz.clamp(-192_000.0, 192_000.0).to_bits(), Ordering::Relaxed);
     }
 
     pub fn detune(&self) -> f32 {
@@ -146,7 +147,10 @@ impl OscShared {
     }
 
     pub fn set_detune(&self, cents: f32) {
-        self.detune.store(cents.clamp(-153_600.0, 153_600.0).to_bits(), Ordering::Relaxed);
+        self.detune.store(
+            cents.clamp(-153_600.0, 153_600.0).to_bits(),
+            Ordering::Relaxed,
+        );
     }
 
     pub fn wave(&self) -> Wave {
@@ -243,7 +247,11 @@ impl OscDsp {
             };
 
             let dt = (self.freq / self.sample_rate).abs();
-            let v = if self.env > 0.0 { sample(wave, self.phase, dt) } else { 0.0 };
+            let v = if self.env > 0.0 {
+                sample(wave, self.phase, dt)
+            } else {
+                0.0
+            };
             *s = v * self.env;
 
             self.phase += self.freq / self.sample_rate;
@@ -323,7 +331,11 @@ impl AudioNode for OscNode {
     ) -> impl AudioNodeProcessor {
         let shared = ArcGc::clone(&self.shared);
         let dsp = OscDsp::new(cx.stream_info.sample_rate.get(), shared.frequency());
-        OscProcessor { shared, dsp, scratch: vec![0.0; 0] }
+        OscProcessor {
+            shared,
+            dsp,
+            scratch: vec![0.0; 0],
+        }
     }
 }
 
@@ -406,7 +418,10 @@ mod tests {
         }
         // A full-scale sine has RMS 1/sqrt(2).
         let r = rms(&out);
-        assert!((r - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01, "sine RMS {r}");
+        assert!(
+            (r - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01,
+            "sine RMS {r}"
+        );
     }
 
     #[test]
@@ -513,7 +528,10 @@ mod tests {
         let mut tail = vec![0.0f32; 16];
         assert!(!dsp.render(&mut tail, Wave::Square, 440.0, false));
         let mut rest = vec![0.0f32; rate as usize / 100];
-        assert!(dsp.render(&mut rest, Wave::Square, 440.0, false), "fade never finished");
+        assert!(
+            dsp.render(&mut rest, Wave::Square, 440.0, false),
+            "fade never finished"
+        );
         assert!(!dsp.audible());
         assert_eq!(rest[rest.len() - 1], 0.0);
 
@@ -556,7 +574,10 @@ mod tests {
         let mut dsp = OscDsp::new(48_000, 440.0);
         let mut out = vec![0.5f32; 256];
         assert!(!dsp.render(&mut out, Wave::Sine, 440.0, false));
-        assert!(out.iter().all(|s| *s == 0.0), "unstarted oscillator emitted signal");
+        assert!(
+            out.iter().all(|s| *s == 0.0),
+            "unstarted oscillator emitted signal"
+        );
     }
 
     #[test]

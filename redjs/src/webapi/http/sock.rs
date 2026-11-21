@@ -86,7 +86,11 @@ impl Polled {
         POLL
     }
 
-    fn io(&mut self, write: bool, mut op: impl FnMut(&mut TcpStream) -> io::Result<usize>) -> io::Result<usize> {
+    fn io(
+        &mut self,
+        write: bool,
+        mut op: impl FnMut(&mut TcpStream) -> io::Result<usize>,
+    ) -> io::Result<usize> {
         let started = Instant::now();
         loop {
             match op(&mut self.tcp) {
@@ -109,7 +113,12 @@ impl Polled {
                     }
                     match op(&mut self.tcp) {
                         Ok(n) => return Ok(n),
-                        Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                            ) =>
+                        {
                             return Err(io::ErrorKind::WouldBlock.into())
                         }
                         Err(e) => return Err(e),
@@ -238,7 +247,14 @@ mod tests {
             }
         });
         let tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let mut p = Polled::new(tcp, Cancel::default(), Wait::Block { budget: Duration::from_secs(5) }).unwrap();
+        let mut p = Polled::new(
+            tcp,
+            Cancel::default(),
+            Wait::Block {
+                budget: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
         let mut got = Vec::new();
         p.read_to_end(&mut got).unwrap();
         let want: Vec<u8> = (0..20u8).flat_map(|i| [i; 3]).collect();
@@ -255,7 +271,14 @@ mod tests {
             drop(held);
         });
         let tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let mut p = Polled::new(tcp, Cancel::default(), Wait::Block { budget: Duration::from_millis(300) }).unwrap();
+        let mut p = Polled::new(
+            tcp,
+            Cancel::default(),
+            Wait::Block {
+                budget: Duration::from_millis(300),
+            },
+        )
+        .unwrap();
         let t0 = Instant::now();
         let e = p.read(&mut [0u8; 8]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
@@ -272,10 +295,19 @@ mod tests {
             drop(held);
         });
         let tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let mut p = Polled::new(tcp, Cancel::default(), Wait::Slice(Duration::from_millis(5))).unwrap();
+        let mut p = Polled::new(
+            tcp,
+            Cancel::default(),
+            Wait::Slice(Duration::from_millis(5)),
+        )
+        .unwrap();
         let t0 = Instant::now();
         let e = p.read(&mut [0u8; 8]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
-        assert!(t0.elapsed() < Duration::from_millis(500), "{:?}", t0.elapsed());
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            t0.elapsed()
+        );
     }
 }

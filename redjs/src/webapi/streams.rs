@@ -299,7 +299,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static StreamClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static StreamClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::streams not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::streams not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -315,8 +320,16 @@ unsafe fn this_writable<'a>(g: *mut c_void, cf: *mut c_void) -> Option<&'a mut W
 
 unsafe fn proto_for(g: *mut c_void, cf: *mut c_void, fallback: u64) -> u64 {
     let nt = cf_new_target(cf);
-    let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-    if is_cell(p) { p } else { fallback }
+    let p = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
+    if is_cell(p) {
+        p
+    } else {
+        fallback
+    }
 }
 
 #[crate::host_fn]
@@ -593,66 +606,90 @@ unsafe fn w_reset_queue(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let readable_cls = make_host_class::<ReadableCore>("RedReadableCore");
-    let readable = define_class(g, &ClassSpec {
-        name: "RedReadableCore",
-        arity: 1,
-        construct: Some(readable_construct),
-        parent_proto: 0,
-        methods: &[
-            ("enqueue", 1, r_enqueue),
-            ("dequeue", 0, r_dequeue),
-            ("requestClose", 0, r_request_close),
-            ("closeIfDrained", 0, r_close_if_drained),
-            ("beginPull", 1, r_begin_pull),
-            ("endPull", 1, r_end_pull),
-            ("resetQueue", 0, r_reset_queue),
-        ],
-        getters: &[
-            ("desiredSize", r_get_desired_size),
-            ("canCloseOrEnqueue", r_get_can_close_or_enqueue),
-            ("closeRequested", r_get_close_requested),
-            ("queueLength", r_get_queue_length),
-        ],
-        accessors: &[
-            ("state", r_get_state, r_set_state),
-            ("started", r_get_started, r_set_started),
-            ("locked", r_get_locked, r_set_locked),
-            ("disturbed", r_get_disturbed, r_set_disturbed),
-        ],
-    });
+    let readable = define_class(
+        g,
+        &ClassSpec {
+            name: "RedReadableCore",
+            arity: 1,
+            construct: Some(readable_construct),
+            parent_proto: 0,
+            methods: &[
+                ("enqueue", 1, r_enqueue),
+                ("dequeue", 0, r_dequeue),
+                ("requestClose", 0, r_request_close),
+                ("closeIfDrained", 0, r_close_if_drained),
+                ("beginPull", 1, r_begin_pull),
+                ("endPull", 1, r_end_pull),
+                ("resetQueue", 0, r_reset_queue),
+            ],
+            getters: &[
+                ("desiredSize", r_get_desired_size),
+                ("canCloseOrEnqueue", r_get_can_close_or_enqueue),
+                ("closeRequested", r_get_close_requested),
+                ("queueLength", r_get_queue_length),
+            ],
+            accessors: &[
+                ("state", r_get_state, r_set_state),
+                ("started", r_get_started, r_set_started),
+                ("locked", r_get_locked, r_set_locked),
+                ("disturbed", r_get_disturbed, r_set_disturbed),
+            ],
+        },
+    );
 
     let writable_cls = make_host_class::<WritableCore>("RedWritableCore");
-    let writable = define_class(g, &ClassSpec {
-        name: "RedWritableCore",
-        arity: 1,
-        construct: Some(writable_construct),
-        parent_proto: 0,
-        methods: &[
-            ("enqueue", 1, w_enqueue),
-            ("dequeue", 0, w_dequeue),
-            ("updateBackpressure", 0, w_update_backpressure),
-            ("resetQueue", 0, w_reset_queue),
-        ],
-        getters: &[
-            ("desiredSize", w_get_desired_size),
-            ("backpressure", w_get_backpressure),
-            ("queueLength", w_get_queue_length),
-        ],
-        accessors: &[
-            ("state", w_get_state, w_set_state),
-            ("started", w_get_started, w_set_started),
-            ("locked", w_get_locked, w_set_locked),
-            ("inFlightWrite", w_get_in_flight_write, w_set_in_flight_write),
-            ("inFlightClose", w_get_in_flight_close, w_set_in_flight_close),
-            ("closeRequested", w_get_close_requested, w_set_close_requested),
-        ],
-    });
+    let writable = define_class(
+        g,
+        &ClassSpec {
+            name: "RedWritableCore",
+            arity: 1,
+            construct: Some(writable_construct),
+            parent_proto: 0,
+            methods: &[
+                ("enqueue", 1, w_enqueue),
+                ("dequeue", 0, w_dequeue),
+                ("updateBackpressure", 0, w_update_backpressure),
+                ("resetQueue", 0, w_reset_queue),
+            ],
+            getters: &[
+                ("desiredSize", w_get_desired_size),
+                ("backpressure", w_get_backpressure),
+                ("queueLength", w_get_queue_length),
+            ],
+            accessors: &[
+                ("state", w_get_state, w_set_state),
+                ("started", w_get_started, w_set_started),
+                ("locked", w_get_locked, w_set_locked),
+                (
+                    "inFlightWrite",
+                    w_get_in_flight_write,
+                    w_set_in_flight_write,
+                ),
+                (
+                    "inFlightClose",
+                    w_get_in_flight_close,
+                    w_set_in_flight_close,
+                ),
+                (
+                    "closeRequested",
+                    w_get_close_requested,
+                    w_set_close_requested,
+                ),
+            ],
+        },
+    );
 
     let slot = atom_priv(g, "redjs#stream");
     let interfaces = new_object(g, NULL);
     crate::glue::rjs_define(g, crate::glue::rjs_global(g), slot, interfaces, 0);
-    let boxed: &'static StreamClasses =
-        Box::leak(Box::new(StreamClasses { slot, interfaces, readable_cls, readable, writable_cls, writable }));
+    let boxed: &'static StreamClasses = Box::leak(Box::new(StreamClasses {
+        slot,
+        interfaces,
+        readable_cls,
+        readable,
+        writable_cls,
+        writable,
+    }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 
@@ -714,14 +751,22 @@ mod tests {
         c.enqueue(1.0).unwrap();
         assert_eq!(c.desired_size(), Some(2.0));
         c.enqueue(5.0).unwrap();
-        assert_eq!(c.desired_size(), Some(-3.0), "desiredSize goes negative, it does not clamp");
+        assert_eq!(
+            c.desired_size(),
+            Some(-3.0),
+            "desiredSize goes negative, it does not clamp"
+        );
     }
 
     #[test]
     fn a_closed_stream_reports_zero_and_an_errored_one_reports_null() {
         let mut c = ReadableCore::new(10.0);
         c.state = ReadableState::Closed;
-        assert_eq!(c.desired_size(), Some(0.0), "a closed stream must not still advertise capacity");
+        assert_eq!(
+            c.desired_size(),
+            Some(0.0),
+            "a closed stream must not still advertise capacity"
+        );
         c.state = ReadableState::Errored;
         assert_eq!(c.desired_size(), None);
     }
@@ -740,9 +785,15 @@ mod tests {
         // { highWaterMark: 0 })` never calls pull at all and every read() hangs.
         let mut c = ReadableCore::new(0.0);
         c.started = true;
-        assert!(!c.should_call_pull(0), "an idle zero-HWM stream should not pull");
+        assert!(
+            !c.should_call_pull(0),
+            "an idle zero-HWM stream should not pull"
+        );
         c.locked = true;
-        assert!(c.should_call_pull(1), "a waiting reader must provoke a pull");
+        assert!(
+            c.should_call_pull(1),
+            "a waiting reader must provoke a pull"
+        );
     }
 
     #[test]
@@ -773,7 +824,10 @@ mod tests {
         c.started = true;
         assert!(c.begin_pull(0));
         c.enqueue(1.0).unwrap();
-        assert!(!c.end_pull(0), "the queue is full; nothing more should be pulled");
+        assert!(
+            !c.end_pull(0),
+            "the queue is full; nothing more should be pulled"
+        );
     }
 
     #[test]
@@ -783,12 +837,18 @@ mod tests {
         let mut c = ReadableCore::new(10.0);
         c.enqueue(1.0).unwrap();
         c.enqueue(1.0).unwrap();
-        assert!(!c.request_close(), "close must not land while chunks are queued");
+        assert!(
+            !c.request_close(),
+            "close must not land while chunks are queued"
+        );
         assert!(!c.close_if_drained());
         c.dequeue();
         assert!(!c.close_if_drained());
         c.dequeue();
-        assert!(c.close_if_drained(), "the close should land as the queue empties");
+        assert!(
+            c.close_if_drained(),
+            "the close should land as the queue empties"
+        );
     }
 
     #[test]
@@ -812,12 +872,18 @@ mod tests {
         // Reporting a change on every write strands whoever awaited the old one.
         let mut c = WritableCore::new(4.0);
         c.started = true;
-        assert!(c.update_backpressure(), "start settling releases backpressure");
+        assert!(
+            c.update_backpressure(),
+            "start settling releases backpressure"
+        );
         assert!(!c.backpressure);
         c.enqueue(1.0).unwrap();
         assert!(!c.update_backpressure(), "still under the mark: no change");
         c.enqueue(3.0).unwrap();
-        assert!(c.update_backpressure(), "reaching the mark applies backpressure");
+        assert!(
+            c.update_backpressure(),
+            "reaching the mark applies backpressure"
+        );
         assert!(c.backpressure);
         c.dequeue();
         assert!(c.update_backpressure(), "draining releases it again");
@@ -840,7 +906,10 @@ mod tests {
     #[test]
     fn a_writable_stream_reports_backpressure_while_unstarted_whatever_the_queue() {
         let mut c = WritableCore::new(100.0);
-        assert!(!c.update_backpressure(), "unstarted is already back-pressured");
+        assert!(
+            !c.update_backpressure(),
+            "unstarted is already back-pressured"
+        );
         assert!(c.backpressure);
     }
 }
@@ -881,13 +950,18 @@ mod jsc_tests {
         // If this ever passes with '1', every other test in this module is
         // meaningless — they all rest on `<pending>` being observable.
         let c = ctx();
-        assert_eq!(run(&c, "await new Promise(() => {}); return 1;"), "<pending>");
+        assert_eq!(
+            run(&c, "await new Promise(() => {}); return 1;"),
+            "<pending>"
+        );
     }
 
     #[test]
     fn native_stream_slots_are_own_and_do_not_invoke_proxy_traps() {
         let c = ctx();
-        ok(&c, "(() => {
+        ok(
+            &c,
+            "(() => {
             const stream = new ReadableStream();
             let traps = 0;
             const proxy = new Proxy(stream, { getOwnPropertyDescriptor() { ++traps; } });
@@ -896,30 +970,39 @@ mod jsc_tests {
                 catch (error) { if (!(error instanceof TypeError)) return false; }
             }
             return !traps && !stream.locked && !Object.getOwnPropertySymbols(stream).length;
-        })()");
+        })()",
+        );
     }
 
     #[test]
     fn internal_pipe_read_skips_inherited_then_on_read_results() {
         let c = ctx();
-        expect(&c, "let observed = 0, received;
+        expect(
+            &c,
+            "let observed = 0, received;
             const source = new ReadableStream({ start(c) { c.enqueue(7); c.close(); } });
             const dest = new WritableStream({ write(chunk) { received = chunk; } });
             Object.defineProperty(Object.prototype, 'then', {
                 configurable: true, get() { ++observed; }
             });
             try { await source.pipeTo(dest); } finally { delete Object.prototype.then; }
-            return [received, observed, source.locked, dest.locked].join();", "7,0,false,false");
+            return [received, observed, source.locked, dest.locked].join();",
+            "7,0,false,false",
+        );
     }
 
     #[test]
     fn piping_to_an_erroring_destination_preserves_the_sink_error() {
         let c = ctx();
-        expect(&c, "const first = {}, second = {};
+        expect(
+            &c,
+            "const first = {}, second = {};
             const src = new ReadableStream({ start(c) { c.error(first); } });
             const dst = new WritableStream({ start(c) { c.error(second); } });
             try { await src.pipeTo(dst); return false; }
-            catch (error) { return error === second && !src.locked && !dst.locked; }", "true");
+            catch (error) { return error === second && !src.locked && !dst.locked; }",
+            "true",
+        );
     }
 
     #[test]
@@ -940,7 +1023,10 @@ mod jsc_tests {
             "bye",
         );
         ok(&c, "(() => { try { ReadableStream.from(5); return false; } catch (e) { return e instanceof TypeError; } })()");
-        ok(&c, "!Object.getOwnPropertyDescriptor(ReadableStream, 'from').enumerable");
+        ok(
+            &c,
+            "!Object.getOwnPropertyDescriptor(ReadableStream, 'from').enumerable",
+        );
     }
 
     #[test]
@@ -1362,7 +1448,10 @@ mod jsc_tests {
         ok(&c, "new ReadableStream({}) instanceof ReadableStream");
         ok(&c, "new WritableStream({}) instanceof WritableStream");
         ok(&c, "new TransformStream() instanceof TransformStream");
-        ok(&c, "new ReadableStream({}).getReader() instanceof ReadableStreamDefaultReader");
+        ok(
+            &c,
+            "new ReadableStream({}).getReader() instanceof ReadableStreamDefaultReader",
+        );
         // The controllers are not constructible (spec: [Exposed] with no ctor).
         let msg = throws(&c, "new ReadableStreamDefaultController()");
         assert!(msg.contains("Illegal constructor"), "{msg}");

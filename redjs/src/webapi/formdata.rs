@@ -43,7 +43,11 @@ use crate::glue;
 pub enum EntryValue {
     Text(String),
     /// `slot` indexes the instance's JS-side value array.
-    File { slot: u32, filename: String, mime: String },
+    File {
+        slot: u32,
+        filename: String,
+        mime: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,7 +75,11 @@ impl FormDataData {
     }
 
     pub fn get_all(&self, name: &str) -> Vec<&EntryValue> {
-        self.list.iter().filter(|e| e.name == name).map(|e| &e.value).collect()
+        self.list
+            .iter()
+            .filter(|e| e.name == name)
+            .map(|e| &e.value)
+            .collect()
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -185,11 +193,19 @@ pub fn encode_multipart(
                 out.extend_from_slice(b"\r\n\r\n");
                 out.extend_from_slice(normalize_newlines(v).as_bytes());
             }
-            EntryValue::File { slot, filename, mime } => {
+            EntryValue::File {
+                slot,
+                filename,
+                mime,
+            } => {
                 out.extend_from_slice(b"; filename=\"");
                 out.extend_from_slice(escape_multipart_name(filename).as_bytes());
                 out.extend_from_slice(b"\"\r\nContent-Type: ");
-                let ct = if mime.is_empty() { "application/octet-stream" } else { mime };
+                let ct = if mime.is_empty() {
+                    "application/octet-stream"
+                } else {
+                    mime
+                };
                 out.extend_from_slice(ct.as_bytes());
                 out.extend_from_slice(b"\r\n\r\n");
                 if let Some(bytes) = file_bytes(*slot) {
@@ -233,7 +249,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static FdClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static FdClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::formdata not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::formdata not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -271,12 +292,16 @@ unsafe fn make_entry_value(
     filename_arg: u64,
 ) -> Result<EntryValue, String> {
     if let Some(b) = blob::data_of(g, value) {
-        let named = (filename_arg != UNDEF).then(|| read_string(g, filename_arg).unwrap_or_default());
+        let named =
+            (filename_arg != UNDEF).then(|| read_string(g, filename_arg).unwrap_or_default());
         let value = match (&b.file, named) {
             (Some(_), None) => value,
             (meta, named) => {
                 let file = match meta {
-                    Some(m) => blob::FileMeta { name: named.unwrap_or_default(), ..m.clone() },
+                    Some(m) => blob::FileMeta {
+                        name: named.unwrap_or_default(),
+                        ..m.clone()
+                    },
                     None => blob::FileMeta {
                         name: named.unwrap_or_else(|| "blob".to_string()),
                         last_modified: super::file::now_ms(),
@@ -284,14 +309,23 @@ unsafe fn make_entry_value(
                         backed: false,
                     },
                 };
-                let data = blob::BlobData { source: b.source.clone(), offset: b.offset, len: b.len, mime: b.mime.clone(), file: Some(file) };
+                let data = blob::BlobData {
+                    source: b.source.clone(),
+                    offset: b.offset,
+                    len: b.len,
+                    mime: b.mime.clone(),
+                    file: Some(file),
+                };
                 super::file::from_data(g, data)
             }
         };
         let Some(b) = blob::data_of(g, value) else {
             return Err("FormData: the File could not be created".into());
         };
-        let (mime, filename) = (b.mime.clone(), b.file.as_ref().map(|m| m.name.clone()).unwrap_or_default());
+        let (mime, filename) = (
+            b.mime.clone(),
+            b.file.as_ref().map(|m| m.name.clone()).unwrap_or_default(),
+        );
         let arr = values_of(g, this, true);
         let Some(d) = host_data::<FormDataData>(g, classes(g).cls, this) else {
             return Err("FormData: lost its entry list".into());
@@ -299,12 +333,16 @@ unsafe fn make_entry_value(
         let slot = d.next_slot;
         d.next_slot += 1;
         set_i(g, arr, slot, value);
-        return Ok(EntryValue::File { slot, filename, mime });
+        return Ok(EntryValue::File {
+            slot,
+            filename,
+            mime,
+        });
     }
     if filename_arg != UNDEF {
         // Spec: the 3-argument form is only defined for Blob values.
         return Err(
-            "FormData.append/set: a filename is only allowed when the value is a Blob".into()
+            "FormData.append/set: a filename is only allowed when the value is a Blob".into(),
         );
     }
     Ok(EntryValue::Text(read_string(g, value).unwrap_or_default()))
@@ -339,8 +377,16 @@ unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     let proto = {
         let nt = cf_new_target(cf);
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(p) { p } else { c.class.proto }
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(p) {
+            p
+        } else {
+            c.class.proto
+        }
     };
     host_create(g, c.cls, proto, FormDataData::default())
 }
@@ -349,7 +395,10 @@ unsafe fn append_or_set(g: *mut c_void, cf: *mut c_void, replace: bool) -> u64 {
     let this = cf_this(cf);
     let label = if replace { "set" } else { "append" };
     if this_fd(g, cf).is_none() {
-        return throw_type_error(g, &format!("FormData.prototype.{label} called on a non-FormData"));
+        return throw_type_error(
+            g,
+            &format!("FormData.prototype.{label} called on a non-FormData"),
+        );
     }
     let name = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let value = match make_entry_value(g, this, cf_arg(cf, 1), cf_arg(cf, 2)) {
@@ -357,7 +406,10 @@ unsafe fn append_or_set(g: *mut c_void, cf: *mut c_void, replace: bool) -> u64 {
         Err(e) => return throw_type_error(g, &e),
     };
     let Some(d) = this_fd(g, cf) else {
-        return throw_type_error(g, &format!("FormData.prototype.{label} called on a non-FormData"));
+        return throw_type_error(
+            g,
+            &format!("FormData.prototype.{label} called on a non-FormData"),
+        );
     };
     if replace {
         d.set(name, value);
@@ -545,9 +597,15 @@ pub unsafe fn encode_body(g: *mut c_void, v: u64) -> Option<Result<(Vec<u8>, Str
         }
     });
     if let Some(e) = failed {
-        return Some(Err(blob::sync_read_failed("FormData (a multipart body)", e)));
+        return Some(Err(blob::sync_read_failed(
+            "FormData (a multipart body)",
+            e,
+        )));
     }
-    Some(Ok((bytes, format!("multipart/form-data; boundary={boundary}"))))
+    Some(Ok((
+        bytes,
+        format!("multipart/form-data; boundary={boundary}"),
+    )))
 }
 
 pub unsafe fn install(g: *mut c_void) {
@@ -560,34 +618,49 @@ pub unsafe fn install(g: *mut c_void) {
     crate::ffi::redjs_protect(g, iter_proto);
     define(g, iter_proto, "next", make_fn(g, "next", 0, iter_next), 2);
     let it_atom = glue::rjs_atom_iterator(g);
-    glue::rjs_define(g, iter_proto, it_atom, make_fn(g, "[Symbol.iterator]", 0, iter_self), 2);
+    glue::rjs_define(
+        g,
+        iter_proto,
+        it_atom,
+        make_fn(g, "[Symbol.iterator]", 0, iter_self),
+        2,
+    );
 
-    let class = define_class(g, &ClassSpec {
-        name: "FormData",
-        arity: 0,
-        construct: Some(construct),
-        parent_proto: 0,
-        methods: &[
-            ("append", 3, fd_append),
-            ("set", 3, fd_set),
-            ("get", 1, fd_get),
-            ("getAll", 1, fd_get_all),
-            ("has", 1, fd_has),
-            ("delete", 1, fd_delete),
-            ("forEach", 2, fd_for_each),
-            ("entries", 0, fd_entries),
-            ("keys", 0, fd_keys),
-            ("values", 0, fd_values),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "FormData",
+            arity: 0,
+            construct: Some(construct),
+            parent_proto: 0,
+            methods: &[
+                ("append", 3, fd_append),
+                ("set", 3, fd_set),
+                ("get", 1, fd_get),
+                ("getAll", 1, fd_get_all),
+                ("has", 1, fd_has),
+                ("delete", 1, fd_delete),
+                ("forEach", 2, fd_for_each),
+                ("entries", 0, fd_entries),
+                ("keys", 0, fd_keys),
+                ("values", 0, fd_values),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     // Spec: FormData's [Symbol.iterator] IS `entries`.
     glue::rjs_define(g, class.proto, it_atom, get(g, class.proto, "entries"), 2);
     glue::rjs_atom_free(g, it_atom);
 
-    let boxed: &'static FdClasses =
-        Box::leak(Box::new(FdClasses { cls, class, iter_cls, iter_proto, s_values, s_target }));
+    let boxed: &'static FdClasses = Box::leak(Box::new(FdClasses {
+        cls,
+        class,
+        iter_cls,
+        iter_proto,
+        s_values,
+        s_target,
+    }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 
@@ -660,7 +733,10 @@ mod tests {
     fn a_quote_in_a_name_cannot_break_out_of_the_header() {
         // The reason the escape exists: an unescaped quote ends the `name="…"`
         // parameter and lets the field inject its own headers.
-        let list = vec![Entry { name: "x\"; filename=\"evil".into(), value: text("v") }];
+        let list = vec![Entry {
+            name: "x\"; filename=\"evil".into(),
+            value: text("v"),
+        }];
         let out = encode_multipart(&list, "B", |_| None);
         let s = String::from_utf8(out).unwrap();
         assert!(!s.contains("filename=\"evil\""), "{s}");
@@ -669,16 +745,26 @@ mod tests {
 
     #[test]
     fn the_encoding_has_the_specified_frame() {
-        let list = vec![Entry { name: "a".into(), value: text("1") }];
+        let list = vec![Entry {
+            name: "a".into(),
+            value: text("1"),
+        }];
         let s = String::from_utf8(encode_multipart(&list, "BOUND", |_| None)).unwrap();
-        assert_eq!(s, "--BOUND\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--BOUND--\r\n");
+        assert_eq!(
+            s,
+            "--BOUND\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--BOUND--\r\n"
+        );
     }
 
     #[test]
     fn a_file_entry_carries_a_filename_and_a_content_type() {
         let list = vec![Entry {
             name: "f".into(),
-            value: EntryValue::File { slot: 0, filename: "a.txt".into(), mime: "text/plain".into() },
+            value: EntryValue::File {
+                slot: 0,
+                filename: "a.txt".into(),
+                mime: "text/plain".into(),
+            },
         }];
         let s = String::from_utf8(encode_multipart(&list, "B", |_| Some(b"hi".to_vec()))).unwrap();
         assert!(s.contains("name=\"f\"; filename=\"a.txt\""), "{s}");
@@ -690,7 +776,11 @@ mod tests {
     fn a_file_with_no_type_defaults_to_octet_stream() {
         let list = vec![Entry {
             name: "f".into(),
-            value: EntryValue::File { slot: 0, filename: "x".into(), mime: String::new() },
+            value: EntryValue::File {
+                slot: 0,
+                filename: "x".into(),
+                mime: String::new(),
+            },
         }];
         let s = String::from_utf8(encode_multipart(&list, "B", |_| Some(vec![]))).unwrap();
         assert!(s.contains("Content-Type: application/octet-stream"), "{s}");
@@ -703,7 +793,11 @@ mod tests {
         // it in. An empty body says "there was a file and it was empty".
         let list = vec![Entry {
             name: "f".into(),
-            value: EntryValue::File { slot: 7, filename: "x".into(), mime: String::new() },
+            value: EntryValue::File {
+                slot: 7,
+                filename: "x".into(),
+                mime: String::new(),
+            },
         }];
         let s = String::from_utf8(encode_multipart(&list, "B", |_| None)).unwrap();
         assert!(s.contains("name=\"f\""), "{s}");
@@ -711,7 +805,10 @@ mod tests {
 
     #[test]
     fn text_values_are_newline_normalised_but_not_escaped() {
-        let list = vec![Entry { name: "a".into(), value: text("one\ntwo") }];
+        let list = vec![Entry {
+            name: "a".into(),
+            value: text("one\ntwo"),
+        }];
         let s = String::from_utf8(encode_multipart(&list, "B", |_| None)).unwrap();
         assert!(s.contains("\r\n\r\none\r\ntwo\r\n"), "{s:?}");
     }
@@ -731,17 +828,26 @@ mod jsc_tests {
     #[test]
     fn the_multi_map_surface_works_from_js() {
         let c = ctx();
-        ok(&c, "(() => { const f = new FormData(); f.append('a','1'); f.append('a','2'); \
-                 return f.get('a') === '1' && f.getAll('a').join() === '1,2' && f.has('a'); })()");
+        ok(
+            &c,
+            "(() => { const f = new FormData(); f.append('a','1'); f.append('a','2'); \
+                 return f.get('a') === '1' && f.getAll('a').join() === '1,2' && f.has('a'); })()",
+        );
         ok(&c, "(() => { const f = new FormData(); f.append('a','1'); f.delete('a'); return f.get('a') === null; })()");
     }
 
     #[test]
     fn it_is_iterable_and_symbol_iterator_is_entries() {
         let c = ctx();
-        ok(&c, "FormData.prototype[Symbol.iterator] === FormData.prototype.entries");
-        ok(&c, "(() => { const f = new FormData(); f.append('a','1'); f.append('b','2'); \
-                 return [...f].map(p => p.join(':')).join() === 'a:1,b:2'; })()");
+        ok(
+            &c,
+            "FormData.prototype[Symbol.iterator] === FormData.prototype.entries",
+        );
+        ok(
+            &c,
+            "(() => { const f = new FormData(); f.append('a','1'); f.append('b','2'); \
+                 return [...f].map(p => p.join(':')).join() === 'a:1,b:2'; })()",
+        );
         ok(&c, "(() => { const f = new FormData(); f.append('a','1'); return [...f.keys()].join() === 'a'; })()");
     }
 
@@ -789,7 +895,10 @@ mod jsc_tests {
     fn a_filename_without_a_blob_is_rejected() {
         let c = ctx();
         let msg = throws(&c, "new FormData().append('a', 'text', 'name.txt')");
-        assert!(msg.contains("only allowed when the value is a Blob"), "{msg}");
+        assert!(
+            msg.contains("only allowed when the value is a Blob"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -808,7 +917,10 @@ mod jsc_tests {
         // `out` staying null would mean the promise never settled — the exact
         // way an async assertion passes without ever running.
         ok(&c, "typeof globalThis.out === 'string'");
-        ok(&c, "globalThis.ct.startsWith('multipart/form-data; boundary=')");
+        ok(
+            &c,
+            "globalThis.ct.startsWith('multipart/form-data; boundary=')",
+        );
         ok(
             &c,
             "(() => { const b = globalThis.ct.split('boundary=')[1]; const t = globalThis.out; \

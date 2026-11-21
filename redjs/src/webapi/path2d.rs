@@ -221,7 +221,8 @@ impl Path {
             let d1 = map(c1 - alpha * s1, s1 + alpha * c1);
             let d2 = map(c2 + alpha * s2, s2 - alpha * c2);
             let _ = p1;
-            self.segs.push(Seg::Cubic([d1.0, d1.1, d2.0, d2.1, p2.0, p2.1]));
+            self.segs
+                .push(Seg::Cubic([d1.0, d1.1, d2.0, d2.1, p2.0, p2.1]));
             self.cur = Some(p2);
             theta = next;
         }
@@ -245,7 +246,14 @@ impl Path {
 
     /// Canvas §"arcTo": the tangent-circle construction, with the spec's three
     /// degenerate cases collapsing to a straight line to (x1, y1).
-    pub fn arc_to(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, r: f64) -> Result<(), &'static str> {
+    pub fn arc_to(
+        &mut self,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        r: f64,
+    ) -> Result<(), &'static str> {
         if r < 0.0 {
             return Err("IndexSizeError: the radius must not be negative");
         }
@@ -311,8 +319,16 @@ impl Path {
         }
         // Spec: negative width/height mirror the rectangle AND swap the corner
         // radii with it.
-        let (x, w, flip_x) = if w < 0.0 { (x + w, -w, true) } else { (x, w, false) };
-        let (y, h, flip_y) = if h < 0.0 { (y + h, -h, true) } else { (y, h, false) };
+        let (x, w, flip_x) = if w < 0.0 {
+            (x + w, -w, true)
+        } else {
+            (x, w, false)
+        };
+        let (y, h, flip_y) = if h < 0.0 {
+            (y + h, -h, true)
+        } else {
+            (y, h, false)
+        };
         if flip_x {
             radii.swap(0, 1);
             radii.swap(2, 3);
@@ -361,9 +377,22 @@ impl Path {
         if r.0 == 0.0 && r.1 == 0.0 {
             return;
         }
-        let start = [-std::f64::consts::FRAC_PI_2, 0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI]
-            [quadrant];
-        let _ = self.ellipse(cx, cy, r.0, r.1, 0.0, start, start + std::f64::consts::FRAC_PI_2, false);
+        let start = [
+            -std::f64::consts::FRAC_PI_2,
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+        ][quadrant];
+        let _ = self.ellipse(
+            cx,
+            cy,
+            r.0,
+            r.1,
+            0.0,
+            start,
+            start + std::f64::consts::FRAC_PI_2,
+            false,
+        );
     }
 
     /// Canvas §"addPath": append `other`, optionally transformed. The transform
@@ -436,7 +465,9 @@ struct Scanner<'a> {
 
 impl<'a> Scanner<'a> {
     fn ws(&mut self) {
-        while self.i < self.b.len() && matches!(self.b[self.i], b' ' | b'\t' | b'\n' | b'\r' | b'\x0c') {
+        while self.i < self.b.len()
+            && matches!(self.b[self.i], b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+        {
             self.i += 1;
         }
     }
@@ -485,7 +516,10 @@ impl<'a> Scanner<'a> {
                 self.i = save;
             }
         }
-        std::str::from_utf8(&self.b[start..self.i]).ok()?.parse::<f64>().ok()
+        std::str::from_utf8(&self.b[start..self.i])
+            .ok()?
+            .parse::<f64>()
+            .ok()
     }
     /// The arc flag grammar is a single `0` or `1` — NOT a number, so `a1 1 0
     /// 1150` parses as three flags and a coordinate (SVG 1.1 §8.3.8).
@@ -526,7 +560,10 @@ impl<'a> Scanner<'a> {
 /// and not a `Result` — a partial path is the specified outcome, not a failure.
 pub fn parse_svg_path(d: &str) -> Path {
     let mut p = Path::new();
-    let mut sc = Scanner { b: d.as_bytes(), i: 0 };
+    let mut sc = Scanner {
+        b: d.as_bytes(),
+        i: 0,
+    };
     let mut cmd = 0u8;
     // Previous control point, for the S/T smooth reflections.
     let mut last_cubic_ctrl: Option<(f64, f64)> = None;
@@ -694,7 +731,8 @@ fn svg_arc(
 
     let num = (rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p).max(0.0);
     let den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
-    let coef = if den == 0.0 { 0.0 } else { (num / den).sqrt() } * if large == sweep { -1.0 } else { 1.0 };
+    let coef =
+        if den == 0.0 { 0.0 } else { (num / den).sqrt() } * if large == sweep { -1.0 } else { 1.0 };
     let cxp = coef * rx * y1p / ry;
     let cyp = -coef * ry * x1p / rx;
     let cx = cos_p * cxp - sin_p * cyp + (x1 + x2) / 2.0;
@@ -738,7 +776,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static PathClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static PathClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::path2d not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::path2d not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -768,8 +811,16 @@ unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let proto = {
         let nt = cf_new_target(cf);
-        let pr = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(pr) { pr } else { c.class.proto }
+        let pr = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(pr) {
+            pr
+        } else {
+            c.class.proto
+        }
     };
     host_create(g, c.cls, proto, PathData { p })
 }
@@ -781,7 +832,10 @@ macro_rules! path_method {
         #[crate::host_fn]
         unsafe fn $name($g: *mut c_void, $cf: *mut c_void) -> u64 {
             let Some(data) = this_path($g, $cf) else {
-                return throw_type_error($g, concat!("Path2D.prototype.", $label, " called on a non-Path2D"));
+                return throw_type_error(
+                    $g,
+                    concat!("Path2D.prototype.", $label, " called on a non-Path2D"),
+                );
             };
             let $p = &mut data.p;
             let r: Result<(), &'static str> = $body;
@@ -807,39 +861,56 @@ path_method!(m_close, "closePath", |p, _g, _cf| {
 });
 path_method!(m_bezier, "bezierCurveTo", |p, g, cf| {
     p.cubic_to(
-        arg_num(g, cf, 0, f64::NAN), arg_num(g, cf, 1, f64::NAN),
-        arg_num(g, cf, 2, f64::NAN), arg_num(g, cf, 3, f64::NAN),
-        arg_num(g, cf, 4, f64::NAN), arg_num(g, cf, 5, f64::NAN),
+        arg_num(g, cf, 0, f64::NAN),
+        arg_num(g, cf, 1, f64::NAN),
+        arg_num(g, cf, 2, f64::NAN),
+        arg_num(g, cf, 3, f64::NAN),
+        arg_num(g, cf, 4, f64::NAN),
+        arg_num(g, cf, 5, f64::NAN),
     );
     Ok(())
 });
 path_method!(m_quad, "quadraticCurveTo", |p, g, cf| {
     p.quad_to(
-        arg_num(g, cf, 0, f64::NAN), arg_num(g, cf, 1, f64::NAN),
-        arg_num(g, cf, 2, f64::NAN), arg_num(g, cf, 3, f64::NAN),
+        arg_num(g, cf, 0, f64::NAN),
+        arg_num(g, cf, 1, f64::NAN),
+        arg_num(g, cf, 2, f64::NAN),
+        arg_num(g, cf, 3, f64::NAN),
     );
     Ok(())
 });
 path_method!(m_rect, "rect", |p, g, cf| {
     p.rect(
-        arg_num(g, cf, 0, f64::NAN), arg_num(g, cf, 1, f64::NAN),
-        arg_num(g, cf, 2, f64::NAN), arg_num(g, cf, 3, f64::NAN),
+        arg_num(g, cf, 0, f64::NAN),
+        arg_num(g, cf, 1, f64::NAN),
+        arg_num(g, cf, 2, f64::NAN),
+        arg_num(g, cf, 3, f64::NAN),
     );
     Ok(())
 });
 path_method!(m_arc, "arc", |p, g, cf| p.arc(
-    arg_num(g, cf, 0, f64::NAN), arg_num(g, cf, 1, f64::NAN), arg_num(g, cf, 2, f64::NAN),
-    arg_num(g, cf, 3, f64::NAN), arg_num(g, cf, 4, f64::NAN),
+    arg_num(g, cf, 0, f64::NAN),
+    arg_num(g, cf, 1, f64::NAN),
+    arg_num(g, cf, 2, f64::NAN),
+    arg_num(g, cf, 3, f64::NAN),
+    arg_num(g, cf, 4, f64::NAN),
     truthy_flag(cf_arg(cf, 5)),
 ));
 path_method!(m_arc_to, "arcTo", |p, g, cf| p.arc_to(
-    arg_num(g, cf, 0, f64::NAN), arg_num(g, cf, 1, f64::NAN),
-    arg_num(g, cf, 2, f64::NAN), arg_num(g, cf, 3, f64::NAN), arg_num(g, cf, 4, f64::NAN),
+    arg_num(g, cf, 0, f64::NAN),
+    arg_num(g, cf, 1, f64::NAN),
+    arg_num(g, cf, 2, f64::NAN),
+    arg_num(g, cf, 3, f64::NAN),
+    arg_num(g, cf, 4, f64::NAN),
 ));
 path_method!(m_ellipse, "ellipse", |p, g, cf| p.ellipse(
-    arg_num(g, cf, 0, f64::NAN), arg_num(g, cf, 1, f64::NAN),
-    arg_num(g, cf, 2, f64::NAN), arg_num(g, cf, 3, f64::NAN), arg_num(g, cf, 4, f64::NAN),
-    arg_num(g, cf, 5, f64::NAN), arg_num(g, cf, 6, f64::NAN),
+    arg_num(g, cf, 0, f64::NAN),
+    arg_num(g, cf, 1, f64::NAN),
+    arg_num(g, cf, 2, f64::NAN),
+    arg_num(g, cf, 3, f64::NAN),
+    arg_num(g, cf, 4, f64::NAN),
+    arg_num(g, cf, 5, f64::NAN),
+    arg_num(g, cf, 6, f64::NAN),
     truthy_flag(cf_arg(cf, 7)),
 ));
 
@@ -850,7 +921,11 @@ pub(crate) unsafe fn read_radii(g: *mut c_void, v: u64) -> Result<[(f64, f64); 4
         if is_cell(v) && get(g, v, "x") != UNDEF {
             let rx = read_number(g, get(g, v, "x"));
             let ry_v = get(g, v, "y");
-            let ry = if ry_v == UNDEF { rx } else { read_number(g, ry_v) };
+            let ry = if ry_v == UNDEF {
+                rx
+            } else {
+                read_number(g, ry_v)
+            };
             return (rx, ry);
         }
         let n = read_number(g, v);
@@ -867,7 +942,9 @@ pub(crate) unsafe fn read_radii(g: *mut c_void, v: u64) -> Result<[(f64, f64); 4
             2 => Ok([vals[0], vals[1], vals[0], vals[1]]),
             3 => Ok([vals[0], vals[1], vals[2], vals[1]]),
             4 => Ok([vals[0], vals[1], vals[2], vals[3]]),
-            other => Err(format!("roundRect: radii must have 1 to 4 entries, got {other}")),
+            other => Err(format!(
+                "roundRect: radii must have 1 to 4 entries, got {other}"
+            )),
         };
     }
     Ok([one(g, v); 4])
@@ -940,29 +1017,32 @@ unsafe fn m_to_segments(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let cls = make_host_class::<PathData>("Path2D");
-    let class = define_class(g, &ClassSpec {
-        name: "Path2D",
-        arity: 1,
-        construct: Some(construct),
-        parent_proto: 0,
-        methods: &[
-            ("moveTo", 2, m_move_to),
-            ("lineTo", 2, m_line_to),
-            ("closePath", 0, m_close),
-            ("bezierCurveTo", 6, m_bezier),
-            ("quadraticCurveTo", 4, m_quad),
-            ("arc", 6, m_arc),
-            ("arcTo", 5, m_arc_to),
-            ("ellipse", 8, m_ellipse),
-            ("rect", 4, m_rect),
-            ("roundRect", 5, m_round_rect),
-            ("addPath", 2, m_add_path),
-            // NOT in the spec — the renderer read-out. See the module docs.
-            ("toSegments", 0, m_to_segments),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "Path2D",
+            arity: 1,
+            construct: Some(construct),
+            parent_proto: 0,
+            methods: &[
+                ("moveTo", 2, m_move_to),
+                ("lineTo", 2, m_line_to),
+                ("closePath", 0, m_close),
+                ("bezierCurveTo", 6, m_bezier),
+                ("quadraticCurveTo", 4, m_quad),
+                ("arc", 6, m_arc),
+                ("arcTo", 5, m_arc_to),
+                ("ellipse", 8, m_ellipse),
+                ("rect", 4, m_rect),
+                ("roundRect", 5, m_round_rect),
+                ("addPath", 2, m_add_path),
+                // NOT in the spec — the renderer read-out. See the module docs.
+                ("toSegments", 0, m_to_segments),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     let boxed: &'static PathClasses = Box::leak(Box::new(PathClasses { cls, class }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
@@ -1022,7 +1102,9 @@ mod tests {
     fn a_negative_radius_is_an_index_size_error() {
         let mut p = Path::new();
         assert!(p.arc(0.0, 0.0, -1.0, 0.0, 1.0, false).is_err());
-        assert!(p.ellipse(0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0, false).is_err());
+        assert!(p
+            .ellipse(0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0, false)
+            .is_err());
         assert!(p.arc_to(1.0, 1.0, 2.0, 2.0, -1.0).is_err());
     }
 
@@ -1031,9 +1113,14 @@ mod tests {
         // start == end with a 2π sweep must draw a whole circle, not an empty
         // arc. The normalisation that gets this wrong silently draws nothing.
         let mut p = Path::new();
-        p.arc(0.0, 0.0, 10.0, 0.0, std::f64::consts::TAU, false).unwrap();
+        p.arc(0.0, 0.0, 10.0, 0.0, std::f64::consts::TAU, false)
+            .unwrap();
         let cubics = p.segs.iter().filter(|s| matches!(s, Seg::Cubic(_))).count();
-        assert_eq!(cubics, 4, "a full turn should be four ≤90° cubics: {:?}", p.segs);
+        assert_eq!(
+            cubics, 4,
+            "a full turn should be four ≤90° cubics: {:?}",
+            p.segs
+        );
         assert!(close(end_of(&p).0, 10.0) && close(end_of(&p).1, 0.0));
     }
 
@@ -1044,7 +1131,10 @@ mod tests {
         for seg in &p.segs {
             if let Seg::Cubic(c) = seg {
                 let (x, y) = (c[4] - 3.0, c[5] + 4.0);
-                assert!(close((x * x + y * y).sqrt(), 7.0), "endpoint off the circle: {seg:?}");
+                assert!(
+                    close((x * x + y * y).sqrt(), 7.0),
+                    "endpoint off the circle: {seg:?}"
+                );
             }
         }
     }
@@ -1056,8 +1146,15 @@ mod tests {
         let mut p = Path::new();
         p.move_to(0.0, 0.0);
         p.quad_to(10.0, 20.0, 20.0, 0.0);
-        let Seg::Cubic(c) = p.segs[1] else { panic!("expected a cubic") };
-        let mid_cubic = |i: usize| 0.125 * (if i == 0 { 0.0 } else { 0.0 }) + 0.375 * c[i] + 0.375 * c[2 + i] + 0.125 * c[4 + i];
+        let Seg::Cubic(c) = p.segs[1] else {
+            panic!("expected a cubic")
+        };
+        let mid_cubic = |i: usize| {
+            0.125 * (if i == 0 { 0.0 } else { 0.0 })
+                + 0.375 * c[i]
+                + 0.375 * c[2 + i]
+                + 0.125 * c[4 + i]
+        };
         // B(0.5) for the quadratic (0,0)-(10,20)-(20,0) is (10, 10).
         assert!(close(mid_cubic(0), 10.0), "{}", mid_cubic(0));
         assert!(close(mid_cubic(1), 10.0), "{}", mid_cubic(1));
@@ -1075,13 +1172,18 @@ mod tests {
         // SVG 1.1 §8.3.2. Reading it as another moveto silently breaks every
         // polygon written in the common shorthand.
         let p = parse_svg_path("M0 0 10 0 10 10");
-        assert_eq!(p.segs, vec![Seg::Move(0., 0.), Seg::Line(10., 0.), Seg::Line(10., 10.)]);
+        assert_eq!(
+            p.segs,
+            vec![Seg::Move(0., 0.), Seg::Line(10., 0.), Seg::Line(10., 10.)]
+        );
     }
 
     #[test]
     fn the_smooth_cubic_reflects_the_previous_control_point() {
         let p = parse_svg_path("M0 0 C 10 10 20 10 30 0 S 40 -10 50 0");
-        let Seg::Cubic(c) = p.segs[2] else { panic!("expected the S segment as a cubic") };
+        let Seg::Cubic(c) = p.segs[2] else {
+            panic!("expected the S segment as a cubic")
+        };
         // Reflection of (20,10) about (30,0) is (40,-10).
         assert!(close(c[0], 40.0) && close(c[1], -10.0), "{c:?}");
     }
@@ -1089,7 +1191,9 @@ mod tests {
     #[test]
     fn a_smooth_cubic_with_no_predecessor_uses_the_current_point() {
         let p = parse_svg_path("M5 5 S 10 10 20 20");
-        let Seg::Cubic(c) = p.segs[1] else { panic!("expected a cubic") };
+        let Seg::Cubic(c) = p.segs[1] else {
+            panic!("expected a cubic")
+        };
         assert!(close(c[0], 5.0) && close(c[1], 5.0), "{c:?}");
     }
 
@@ -1105,7 +1209,11 @@ mod tests {
     #[test]
     fn an_svg_arc_reaches_its_endpoint() {
         let p = parse_svg_path("M100 100 A 50 30 20 1 0 200 150");
-        assert!(close(end_of(&p).0, 200.0) && close(end_of(&p).1, 150.0), "{:?}", end_of(&p));
+        assert!(
+            close(end_of(&p).0, 200.0) && close(end_of(&p).1, 150.0),
+            "{:?}",
+            end_of(&p)
+        );
     }
 
     #[test]
@@ -1139,7 +1247,11 @@ mod tests {
         other.line_to(2.0, 0.0);
 
         base.add_path(&other, Some(&Mat::translate(10.0, 5.0, 0.0)));
-        assert_eq!(base.segs[0], Seg::Move(0.0, 0.0), "the existing subpath must not move");
+        assert_eq!(
+            base.segs[0],
+            Seg::Move(0.0, 0.0),
+            "the existing subpath must not move"
+        );
         assert_eq!(base.segs[1], Seg::Move(11.0, 5.0));
         assert_eq!(base.segs[2], Seg::Line(12.0, 5.0));
     }
@@ -1159,7 +1271,8 @@ mod tests {
         // Spec: one common factor scales every radius, so a 100-radius corner on
         // a 10-wide box does not wrap around and invert the shape.
         let mut p = Path::new();
-        p.round_rect(0.0, 0.0, 10.0, 10.0, [(100.0, 100.0); 4]).unwrap();
+        p.round_rect(0.0, 0.0, 10.0, 10.0, [(100.0, 100.0); 4])
+            .unwrap();
         for seg in &p.segs {
             let pt = match seg {
                 Seg::Move(x, y) | Seg::Line(x, y) => (*x, *y),
@@ -1176,7 +1289,9 @@ mod tests {
     #[test]
     fn round_rect_rejects_negative_radii() {
         let mut p = Path::new();
-        assert!(p.round_rect(0.0, 0.0, 10.0, 10.0, [(-1.0, 1.0); 4]).is_err());
+        assert!(p
+            .round_rect(0.0, 0.0, 10.0, 10.0, [(-1.0, 1.0); 4])
+            .is_err());
     }
 
     #[test]
@@ -1201,7 +1316,10 @@ mod tests {
         p.line_to(3.0, 4.0);
         p.cubic_to(5.0, 6.0, 7.0, 8.0, 9.0, 10.0);
         p.close();
-        assert_eq!(p.to_segments(), vec![0., 1., 2., 1., 3., 4., 2., 5., 6., 7., 8., 9., 10., 3.]);
+        assert_eq!(
+            p.to_segments(),
+            vec![0., 1., 2., 1., 3., 4., 2., 5., 6., 7., 8., 9., 10., 3.]
+        );
     }
 }
 

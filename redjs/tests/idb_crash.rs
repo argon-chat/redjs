@@ -109,7 +109,8 @@ impl Drop for Dir {
 
 /// What the parent finds after the kill: (transactions present, records).
 fn inspect(dir: &Path, encrypted: bool) -> (u64, u64) {
-    let ok = sqlite::integrity_check(dir, &units("crash"), encrypted.then_some(&KEY)).expect("integrity_check runs");
+    let ok = sqlite::integrity_check(dir, &units("crash"), encrypted.then_some(&KEY))
+        .expect("integrity_check runs");
     assert_eq!(ok, "ok", "PRAGMA integrity_check after the kill");
     let mut b = sqlite::SqliteBackend::new(sqlite::SqliteConfig {
         folder: dir.to_path_buf(),
@@ -117,22 +118,41 @@ fn inspect(dir: &Path, encrypted: bool) -> (u64, u64) {
         quota: std::sync::Arc::new(|_| 1 << 40),
         migrated: None,
     });
-    let mut db = b.open(&units("crash")).expect("the database opens after the kill");
+    let mut db = b
+        .open(&units("crash"))
+        .expect("the database opens after the kill");
     let meta = db.meta().clone();
-    let id = |n: &str| meta.stores.iter().find(|s| s.name == units(n)).unwrap_or_else(|| panic!("store {n}")).id;
+    let id = |n: &str| {
+        meta.stores
+            .iter()
+            .find(|s| s.name == units(n))
+            .unwrap_or_else(|| panic!("store {n}"))
+            .id
+    };
     let (r, done) = (id("r"), id("done"));
     let n_done = db.count(done, Bound::Unbounded, Bound::Unbounded).unwrap();
-    let keys = db.keys(done, Bound::Unbounded, Bound::Unbounded, false, usize::MAX).unwrap();
+    let keys = db
+        .keys(done, Bound::Unbounded, Bound::Unbounded, false, usize::MAX)
+        .unwrap();
     for (i, k) in keys.iter().enumerate() {
-        assert_eq!(key::decode(k), Some(Key::Number(i as f64)), "transactions 0..n, contiguous");
+        assert_eq!(
+            key::decode(k),
+            Some(Key::Number(i as f64)),
+            "transactions 0..n, contiguous"
+        );
     }
     let n_rec = db.count(r, Bound::Unbounded, Bound::Unbounded).unwrap();
     // Every present transaction is whole.
     for k in 0..n_done {
         let lo = Key::String(units(&format!("{k}:"))).encode();
         let hi = Key::String(units(&format!("{k};"))).encode();
-        let n = db.count(r, Bound::Included(&lo), Bound::Excluded(&hi)).unwrap();
-        assert_eq!(n, PER_TX as u64, "transaction {k} has {n} of its {PER_TX} records");
+        let n = db
+            .count(r, Bound::Included(&lo), Bound::Excluded(&hi))
+            .unwrap();
+        assert_eq!(
+            n, PER_TX as u64,
+            "transaction {k} has {n} of its {PER_TX} records"
+        );
     }
     (n_done, n_rec)
 }
@@ -140,19 +160,28 @@ fn inspect(dir: &Path, encrypted: bool) -> (u64, u64) {
 #[test]
 fn a_kill_mid_transaction_leaves_the_committed_state() {
     if let Ok(dir) = std::env::var("REDJS_IDB_CRASH_CHILD") {
-        child(Path::new(&dir), std::env::var("REDJS_IDB_CRASH_ENCRYPTED").is_ok());
+        child(
+            Path::new(&dir),
+            std::env::var("REDJS_IDB_CRASH_ENCRYPTED").is_ok(),
+        );
     }
     let exe = std::env::current_exe().unwrap();
     // Deterministic "random" kill delays, spread over a transaction's write.
     let delays_ms = [3u64, 11, 27, 6, 41, 17];
     for (round, delay) in delays_ms.iter().enumerate() {
         let encrypted = round % 2 == 1;
-        let dir = Dir(std::env::temp_dir().join(format!("redjs-idb-crash-{}-{round}", std::process::id())));
+        let dir =
+            Dir(std::env::temp_dir()
+                .join(format!("redjs-idb-crash-{}-{round}", std::process::id())));
         let _ = std::fs::remove_dir_all(&dir.0);
         let mut child = Command::new(&exe)
             .env("REDJS_IDB_CRASH_CHILD", &dir.0)
             .envs(encrypted.then_some(("REDJS_IDB_CRASH_ENCRYPTED", "1")))
-            .args(["--exact", "a_kill_mid_transaction_leaves_the_committed_state", "--nocapture"])
+            .args([
+                "--exact",
+                "a_kill_mid_transaction_leaves_the_committed_state",
+                "--nocapture",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -174,7 +203,9 @@ fn a_kill_mid_transaction_leaves_the_committed_state() {
         let mut killed_in: Option<i64> = None;
         let mut seen = Vec::new();
         while Instant::now() < deadline {
-            let Ok(l) = rx_lines.recv_timeout(Duration::from_millis(200)) else { continue };
+            let Ok(l) = rx_lines.recv_timeout(Duration::from_millis(200)) else {
+                continue;
+            };
             seen.push(l.clone());
             if let Some(e) = l.strip_prefix("error ") {
                 let _ = child.kill();
@@ -205,7 +236,8 @@ fn a_kill_mid_transaction_leaves_the_committed_state() {
                 last_begun = last_begun.max(k.parse().unwrap());
             }
         }
-        let killed_in = killed_in.unwrap_or_else(|| panic!("round {round}: the child never got going: {seen:?}"));
+        let killed_in = killed_in
+            .unwrap_or_else(|| panic!("round {round}: the child never got going: {seen:?}"));
         let wal = std::fs::read_dir(&dir.0)
             .unwrap()
             .flatten()
@@ -222,8 +254,15 @@ fn a_kill_mid_transaction_leaves_the_committed_state() {
         assert_eq!(n_rec, n_done * PER_TX as u64, "only whole transactions");
         // Everything whose `complete` fired is there (relaxed durability
         // survives a process kill: the WAL write reached the OS) ...
-        assert!(n_done as i64 >= last_committed + 1, "committed transactions lost: {n_done} present, {} completed", last_committed + 1);
+        assert!(
+            n_done as i64 >= last_committed + 1,
+            "committed transactions lost: {n_done} present, {} completed",
+            last_committed + 1
+        );
         // ... and nothing past the last transaction the child began.
-        assert!(n_done as i64 <= last_begun + 1, "{n_done} transactions present, the last one begun was {last_begun}");
+        assert!(
+            n_done as i64 <= last_begun + 1,
+            "{n_done} transactions present, the last one begun was {last_begun}"
+        );
     }
 }

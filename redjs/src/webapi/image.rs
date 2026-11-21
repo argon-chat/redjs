@@ -43,7 +43,12 @@ pub struct BitmapData {
 impl BitmapData {
     /// Straight RGBA pixels from this origin.
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> BitmapData {
-        BitmapData { width, height, rgba, origin_clean: true }
+        BitmapData {
+            width,
+            height,
+            rgba,
+            origin_clean: true,
+        }
     }
 }
 
@@ -320,8 +325,12 @@ unsafe fn finish_load(
                 crate::ffi::redjs_unprotect(g, this);
                 return;
             }
-            if width == 0.0 { define(g, this, "width", enc_i32(data.width as i32), 0); }
-            if height == 0.0 { define(g, this, "height", enc_i32(data.height as i32), 0); }
+            if width == 0.0 {
+                define(g, this, "width", enc_i32(data.width as i32), 0);
+            }
+            if height == 0.0 {
+                define(g, this, "height", enc_i32(data.height as i32), 0);
+            }
             define(g, this, "naturalWidth", enc_i32(data.width as i32), 0);
             define(g, this, "naturalHeight", enc_i32(data.height as i32), 0);
             let bmp = create_bitmap(g, data);
@@ -434,7 +443,9 @@ pub fn decode(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
         .ok()?
         .into_decoder()
         .ok()?;
-    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
     img.apply_orientation(orientation);
     let rgba = img.into_rgba8();
@@ -448,21 +459,35 @@ pub fn decode(bytes: &[u8], mime: Option<&str>) -> Option<BitmapData> {
 /// The returned bitmap is straight RGBA, with neither dimension above `max_side`.
 pub fn decode_thumbnail(bytes: &[u8], mime: Option<&str>, max_side: u32) -> Option<BitmapData> {
     use image::ImageDecoder;
-    if max_side == 0 || max_side > 512 || bytes.len() > 2 * 1024 * 1024 { return None; }
-    if is_svg(bytes, mime) { return svg::rasterize_at(bytes, max_side as f32); }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    if max_side == 0 || max_side > 512 || bytes.len() > 2 * 1024 * 1024 {
+        return None;
+    }
+    if is_svg(bytes, mime) {
+        return svg::rasterize_at(bytes, max_side as f32);
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(4096);
     limits.max_image_height = Some(4096);
     limits.max_alloc = Some(32 * 1024 * 1024);
     reader.limits(limits);
     let mut decoder = reader.into_decoder().ok()?;
-    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
     img.apply_orientation(orientation);
-    if img.width() > max_side || img.height() > max_side { img = img.thumbnail(max_side, max_side); }
+    if img.width() > max_side || img.height() > max_side {
+        img = img.thumbnail(max_side, max_side);
+    }
     let rgba = img.into_rgba8();
-    Some(BitmapData::new(rgba.width(), rgba.height(), rgba.into_raw()))
+    Some(BitmapData::new(
+        rgba.width(),
+        rgba.height(),
+        rgba.into_raw(),
+    ))
 }
 
 /// `image/svg+xml`, or markup that opens an `<svg>` element (after a BOM,
@@ -476,7 +501,10 @@ fn is_svg(bytes: &[u8], mime: Option<&str>) -> bool {
     }
     let head = &bytes[..bytes.len().min(1024)];
     let head = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
-    let start = head.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(head.len());
+    let start = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(head.len());
     let head = &head[start..];
     if !head.starts_with(b"<") {
         return false;
@@ -507,7 +535,9 @@ mod svg {
 
     /// Rasterize at the SVG's intrinsic size (its `width`/`height`, else its
     /// `viewBox`), which is what `naturalWidth`/`naturalHeight` then report.
-    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> { rasterize_at(bytes, MAX_SIDE) }
+    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> {
+        rasterize_at(bytes, MAX_SIDE)
+    }
 
     pub(super) fn rasterize_at(bytes: &[u8], max_side: f32) -> Option<BitmapData> {
         let mut opt = usvg::Options::default();
@@ -528,7 +558,11 @@ mod svg {
         let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
         let sx = w as f32 / size.width();
         let sy = h as f32 / size.height();
-        resvg::render(&tree, tiny_skia::Transform::from_scale(sx, sy), &mut pixmap.as_mut());
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::from_scale(sx, sy),
+            &mut pixmap.as_mut(),
+        );
         // tiny-skia is premultiplied; a bitmap here is straight RGBA.
         let mut rgba = pixmap.take();
         for px in rgba.chunks_exact_mut(4) {
@@ -547,7 +581,9 @@ mod svg {
 mod svg {
     use super::BitmapData;
 
-    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> { rasterize_at(bytes, 8192.0) }
+    pub(super) fn rasterize(bytes: &[u8]) -> Option<BitmapData> {
+        rasterize_at(bytes, 8192.0)
+    }
 
     pub(super) fn rasterize_at(_bytes: &[u8], _max_side: f32) -> Option<BitmapData> {
         static WARNED: std::sync::Once = std::sync::Once::new();
@@ -579,7 +615,12 @@ fn crop(src: &BitmapData, sx: i64, sy: i64, sw: u32, sh: u32) -> BitmapData {
             out[di..di + 4].copy_from_slice(&src.rgba[si..si + 4]);
         }
     }
-    BitmapData { width: sw, height: sh, rgba: out, origin_clean: src.origin_clean }
+    BitmapData {
+        width: sw,
+        height: sh,
+        rgba: out,
+        origin_clean: src.origin_clean,
+    }
 }
 
 #[crate::host_fn]
@@ -587,10 +628,19 @@ unsafe fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -> u64 {
     let source = cf_arg(cf, 0);
 
     // Region overload: (source, sx, sy, sw, sh, options?)
-    let region = match (dec_f64(cf_arg(cf, 1)), dec_f64(cf_arg(cf, 2)), dec_f64(cf_arg(cf, 3)), dec_f64(cf_arg(cf, 4))) {
+    let region = match (
+        dec_f64(cf_arg(cf, 1)),
+        dec_f64(cf_arg(cf, 2)),
+        dec_f64(cf_arg(cf, 3)),
+        dec_f64(cf_arg(cf, 4)),
+    ) {
         (Some(sx), Some(sy), Some(sw), Some(sh)) => {
             if sw <= 0.0 || sh <= 0.0 {
-                return rejected_promise(g, 2, "createImageBitmap: crop rect width/height must be positive");
+                return rejected_promise(
+                    g,
+                    2,
+                    "createImageBitmap: crop rect width/height must be positive",
+                );
             }
             Some((sx as i64, sy as i64, sw as u32, sh as u32))
         }
@@ -599,27 +649,31 @@ unsafe fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     // A path-backed Blob and a blob: URL settle later: the bytes are read off
     // the JS thread (or looked up in the store), then decoded here.
-    let deferred: Option<Box<dyn FnOnce(*mut c_void, BlobBytes)>> = match super::blob::data_of(g, source) {
-        Some(b) if matches!(b.source, super::blob::Source::Disk(_)) => {
-            let range = b.range();
-            Some(Box::new(move |g, done: BlobBytes| {
-                super::blob::read_async(
-                    g,
-                    range,
-                    Box::new(move |g, r| match r {
-                        Ok(bytes) => done(g, Ok(&bytes)),
-                        Err(e) => done(g, Err(format!("{}: {}", e.name(), e.message()))),
-                    }),
-                )
-            }))
-        }
-        Some(_) => None,
-        None if glue::rjs_kind(g, source) == 5 => {
-            let s = read_string(g, source).unwrap_or_default();
-            is_blob_url(&s).then(|| Box::new(move |g, done: BlobBytes| unsafe { blob_bytes(g, &s, done) }) as Box<dyn FnOnce(*mut c_void, BlobBytes)>)
-        }
-        None => None,
-    };
+    let deferred: Option<Box<dyn FnOnce(*mut c_void, BlobBytes)>> =
+        match super::blob::data_of(g, source) {
+            Some(b) if matches!(b.source, super::blob::Source::Disk(_)) => {
+                let range = b.range();
+                Some(Box::new(move |g, done: BlobBytes| {
+                    super::blob::read_async(
+                        g,
+                        range,
+                        Box::new(move |g, r| match r {
+                            Ok(bytes) => done(g, Ok(&bytes)),
+                            Err(e) => done(g, Err(format!("{}: {}", e.name(), e.message()))),
+                        }),
+                    )
+                }))
+            }
+            Some(_) => None,
+            None if glue::rjs_kind(g, source) == 5 => {
+                let s = read_string(g, source).unwrap_or_default();
+                is_blob_url(&s).then(|| {
+                    Box::new(move |g, done: BlobBytes| unsafe { blob_bytes(g, &s, done) })
+                        as Box<dyn FnOnce(*mut c_void, BlobBytes)>
+                })
+            }
+            None => None,
+        };
     if let Some(start) = deferred {
         let (mut res, mut rej, mut p) = (0u64, 0u64, 0u64);
         if crate::ffi::redjs_promise_create(g, &mut res, &mut rej, &mut p) != 0 {
@@ -631,8 +685,11 @@ unsafe fn create_image_bitmap(g: *mut c_void, cf: *mut c_void) -> u64 {
             g,
             Box::new(move |g, r| unsafe {
                 let decoded = match r {
-                    Ok(bytes) => decode_rgba(bytes).ok_or_else(|| "createImageBitmap: image decode failed".to_string()),
-                    Err(why) => Err(format!("createImageBitmap: the source could not be read ({why})")),
+                    Ok(bytes) => decode_rgba(bytes)
+                        .ok_or_else(|| "createImageBitmap: image decode failed".to_string()),
+                    Err(why) => Err(format!(
+                        "createImageBitmap: the source could not be read ({why})"
+                    )),
                 };
                 match decoded {
                     Ok(full) => {
@@ -675,12 +732,14 @@ unsafe fn acquire_pixels(g: *mut c_void, source: u64) -> Result<BitmapData, Stri
     // Blob.
     if let Some(r) = super::blob::bytes_of(g, source, "createImageBitmap") {
         let bytes = r.map_err(|e| super::blob::sync_read_failed("createImageBitmap", e))?;
-        return decode_rgba(&bytes).ok_or_else(|| "createImageBitmap: image decode failed".to_string());
+        return decode_rgba(&bytes)
+            .ok_or_else(|| "createImageBitmap: image decode failed".to_string());
     }
     // BufferSource.
     if let Some(bytes) = bufferish(g, source) {
         let owned = bytes.to_vec();
-        return decode_rgba(&owned).ok_or_else(|| "createImageBitmap: image decode failed".to_string());
+        return decode_rgba(&owned)
+            .ok_or_else(|| "createImageBitmap: image decode failed".to_string());
     }
     // Non-standard convenience kept from the old player: a path string.
     if glue::rjs_kind(g, source) == 5 {
@@ -689,34 +748,47 @@ unsafe fn acquire_pixels(g: *mut c_void, source: u64) -> Result<BitmapData, Stri
         if !fetched.ok {
             return Err(format!("createImageBitmap: not found: {path}"));
         }
-        return decode_typed(&fetched.bytes, Some(&fetched.mime)).ok_or_else(|| "createImageBitmap: image decode failed".to_string());
+        return decode_typed(&fetched.bytes, Some(&fetched.mime))
+            .ok_or_else(|| "createImageBitmap: image decode failed".to_string());
     }
     Err("createImageBitmap: unsupported source".to_string())
 }
 
 // ---------------------------------------------------------------------------
 
-pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (crate::capi::JSClassRef, Class, Class) {
+pub unsafe fn install(
+    g: *mut c_void,
+    event_target_proto: u64,
+) -> (crate::capi::JSClassRef, Class, Class) {
     let bitmap_cls = make_host_class::<BitmapData>("ImageBitmap");
-    let bitmap = define_class(g, &ClassSpec {
-        name: "ImageBitmap",
-        arity: 0,
-        construct: None, // spec: illegal constructor
-        parent_proto: 0,
-        methods: &[("close", 0, bitmap_close)],
-        getters: &[("width", bitmap_get_width), ("height", bitmap_get_height)],
-        accessors: &[],
-    });
+    let bitmap = define_class(
+        g,
+        &ClassSpec {
+            name: "ImageBitmap",
+            arity: 0,
+            construct: None, // spec: illegal constructor
+            parent_proto: 0,
+            methods: &[("close", 0, bitmap_close)],
+            getters: &[("width", bitmap_get_width), ("height", bitmap_get_height)],
+            accessors: &[],
+        },
+    );
 
-    let image = define_class(g, &ClassSpec {
-        name: "HTMLImageElement",
-        arity: 0,
-        construct: Some(image_construct),
-        parent_proto: event_target_proto,
-        methods: &[("decode", 0, image_decode_method), ("removeAttribute", 1, image_remove_attribute)],
-        getters: &[],
-        accessors: &[("src", image_get_src, image_set_src)],
-    });
+    let image = define_class(
+        g,
+        &ClassSpec {
+            name: "HTMLImageElement",
+            arity: 0,
+            construct: Some(image_construct),
+            parent_proto: event_target_proto,
+            methods: &[
+                ("decode", 0, image_decode_method),
+                ("removeAttribute", 1, image_remove_attribute),
+            ],
+            getters: &[],
+            accessors: &[("src", image_get_src, image_set_src)],
+        },
+    );
 
     // `Image` — same constructor & prototype (spec: Image creates an
     // HTMLImageElement); expose as a distinct global.
@@ -737,13 +809,27 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (crate::capi::
     // createImageBitmap global.
     let n16: Vec<u16> = "createImageBitmap".encode_utf16().collect();
     let mut cib = UNDEF;
-    glue::rjs_function_create(g, n16.as_ptr(), n16.len(), 2, create_image_bitmap as *const c_void, &mut cib);
+    glue::rjs_function_create(
+        g,
+        n16.as_ptr(),
+        n16.len(),
+        2,
+        create_image_bitmap as *const c_void,
+        &mut cib,
+    );
     define(g, glue::rjs_global(g), "createImageBitmap", cib, 2);
 
     // __rjs_sourcePixels for the OffscreenCanvas JS stub.
     let n16: Vec<u16> = "__rjs_sourcePixels".encode_utf16().collect();
     let mut sp = UNDEF;
-    glue::rjs_function_create(g, n16.as_ptr(), n16.len(), 1, source_pixels_js as *const c_void, &mut sp);
+    glue::rjs_function_create(
+        g,
+        n16.as_ptr(),
+        n16.len(),
+        1,
+        source_pixels_js as *const c_void,
+        &mut sp,
+    );
     define(g, glue::rjs_global(g), "__rjs_sourcePixels", sp, 2);
 
     (bitmap_cls, bitmap, image)
@@ -766,8 +852,14 @@ mod jsc_tests {
     fn removing_image_source_releases_pixels_and_fences_queued_loads() {
         let c = file_ctx();
         let data = crate::webapi::fsutil::b64_encode(&png());
-        s(&c, &format!("globalThis.imageUrl = 'data:image/png;base64,{data}'; 0"));
-        assert_eq!(run(&c, r#"
+        s(
+            &c,
+            &format!("globalThis.imageUrl = 'data:image/png;base64,{data}'; 0"),
+        );
+        assert_eq!(
+            run(
+                &c,
+                r#"
           const image = new Image(32, 32); let loads=0, errors=0;
           image.onload=()=>loads++;image.onerror=()=>errors++;
           image.src=imageUrl;
@@ -783,22 +875,34 @@ mod jsc_tests {
           if(loads!==2||errors!==0||image.naturalWidth!==3)throw Error('Replaced same-URL request was not fenced');
           image.src='';
           return [image.width,image.height,image.complete,__rjs_sourcePixels(image)===null].join(',');
-        "#), "32,32,true,true");
+        "#
+            ),
+            "32,32,true,true"
+        );
     }
 
     #[test]
     fn source_removal_from_a_dimension_getter_cannot_publish_a_stale_image() {
         let c = file_ctx();
         let data = crate::webapi::fsutil::b64_encode(&png());
-        s(&c, &format!("globalThis.imageUrl = 'data:image/png;base64,{data}'; 0"));
-        assert_eq!(run(&c, r#"
+        s(
+            &c,
+            &format!("globalThis.imageUrl = 'data:image/png;base64,{data}'; 0"),
+        );
+        assert_eq!(
+            run(
+                &c,
+                r#"
           const image=new Image();let loads=0;
           image.onload=()=>loads++;
           Object.defineProperty(image,'width',{configurable:true,get(){image.removeAttribute('src');return 0;}});
           image.src=imageUrl;
           await new Promise(resolve=>setTimeout(resolve,10));
           return [loads,image.src,image.naturalWidth,image.complete,__rjs_sourcePixels(image)===null].join(',');
-        "#), "0,,0,true,true");
+        "#
+            ),
+            "0,,0,true,true"
+        );
     }
 
     const LOAD: &str = "const load = (src) => new Promise(r => { const i = new Image(); \
@@ -817,13 +921,35 @@ mod jsc_tests {
         t.expose(&c, "picked");
         unsafe {
             let g = c.raw();
-            let proto = crate::webapi::util::get(g, crate::webapi::util::get(g, crate::glue::rjs_global(g), "Blob"), "prototype");
+            let proto = crate::webapi::util::get(
+                g,
+                crate::webapi::util::get(g, crate::glue::rjs_global(g), "Blob"),
+                "prototype",
+            );
             let b = crate::webapi::blob::create(g, proto, bytes.clone(), "image/png".into());
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "mem", b, 0);
         }
-        assert_eq!(run(&c, &format!("{LOAD} return await load(URL.createObjectURL(mem));")), "load,3,2,true");
-        assert_eq!(run(&c, &format!("{LOAD} return await load(URL.createObjectURL(picked));")), "load,3,2,true");
-        assert_eq!(run(&c, &format!("{LOAD} return await load(URL.createObjectURL(picked.slice(0, 10)));")), "error");
+        assert_eq!(
+            run(
+                &c,
+                &format!("{LOAD} return await load(URL.createObjectURL(mem));")
+            ),
+            "load,3,2,true"
+        );
+        assert_eq!(
+            run(
+                &c,
+                &format!("{LOAD} return await load(URL.createObjectURL(picked));")
+            ),
+            "load,3,2,true"
+        );
+        assert_eq!(
+            run(
+                &c,
+                &format!("{LOAD} return await load(URL.createObjectURL(picked.slice(0, 10)));")
+            ),
+            "error"
+        );
         assert_eq!(
             run(&c, &format!("{LOAD} const u = URL.createObjectURL(mem); URL.revokeObjectURL(u); return await load(u);")),
             "error"
@@ -851,7 +977,10 @@ mod jsc_tests {
             "load,24,24,true"
         );
         assert_eq!(
-            run(&c, &format!("{LOAD} return await load('data:image/svg+xml;base64,' + btoa(RED));")),
+            run(
+                &c,
+                &format!("{LOAD} return await load('data:image/svg+xml;base64,' + btoa(RED));")
+            ),
             "load,24,24,true"
         );
         // width/height win over the viewBox, as for an <img>.
@@ -862,7 +991,10 @@ mod jsc_tests {
         );
         // A Blob with no type is sniffed.
         assert_eq!(
-            run(&c, &format!("{LOAD} return await load(URL.createObjectURL(new Blob([RED])));")),
+            run(
+                &c,
+                &format!("{LOAD} return await load(URL.createObjectURL(new Blob([RED])));")
+            ),
             "load,24,24,true"
         );
         // The pixels are the drawing, straight RGBA, and new Image(w, h) keeps its size.
@@ -879,7 +1011,12 @@ mod jsc_tests {
         );
         // Not an SVG at all: `error`, as a browser reports a broken image.
         assert_eq!(
-            run(&c, &format!("{LOAD} return await load('data:image/svg+xml,' + encodeURIComponent('<svg'));")),
+            run(
+                &c,
+                &format!(
+                    "{LOAD} return await load('data:image/svg+xml,' + encodeURIComponent('<svg'));"
+                )
+            ),
             "error"
         );
     }
@@ -893,11 +1030,23 @@ mod jsc_tests {
 
     #[test]
     fn svg_is_recognised_by_type_or_by_its_first_bytes() {
-        assert!(super::is_svg(b"anything", Some("image/svg+xml; charset=utf-8")));
-        assert!(super::is_svg(b"\xEF\xBB\xBF  <?xml version='1.0'?><!-- x --><svg/>", None));
-        assert!(super::is_svg(b"<!DOCTYPE svg><svg xmlns='http://www.w3.org/2000/svg'/>", Some("text/plain")));
+        assert!(super::is_svg(
+            b"anything",
+            Some("image/svg+xml; charset=utf-8")
+        ));
+        assert!(super::is_svg(
+            b"\xEF\xBB\xBF  <?xml version='1.0'?><!-- x --><svg/>",
+            None
+        ));
+        assert!(super::is_svg(
+            b"<!DOCTYPE svg><svg xmlns='http://www.w3.org/2000/svg'/>",
+            Some("text/plain")
+        ));
         assert!(!super::is_svg(b"\x89PNG\r\n\x1a\n", Some("image/png")));
-        assert!(!super::is_svg(b"GIF89a <svg", None), "markup must come first");
+        assert!(
+            !super::is_svg(b"GIF89a <svg", None),
+            "markup must come first"
+        );
     }
 
     #[test]
@@ -905,7 +1054,13 @@ mod jsc_tests {
         let c = file_ctx();
         let t = TempFile::new("pic.png", &png());
         t.expose(&c, "picked");
-        assert_eq!(run(&c, "const b = await createImageBitmap(picked); return [b.width, b.height].join();"), "3,2");
+        assert_eq!(
+            run(
+                &c,
+                "const b = await createImageBitmap(picked); return [b.width, b.height].join();"
+            ),
+            "3,2"
+        );
         assert_eq!(run(&c, "const b = await createImageBitmap(picked, 1, 0, 2, 2); return [b.width, b.height].join();"), "2,2");
         assert_eq!(
             run(&c, "const b = await createImageBitmap(URL.createObjectURL(picked)); return [b.width, b.height].join();"),
@@ -921,7 +1076,10 @@ mod jsc_tests {
         );
         std::fs::write(&t.0, b"changed").unwrap();
         let r = run(&c, "await createImageBitmap(picked);");
-        assert!(r.starts_with("ERROR: TypeError") && r.contains("NotReadableError"), "{r}");
+        assert!(
+            r.starts_with("ERROR: TypeError") && r.contains("NotReadableError"),
+            "{r}"
+        );
     }
 }
 
@@ -932,7 +1090,10 @@ mod decode_tests {
     #[test]
     fn thumbnails_bound_dimensions_preserve_orientation_and_reject_invalid_inputs() {
         let turned = decode_thumbnail(&jpeg(Some(6)), None, 8).unwrap();
-        assert_eq!((turned.width, turned.height, turned.rgba.len()), (4, 8, 128));
+        assert_eq!(
+            (turned.width, turned.height, turned.rgba.len()),
+            (4, 8, 128)
+        );
         assert!(decode_thumbnail(b"bad", None, 16).is_none());
         assert!(decode_thumbnail(&jpeg(None), None, 0).is_none());
         assert!(decode_thumbnail(&jpeg(None), None, 513).is_none());
@@ -953,13 +1114,21 @@ mod decode_tests {
     /// chroma subsampling keeps the halves apart), with an APP1 Exif segment
     /// carrying `orientation` when given.
     fn jpeg(orientation: Option<u16>) -> Vec<u8> {
-        let img = image::RgbImage::from_fn(32, 16, |x, _| if x < 16 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) });
+        let img = image::RgbImage::from_fn(32, 16, |x, _| {
+            if x < 16 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
         let mut out = std::io::Cursor::new(Vec::new());
         img.write_to(&mut out, image::ImageFormat::Jpeg).unwrap();
         let jpeg = out.into_inner();
         let Some(o) = orientation else { return jpeg };
         // TIFF, big-endian: one IFD entry, Orientation (0x0112), SHORT, 1.
-        let mut tiff = vec![0x4D, 0x4D, 0, 0x2A, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1];
+        let mut tiff = vec![
+            0x4D, 0x4D, 0, 0x2A, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1,
+        ];
         tiff.extend_from_slice(&[(o >> 8) as u8, o as u8, 0, 0, 0, 0, 0, 0]);
         let len = (2 + 6 + tiff.len()) as u16;
         let mut app1 = vec![0xFF, 0xE1, (len >> 8) as u8, len as u8];

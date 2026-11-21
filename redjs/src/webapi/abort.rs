@@ -30,7 +30,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static AbortClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static AbortClasses {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::abort not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::abort not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -59,7 +64,11 @@ pub unsafe fn abort_signal(g: *mut c_void, sig: u64, reason: u64) {
     if !is_cell(slots) || get(g, slots, "aborted") == 0x7 {
         return;
     }
-    let reason = if reason == UNDEF { default_reason(g, "AbortError", "signal is aborted without reason") } else { reason };
+    let reason = if reason == UNDEF {
+        default_reason(g, "AbortError", "signal is aborted without reason")
+    } else {
+        reason
+    };
     define(g, slots, "aborted", enc_bool(true), 0);
     define(g, slots, "reason", reason, 0);
     // DOM: dependents take the reason now, and fire after the source.
@@ -219,7 +228,11 @@ unsafe fn sig_throw_if_aborted(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn sig_static_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
     let reason = cf_arg(cf, 0);
-    let reason = if reason == UNDEF { default_reason(g, "AbortError", "signal is aborted without reason") } else { reason };
+    let reason = if reason == UNDEF {
+        default_reason(g, "AbortError", "signal is aborted without reason")
+    } else {
+        reason
+    };
     new_signal(g, true, reason)
 }
 
@@ -254,7 +267,11 @@ unsafe fn sig_static_any(g: *mut c_void, cf: *mut c_void) -> u64 {
     let mut linked: Vec<u64> = Vec::new();
     for s in sources {
         let own = get(g, slots_of(g, s), "sources");
-        let roots: Vec<u64> = if is_cell(own) { (0..array_len(g, own)).map(|i| get_i(g, own, i)).collect() } else { vec![s] };
+        let roots: Vec<u64> = if is_cell(own) {
+            (0..array_len(g, own)).map(|i| get_i(g, own, i)).collect()
+        } else {
+            vec![s]
+        };
         for root in roots {
             if linked.contains(&root) {
                 continue;
@@ -283,11 +300,15 @@ unsafe fn sig_static_timeout(g: *mut c_void, cf: *mut c_void) -> u64 {
     let ms = dec_f64(cf_arg(cf, 0)).unwrap_or(0.0).max(0.0);
     let sig = new_signal(g, false, UNDEF);
     crate::ffi::redjs_protect(g, sig);
-    crate::web::schedule_native(g, ms, Box::new(move |g| {
-        let reason = default_reason(g, "TimeoutError", "signal timed out");
-        abort_signal(g, sig, reason);
-        crate::ffi::redjs_unprotect(g, sig);
-    }));
+    crate::web::schedule_native(
+        g,
+        ms,
+        Box::new(move |g| {
+            let reason = default_reason(g, "TimeoutError", "signal timed out");
+            abort_signal(g, sig, reason);
+            crate::ffi::redjs_unprotect(g, sig);
+        }),
+    );
     sig
 }
 
@@ -328,30 +349,58 @@ unsafe fn ctrl_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
 pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     let s_abort = atom_priv(g, "redjs#abort");
 
-    let signal = define_class(g, &ClassSpec {
-        name: "AbortSignal",
-        arity: 0,
-        construct: None,
-        parent_proto: event_target_proto,
-        methods: &[("throwIfAborted", 0, sig_throw_if_aborted)],
-        getters: &[("aborted", sig_get_aborted), ("reason", sig_get_reason)],
-        accessors: &[],
-    });
-    define(g, signal.ctor, "abort", make_fn(g, "abort", 1, sig_static_abort), 2);
-    define(g, signal.ctor, "timeout", make_fn(g, "timeout", 1, sig_static_timeout), 2);
-    define(g, signal.ctor, "any", make_fn(g, "any", 1, sig_static_any), 2);
+    let signal = define_class(
+        g,
+        &ClassSpec {
+            name: "AbortSignal",
+            arity: 0,
+            construct: None,
+            parent_proto: event_target_proto,
+            methods: &[("throwIfAborted", 0, sig_throw_if_aborted)],
+            getters: &[("aborted", sig_get_aborted), ("reason", sig_get_reason)],
+            accessors: &[],
+        },
+    );
+    define(
+        g,
+        signal.ctor,
+        "abort",
+        make_fn(g, "abort", 1, sig_static_abort),
+        2,
+    );
+    define(
+        g,
+        signal.ctor,
+        "timeout",
+        make_fn(g, "timeout", 1, sig_static_timeout),
+        2,
+    );
+    define(
+        g,
+        signal.ctor,
+        "any",
+        make_fn(g, "any", 1, sig_static_any),
+        2,
+    );
 
-    let controller = define_class(g, &ClassSpec {
-        name: "AbortController",
-        arity: 0,
-        construct: Some(ctrl_construct),
-        parent_proto: 0,
-        methods: &[("abort", 1, ctrl_abort)],
-        getters: &[("signal", ctrl_get_signal)],
-        accessors: &[],
-    });
+    let controller = define_class(
+        g,
+        &ClassSpec {
+            name: "AbortController",
+            arity: 0,
+            construct: Some(ctrl_construct),
+            parent_proto: 0,
+            methods: &[("abort", 1, ctrl_abort)],
+            getters: &[("signal", ctrl_get_signal)],
+            accessors: &[],
+        },
+    );
 
-    let boxed: &'static AbortClasses = Box::leak(Box::new(AbortClasses { signal, controller, s_abort }));
+    let boxed: &'static AbortClasses = Box::leak(Box::new(AbortClasses {
+        signal,
+        controller,
+        s_abort,
+    }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 

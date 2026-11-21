@@ -18,14 +18,22 @@ fn roots() -> &'static Mutex<HashMap<usize, Roots>> {
 }
 
 pub fn set_roots(g: *mut c_void, scripts: &str, assets: &str) {
-    roots()
-        .lock()
-        .unwrap()
-        .insert(g as usize, Roots { scripts: PathBuf::from(scripts), assets: PathBuf::from(assets) });
+    roots().lock().unwrap().insert(
+        g as usize,
+        Roots {
+            scripts: PathBuf::from(scripts),
+            assets: PathBuf::from(assets),
+        },
+    );
 }
 
 pub fn get_roots(g: *mut c_void) -> Roots {
-    roots().lock().unwrap().get(&(g as usize)).cloned().unwrap_or_default()
+    roots()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .cloned()
+        .unwrap_or_default()
 }
 
 // --- host content provider -------------------------------------------------
@@ -40,8 +48,12 @@ pub type ContentSinkFn = unsafe extern "C" fn(sink_ctx: *mut c_void, ptr: *const
 /// Host read: UTF-8 content-relative path in, `sink` called once with the
 /// decoded bytes on success. Returns 0 on hit, non-zero on miss (the caller
 /// then falls back to on-disk root resolution).
-pub type ContentReadFn =
-    unsafe extern "C" fn(path_ptr: *const u8, path_len: usize, sink: ContentSinkFn, sink_ctx: *mut c_void) -> i32;
+pub type ContentReadFn = unsafe extern "C" fn(
+    path_ptr: *const u8,
+    path_len: usize,
+    sink: ContentSinkFn,
+    sink_ctx: *mut c_void,
+) -> i32;
 
 fn providers() -> &'static Mutex<HashMap<usize, ContentReadFn>> {
     static P: OnceLock<Mutex<HashMap<usize, ContentReadFn>>> = OnceLock::new();
@@ -158,7 +170,13 @@ pub fn fetch_url(g: *mut c_void, url: &str) -> Fetched {
         return fetch_data_uri(rest);
     }
     if url.starts_with("http://") || url.starts_with("https://") {
-        return Fetched { ok: false, status: 0, status_text: "", mime: "text/plain".into(), bytes: Vec::new() };
+        return Fetched {
+            ok: false,
+            status: 0,
+            status_text: "",
+            mime: "text/plain".into(),
+            bytes: Vec::new(),
+        };
     }
     // Host content provider: content-relative reads are served by the embedder's registered
     // provider (bank or loose files). A miss falls through to the on-disk resolution below
@@ -166,7 +184,14 @@ pub fn fetch_url(g: *mut c_void, url: &str) -> Fetched {
     if let Some(read) = get_content_provider(g) {
         if let Some(key) = clean_relative(url) {
             let mut bytes: Vec<u8> = Vec::new();
-            let rc = unsafe { read(key.as_ptr(), key.len(), vec_sink, &mut bytes as *mut Vec<u8> as *mut c_void) };
+            let rc = unsafe {
+                read(
+                    key.as_ptr(),
+                    key.len(),
+                    vec_sink,
+                    &mut bytes as *mut Vec<u8> as *mut c_void,
+                )
+            };
             if rc == 0 {
                 return Fetched {
                     ok: true,
@@ -187,28 +212,58 @@ pub fn fetch_url(g: *mut c_void, url: &str) -> Fetched {
             mime: guess_content_type(&path.to_string_lossy()).to_string(),
             bytes,
         },
-        None => Fetched { ok: false, status: 404, status_text: "Not Found", mime: "text/plain".into(), bytes: Vec::new() },
+        None => Fetched {
+            ok: false,
+            status: 404,
+            status_text: "Not Found",
+            mime: "text/plain".into(),
+            bytes: Vec::new(),
+        },
     }
 }
 
 fn fetch_data_uri(rest: &str) -> Fetched {
     let Some(comma) = rest.find(',') else {
-        return Fetched { ok: false, status: 0, status_text: "", mime: "text/plain".into(), bytes: Vec::new() };
+        return Fetched {
+            ok: false,
+            status: 0,
+            status_text: "",
+            mime: "text/plain".into(),
+            bytes: Vec::new(),
+        };
     };
     let meta = &rest[..comma];
     let payload = &rest[comma + 1..];
     let is_b64 = meta.to_ascii_lowercase().ends_with(";base64");
     let mime = meta.split(';').next().unwrap_or("").to_string();
-    let mime = if mime.is_empty() { "text/plain".to_string() } else { mime };
+    let mime = if mime.is_empty() {
+        "text/plain".to_string()
+    } else {
+        mime
+    };
     let bytes = if is_b64 {
         match b64_decode(payload) {
             Some(b) => b,
-            None => return Fetched { ok: false, status: 0, status_text: "", mime, bytes: Vec::new() },
+            None => {
+                return Fetched {
+                    ok: false,
+                    status: 0,
+                    status_text: "",
+                    mime,
+                    bytes: Vec::new(),
+                }
+            }
         }
     } else {
         percent_decode(payload)
     };
-    Fetched { ok: true, status: 200, status_text: "OK", mime, bytes }
+    Fetched {
+        ok: true,
+        status: 200,
+        status_text: "OK",
+        mime,
+        bytes,
+    }
 }
 
 pub fn b64_decode(s: &str) -> Option<Vec<u8>> {
@@ -249,8 +304,16 @@ pub fn b64_encode(bytes: &[u8]) -> String {
         let triplet = (b0 << 16) | (b1 << 8) | b2;
         out.push(B64[(triplet >> 18) as usize & 63] as char);
         out.push(B64[(triplet >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { B64[(triplet >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[triplet as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(triplet >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[triplet as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }

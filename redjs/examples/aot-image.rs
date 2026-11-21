@@ -208,9 +208,12 @@ fn run_web_loaded(path: &str, verify_host_startup: bool) -> Result<(), Box<dyn s
         let result = context.eval_named("20 + 22", "host-eval-probe.js")?;
         assert_eq!(context.to_number(result)?, 42.0);
         let policy = context.eval_named("JSON.stringify([(() => {try {(0,eval)('42');return 'allowed';}catch(e){return e.name;}})(), (() => {try {new Function('return 42');return 'allowed';}catch(e){return e.name;}})()])", "image-policy-probe.js")?;
-        assert_eq!(context.to_rust_string(policy)?, "[\"EvalError\",\"EvalError\"]", "closed fixture must retain its image's evaluation policy");
+        assert_eq!(
+            context.to_rust_string(policy)?,
+            "[\"EvalError\",\"EvalError\"]",
+            "closed fixture must retain its image's evaluation policy"
+        );
         println!("closed_image_js_eval_and_function=refused;trusted_host_program=42");
-
     }
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
@@ -412,12 +415,12 @@ fn run_stress(
 fn open_image(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
     {
-    use std::os::windows::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .access_mode(0xA0000000)
-        .share_mode(1 | 4)
-        .open(path)
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .access_mode(0xA0000000)
+            .share_mode(1 | 4)
+            .open(path)
     }
     #[cfg(unix)]
     {
@@ -429,10 +432,10 @@ fn run_verified(
     profile: redjs::aot::MemoryProfile,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Seek, SeekFrom};
-    #[cfg(windows)]
-    use std::os::windows::fs::symlink_file;
     #[cfg(unix)]
     use std::os::unix::fs::symlink as symlink_file;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file;
     let original = std::fs::canonicalize(path)?;
     let fixture = original
         .parent()
@@ -484,10 +487,10 @@ fn reject_handles(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         fn GetProcessHandleCount(process: isize, count: *mut u32) -> i32;
     }
     use std::io::{Seek, SeekFrom};
-    #[cfg(windows)]
-    use std::os::windows::io::AsRawHandle;
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
+    #[cfg(windows)]
+    use std::os::windows::io::AsRawHandle;
     let mut file = open_image(Path::new(path))?;
     let expected = redjs::aot::digest_reader(&file)?;
     let identity: [u8; 16] = std::fs::read(format!("{path}.identity"))?
@@ -512,7 +515,15 @@ fn reject_handles(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         value
     };
     #[cfg(unix)]
-    let count = || std::fs::read_dir(if cfg!(target_os = "linux") { "/proc/self/fd" } else { "/dev/fd" }).unwrap().count();
+    let count = || {
+        std::fs::read_dir(if cfg!(target_os = "linux") {
+            "/proc/self/fd"
+        } else {
+            "/dev/fd"
+        })
+        .unwrap()
+        .count()
+    };
     let before = count();
     for _ in 0..1000 {
         // Descriptor zero is a valid Unix file; only Windows treats a null

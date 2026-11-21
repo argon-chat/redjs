@@ -74,7 +74,14 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 fn epoch_ms(t: SystemTime) -> f64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_millis() as f64,
-        Err(e) => -(e.duration().as_millis() as f64) - if e.duration().subsec_nanos() % 1_000_000 != 0 { 1.0 } else { 0.0 },
+        Err(e) => {
+            -(e.duration().as_millis() as f64)
+                - if e.duration().subsec_nanos() % 1_000_000 != 0 {
+                    1.0
+                } else {
+                    0.0
+                }
+        }
     }
 }
 
@@ -99,7 +106,11 @@ fn to_long_long(d: f64) -> f64 {
     }
     let t = t.rem_euclid(TWO_64);
     let t = if t >= TWO_64 / 2.0 { t - TWO_64 } else { t };
-    if t == 0.0 { 0.0 } else { t }
+    if t == 0.0 {
+        0.0
+    } else {
+        t
+    }
 }
 
 unsafe fn file_data<'a>(g: *mut c_void, v: u64) -> Option<(&'a BlobData, &'a FileMeta)> {
@@ -114,34 +125,73 @@ unsafe fn file_data<'a>(g: *mut c_void, v: u64) -> Option<(&'a BlobData, &'a Fil
 
 #[crate::host_fn]
 unsafe fn file_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(c) = classes(g) else { return throw_type_error(g, "File is not installed in this context") };
+    let Some(c) = classes(g) else {
+        return throw_type_error(g, "File is not installed in this context");
+    };
     let argc = cf_argc(cf);
     if argc < 2 {
-        return throw_type_error(g, &format!("Failed to construct 'File': 2 arguments required, but only {argc} present."));
+        return throw_type_error(
+            g,
+            &format!("Failed to construct 'File': 2 arguments required, but only {argc} present."),
+        );
     }
     // Arguments in order (WebIDL), then the dictionary members in order:
     // `endings`, `type` (BlobPropertyBag), then `lastModified`.
-    let Ok(parts) = blob::convert_parts(g, cf_arg(cf, 0), "File") else { return UNDEF };
-    let Ok(name) = to_js_string(g, cf_arg(cf, 1)) else { return UNDEF };
+    let Ok(parts) = blob::convert_parts(g, cf_arg(cf, 0), "File") else {
+        return UNDEF;
+    };
+    let Ok(name) = to_js_string(g, cf_arg(cf, 1)) else {
+        return UNDEF;
+    };
     let name = read_string(g, name).unwrap_or_default();
     let options = cf_arg(cf, 2);
-    let Ok((mime, native)) = blob::convert_bag(g, options, "File") else { return UNDEF };
+    let Ok((mime, native)) = blob::convert_bag(g, options, "File") else {
+        return UNDEF;
+    };
     let mut last_modified = now_ms();
     if blob::is_object(g, options) {
-        let Ok(lm) = try_get(g, options, "lastModified") else { return UNDEF };
+        let Ok(lm) = try_get(g, options, "lastModified") else {
+            return UNDEF;
+        };
         if lm != UNDEF {
-            let Ok(d) = to_number(g, lm) else { return UNDEF };
+            let Ok(d) = to_number(g, lm) else {
+                return UNDEF;
+            };
             last_modified = to_long_long(d);
         }
     }
     let range = blob::assemble(parts, native, "the File constructor");
     let proto = {
         let nt = cf_new_target(cf);
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(p) { p } else { c.file.proto }
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(p) {
+            p
+        } else {
+            c.file.proto
+        }
     };
-    let file = FileMeta { name, last_modified, relative_path: String::new(), backed: false };
-    host_create(g, c.file_cls, proto, BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: Some(file) })
+    let file = FileMeta {
+        name,
+        last_modified,
+        relative_path: String::new(),
+        backed: false,
+    };
+    host_create(
+        g,
+        c.file_cls,
+        proto,
+        BlobData {
+            source: range.source,
+            offset: range.offset,
+            len: range.len,
+            mime,
+            file: Some(file),
+        },
+    )
 }
 
 #[crate::host_fn]
@@ -181,7 +231,10 @@ unsafe fn get_last_modified_date(g: *mut c_void, cf: *mut c_void) -> u64 {
             glue::rjs_throw(g, out);
             UNDEF
         }
-        _ => throw_type_error(g, "File.prototype.lastModifiedDate: Date is not a constructor"),
+        _ => throw_type_error(
+            g,
+            "File.prototype.lastModifiedDate: Date is not a constructor",
+        ),
     }
 }
 
@@ -226,13 +279,22 @@ pub unsafe fn create_file(
         None => super::mime::type_for_name(name).unwrap_or("").to_string(),
     };
     let last_modified = epoch_ms(mtime.unwrap_or_else(SystemTime::now));
-    let disk = DiskFile { path: path.to_path_buf(), size, mtime };
+    let disk = DiskFile {
+        path: path.to_path_buf(),
+        size,
+        mtime,
+    };
     let data = BlobData {
         source: Source::Disk(Arc::new(disk)),
         offset: 0,
         len: size,
         mime,
-        file: Some(FileMeta { name: name.to_string(), last_modified, relative_path: relative_path.to_string(), backed: true }),
+        file: Some(FileMeta {
+            name: name.to_string(),
+            last_modified,
+            relative_path: relative_path.to_string(),
+            backed: true,
+        }),
     };
     host_create(g, c.file_cls, c.file.proto, data)
 }
@@ -242,13 +304,31 @@ pub unsafe fn create_file(
 ///
 /// # Safety
 /// As [`create_file`].
-pub unsafe fn file_from_path(g: *mut c_void, path: &Path, relative_path: &str) -> std::io::Result<u64> {
+pub unsafe fn file_from_path(
+    g: *mut c_void,
+    path: &Path,
+    relative_path: &str,
+) -> std::io::Result<u64> {
     let m = std::fs::metadata(path)?;
     if m.is_dir() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a directory is not a File"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a directory is not a File",
+        ));
     }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(create_file(g, path, &name, None, m.len(), m.modified().ok(), relative_path))
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(create_file(
+        g,
+        path,
+        &name,
+        None,
+        m.len(),
+        m.modified().ok(),
+        relative_path,
+    ))
 }
 
 /// A `File` over existing data (the serializer's way back in).
@@ -301,14 +381,26 @@ unsafe fn list_data<'a>(g: *mut c_void, c: &FileClasses, v: u64) -> Option<&'a m
 pub unsafe fn create_file_list(g: *mut c_void, files: &[u64]) -> u64 {
     let Some(c) = classes(g) else { return UNDEF };
     let files: Vec<u64> = files.iter().copied().filter(|&f| is_file(g, f)).collect();
-    let list = host_create(g, c.list_cls, c.list.proto, FileListData { len: files.len() as u32 });
+    let list = host_create(
+        g,
+        c.list_cls,
+        c.list.proto,
+        FileListData {
+            len: files.len() as u32,
+        },
+    );
     let arr = new_array(g);
     for (i, &f) in files.iter().enumerate() {
         set_i(g, arr, i as u32, f);
         let desc = new_object(g, NULL);
         define(g, desc, "value", f, 0);
         define(g, desc, "enumerable", TRUE, 0);
-        let _ = call(g, c.define_property, UNDEF, &[list, enc_i32(i as i32), desc]);
+        let _ = call(
+            g,
+            c.define_property,
+            UNDEF,
+            &[list, enc_i32(i as i32), desc],
+        );
     }
     glue::rjs_define(g, list, c.s_items, arr, 1 | 2 | 4);
     list
@@ -350,37 +442,52 @@ unsafe fn list_item(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "FileList.prototype.item called on a non-FileList");
     };
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to execute 'item' on 'FileList': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to execute 'item' on 'FileList': 1 argument required, but only 0 present.",
+        );
     }
     // `unsigned long`: ToNumber, then modulo 2^32.
-    let Ok(d) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
-    let i = if d.is_finite() { d.trunc().rem_euclid(4_294_967_296.0) as u32 } else { 0 };
+    let Ok(d) = to_number(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let i = if d.is_finite() {
+        d.trunc().rem_euclid(4_294_967_296.0) as u32
+    } else {
+        0
+    };
     if i >= len {
         return NULL;
     }
     get_i(g, get_a(g, this, c.s_items), i)
 }
 
-
 /// After `blob::install` (File.prototype's prototype is Blob.prototype).
 pub unsafe fn install(g: *mut c_void) {
     let st = state(g);
-    let file = define_class(g, &ClassSpec {
-        name: "File",
-        arity: 2,
-        construct: Some(file_construct),
-        parent_proto: st.blob.proto,
-        methods: &[],
-        getters: &[
-            ("name", get_name),
-            ("lastModified", get_last_modified),
-            ("lastModifiedDate", get_last_modified_date),
-            ("webkitRelativePath", get_relative_path),
-        ],
-        accessors: &[],
-    });
+    let file = define_class(
+        g,
+        &ClassSpec {
+            name: "File",
+            arity: 2,
+            construct: Some(file_construct),
+            parent_proto: st.blob.proto,
+            methods: &[],
+            getters: &[
+                ("name", get_name),
+                ("lastModified", get_last_modified),
+                ("lastModifiedDate", get_last_modified_date),
+                ("webkitRelativePath", get_relative_path),
+            ],
+            accessors: &[],
+        },
+    );
     // `Object.getPrototypeOf(File) === Blob`, as for every derived interface.
-    crate::capi::JSObjectSetPrototype(g, file.ctor as usize as crate::capi::JSObjectRef, st.blob.ctor as usize as crate::capi::JSValueRef);
+    crate::capi::JSObjectSetPrototype(
+        g,
+        file.ctor as usize as crate::capi::JSObjectRef,
+        st.blob.ctor as usize as crate::capi::JSValueRef,
+    );
     // A File instance is of its own host class, whose parent is the Blob
     // class: `JSValueIsObjectOfClass` walks the parent chain, so every Blob
     // brand check accepts a File, while JSC names the object after its own
@@ -397,15 +504,18 @@ pub unsafe fn install(g: *mut c_void) {
     };
 
     let list_cls = make_host_class::<FileListData>("FileList");
-    let list = define_class(g, &ClassSpec {
-        name: "FileList",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("item", 1, list_item)],
-        getters: &[("length", list_length)],
-        accessors: &[],
-    });
+    let list = define_class(
+        g,
+        &ClassSpec {
+            name: "FileList",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("item", 1, list_item)],
+            getters: &[("length", list_length)],
+            accessors: &[],
+        },
+    );
     // WebIDL: an interface with an indexed getter and `length` iterates as
     // an array does — its @@iterator IS %Array.prototype.values%.
     let global = glue::rjs_global(g);
@@ -419,8 +529,15 @@ pub unsafe fn install(g: *mut c_void) {
     let date = get(g, global, "Date");
     crate::ffi::redjs_protect(g, date);
     let s_items = atom_priv(g, "redjs#filelist");
-    let boxed: &'static FileClasses =
-        Box::leak(Box::new(FileClasses { file, file_cls, list, list_cls, s_items, define_property, date }));
+    let boxed: &'static FileClasses = Box::leak(Box::new(FileClasses {
+        file,
+        file_cls,
+        list,
+        list_cls,
+        s_items,
+        define_property,
+        date,
+    }));
     registry().lock().unwrap().insert(g as usize, boxed);
 }
 
@@ -477,7 +594,11 @@ pub(crate) mod testing {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             unsafe {
-                crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+                crate::web::pump(
+                    c.raw(),
+                    crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                    core::ptr::null_mut(),
+                );
             }
             c.drain_microtasks();
             let out = s(c, "globalThis.__out");
@@ -497,7 +618,11 @@ pub(crate) mod testing {
     impl TempFile {
         pub fn new(name: &str, bytes: &[u8]) -> TempFile {
             static N: AtomicU32 = AtomicU32::new(0);
-            let dir = std::env::temp_dir().join(format!("redjs-file-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            let dir = std::env::temp_dir().join(format!(
+                "redjs-file-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             let p = dir.join(name);
             std::fs::write(&p, bytes).unwrap();
@@ -542,13 +667,26 @@ mod jsc_tests {
                  return f instanceof File && f instanceof Blob && f.name === 'a.TXT' && f.type === 'text/plain' && f.size === 3 \
                    && f.lastModified === 1234 && f.webkitRelativePath === ''; })()");
         ok(&c, "(() => { const t = Date.now(); const f = new File([], 'n'); return f.lastModified >= t && f.lastModified <= Date.now(); })()");
-        ok(&c, "new File([], 'x', { lastModified: NaN }).lastModified === 0");
-        ok(&c, "new File([], 'x', { lastModified: -5 }).lastModified === -5");
-        assert_eq!(throws(&c, "new File([])"), "Failed to construct 'File': 2 arguments required, but only 1 present.");
+        ok(
+            &c,
+            "new File([], 'x', { lastModified: NaN }).lastModified === 0",
+        );
+        ok(
+            &c,
+            "new File([], 'x', { lastModified: -5 }).lastModified === -5",
+        );
+        assert_eq!(
+            throws(&c, "new File([])"),
+            "Failed to construct 'File': 2 arguments required, but only 1 present."
+        );
         assert!(throws(&c, "new File([], 'x', 'nope')").contains("FilePropertyBag"));
         assert!(throws(&c, "File([], 'x')").contains("new"));
         // A getter brand-checks: a Blob is not a File.
-        assert!(throws(&c, "Object.getOwnPropertyDescriptor(File.prototype, 'name').get.call(new Blob([]))").contains("non-File"));
+        assert!(throws(
+            &c,
+            "Object.getOwnPropertyDescriptor(File.prototype, 'name').get.call(new Blob([]))"
+        )
+        .contains("non-File"));
         // A subclass keeps its prototype and is still a File.
         ok(&c, "(() => { class F extends File {} const f = new F(['x'], 'n'); return f instanceof F && f.name === 'n' && f.size === 1; })()");
     }
@@ -562,7 +700,10 @@ mod jsc_tests {
         // makes its read fail, which a copy would not.
         ok(&c, "(() => { globalThis.renamed = new File([picked], 'renamed.bin', { type: 'a/b' }); \
                  globalThis.part = picked.slice(2, 5, 'X/Y'); return renamed.size === 10 && part.size === 3; })()");
-        ok(&c, "!(part instanceof File) && part instanceof Blob && part.type === 'x/y'");
+        ok(
+            &c,
+            "!(part instanceof File) && part instanceof Blob && part.type === 'x/y'",
+        );
         assert_eq!(run(&c, "return await part.text();"), "234");
         assert_eq!(run(&c, "return await renamed.text();"), "0123456789");
         assert_eq!(run(&c, "return [picked.name, picked.size, picked.type, typeof picked.lastModified].join();"), "shared.bin,10,application/octet-stream,number");
@@ -578,7 +719,11 @@ mod jsc_tests {
         ok(&c, "f.type === 'text/plain' && f.size === 9");
         // The read is asynchronous: nothing has settled before the pump runs.
         ok(&c, "(() => { globalThis.early = 'none'; f.text().then(v => { early = v; }); return early === 'none'; })()");
-        assert_eq!(run(&c, "return await f.text();"), "héllo", "UTF-8 decode drops the BOM");
+        assert_eq!(
+            run(&c, "return await f.text();"),
+            "héllo",
+            "UTF-8 decode drops the BOM"
+        );
         assert_eq!(run(&c, "const b = await f.bytes(); return b instanceof Uint8Array && b.length === 9 && b[0] === 0xEF;"), "true");
         assert_eq!(run(&c, "const b = await f.arrayBuffer(); return b instanceof ArrayBuffer && b.byteLength === 9;"), "true");
         // Change it after the File was made: Chromium's snapshot rule.
@@ -614,7 +759,11 @@ mod jsc_tests {
         let mut pumps = 0u32;
         loop {
             unsafe {
-                crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+                crate::web::pump(
+                    c.raw(),
+                    crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                    core::ptr::null_mut(),
+                );
             }
             pumps += 1;
             if s(c, "String(globalThis.__done)") == "true" || pumps >= 5000 {
@@ -647,9 +796,12 @@ mod jsc_tests {
             }
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "files", arr, 0);
         }
-        s(&c, "globalThis.__done = false; (async () => { let n = 0; \
+        s(
+            &c,
+            "globalThis.__done = false; (async () => { let n = 0; \
                  for (const f of files) n += (await f.text()).length; \
-                 globalThis.__n = n; globalThis.__done = true; })(); 0");
+                 globalThis.__n = n; globalThis.__done = true; })(); 0",
+        );
         let texts = pumps_until_done(&c);
         // 50 awaited fetch()es of a path-backed blob: URL.
         s(&c, "globalThis.__done = false; (async () => { const u = URL.createObjectURL(picked); let n = 0; \
@@ -668,7 +820,10 @@ mod jsc_tests {
         );
         assert_eq!(s(&c, "String(__n)"), "204800");
         assert_eq!(s(&c, "String(__m)"), "100");
-        assert!(slices <= 50 && texts <= 25 && fetches <= 13 && strings <= 13, "{slices} / {texts} / {fetches} / {strings} pumps");
+        assert!(
+            slices <= 50 && texts <= 25 && fetches <= 13 && strings <= 13,
+            "{slices} / {texts} / {fetches} / {strings} pumps"
+        );
     }
 
     #[test]
@@ -681,7 +836,9 @@ mod jsc_tests {
                      return all.every(b => b.length === 10 && b[0] === 7);"),
             "true"
         );
-        assert!(super::super::blob::peak_reads_in_flight() <= super::super::blob::MAX_READS_IN_FLIGHT);
+        assert!(
+            super::super::blob::peak_reads_in_flight() <= super::super::blob::MAX_READS_IN_FLIGHT
+        );
     }
 
     #[test]
@@ -694,12 +851,21 @@ mod jsc_tests {
                           for (;;) { const { done, value } = await r.read(); if (done) break; sizes.push(value.length); \
                             for (let i = 0; i < value.length; i++) if (value[i] !== (at + i) % 251) ok = false; at += value.length; sum += value.length; } \
                           return sizes.join('+') + '=' + sum + (ok ? ' ok' : ' BAD'); }";
-        assert_eq!(run(&c, &format!("return await ({read_all})(f);")), "65536+65536+18928=150000 ok");
+        assert_eq!(
+            run(&c, &format!("return await ({read_all})(f);")),
+            "65536+65536+18928=150000 ok"
+        );
         assert_eq!(
             run(&c, &format!("const m = new Uint8Array(150000); for (let i = 0; i < m.length; i++) m[i] = i % 251; return await ({read_all})(new Blob([m]));")),
             "65536+65536+18928=150000 ok"
         );
-        assert_eq!(run(&c, "const r = new Blob([]).stream().getReader(); return (await r.read()).done;"), "true");
+        assert_eq!(
+            run(
+                &c,
+                "const r = new Blob([]).stream().getReader(); return (await r.read()).done;"
+            ),
+            "true"
+        );
         // A page that replaces ReadableStream later does not change what stream() returns.
         assert_eq!(
             run(&c, "const RS = ReadableStream; globalThis.ReadableStream = function () { throw new Error('patched'); }; \
@@ -723,11 +889,20 @@ mod jsc_tests {
         ok(&c, "list instanceof FileList && list.length === 2 && list[0].name === 'a.txt' && list.item(1) === list[1] && list.item(2) === null && list[2] === undefined");
         ok(&c, "Object.prototype.toString.call(list) === '[object FileList]' && FileList.prototype[Symbol.iterator] === Array.prototype.values");
         ok(&c, "[...list].map(f => f.name).join() === 'a.txt,b.txt' && Object.keys(list).join() === '0,1'");
-        ok(&c, "list.item(4294967296) === list[0] && list.item('1') === list[1]");
+        ok(
+            &c,
+            "list.item(4294967296) === list[0] && list.item('1') === list[1]",
+        );
         ok(&c, "(() => { const d = Object.getOwnPropertyDescriptor(list, 0); return d.enumerable && !d.writable; })()");
         ok(&c, "(() => { list[0] = 1; delete list[1]; return list[0] instanceof File && list[1] instanceof File; })()");
-        assert!(throws(&c, "'use strict'; list[0] = 1").contains("read"), "a write to an index fails");
-        assert_eq!(throws(&c, "list.item()"), "Failed to execute 'item' on 'FileList': 1 argument required, but only 0 present.");
+        assert!(
+            throws(&c, "'use strict'; list[0] = 1").contains("read"),
+            "a write to an index fails"
+        );
+        assert_eq!(
+            throws(&c, "list.item()"),
+            "Failed to execute 'item' on 'FileList': 1 argument required, but only 0 present."
+        );
         assert!(throws(&c, "new FileList()").contains("Illegal constructor"));
     }
 
@@ -738,7 +913,10 @@ mod jsc_tests {
         t.expose(&c, "picked");
         unsafe {
             let g = c.raw();
-            let a = c.eval("new File(['mem'], 'm.txt', { type: 'text/x', lastModified: 77 })").unwrap().0;
+            let a = c
+                .eval("new File(['mem'], 'm.txt', { type: 'text/x', lastModified: 77 })")
+                .unwrap()
+                .0;
             let p = c.eval("picked").unwrap().0;
             let list = super::create_file_list(g, &[a, p]);
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "list", list, 0);
@@ -748,7 +926,10 @@ mod jsc_tests {
                    && r.list[0] instanceof File && r.list[0].name === 'm.txt' && r.list[0].type === 'text/x' && r.list[0].lastModified === 77 \
                    && r.list[1].name === 'clone.txt'; })()");
         // By reference: the clone of a path-backed File reads the file (no copy was made).
-        assert_eq!(run(&c, "return await structuredClone(picked).text();"), "by reference");
+        assert_eq!(
+            run(&c, "return await structuredClone(picked).text();"),
+            "by reference"
+        );
         assert_eq!(
             run(&c, "const rx = new BroadcastChannel('files'), tx = new BroadcastChannel('files'); \
                      const got = new Promise(r => { rx.onmessage = e => r(e.data); }); tx.postMessage({ f: picked }); \
@@ -768,11 +949,37 @@ mod jsc_tests {
             let g = c.raw();
             let ser = |src: &str| {
                 let v = c.eval(src).unwrap().0;
-                serialize(g, v, &Options { for_storage: true, transfer: &[] }).map_err(|e| c.error_info(crate::api::Value(e)).0)
+                serialize(
+                    g,
+                    v,
+                    &Options {
+                        for_storage: true,
+                        transfer: &[],
+                    },
+                )
+                .map_err(|e| c.error_info(crate::api::Value(e)).0)
             };
             // The wire format of 0x31, pinned.
             let s = ser("new File(['ab'], 'n', { type: 't/x', lastModified: 5 })").unwrap();
-            let mut want = vec![b'R', b'J', b'S', 1, 1, tag::FILE, 0x08, 3, b't', b'/', b'x', 2, b'a', b'b', 0x08, 1, b'n'];
+            let mut want = vec![
+                b'R',
+                b'J',
+                b'S',
+                1,
+                1,
+                tag::FILE,
+                0x08,
+                3,
+                b't',
+                b'/',
+                b'x',
+                2,
+                b'a',
+                b'b',
+                0x08,
+                1,
+                b'n',
+            ];
             want.extend(5f64.to_le_bytes());
             want.extend([0x08, 0]);
             assert_eq!(s.bytes, want);
@@ -783,20 +990,21 @@ mod jsc_tests {
             let v = deserialize_storage(g, &s.bytes).unwrap();
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "fromDisk", v, 0);
             ok(&c, "fromDisk.f instanceof File && fromDisk.f.name === 'stored.txt' && fromDisk.l[0] === fromDisk.f");
-            assert_eq!(run(&c, "return await fromDisk.f.text();"), "on disk", "the stored copy is independent of the file");
+            assert_eq!(
+                run(&c, "return await fromDisk.f.text();"),
+                "on disk",
+                "the stored copy is independent of the file"
+            );
             // The file changed since `picked` was made: storing it now fails.
             let e = ser("picked").unwrap_err();
             assert!(e.contains("could not be read"), "{e}");
             // A FileList whose item is not a File, or a non-integral lastModified, is corrupt.
-            for bad in [
-                vec![b'R', b'J', b'S', 1, 1, tag::FILE_LIST, 1, 0x05, 0],
-                {
-                    let mut b = vec![b'R', b'J', b'S', 1, 1, tag::FILE, 0x08, 0, 0, 0x08, 0];
-                    b.extend(0.5f64.to_le_bytes());
-                    b.extend([0x08, 0]);
-                    b
-                },
-            ] {
+            for bad in [vec![b'R', b'J', b'S', 1, 1, tag::FILE_LIST, 1, 0x05, 0], {
+                let mut b = vec![b'R', b'J', b'S', 1, 1, tag::FILE, 0x08, 0, 0, 0x08, 0];
+                b.extend(0.5f64.to_le_bytes());
+                b.extend([0x08, 0]);
+                b
+            }] {
                 assert!(deserialize_storage(g, &bad).is_err(), "{bad:?}");
             }
         }
@@ -815,7 +1023,15 @@ mod jsc_tests {
             let g = c.raw();
             let (_, mtime) = super::snapshot(&t.0).unwrap();
             let f = super::create_file(g, &t.0, "huge.bin", None, 1u64 << 62, mtime, "");
-            let e = serialize(g, f, &Options { for_storage: true, transfer: &[] }).unwrap_err();
+            let e = serialize(
+                g,
+                f,
+                &Options {
+                    for_storage: true,
+                    transfer: &[],
+                },
+            )
+            .unwrap_err();
             crate::webapi::util::define(g, crate::glue::rjs_global(g), "err", e, 0);
         }
         ok(&c, "err instanceof DOMException && err.name === 'DataCloneError' && err.message === 'Data cannot be cloned, out of memory.'");
@@ -826,11 +1042,19 @@ mod jsc_tests {
         let c = file_ctx();
         let t = TempFile::new("large.bin", &vec![1u8; (17 << 20) as usize]);
         t.expose(&c, "big");
-        ok(&c, "new Response(big) instanceof Response && new Response(big) instanceof Response");
-        let said: Vec<String> =
-            super::super::blob::advisories().into_iter().filter(|m| m.contains("A-F2") && m.contains("fetch/Request/Response body")).collect();
+        ok(
+            &c,
+            "new Response(big) instanceof Response && new Response(big) instanceof Response",
+        );
+        let said: Vec<String> = super::super::blob::advisories()
+            .into_iter()
+            .filter(|m| m.contains("A-F2") && m.contains("fetch/Request/Response body"))
+            .collect();
         assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said[0].contains("17 MiB") && said[0].contains("stream()"), "{said:?}");
+        assert!(
+            said[0].contains("17 MiB") && said[0].contains("stream()"),
+            "{said:?}"
+        );
     }
 
     #[test]
@@ -843,7 +1067,11 @@ mod jsc_tests {
             let picked = c.eval("picked").unwrap().0;
             assert_eq!(super::path_of(g, picked).as_deref(), Some(t.0.as_path()));
             let made = c.eval("new File([picked], 'copy.txt')").unwrap().0;
-            assert_eq!(super::path_of(g, made), None, "a script-made File has no path, as in Electron");
+            assert_eq!(
+                super::path_of(g, made),
+                None,
+                "a script-made File has no path, as in Electron"
+            );
             let blob = c.eval("new Blob(['x'])").unwrap().0;
             assert!(!super::is_file(g, blob) && super::path_of(g, blob).is_none());
         }

@@ -94,10 +94,10 @@ pub mod navigator;
 #[cfg(feature = "audio")]
 pub mod osc;
 pub mod path2d;
-pub mod performance;
-pub mod permissions;
 #[cfg(feature = "audio")]
 pub mod pcm;
+pub mod performance;
+pub mod permissions;
 pub mod platform;
 pub mod report_error;
 pub mod request;
@@ -134,7 +134,16 @@ pub mod testing {
         let c = Context::new();
         unsafe {
             assert_eq!(crate::ffi::redjs_web_install(c.raw()), 0);
-            assert_eq!(crate::ffi::redjs_webshim_install(c.raw(), core::ptr::null(), 0, core::ptr::null(), 0), 0);
+            assert_eq!(
+                crate::ffi::redjs_webshim_install(
+                    c.raw(),
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    0
+                ),
+                0
+            );
         }
         c
     }
@@ -142,7 +151,9 @@ pub mod testing {
     /// Evaluate; the result stringified. Panics with the JS message on throw.
     pub fn s(c: &Context, src: &str) -> String {
         match c.eval(src) {
-            Ok(v) => c.to_rust_string(v).unwrap_or_else(|_| "<unstringifiable>".into()),
+            Ok(v) => c
+                .to_rust_string(v)
+                .unwrap_or_else(|_| "<unstringifiable>".into()),
             Err(Error::Exception(e)) => {
                 let (m, _) = c.error_info(e);
                 panic!("eval threw:\n  {src}\n  → {m}")
@@ -165,7 +176,9 @@ pub mod testing {
             Err(Error::Exception(e)) => c.error_info(e).0,
             Err(e) => panic!("expected a JS exception, got {e}: {src}"),
             Ok(v) => {
-                let shown = c.to_rust_string(v).unwrap_or_else(|_| "<unstringifiable>".into());
+                let shown = c
+                    .to_rust_string(v)
+                    .unwrap_or_else(|_| "<unstringifiable>".into());
                 panic!("expected a throw from `{src}`, but it returned {shown}")
             }
         }
@@ -255,7 +268,14 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     {
         let n16: Vec<u16> = "__rjs_print".encode_utf16().collect();
         let mut f = UNDEF;
-        crate::glue::rjs_function_create(g, n16.as_ptr(), n16.len(), 2, print as *const c_void, &mut f);
+        crate::glue::rjs_function_create(
+            g,
+            n16.as_ptr(),
+            n16.len(),
+            2,
+            print as *const c_void,
+            &mut f,
+        );
         define(g, crate::glue::rjs_global(g), "__rjs_print", f, 2);
     }
 
@@ -291,45 +311,75 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     let global_proxy = get(g, crate::glue::rjs_global(g), "globalThis");
     crate::ffi::redjs_protect(g, global_proxy);
 
-    let st = put_state(g, WebState {
+    let st = put_state(
         g,
-        global_proxy,
-        s_performance,
-        s_response_body,
-        s_console: atom_priv(g, "redjs#console"),
-        s_crypto,
-        s_subtle_crypto,
-        s_listeners,
-        s_handler_entries,
-        s_event,
-        s_image,
-        s_image_request,
-        s_usp,
-        s_iter_target,
-        a_type,
-        a_cb,
-        a_flags,
-        a_handle_event,
-        event: Class { ctor: UNDEF, proto: UNDEF },
-        custom_event: Class { ctor: UNDEF, proto: UNDEF },
-        event_target: Class { ctor: UNDEF, proto: UNDEF },
-        blob_class: core::ptr::null_mut(),
-        blob: Class { ctor: UNDEF, proto: UNDEF },
-        url_class: core::ptr::null_mut(),
-        url: Class { ctor: UNDEF, proto: UNDEF },
-        usp_class: core::ptr::null_mut(),
-        usp: Class { ctor: UNDEF, proto: UNDEF },
-        usp_iter_class: core::ptr::null_mut(),
-        usp_iter_proto: UNDEF,
-        bitmap_class: core::ptr::null_mut(),
-        bitmap: Class { ctor: UNDEF, proto: UNDEF },
-        image: Class { ctor: UNDEF, proto: UNDEF },
-        response_class: core::ptr::null_mut(),
-        response: Class { ctor: UNDEF, proto: UNDEF },
-        document: UNDEF,
-        elements: UNDEF,
-        json_parse,
-    });
+        WebState {
+            g,
+            global_proxy,
+            s_performance,
+            s_response_body,
+            s_console: atom_priv(g, "redjs#console"),
+            s_crypto,
+            s_subtle_crypto,
+            s_listeners,
+            s_handler_entries,
+            s_event,
+            s_image,
+            s_image_request,
+            s_usp,
+            s_iter_target,
+            a_type,
+            a_cb,
+            a_flags,
+            a_handle_event,
+            event: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            custom_event: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            event_target: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            blob_class: core::ptr::null_mut(),
+            blob: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            url_class: core::ptr::null_mut(),
+            url: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            usp_class: core::ptr::null_mut(),
+            usp: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            usp_iter_class: core::ptr::null_mut(),
+            usp_iter_proto: UNDEF,
+            bitmap_class: core::ptr::null_mut(),
+            bitmap: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            image: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            response_class: core::ptr::null_mut(),
+            response: Class {
+                ctor: UNDEF,
+                proto: UNDEF,
+            },
+            document: UNDEF,
+            elements: UNDEF,
+            json_parse,
+        },
+    );
     let st_mut = st as *const WebState as *mut WebState;
 
     let (event, custom_event, event_target) = events::install(g);
@@ -456,18 +506,31 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     if let Err(exception) = bootstrap::install(g) {
         let (mut msg, mut stack) = (UNDEF, UNDEF);
         crate::glue::rjs_error_info(g, exception, &mut msg, &mut stack);
-        eprintln!("[redjs] bootstrap failed: {}", read_string(g, msg).unwrap_or_default());
+        eprintln!(
+            "[redjs] bootstrap failed: {}",
+            read_string(g, msg).unwrap_or_default()
+        );
         return 1;
     }
     #[cfg(not(feature = "canvas"))]
     if crate::glue::rjs_kind(g, get(g, st.global_proxy, "OffscreenCanvas")) != 9 {
         let url = "redjs/bootstrap.js";
         let mut out = UNDEF;
-        if crate::glue::rjs_eval8(g, CANVAS_FALLBACK_JS.as_ptr(), CANVAS_FALLBACK_JS.len(),
-                                  url.as_ptr(), url.len(), &mut out) != 0 {
+        if crate::glue::rjs_eval8(
+            g,
+            CANVAS_FALLBACK_JS.as_ptr(),
+            CANVAS_FALLBACK_JS.len(),
+            url.as_ptr(),
+            url.len(),
+            &mut out,
+        ) != 0
+        {
             let (mut msg, mut stack) = (UNDEF, UNDEF);
             crate::glue::rjs_error_info(g, out, &mut msg, &mut stack);
-            eprintln!("[redjs] canvas fallback failed: {}", read_string(g, msg).unwrap_or_default());
+            eprintln!(
+                "[redjs] canvas fallback failed: {}",
+                read_string(g, msg).unwrap_or_default()
+            );
             return 1;
         }
     }
@@ -492,7 +555,10 @@ mod console_tests {
         // Inside an object: the header; a BigInt does not throw.
         ok(&c, "console.log({ e: new Error('x'), n: 1n }), __got === '{\"e\":\"Error: x\",\"n\":\"1n\"}'");
         // %d, %%, leftover arguments, and a lone format string left as written.
-        ok(&c, "console.log('%d items', '42.9', 'extra'), __got === '42 items extra'");
+        ok(
+            &c,
+            "console.log('%d items', '42.9', 'extra'), __got === '42 items extra'",
+        );
         ok(&c, "console.log('100%% %s', 'done'), __got === '100% done'");
         ok(&c, "console.log('%c'), __got === '%c'");
     }

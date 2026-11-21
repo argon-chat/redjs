@@ -208,10 +208,16 @@ pub unsafe fn reject_refusal(g: *mut c_void, msg: &str) -> u64 {
 /// Marks the body consumed, or returns the rejection for a double read.
 unsafe fn take_body(g: *mut c_void, cf: *mut c_void, who: &str) -> Result<Arc<Vec<u8>>, u64> {
     let Some(d) = this_resp(g, cf) else {
-        return Err(reject_refusal(g, &format!("Response.{who} called on a non-Response")));
+        return Err(reject_refusal(
+            g,
+            &format!("Response.{who} called on a non-Response"),
+        ));
     };
     if d.body_used {
-        return Err(reject_refusal(g, &format!("Response.{who}: body has already been consumed")));
+        return Err(reject_refusal(
+            g,
+            &format!("Response.{who}: body has already been consumed"),
+        ));
     }
     d.body_used = true;
     Ok(Arc::clone(&d.bytes))
@@ -313,7 +319,9 @@ unsafe fn start_body(g: *mut c_void, cf: *mut c_void) -> u64 {
     let bytes = get_a(g, callee, state(g).s_response_body);
     let controller = cf_arg(cf, 0);
     for (name, args) in [("enqueue", &[bytes][..]), ("close", &[][..])] {
-        let Ok(method) = try_get(g, controller, name) else { return UNDEF };
+        let Ok(method) = try_get(g, controller, name) else {
+            return UNDEF;
+        };
         if let Err(exception) = call(g, method, controller, args) {
             glue::rjs_throw(g, exception);
             return UNDEF;
@@ -331,7 +339,11 @@ unsafe fn make_body_stream(g: *mut c_void, bytes: &[u8]) -> u64 {
     define(g, source, "start", start, 0);
     let ctor = get(g, glue::rjs_global(g), "ReadableStream");
     let mut stream = UNDEF;
-    if glue::rjs_construct(g, ctor, &source, 1, &mut stream) == 0 { stream } else { UNDEF }
+    if glue::rjs_construct(g, ctor, &source, 1, &mut stream) == 0 {
+        stream
+    } else {
+        UNDEF
+    }
 }
 
 #[crate::host_fn]
@@ -420,7 +432,11 @@ unsafe fn resp_clone(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 /// Reads a `ResponseInit` / `RequestInit` `headers` + `status` + `statusText`.
-unsafe fn response_init(g: *mut c_void, init: u64, default_mime: Option<String>) -> Result<(i32, String, Vec<(String, String)>), String> {
+unsafe fn response_init(
+    g: *mut c_void,
+    init: u64,
+    default_mime: Option<String>,
+) -> Result<(i32, String, Vec<(String, String)>), String> {
     let mut list = Vec::new();
     let mut status = 200i32;
     let mut status_text = String::new();
@@ -460,18 +476,21 @@ unsafe fn response_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         Ok(v) => v,
         Err(m) => return throw_type_error(g, &format!("new Response: {m}")),
     };
-    create_response(g, RespData {
-        bytes: Arc::new(bytes),
-        headers: list,
-        url: String::new(),
-        status,
-        status_text,
-        redirected: false,
-        kind: "default",
-        has_body,
-        body_used: false,
-        net: None,
-    })
+    create_response(
+        g,
+        RespData {
+            bytes: Arc::new(bytes),
+            headers: list,
+            url: String::new(),
+            status,
+            status_text,
+            redirected: false,
+            kind: "default",
+            has_body,
+            body_used: false,
+            net: None,
+        },
+    )
 }
 
 /// `Response.json(data, init)`.
@@ -491,18 +510,21 @@ unsafe fn response_static_json(g: *mut c_void, cf: *mut c_void) -> u64 {
             Ok(v) => v,
             Err(m) => return throw_type_error(g, &format!("Response.json: {m}")),
         };
-    create_response(g, RespData {
-        bytes: Arc::new(text.into_bytes()),
-        headers: list,
-        url: String::new(),
-        status,
-        status_text,
-        redirected: false,
-        kind: "default",
-        has_body: true,
-        body_used: false,
-        net: None,
-    })
+    create_response(
+        g,
+        RespData {
+            bytes: Arc::new(text.into_bytes()),
+            headers: list,
+            url: String::new(),
+            status,
+            status_text,
+            redirected: false,
+            kind: "default",
+            has_body: true,
+            body_used: false,
+            net: None,
+        },
+    )
 }
 
 /// `Response.error()` — the spec's network-error sentinel. This is the ONLY
@@ -511,18 +533,21 @@ unsafe fn response_static_json(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// `fetch('https://…')`.
 #[crate::host_fn]
 unsafe fn response_static_error(g: *mut c_void, _cf: *mut c_void) -> u64 {
-    create_response(g, RespData {
-        bytes: Arc::new(Vec::new()),
-        headers: Vec::new(),
-        url: String::new(),
-        status: 0,
-        status_text: String::new(),
-        redirected: false,
-        kind: "error",
-        has_body: false,
-        body_used: false,
-        net: None,
-    })
+    create_response(
+        g,
+        RespData {
+            bytes: Arc::new(Vec::new()),
+            headers: Vec::new(),
+            url: String::new(),
+            status: 0,
+            status_text: String::new(),
+            redirected: false,
+            kind: "error",
+            has_body: false,
+            body_used: false,
+            net: None,
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +577,13 @@ unsafe fn bridge_handle_event(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 unsafe fn make_bridge(g: *mut c_void, cancel: Arc<http::Cancel>) -> u64 {
     let obj = host_create(g, bridge_class(), UNDEF, BridgeData { cancel });
-    define(g, obj, "handleEvent", make_fn(g, "handleEvent", 1, bridge_handle_event), 2);
+    define(
+        g,
+        obj,
+        "handleEvent",
+        make_fn(g, "handleEvent", 1, bridge_handle_event),
+        2,
+    );
     obj
 }
 
@@ -561,7 +592,11 @@ unsafe fn signal_is_aborted(g: *mut c_void, signal: u64) -> bool {
 }
 
 unsafe fn signal_reason(g: *mut c_void, signal: u64) -> u64 {
-    let r = if is_cell(signal) { get(g, signal, "reason") } else { UNDEF };
+    let r = if is_cell(signal) {
+        get(g, signal, "reason")
+    } else {
+        UNDEF
+    };
     if r == UNDEF || r == NULL {
         super::domexception::create(g, "AbortError", "The operation was aborted")
     } else {
@@ -570,7 +605,11 @@ unsafe fn signal_reason(g: *mut c_void, signal: u64) -> u64 {
 }
 
 unsafe fn listen(g: *mut c_void, signal: u64, bridge: u64, add: bool) {
-    let name = if add { "addEventListener" } else { "removeEventListener" };
+    let name = if add {
+        "addEventListener"
+    } else {
+        "removeEventListener"
+    };
     let f = get(g, signal, name);
     if is_cell(f) {
         let ev = js_string(g, "abort");
@@ -618,33 +657,40 @@ unsafe fn settle(g: *mut c_void, d: Delivery) {
                 .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
                 .map(|(_, v)| v.clone())
                 .collect();
-            headers.retain(|(k, _)| !k.eq_ignore_ascii_case("set-cookie") && !k.eq_ignore_ascii_case("set-cookie2"));
-            let obj = create_response(g, RespData {
-                bytes: Arc::new(resp.body),
-                headers,
-                url: resp.url,
-                status: resp.status as i32,
-                status_text: resp.status_text,
-                redirected: resp.redirected,
-                kind: "basic",
-                has_body,
-                body_used: false,
-                net: Some(NetInfo {
-                    protocol: resp.protocol,
-                    reused: resp.reused,
-                    connection_id: resp.connection_id,
-                    remote_addr: resp.remote_addr,
-                    set_cookies,
-                    cache: resp.cache,
-                }),
+            headers.retain(|(k, _)| {
+                !k.eq_ignore_ascii_case("set-cookie") && !k.eq_ignore_ascii_case("set-cookie2")
             });
+            let obj = create_response(
+                g,
+                RespData {
+                    bytes: Arc::new(resp.body),
+                    headers,
+                    url: resp.url,
+                    status: resp.status as i32,
+                    status_text: resp.status_text,
+                    redirected: resp.redirected,
+                    kind: "basic",
+                    has_body,
+                    body_used: false,
+                    net: Some(NetInfo {
+                        protocol: resp.protocol,
+                        reused: resp.reused,
+                        connection_id: resp.connection_id,
+                        remote_addr: resp.remote_addr,
+                        set_cookies,
+                        cache: resp.cache,
+                    }),
+                },
+            );
             let _ = call(g, d.resolve, UNDEF, &[obj]);
         }
         Err(e) => {
             // Browsers reject `fetch` with a TypeError for every network
             // failure; the message carries what actually went wrong.
             let err = match e.kind {
-                http::ErrorKind::Aborted => super::domexception::create(g, "AbortError", "The operation was aborted"),
+                http::ErrorKind::Aborted => {
+                    super::domexception::create(g, "AbortError", "The operation was aborted")
+                }
                 _ => make_error(g, TYPE_ERR, "", &format!("Failed to fetch {}", e.message)),
             };
             let _ = call(g, d.reject, UNDEF, &[err]);
@@ -705,7 +751,11 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
         url: plan.url,
         headers: plan.headers,
         body: plan.body,
-        redirect: if plan.redirect == "error" { http::Redirect::Error } else { http::Redirect::Follow },
+        redirect: if plan.redirect == "error" {
+            http::Redirect::Error
+        } else {
+            http::Redirect::Follow
+        },
         // `check_supported` already refused anything else.
         credentials: super::cookies::Credentials::parse(&plan.credentials)
             .unwrap_or(super::cookies::Credentials::SameOrigin),
@@ -727,14 +777,26 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
         req,
         (*cancel).clone(),
         Box::new(move |result| {
-            let delivery = Delivery { resolve, reject, signal, bridge, cancel: worker_cancel, result };
+            let delivery = Delivery {
+                resolve,
+                reject,
+                signal,
+                bridge,
+                cancel: worker_cancel,
+                result,
+            };
             INFLIGHT.fetch_sub(1, Ordering::SeqCst);
             // Back onto the JS thread: the pump runs this with the VM lock
             // held, and only in the context that asked. `resolve`/`reject`
             // are values of THAT heap; a newer context at the same address
             // must never call them, and a torn-down one must not get its
             // queue back.
-            crate::web::schedule_native_from(ctx.ptr(), id, 0.0, Box::new(move |g| unsafe { settle(g, delivery) }));
+            crate::web::schedule_native_from(
+                ctx.ptr(),
+                id,
+                0.0,
+                Box::new(move |g| unsafe { settle(g, delivery) }),
+            );
         }),
     );
 
@@ -758,32 +820,41 @@ unsafe fn fetch_network(g: *mut c_void, plan: Plan) -> u64 {
 /// resolving with a status-0 response.
 unsafe fn fetch_local(g: *mut c_void, plan: &Plan) -> u64 {
     if plan.method != "GET" && plan.method != "HEAD" {
-        return reject_refusal(g, &format!(
-            "fetch: {} is not supported for local and data: URLs — only GET and HEAD are",
-            plan.method
-        ));
+        return reject_refusal(
+            g,
+            &format!(
+                "fetch: {} is not supported for local and data: URLs — only GET and HEAD are",
+                plan.method
+            ),
+        );
     }
     let fetched = fsutil::fetch_url(g, &plan.url);
     if fetched.status == 0 {
         // fsutil signals "could not even be interpreted" with status 0. That is
         // a failure, and the whole point of this change is that it must not
         // reach JS wearing a Response.
-        return reject_refusal(g, &format!("Failed to fetch {}: the URL could not be read", plan.url));
+        return reject_refusal(
+            g,
+            &format!("Failed to fetch {}: the URL could not be read", plan.url),
+        );
     }
     let mime = fetched.mime.clone();
     let has_body = plan.method == "GET";
-    let resp = create_response(g, RespData {
-        bytes: Arc::new(if has_body { fetched.bytes } else { Vec::new() }),
-        headers: vec![("content-type".into(), mime)],
-        url: plan.url.clone(),
-        status: fetched.status,
-        status_text: fetched.status_text.to_string(),
-        redirected: false,
-        kind: "basic",
-        has_body,
-        body_used: false,
-        net: None,
-    });
+    let resp = create_response(
+        g,
+        RespData {
+            bytes: Arc::new(if has_body { fetched.bytes } else { Vec::new() }),
+            headers: vec![("content-type".into(), mime)],
+            url: plan.url.clone(),
+            status: fetched.status,
+            status_text: fetched.status_text.to_string(),
+            redirected: false,
+            kind: "basic",
+            has_body,
+            body_used: false,
+            net: None,
+        },
+    );
     resolved_promise(g, resp)
 }
 
@@ -803,9 +874,10 @@ unsafe fn fetch_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
         return fetch_blob(g, &plan);
     }
     if let Some(scheme) = unsupported_scheme(&lower) {
-        return reject_refusal(g, &format!(
-            "Failed to fetch: the {scheme}: scheme is not supported by this runtime"
-        ));
+        return reject_refusal(
+            g,
+            &format!("Failed to fetch: the {scheme}: scheme is not supported by this runtime"),
+        );
     }
     fetch_local(g, &plan)
 }
@@ -866,11 +938,17 @@ fn parse_single_range(v: &str) -> Option<(Option<u64>, Option<u64>)> {
 /// `headers`: `(start, len, Content-Range)`, the last `None` when no `Range`
 /// was asked for. `Err` is why the request is a network error. Shared by
 /// `fetch` and `XMLHttpRequest` (super::xhr).
-pub(crate) fn blob_range(full: u64, headers: &[(String, String)]) -> Result<(u64, u64, Option<String>), String> {
+pub(crate) fn blob_range(
+    full: u64,
+    headers: &[(String, String)],
+) -> Result<(u64, u64, Option<String>), String> {
     // "Get `Range`" combines every value with ", ", so two Range headers are
     // a list of ranges, which is a network error.
-    let values: Vec<&str> =
-        headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("range")).map(|(_, v)| v.as_str()).collect();
+    let values: Vec<&str> = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("range"))
+        .map(|(_, v)| v.as_str())
+        .collect();
     if values.is_empty() {
         return Ok((0, full, None));
     }
@@ -883,7 +961,9 @@ pub(crate) fn blob_range(full: u64, headers: &[(String, String)]) -> Result<(u64
         (None, Some(n)) => (full.saturating_sub(n), full.saturating_sub(1)),
         (Some(s), e) => {
             if s >= full {
-                return Err(format!("the Range {v:?} starts past the end of a {full}-byte Blob"));
+                return Err(format!(
+                    "the Range {v:?} starts past the end of a {full}-byte Blob"
+                ));
             }
             (s, e.map_or(full - 1, |e| e.min(full - 1)))
         }
@@ -915,23 +995,35 @@ impl BlobDelivery {
         } else {
             match body {
                 Ok(bytes) => {
-                    let resp = create_response(g, RespData {
-                        bytes,
-                        headers: self.headers,
-                        url: self.url,
-                        status: self.status,
-                        status_text: if self.status == 206 { "Partial Content".into() } else { "OK".into() },
-                        redirected: false,
-                        kind: "basic",
-                        has_body: true,
-                        body_used: false,
-                        net: None,
-                    });
+                    let resp = create_response(
+                        g,
+                        RespData {
+                            bytes,
+                            headers: self.headers,
+                            url: self.url,
+                            status: self.status,
+                            status_text: if self.status == 206 {
+                                "Partial Content".into()
+                            } else {
+                                "OK".into()
+                            },
+                            redirected: false,
+                            kind: "basic",
+                            has_body: true,
+                            body_used: false,
+                            net: None,
+                        },
+                    );
                     let _ = call(g, self.resolve, UNDEF, &[resp]);
                 }
                 Err(e) => {
                     // A network error, as for any blob whose read fails.
-                    let err = make_error(g, TYPE_ERR, "", &format!("Failed to fetch: {}: {}", e.name(), e.message()));
+                    let err = make_error(
+                        g,
+                        TYPE_ERR,
+                        "",
+                        &format!("Failed to fetch: {}: {}", e.name(), e.message()),
+                    );
                     let _ = call(g, self.reject, UNDEF, &[err]);
                 }
             }
@@ -952,7 +1044,13 @@ impl BlobDelivery {
 /// thread under the snapshot rule, like `text()`.
 unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
     if plan.method != "GET" {
-        return reject_refusal(g, &format!("Failed to fetch: a blob: URL can only be fetched with GET, not {}", plan.method));
+        return reject_refusal(
+            g,
+            &format!(
+                "Failed to fetch: a blob: URL can only be fetched with GET, not {}",
+                plan.method
+            ),
+        );
     }
     let Some(entry) = super::url::lookup(g, &plan.url) else {
         return reject_refusal(g, "Failed to fetch: this blob: URL is not in the blob URL store (it was revoked, or never created in this context)");
@@ -961,7 +1059,10 @@ unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
         Ok(r) => r,
         Err(m) => return reject_refusal(g, &format!("Failed to fetch: {m}")),
     };
-    let mut headers = vec![("content-length".to_string(), len.to_string()), ("content-type".to_string(), entry.mime.clone())];
+    let mut headers = vec![
+        ("content-length".to_string(), len.to_string()),
+        ("content-type".to_string(), entry.mime.clone()),
+    ];
     if let Some(cr) = &content_range {
         headers.push(("content-range".to_string(), cr.clone()));
     }
@@ -970,7 +1071,11 @@ unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
         let reason = signal_reason(g, plan.signal);
         return reject_with(g, reason);
     }
-    let window = super::blob::Range { source: entry.range.source.clone(), offset: entry.range.offset + start, len };
+    let window = super::blob::Range {
+        source: entry.range.source.clone(),
+        offset: entry.range.offset + start,
+        len,
+    };
 
     let (mut resolve, mut reject, mut promise) = (0u64, 0u64, 0u64);
     if crate::ffi::redjs_promise_create(g, &mut resolve, &mut reject, &mut promise) != 0 {
@@ -983,17 +1088,31 @@ unsafe fn fetch_blob(g: *mut c_void, plan: &Plan) -> u64 {
     }
     // `Response.url` is serialized with "exclude fragment" (Fetch).
     let url = plan.url.split('#').next().unwrap_or_default().to_string();
-    let d = BlobDelivery { resolve, reject, signal: plan.signal, url, status, headers };
+    let d = BlobDelivery {
+        resolve,
+        reject,
+        signal: plan.signal,
+        url,
+        status,
+        headers,
+    };
     if let super::blob::Source::Memory(arc) = &window.source {
         let body = if window.offset == 0 && window.len as usize == arc.len() {
             Ok(Arc::clone(arc))
         } else {
-            window.in_memory().map(|b| Arc::new(b.to_vec())).ok_or(super::blob::ReadError::NotReadable)
+            window
+                .in_memory()
+                .map(|b| Arc::new(b.to_vec()))
+                .ok_or(super::blob::ReadError::NotReadable)
         };
         d.settle(g, body);
         return promise;
     }
-    super::blob::read_async(g, window, Box::new(move |g, r| unsafe { d.settle(g, r.map(Arc::new)) }));
+    super::blob::read_async(
+        g,
+        window,
+        Box::new(move |g, r| unsafe { d.settle(g, r.map(Arc::new)) }),
+    );
     promise
 }
 
@@ -1018,38 +1137,60 @@ pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class) {
     request::install(g);
 
     let resp_cls = make_host_class::<RespData>("Response");
-    let response = define_class(g, &ClassSpec {
-        name: "Response",
-        arity: 0,
-        construct: Some(response_construct),
-        parent_proto: 0,
-        methods: &[
-            ("arrayBuffer", 0, resp_array_buffer),
-            ("bytes", 0, resp_bytes),
-            ("text", 0, resp_text),
-            ("json", 0, resp_json),
-            ("blob", 0, resp_blob),
-            ("clone", 0, resp_clone),
-        ],
-        getters: &[
-            ("ok", resp_ok),
-            ("status", resp_status),
-            ("statusText", resp_status_text),
-            ("url", resp_url),
-            ("redirected", resp_redirected),
-            ("bodyUsed", resp_body_used),
-            ("body", resp_body),
-            ("type", resp_type),
-            ("headers", resp_headers),
-        ],
-        accessors: &[],
-    });
-    define(g, response.ctor, "json", make_fn(g, "json", 2, response_static_json), 2);
-    define(g, response.ctor, "error", make_fn(g, "error", 0, response_static_error), 2);
+    let response = define_class(
+        g,
+        &ClassSpec {
+            name: "Response",
+            arity: 0,
+            construct: Some(response_construct),
+            parent_proto: 0,
+            methods: &[
+                ("arrayBuffer", 0, resp_array_buffer),
+                ("bytes", 0, resp_bytes),
+                ("text", 0, resp_text),
+                ("json", 0, resp_json),
+                ("blob", 0, resp_blob),
+                ("clone", 0, resp_clone),
+            ],
+            getters: &[
+                ("ok", resp_ok),
+                ("status", resp_status),
+                ("statusText", resp_status_text),
+                ("url", resp_url),
+                ("redirected", resp_redirected),
+                ("bodyUsed", resp_body_used),
+                ("body", resp_body),
+                ("type", resp_type),
+                ("headers", resp_headers),
+            ],
+            accessors: &[],
+        },
+    );
+    define(
+        g,
+        response.ctor,
+        "json",
+        make_fn(g, "json", 2, response_static_json),
+        2,
+    );
+    define(
+        g,
+        response.ctor,
+        "error",
+        make_fn(g, "error", 0, response_static_error),
+        2,
+    );
 
     let n16: Vec<u16> = "fetch".encode_utf16().collect();
     let mut f = UNDEF;
-    glue::rjs_function_create(g, n16.as_ptr(), n16.len(), 2, fetch_fn as *const c_void, &mut f);
+    glue::rjs_function_create(
+        g,
+        n16.as_ptr(),
+        n16.len(),
+        2,
+        fetch_fn as *const c_void,
+        &mut f,
+    );
     define(g, glue::rjs_global(g), "fetch", f, 2);
 
     (resp_cls, response)
@@ -1092,7 +1233,11 @@ mod jsc_tests {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             unsafe {
-                crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+                crate::web::pump(
+                    c.raw(),
+                    crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                    core::ptr::null_mut(),
+                );
             }
             c.drain_microtasks();
             let out = s(c, "globalThis.__out");
@@ -1112,7 +1257,9 @@ mod jsc_tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             for reply in replies {
-                let Ok((mut sock, _)) = listener.accept() else { return };
+                let Ok((mut sock, _)) = listener.accept() else {
+                    return;
+                };
                 let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut got = Vec::new();
                 let mut buf = [0u8; 4096];
@@ -1156,7 +1303,9 @@ mod jsc_tests {
         // here may resolve with a fabricated status again: either a real
         // response comes back, or the promise rejects.
         let c = fetch_ctx();
-        let port = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()]);
+        let port = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()
+        ]);
         let out = run(
             &c,
             &format!(
@@ -1196,7 +1345,10 @@ mod jsc_tests {
     #[test]
     fn an_unsupported_scheme_rejects_by_name_instead_of_resolving() {
         let c = fetch_ctx();
-        for (url, needle) in [("ws://example.com/socket", "ws"), ("ftp://example.com/f", "ftp")] {
+        for (url, needle) in [
+            ("ws://example.com/socket", "ws"),
+            ("ftp://example.com/f", "ftp"),
+        ] {
             let out = run(
                 &c,
                 &format!(
@@ -1204,8 +1356,14 @@ mod jsc_tests {
                      catch (e) {{ return e.message; }}"
                 ),
             );
-            assert!(out.contains(needle), "expected {needle}: to be named in the rejection, got {out}");
-            assert!(!out.starts_with("RESOLVED"), "{url} resolved instead of rejecting: {out}");
+            assert!(
+                out.contains(needle),
+                "expected {needle}: to be named in the rejection, got {out}"
+            );
+            assert!(
+                !out.starts_with("RESOLVED"),
+                "{url} resolved instead of rejecting: {out}"
+            );
         }
     }
 
@@ -1229,8 +1387,14 @@ mod jsc_tests {
                      catch (e) {{ return e.message; }}"
                 ),
             );
-            assert!(!out.starts_with("RESOLVED"), "{init} resolved instead of rejecting: {out}");
-            assert!(out.contains(needle), "{init} did not name {needle:?} in its refusal: {out}");
+            assert!(
+                !out.starts_with("RESOLVED"),
+                "{init} resolved instead of rejecting: {out}"
+            );
+            assert!(
+                out.contains(needle),
+                "{init} did not name {needle:?} in its refusal: {out}"
+            );
         }
     }
 
@@ -1263,7 +1427,9 @@ mod jsc_tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             for _ in 0..n {
-                let Ok((mut sock, _)) = listener.accept() else { return };
+                let Ok((mut sock, _)) = listener.accept() else {
+                    return;
+                };
                 let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut got = Vec::new();
                 let mut buf = [0u8; 4096];
@@ -1287,10 +1453,16 @@ mod jsc_tests {
     fn echo_cookie(head: &str, extra: &str) -> String {
         let cookie = head
             .lines()
-            .find_map(|l| l.strip_prefix("cookie: ").or_else(|| l.strip_prefix("Cookie: ")))
+            .find_map(|l| {
+                l.strip_prefix("cookie: ")
+                    .or_else(|| l.strip_prefix("Cookie: "))
+            })
             .unwrap_or("-")
             .to_string();
-        format!("HTTP/1.1 200 OK\r\n{extra}Content-Length: {}\r\n\r\n{cookie}", cookie.len())
+        format!(
+            "HTTP/1.1 200 OK\r\n{extra}Content-Length: {}\r\n\r\n{cookie}",
+            cookie.len()
+        )
     }
 
     #[test]
@@ -1300,7 +1472,10 @@ mod jsc_tests {
         let c = fetch_ctx();
         let port = serve_fn(4, |head| {
             if head.starts_with("GET /login") {
-                echo_cookie(head, "Set-Cookie: sid=abc; Path=/; HttpOnly\r\nSet-Cookie: theme=dark; Path=/\r\n")
+                echo_cookie(
+                    head,
+                    "Set-Cookie: sid=abc; Path=/; HttpOnly\r\nSet-Cookie: theme=dark; Path=/\r\n",
+                )
             } else {
                 echo_cookie(head, "")
             }
@@ -1334,16 +1509,26 @@ mod jsc_tests {
         )
         .unwrap();
         let c = fetch_ctx();
-        let out = s(&c, "document.cookie = 'x=1'; JSON.stringify([typeof document.cookie, document.cookie])");
+        let out = s(
+            &c,
+            "document.cookie = 'x=1'; JSON.stringify([typeof document.cookie, document.cookie])",
+        );
         assert_eq!(out, "[\"string\",\"\"]");
-        assert!(super::super::cookies::get(None).iter().all(|k| k.name != "x"), "the write went nowhere");
+        assert!(
+            super::super::cookies::get(None)
+                .iter()
+                .all(|k| k.name != "x"),
+            "the write went nowhere"
+        );
         super::super::cookies::reset_for_tests();
     }
 
     #[test]
     fn a_post_sends_its_method_headers_and_body() {
         let c = fetch_ctx();
-        let port = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()]);
+        let port = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()
+        ]);
         let out = run(
             &c,
             &format!(
@@ -1360,7 +1545,9 @@ mod jsc_tests {
     #[test]
     fn an_error_status_is_a_resolved_response_not_a_rejection() {
         let c = fetch_ctx();
-        let port = serve(vec![b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\n\r\ndown".to_vec()]);
+        let port = serve(vec![
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\n\r\ndown".to_vec(),
+        ]);
         let out = run(
             &c,
             &format!(
@@ -1405,12 +1592,16 @@ mod jsc_tests {
         assert_eq!(out, "null|ok");
         // ...the embedder's devtools do, with the rest of the transport facts.
         let v = c.global_get("__resp").unwrap();
-        let info = unsafe { super::net_info(c.raw(), v.0) }.expect("a network response carries NetInfo");
+        let info =
+            unsafe { super::net_info(c.raw(), v.0) }.expect("a network response carries NetInfo");
         assert_eq!(info.protocol, "http/1.1");
         assert!(!info.reused);
         assert!(info.connection_id > 0);
         assert_eq!(info.remote_addr.map(|a| a.port()), Some(port));
-        assert_eq!(info.set_cookies, vec!["a=1; Path=/".to_string(), "b=2".to_string()]);
+        assert_eq!(
+            info.set_cookies,
+            vec!["a=1; Path=/".to_string(), "b=2".to_string()]
+        );
         let constructed = c.eval("new Response('x')").unwrap();
         assert!(unsafe { super::net_info(c.raw(), constructed.0) }.is_none());
     }
@@ -1418,7 +1609,9 @@ mod jsc_tests {
     #[test]
     fn the_response_body_is_a_readable_stream() {
         let c = fetch_ctx();
-        let port = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nhello world".to_vec()]);
+        let port = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nhello world".to_vec(),
+        ]);
         let out = run(
             &c,
             &format!(
@@ -1438,8 +1631,11 @@ mod jsc_tests {
         let c = fetch_ctx();
         assert_eq!(s(&c, "globalThis.ReadableStream = class { constructor(source) { globalThis.savedStart = source.start; } }; \
             const response = new Response('abc'); String(response.body === response.body)"), "true");
-        assert!(throws(&c, "Object.getOwnPropertyDescriptor(Response.prototype, 'body').get.call(savedStart)")
-            .contains("non-Response"));
+        assert!(throws(
+            &c,
+            "Object.getOwnPropertyDescriptor(Response.prototype, 'body').get.call(savedStart)"
+        )
+        .contains("non-Response"));
         c.gc();
         assert_eq!(s(&c, "const calls = []; savedStart.call(null, { \
             enqueue(bytes) { calls.push(new TextDecoder().decode(bytes)); }, close() { calls.push('close'); } \
@@ -1463,7 +1659,9 @@ mod jsc_tests {
     #[test]
     fn a_body_cannot_be_read_twice() {
         let c = fetch_ctx();
-        let port = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()]);
+        let port = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()
+        ]);
         let out = run(
             &c,
             &format!(
@@ -1514,7 +1712,10 @@ mod jsc_tests {
             ),
         );
         assert_eq!(out, "AbortError/20");
-        assert!(started.elapsed() < Duration::from_secs(15), "abort did not cut the connection short");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "abort did not cut the connection short"
+        );
     }
 
     // -- Headers, which used to be a trap ---------------------------------------
@@ -1593,7 +1794,9 @@ mod jsc_tests {
     #[test]
     fn fetch_accepts_a_request_object() {
         let c = fetch_ctx();
-        let port = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()]);
+        let port = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()
+        ]);
         let out = run(
             &c,
             &format!(
@@ -1621,7 +1824,10 @@ mod jsc_tests {
     #[test]
     fn response_error_is_the_only_status_zero_and_says_so() {
         let c = fetch_ctx();
-        let out = run(&c, "const r = Response.error(); return r.status + '|' + r.type + '|' + r.ok;");
+        let out = run(
+            &c,
+            "const r = Response.error(); return r.status + '|' + r.type + '|' + r.ok;",
+        );
         assert_eq!(out, "0|error|false");
     }
 
@@ -1639,7 +1845,10 @@ mod jsc_tests {
     #[test]
     fn a_data_uri_still_works_and_a_broken_one_rejects() {
         let c = fetch_ctx();
-        let ok = run(&c, "const r = await fetch('data:text/plain,hello'); return await r.text();");
+        let ok = run(
+            &c,
+            "const r = await fetch('data:text/plain,hello'); return await r.text();",
+        );
         assert_eq!(ok, "hello");
 
         let bad = run(
@@ -1647,6 +1856,9 @@ mod jsc_tests {
             "try { const r = await fetch('data:text/plain;base64'); return 'RESOLVED ' + r.status; } \
              catch (e) { return 'rejected'; }",
         );
-        assert_eq!(bad, "rejected", "a malformed data: URI must not resolve with a fake status");
+        assert_eq!(
+            bad, "rejected",
+            "a malformed data: URI must not resolve with a fake status"
+        );
     }
 }

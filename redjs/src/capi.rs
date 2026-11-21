@@ -162,11 +162,21 @@ extern "C" {
     pub fn JSClassRelease(js_class: JSClassRef);
     pub fn JSObjectMake(ctx: JSContextRef, js_class: JSClassRef, data: *mut c_void) -> JSObjectRef;
     #[cfg(feature = "audio")]
-    pub fn JSWeakObjectMapCreate(ctx: JSContextRef, data: *mut c_void, destroyed: unsafe extern "C" fn(*mut c_void, *mut c_void)) -> *mut c_void;
+    pub fn JSWeakObjectMapCreate(
+        ctx: JSContextRef,
+        data: *mut c_void,
+        destroyed: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    ) -> *mut c_void;
     #[cfg(feature = "audio")]
-    pub fn JSWeakObjectMapSet(ctx: JSContextRef, map: *mut c_void, key: *mut c_void, object: JSObjectRef);
+    pub fn JSWeakObjectMapSet(
+        ctx: JSContextRef,
+        map: *mut c_void,
+        key: *mut c_void,
+        object: JSObjectRef,
+    );
     #[cfg(feature = "audio")]
-    pub fn JSWeakObjectMapGet(ctx: JSContextRef, map: *mut c_void, key: *mut c_void) -> JSObjectRef;
+    pub fn JSWeakObjectMapGet(ctx: JSContextRef, map: *mut c_void, key: *mut c_void)
+        -> JSObjectRef;
     #[cfg(feature = "audio")]
     pub fn JSWeakObjectMapRemove(ctx: JSContextRef, map: *mut c_void, key: *mut c_void);
     pub fn JSObjectGetPrivate(object: JSObjectRef) -> *mut c_void;
@@ -175,10 +185,17 @@ extern "C" {
     /// The object's [[Prototype]] slot as stored (no Proxy trap runs).
     pub fn JSObjectGetPrototype(ctx: JSContextRef, object: JSObjectRef) -> JSValueRef;
     /// Brand check: is `value` an object created from `js_class`?
-    pub fn JSValueIsObjectOfClass(ctx: JSContextRef, value: JSValueRef, js_class: JSClassRef) -> bool;
+    pub fn JSValueIsObjectOfClass(
+        ctx: JSContextRef,
+        value: JSValueRef,
+        js_class: JSClassRef,
+    ) -> bool;
     pub fn JSStringCreateWithCharacters(chars: *const u16, len: usize) -> JSStringRef;
     pub fn JSStringRelease(string: JSStringRef);
     pub fn JSStringGetLength(string: JSStringRef) -> usize;
     pub fn JSStringGetCharactersPtr(string: JSStringRef) -> *const u16;
-    pub fn JSPropertyNameAccumulatorAddName(accumulator: JSPropertyNameAccumulatorRef, name: JSStringRef);
+    pub fn JSPropertyNameAccumulatorAddName(
+        accumulator: JSPropertyNameAccumulatorRef,
+        name: JSStringRef,
+    );
 }

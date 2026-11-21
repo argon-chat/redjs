@@ -117,7 +117,13 @@ impl HrtfDatabase {
     /// Kernels for a Web-Audio direction (azimuth 0 = front, +90 = right;
     /// elevation −90..+90), bilinearly interpolated between the four
     /// surrounding grid responses (azimuth × elevation).
-    pub fn kernels_for(&self, azimuth_deg: f32, elevation_deg: f32, out_l: &mut [f32], out_r: &mut [f32]) {
+    pub fn kernels_for(
+        &self,
+        azimuth_deg: f32,
+        elevation_deg: f32,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
         // The IRCAM responses are reversed relative to Web Audio's azimuth
         let az = (-azimuth_deg).rem_euclid(360.0);
         let azf = az / (360.0 / NUM_AZIMUTHS as f32);
@@ -128,7 +134,11 @@ impl HrtfDatabase {
         let el = elevation_deg.clamp(-45.0, 90.0);
         let e_low = (el / ELEVATION_STEP).floor() * ELEVATION_STEP;
         let e_high = (e_low + ELEVATION_STEP).min(90.0);
-        let eb = if e_high > e_low { (el - e_low) / ELEVATION_STEP } else { 0.0 };
+        let eb = if e_high > e_low {
+            (el - e_low) / ELEVATION_STEP
+        } else {
+            0.0
+        };
         let e1 = elevation_index(e_low);
         let e2 = elevation_index(e_high);
 
@@ -319,7 +329,11 @@ impl PannerDsp {
                 if stereo {
                     // Spec STEREO source law: the leading channel passes
                     // through, the trailing one is re-panned across.
-                    let x = if az <= 0.0 { (az + 90.0) / 90.0 } else { az / 90.0 };
+                    let x = if az <= 0.0 {
+                        (az + 90.0) / 90.0
+                    } else {
+                        az / 90.0
+                    };
                     let phase = x * core::f32::consts::FRAC_PI_2;
                     let (gl, gr) = (phase.cos(), phase.sin());
                     if az <= 0.0 {
@@ -359,7 +373,12 @@ pub struct WebPannerNode {
 
 impl Default for WebPannerNode {
     fn default() -> Self {
-        Self { azimuth: 0.0, elevation: 0.0, gain: 1.0, hrtf: false }
+        Self {
+            azimuth: 0.0,
+            elevation: 0.0,
+            gain: 1.0,
+            hrtf: false,
+        }
     }
 }
 
@@ -436,7 +455,8 @@ impl AudioNodeProcessor for WebPannerProcessor {
                 || before.azimuth != self.params.azimuth
                 || before.elevation != self.params.elevation)
         {
-            self.dsp.set_direction(self.params.azimuth, self.params.elevation);
+            self.dsp
+                .set_direction(self.params.azimuth, self.params.elevation);
         }
 
         // Treat the input as stereo only when the right channel carries its
@@ -447,8 +467,13 @@ impl AudioNodeProcessor for WebPannerProcessor {
 
         if let Some(bus) = self.route.bus.as_ref().and_then(|cell| cell.get()) {
             let frames = info.frames.min(self.silence.len());
-            let left = if l_silent { &self.silence[..frames] } else { &buffers.inputs[0][..frames] };
-            let right = (!r_silent && buffers.inputs[1][..frames] != *left).then(|| &buffers.inputs[1][..frames]);
+            let left = if l_silent {
+                &self.silence[..frames]
+            } else {
+                &buffers.inputs[0][..frames]
+            };
+            let right = (!r_silent && buffers.inputs[1][..frames] != *left)
+                .then(|| &buffers.inputs[1][..frames]);
             // SAFETY: a processor runs on the thread rendering the stream.
             if unsafe { bus.write(self.route.slot, self.route.owner, left, right) } {
                 return ProcessStatus::ClearAllOutputs;
@@ -463,8 +488,16 @@ impl AudioNodeProcessor for WebPannerProcessor {
         let mut off = 0usize;
         while off < info.frames {
             let n = (info.frames - off).min(CHUNK);
-            let in_l: &[f32] = if l_silent { &silent[..n] } else { &buffers.inputs[0][off..off + n] };
-            let in_r: &[f32] = if r_silent { in_l } else { &buffers.inputs[1][off..off + n] };
+            let in_l: &[f32] = if l_silent {
+                &silent[..n]
+            } else {
+                &buffers.inputs[0][off..off + n]
+            };
+            let in_r: &[f32] = if r_silent {
+                in_l
+            } else {
+                &buffers.inputs[1][off..off + n]
+            };
             self.dsp.render(
                 self.params.hrtf,
                 self.params.azimuth,
@@ -480,8 +513,13 @@ impl AudioNodeProcessor for WebPannerProcessor {
         ProcessStatus::OutputsModified
     }
 
-    fn new_stream(&mut self, stream_info: &firewheel::StreamInfo, _context: &mut firewheel::node::ProcStreamCtx) {
-        self.silence.resize(stream_info.max_block_frames.get() as usize, 0.0);
+    fn new_stream(
+        &mut self,
+        stream_info: &firewheel::StreamInfo,
+        _context: &mut firewheel::node::ProcStreamCtx,
+    ) {
+        self.silence
+            .resize(stream_info.max_block_frames.get() as usize, 0.0);
     }
 }
 
@@ -537,7 +575,10 @@ mod tests {
         let mut l = [0.0f32; KERNEL_LEN];
         let mut r = [0.0f32; KERNEL_LEN];
         db.kernels_for(0.0, 0.0, &mut l, &mut r);
-        assert!(energy(&l) > 0.01 && energy(&r) > 0.01, "front kernels silent");
+        assert!(
+            energy(&l) > 0.01 && energy(&r) > 0.01,
+            "front kernels silent"
+        );
         let ratio = energy(&l) / energy(&r);
         assert!((0.5..2.0).contains(&ratio), "front L/R asymmetry: {ratio}");
     }
@@ -558,7 +599,11 @@ mod tests {
 
         for i in 0..KERNEL_LEN {
             let expect = (lo_l[i] + hi_l[i]) * 0.5;
-            assert!((mid_l[i] - expect).abs() < 1e-6, "tap {i}: {} vs {expect}", mid_l[i]);
+            assert!(
+                (mid_l[i] - expect).abs() < 1e-6,
+                "tap {i}: {} vs {expect}",
+                mid_l[i]
+            );
         }
         // And negative elevations resolve through the wrapped table slots
         db.kernels_for(0.0, -45.0, &mut lo_l, &mut lo_r);
@@ -569,14 +614,25 @@ mod tests {
     fn hrtf_right_source_favors_right_ear_and_leads() {
         let (l, r) = render_impulse(90.0, 0.0);
         let (el, er) = (energy(&l), energy(&r));
-        assert!(er > el * 2.0, "right source should be louder right: L={el} R={er}");
-        assert!(peak_index(&r) < peak_index(&l), "right ear should lead: L@{} R@{}", peak_index(&l), peak_index(&r));
+        assert!(
+            er > el * 2.0,
+            "right source should be louder right: L={el} R={er}"
+        );
+        assert!(
+            peak_index(&r) < peak_index(&l),
+            "right ear should lead: L@{} R@{}",
+            peak_index(&l),
+            peak_index(&r)
+        );
     }
 
     #[test]
     fn hrtf_left_source_mirrors() {
         let (l, r) = render_impulse(-90.0, 0.0);
-        assert!(energy(&l) > energy(&r) * 2.0, "left source should be louder left");
+        assert!(
+            energy(&l) > energy(&r) * 2.0,
+            "left source should be louder left"
+        );
         assert!(peak_index(&l) < peak_index(&r), "left ear should lead");
     }
 
@@ -595,7 +651,10 @@ mod tests {
         let mut r = vec![0.0f32; KERNEL_LEN];
         dsp.render(true, 0.0, 1.0, &in_l, &in_r, &mut l, &mut r);
         assert!(energy(&l) > 0.01, "left ear should render the left channel");
-        assert!(energy(&r) < 1e-9, "right ear must stay silent for a silent right channel");
+        assert!(
+            energy(&r) < 1e-9,
+            "right ear must stay silent for a silent right channel"
+        );
     }
 
     #[test]
@@ -609,14 +668,25 @@ mod tests {
 
         dsp.render(false, 0.0, 1.0, &input, &input, &mut l, &mut r); // mono center
         assert!((l[3] - r[3]).abs() < 1e-3, "center should be symmetric");
-        assert!((l[3] - inv_sqrt2).abs() < 1e-3, "center gain should be cos(45°)");
+        assert!(
+            (l[3] - inv_sqrt2).abs() < 1e-3,
+            "center gain should be cos(45°)"
+        );
 
         dsp.render(false, 90.0, 1.0, &input, &input, &mut l, &mut r); // hard right
-        assert!(l[3].abs() < 1e-3 && (r[3] - 1.0).abs() < 1e-3, "hard right: L={} R={}", l[3], r[3]);
+        assert!(
+            l[3].abs() < 1e-3 && (r[3] - 1.0).abs() < 1e-3,
+            "hard right: L={} R={}",
+            l[3],
+            r[3]
+        );
 
         // Rear fold: 180° behaves like 0° (front)
         dsp.render(false, 180.0, 1.0, &input, &input, &mut l, &mut r);
-        assert!((l[3] - inv_sqrt2).abs() < 1e-3, "rear fold should re-center");
+        assert!(
+            (l[3] - inv_sqrt2).abs() < 1e-3,
+            "rear fold should re-center"
+        );
     }
 
     #[test]
@@ -630,16 +700,29 @@ mod tests {
 
         // Center (az 0, stereo): x = 1 → gainL = 0, gainR = 1 → passthrough
         dsp.render(false, 0.0, 1.0, &in_l, &in_r, &mut l, &mut r);
-        assert!((l[3] - 1.0).abs() < 1e-3 && (r[3] - 0.5).abs() < 1e-3, "stereo center should pass through: L={} R={}", l[3], r[3]);
+        assert!(
+            (l[3] - 1.0).abs() < 1e-3 && (r[3] - 0.5).abs() < 1e-3,
+            "stereo center should pass through: L={} R={}",
+            l[3],
+            r[3]
+        );
 
         // Hard right (az 90): both channels collapse to the right
         dsp.render(false, 90.0, 1.0, &in_l, &in_r, &mut l, &mut r);
         assert!(l[3].abs() < 1e-3, "hard-right stereo: left should be empty");
-        assert!((r[3] - 1.5).abs() < 1e-3, "hard-right stereo: R = inR + inL, got {}", r[3]);
+        assert!(
+            (r[3] - 1.5).abs() < 1e-3,
+            "hard-right stereo: R = inR + inL, got {}",
+            r[3]
+        );
 
         // Hard left (az −90): x = 0 → gainL = 1, gainR = 0 → both collapse left
         dsp.render(false, -90.0, 1.0, &in_l, &in_r, &mut l, &mut r);
-        assert!((l[3] - 1.5).abs() < 1e-3, "hard-left stereo: L = inL + inR, got {}", l[3]);
+        assert!(
+            (l[3] - 1.5).abs() < 1e-3,
+            "hard-left stereo: L = inL + inR, got {}",
+            l[3]
+        );
         assert!(r[3].abs() < 1e-3, "hard-left stereo: right should be empty");
     }
 

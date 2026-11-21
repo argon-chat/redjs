@@ -65,7 +65,12 @@ impl DbMeta {
     }
     /// The next free id for a store or an index (one id space per database).
     pub fn next_id(&self) -> u64 {
-        self.stores.iter().flat_map(|s| core::iter::once(s.id).chain(s.indexes.iter().map(|i| i.id))).max().unwrap_or(0) + 1
+        self.stores
+            .iter()
+            .flat_map(|s| core::iter::once(s.id).chain(s.indexes.iter().map(|i| i.id)))
+            .max()
+            .unwrap_or(0)
+            + 1
     }
 }
 
@@ -99,9 +104,13 @@ pub trait Backend: Send {
     fn open(&mut self, name: &[u16]) -> R<Box<dyn Database>>;
     /// Inspector-only open: existing database, no creation, repair or migration.
     fn inspect_existing(&mut self, _name: &[u16]) -> R<Box<dyn Database>> {
-        Err(BackendError::Io("This backend cannot inspect a closed database without opening it".into()))
+        Err(BackendError::Io(
+            "This backend cannot inspect a closed database without opening it".into(),
+        ))
     }
-    fn inspect_databases(&mut self) -> R<Vec<(Vec<u16>, u64)>> { self.databases() }
+    fn inspect_databases(&mut self) -> R<Vec<(Vec<u16>, u64)>> {
+        self.databases()
+    }
 
     /// Deletes a database; returns its version (0 if it did not exist). The
     /// server only calls this with no handle of that database open.
@@ -141,8 +150,18 @@ pub trait Database: Send {
     // Records.
     fn get(&mut self, store: StoreId, key: &[u8]) -> R<Option<Value>>;
     /// Bounded serialized prefix; avoids materializing a large stored Blob.
-    fn inspect_value(&mut self, store: StoreId, key: &[u8], maximum: usize) -> R<Option<(u64, Vec<u8>)>> {
-        Ok(self.get(store, key)?.map(|value| (value.len() as u64, value[..value.len().min(maximum)].to_vec())))
+    fn inspect_value(
+        &mut self,
+        store: StoreId,
+        key: &[u8],
+        maximum: usize,
+    ) -> R<Option<(u64, Vec<u8>)>> {
+        Ok(self.get(store, key)?.map(|value| {
+            (
+                value.len() as u64,
+                value[..value.len().min(maximum)].to_vec(),
+            )
+        }))
     }
     /// VM instruction budget, only around inspector reads outside writers.
     fn inspection_budget(&mut self, _instructions: Option<u32>) {}
@@ -150,14 +169,28 @@ pub trait Database: Send {
     fn put(&mut self, store: StoreId, key: &[u8], value: Value) -> R<()>;
     fn delete(&mut self, store: StoreId, key: &[u8]) -> R<()>;
     /// Keys in `(lo, hi)`, ascending (or descending), at most `limit`.
-    fn keys(&mut self, store: StoreId, lo: Bound<&[u8]>, hi: Bound<&[u8]>, reverse: bool, limit: usize) -> R<Vec<Vec<u8>>>;
+    fn keys(
+        &mut self,
+        store: StoreId,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        reverse: bool,
+        limit: usize,
+    ) -> R<Vec<Vec<u8>>>;
     fn count(&mut self, store: StoreId, lo: Bound<&[u8]>, hi: Bound<&[u8]>) -> R<u64>;
     fn clear(&mut self, store: StoreId) -> R<()>;
 
     // Index entries (`index key ‖ primary key`).
     fn index_add(&mut self, index: IndexId, entry: Vec<u8>) -> R<()>;
     fn index_remove(&mut self, index: IndexId, entry: &[u8]) -> R<()>;
-    fn index_scan(&mut self, index: IndexId, lo: Bound<&[u8]>, hi: Bound<&[u8]>, reverse: bool, limit: usize) -> R<Vec<Vec<u8>>>;
+    fn index_scan(
+        &mut self,
+        index: IndexId,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        reverse: bool,
+        limit: usize,
+    ) -> R<Vec<Vec<u8>>>;
     fn index_count(&mut self, index: IndexId, lo: Bound<&[u8]>, hi: Bound<&[u8]>) -> R<u64>;
     fn index_clear(&mut self, index: IndexId) -> R<()>;
 }

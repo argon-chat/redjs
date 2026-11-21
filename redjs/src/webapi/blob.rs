@@ -132,7 +132,11 @@ pub struct BlobData {
 
 impl BlobData {
     pub fn range(&self) -> Range {
-        Range { source: self.source.clone(), offset: self.offset, len: self.len }
+        Range {
+            source: self.source.clone(),
+            offset: self.offset,
+            len: self.len,
+        }
     }
 }
 
@@ -168,7 +172,9 @@ impl Range {
 
     /// Does the window fit inside its source? (The serializer's decode check.)
     pub fn fits(&self) -> bool {
-        let Some(end) = self.offset.checked_add(self.len) else { return false };
+        let Some(end) = self.offset.checked_add(self.len) else {
+            return false;
+        };
         match &self.source {
             Source::Memory(b) => end <= b.len() as u64,
             Source::Disk(f) => end <= f.size,
@@ -192,7 +198,8 @@ impl Range {
         match &self.source {
             Source::Memory(_) => {
                 let b = self.in_memory().ok_or(ReadError::NotReadable)?;
-                out.try_reserve_exact(b.len()).map_err(|_| ReadError::OutOfMemory)?;
+                out.try_reserve_exact(b.len())
+                    .map_err(|_| ReadError::OutOfMemory)?;
                 out.extend_from_slice(b);
                 Ok(())
             }
@@ -211,7 +218,9 @@ impl Range {
     pub fn copy_into(&self, out: &mut dyn std::io::Write) -> Result<(), CopyError> {
         match &self.source {
             Source::Memory(_) => {
-                let b = self.in_memory().ok_or(CopyError::Read(ReadError::NotReadable))?;
+                let b = self
+                    .in_memory()
+                    .ok_or(CopyError::Read(ReadError::NotReadable))?;
                 out.write_all(b).map_err(CopyError::Write)
             }
             Source::Disk(f) => copy_disk(f, self.offset, self.len, out),
@@ -231,7 +240,12 @@ pub enum CopyError {
 
 /// [`read_disk`]'s snapshot check, then the range in 64 KiB pieces. A file
 /// that ends before the range does is `NotReadable`, as a short read is.
-fn copy_disk(f: &DiskFile, offset: u64, len: u64, out: &mut dyn std::io::Write) -> Result<(), CopyError> {
+fn copy_disk(
+    f: &DiskFile,
+    offset: u64,
+    len: u64,
+    out: &mut dyn std::io::Write,
+) -> Result<(), CopyError> {
     use std::io::{Read, Seek, SeekFrom};
     let read = |e: std::io::Error| CopyError::Read(io_error(e));
     let mut file = std::fs::File::open(&f.path).map_err(read)?;
@@ -278,7 +292,8 @@ fn read_disk(f: &DiskFile, offset: u64, len: u64, out: &mut Vec<u8>) -> Result<(
         return Err(ReadError::NotReadable);
     }
     let len = usize::try_from(len).map_err(|_| ReadError::OutOfMemory)?;
-    out.try_reserve_exact(len).map_err(|_| ReadError::OutOfMemory)?;
+    out.try_reserve_exact(len)
+        .map_err(|_| ReadError::OutOfMemory)?;
     let at = out.len();
     file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
     file.take(len as u64).read_to_end(out).map_err(io_error)?;
@@ -313,7 +328,13 @@ struct Pool {
 
 fn pool() -> &'static Mutex<Pool> {
     static P: OnceLock<Mutex<Pool>> = OnceLock::new();
-    P.get_or_init(|| Mutex::new(Pool { jobs: VecDeque::new(), running: 0, peak: 0 }))
+    P.get_or_init(|| {
+        Mutex::new(Pool {
+            jobs: VecDeque::new(),
+            running: 0,
+            peak: 0,
+        })
+    })
 }
 
 /// Runs one job. A job that panics loses its own result, never the thread:
@@ -360,7 +381,11 @@ fn submit(job: Job) {
     // queue, so that a failed spawn can take back exactly this job.
     let first = Arc::new(Mutex::new(Some(job)));
     let theirs = Arc::clone(&first);
-    if std::thread::Builder::new().name("redjs-blob-read".into()).spawn(move || worker(theirs)).is_err() {
+    if std::thread::Builder::new()
+        .name("redjs-blob-read".into())
+        .spawn(move || worker(theirs))
+        .is_err()
+    {
         pool().lock().unwrap().running -= 1;
         // No thread to be had: run THIS job here, and only it. Other contexts'
         // reads stay queued for the threads that exist (a job is queued only
@@ -549,11 +574,13 @@ fn retire(i: &Inbox) {
 }
 
 unsafe fn src_inflight(g: *mut c_void) -> bool {
-    PENDING.load(Ordering::Acquire) != 0 && lookup(g).is_some_and(|i| i.pending.load(Ordering::Acquire) != 0)
+    PENDING.load(Ordering::Acquire) != 0
+        && lookup(g).is_some_and(|i| i.pending.load(Ordering::Acquire) != 0)
 }
 
 unsafe fn src_ready(g: *mut c_void) -> bool {
-    PENDING.load(Ordering::Acquire) != 0 && lookup(g).is_some_and(|i| i.queued.load(Ordering::Acquire) != 0)
+    PENDING.load(Ordering::Acquire) != 0
+        && lookup(g).is_some_and(|i| i.queued.load(Ordering::Acquire) != 0)
 }
 
 /// Runs what is queued, one task each with a checkpoint after it, within the
@@ -573,11 +600,17 @@ unsafe fn src_drain(g: *mut c_void) -> usize {
     // Microtasks left by earlier tasks run before this one: HTML's order.
     crate::web::checkpoint(g);
     let budget_us = crate::web::pump_budget_us();
-    let cap = if budget_us == 0 { inbox.queued.load(Ordering::Acquire) } else { usize::MAX };
+    let cap = if budget_us == 0 {
+        inbox.queued.load(Ordering::Acquire)
+    } else {
+        usize::MAX
+    };
     let start = std::time::Instant::now();
     let mut n = 0usize;
     while n < cap {
-        let Some(task) = inbox.q.lock().unwrap().pop_front() else { break };
+        let Some(task) = inbox.q.lock().unwrap().pop_front() else {
+            break;
+        };
         inbox.queued.fetch_sub(1, Ordering::AcqRel);
         inbox.pending.fetch_sub(1, Ordering::AcqRel);
         PENDING.fetch_sub(1, Ordering::AcqRel);
@@ -597,7 +630,6 @@ unsafe fn src_drain(g: *mut c_void) -> usize {
 
 /// Above this, a synchronous read of a path-backed Blob says so (A-F2).
 pub const SYNC_READ_ADVISORY_BYTES: u64 = 16 << 20;
-
 
 fn advised() -> &'static Mutex<(HashSet<String>, Vec<String>)> {
     static A: OnceLock<Mutex<(HashSet<String>, Vec<String>)>> = OnceLock::new();
@@ -669,7 +701,9 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 
 #[cfg(test)]
 pub(crate) fn has_inbox_work(g: *mut c_void) -> bool {
-    lookup(g).is_some_and(|i| i.pending.load(Ordering::Acquire) != 0 || i.queued.load(Ordering::Acquire) != 0)
+    lookup(g).is_some_and(|i| {
+        i.pending.load(Ordering::Acquire) != 0 || i.queued.load(Ordering::Acquire) != 0
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -750,15 +784,26 @@ pub(crate) unsafe fn convert_parts(g: *mut c_void, parts: u64, who: &str) -> Res
 /// `BlobPropertyBag`, members in WebIDL order (`endings`, then `type`):
 /// `(type, endings == "native")`. A `type` outside U+0020–U+007E is `""`,
 /// otherwise lowercased.
-pub(crate) unsafe fn convert_bag(g: *mut c_void, options: u64, who: &str) -> Result<(String, bool), ()> {
+pub(crate) unsafe fn convert_bag(
+    g: *mut c_void,
+    options: u64,
+    who: &str,
+) -> Result<(String, bool), ()> {
     let mut mime = String::new();
     let mut native = false;
     if options == UNDEF || options == NULL {
         return Ok((mime, native));
     }
     if !is_object(g, options) {
-        let bag = if who == "File" { "FilePropertyBag" } else { "BlobPropertyBag" };
-        throw_type_error(g, &format!("Failed to construct '{who}': The provided value is not of type '{bag}'."));
+        let bag = if who == "File" {
+            "FilePropertyBag"
+        } else {
+            "BlobPropertyBag"
+        };
+        throw_type_error(
+            g,
+            &format!("Failed to construct '{who}': The provided value is not of type '{bag}'."),
+        );
         return Err(());
     }
     let e = try_get(g, options, "endings")?;
@@ -779,7 +824,9 @@ pub(crate) unsafe fn convert_bag(g: *mut c_void, options: u64, who: &str) -> Res
     }
     let t = try_get(g, options, "type")?;
     if t != UNDEF {
-        let Ok(s) = to_js_string(g, t) else { return Err(()) };
+        let Ok(s) = to_js_string(g, t) else {
+            return Err(());
+        };
         let s = read_string(g, s).unwrap_or_default();
         if s.chars().all(|c| ('\u{20}'..='\u{7e}').contains(&c)) {
             mime = s.to_ascii_lowercase();
@@ -816,7 +863,9 @@ fn native_line_endings(s: &str) -> String {
 /// size it would have had.
 pub(crate) fn assemble(parts: Vec<Part>, native: bool, consumer: &str) -> Range {
     if parts.len() == 1 && matches!(parts[0], Part::Blob(_)) {
-        let Some(Part::Blob(r)) = parts.into_iter().next() else { unreachable!() };
+        let Some(Part::Blob(r)) = parts.into_iter().next() else {
+            unreachable!()
+        };
         return r;
     }
     let parts: Vec<Part> = parts
@@ -846,7 +895,11 @@ pub(crate) fn assemble(parts: Vec<Part>, native: bool, consumer: &str) -> Range 
     }
     let mut bytes: Vec<u8> = Vec::new();
     if bytes.try_reserve_exact(total as usize).is_err() {
-        return Range { source: Source::Unreadable(ReadError::NotReadable), offset: 0, len: total };
+        return Range {
+            source: Source::Unreadable(ReadError::NotReadable),
+            offset: 0,
+            len: total,
+        };
     }
     for p in parts {
         match p {
@@ -856,7 +909,13 @@ pub(crate) fn assemble(parts: Vec<Part>, native: bool, consumer: &str) -> Range 
                     Ok(b) => bytes.extend_from_slice(&b),
                     // `size` is the sum of the parts whether or not they can
                     // still be read; only the reads fail.
-                    Err(e) => return Range { source: Source::Unreadable(e), offset: 0, len: total },
+                    Err(e) => {
+                        return Range {
+                            source: Source::Unreadable(e),
+                            offset: 0,
+                            len: total,
+                        }
+                    }
                 },
             },
             Part::Bytes(b) => bytes.extend_from_slice(&b),
@@ -864,7 +923,11 @@ pub(crate) fn assemble(parts: Vec<Part>, native: bool, consumer: &str) -> Range 
         }
     }
     let len = bytes.len() as u64;
-    Range { source: Source::Memory(Arc::new(bytes)), offset: 0, len }
+    Range {
+        source: Source::Memory(Arc::new(bytes)),
+        offset: 0,
+        len,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -881,21 +944,55 @@ pub unsafe fn create(g: *mut c_void, proto: u64, bytes: Vec<u8>, mime: String) -
     let st = state(g);
     let proto = if is_cell(proto) { proto } else { st.blob.proto };
     let len = bytes.len() as u64;
-    host_create(g, st.blob_class, proto, BlobData { source: Source::Memory(Arc::new(bytes)), offset: 0, len, mime, file: None })
+    host_create(
+        g,
+        st.blob_class,
+        proto,
+        BlobData {
+            source: Source::Memory(Arc::new(bytes)),
+            offset: 0,
+            len,
+            mime,
+            file: None,
+        },
+    )
 }
 
 #[crate::host_fn]
 unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
-    let Ok(parts) = convert_parts(g, cf_arg(cf, 0), "Blob") else { return UNDEF };
-    let Ok((mime, native)) = convert_bag(g, cf_arg(cf, 1), "Blob") else { return UNDEF };
+    let Ok(parts) = convert_parts(g, cf_arg(cf, 0), "Blob") else {
+        return UNDEF;
+    };
+    let Ok((mime, native)) = convert_bag(g, cf_arg(cf, 1), "Blob") else {
+        return UNDEF;
+    };
     let range = assemble(parts, native, "the Blob constructor");
     let proto = {
         let nt = cf_new_target(cf);
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(p) { p } else { st.blob.proto }
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(p) {
+            p
+        } else {
+            st.blob.proto
+        }
     };
-    host_create(g, st.blob_class, proto, BlobData { source: range.source, offset: range.offset, len: range.len, mime, file: None })
+    host_create(
+        g,
+        st.blob_class,
+        proto,
+        BlobData {
+            source: range.source,
+            offset: range.offset,
+            len: range.len,
+            mime,
+            file: None,
+        },
+    )
 }
 
 #[crate::host_fn]
@@ -942,7 +1039,11 @@ unsafe fn convert(g: *mut c_void, as_: As, bytes: &[u8]) -> Result<u64, u64> {
                 glue::rjs_error_create(g, 2, m.as_ptr(), m.len(), &mut err);
                 return Err(err);
             }
-            Ok(if matches!(as_, As::Bytes) { u8v } else { get(g, u8v, "buffer") })
+            Ok(if matches!(as_, As::Bytes) {
+                u8v
+            } else {
+                get(g, u8v, "buffer")
+            })
         }
     }
 }
@@ -983,7 +1084,10 @@ unsafe fn read_promise(g: *mut c_void, range: Range, as_: As) -> u64 {
     }
     crate::ffi::redjs_protect(g, res);
     crate::ffi::redjs_protect(g, rej);
-    let settle = Settle { resolve: res, reject: rej };
+    let settle = Settle {
+        resolve: res,
+        reject: rej,
+    };
     read_async(
         g,
         range,
@@ -1040,25 +1144,50 @@ unsafe fn slice(g: *mut c_void, cf: *mut c_void) -> u64 {
             return Ok(def);
         }
         let d = to_number(g, v)?;
-        let d = if d.is_nan() { 0.0 } else { d.clamp(-9.223_372_036_854_776e18, 9.223_372_036_854_776e18).round_ties_even() };
-        Ok(if d < 0.0 { (size + d).max(0.0) } else { d.min(size) })
+        let d = if d.is_nan() {
+            0.0
+        } else {
+            d.clamp(-9.223_372_036_854_776e18, 9.223_372_036_854_776e18)
+                .round_ties_even()
+        };
+        Ok(if d < 0.0 {
+            (size + d).max(0.0)
+        } else {
+            d.min(size)
+        })
     };
-    let Ok(start) = rel(cf_arg(cf, 0), 0.0) else { return UNDEF };
-    let Ok(end) = rel(cf_arg(cf, 1), size) else { return UNDEF };
+    let Ok(start) = rel(cf_arg(cf, 0), 0.0) else {
+        return UNDEF;
+    };
+    let Ok(end) = rel(cf_arg(cf, 1), size) else {
+        return UNDEF;
+    };
     let span = (end - start).max(0.0) as u64;
     let ct = cf_arg(cf, 2);
     let mime = if ct == UNDEF {
         String::new()
     } else {
-        let Ok(ct) = to_js_string(g, ct) else { return UNDEF };
+        let Ok(ct) = to_js_string(g, ct) else {
+            return UNDEF;
+        };
         let s = read_string(g, ct).unwrap_or_default();
-        if s.chars().all(|c| ('\u{20}'..='\u{7e}').contains(&c)) { s.to_ascii_lowercase() } else { String::new() }
+        if s.chars().all(|c| ('\u{20}'..='\u{7e}').contains(&c)) {
+            s.to_ascii_lowercase()
+        } else {
+            String::new()
+        }
     };
     let Some(b) = this_blob(g, cf) else {
         return throw_type_error(g, "Blob.prototype.slice called on a non-Blob");
     };
     // A slice of a File is a Blob (no name): the IDL returns `Blob`.
-    let data = BlobData { source: b.source.clone(), offset: b.offset + start as u64, len: span, mime, file: None };
+    let data = BlobData {
+        source: b.source.clone(),
+        offset: b.offset + start as u64,
+        len: span,
+        mime,
+        file: None,
+    };
     host_create(g, st.blob_class, st.blob.proto, data)
 }
 
@@ -1078,7 +1207,12 @@ fn stream_source_class() -> crate::capi::JSClassRef {
         as crate::capi::JSClassRef
 }
 
-unsafe fn controller_method(g: *mut c_void, controller: u64, name: &str, args: &[u64]) -> Result<u64, u64> {
+unsafe fn controller_method(
+    g: *mut c_void,
+    controller: u64,
+    name: &str,
+    args: &[u64],
+) -> Result<u64, u64> {
     let mut method = UNDEF;
     if glue::rjs_get(g, controller, key(g, name), &mut method) != 0 {
         return Err(method);
@@ -1088,7 +1222,9 @@ unsafe fn controller_method(g: *mut c_void, controller: u64, name: &str, args: &
 
 unsafe fn deliver_chunk(g: *mut c_void, source: u64, controller: u64) -> Result<u64, u64> {
     let state = host_data::<StreamSource>(g, stream_source_class(), source).unwrap();
-    let Some(remaining) = &mut state.remaining else { return Ok(UNDEF) }; // cancelled during the read
+    let Some(remaining) = &mut state.remaining else {
+        return Ok(UNDEF);
+    }; // cancelled during the read
     let range = state.buffered.as_mut().unwrap_or(remaining);
     if range.len != 0 {
         let mut chunk = range.clone();
@@ -1135,7 +1271,9 @@ unsafe fn stream_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     let Some(cursor) = host_data::<StreamSource>(g, stream_source_class(), source) else {
         return throw_type_error(g, "Illegal invocation of Blob stream pull");
     };
-    let Some(mut range) = cursor.remaining.clone() else { return resolved_promise(g, UNDEF) };
+    let Some(mut range) = cursor.remaining.clone() else {
+        return resolved_promise(g, UNDEF);
+    };
     if range.len == 0 || cursor.buffered.is_some() {
         return match deliver_chunk(g, source, controller) {
             Ok(v) => resolved_promise(g, v),
@@ -1150,27 +1288,41 @@ unsafe fn stream_pull(g: *mut c_void, cf: *mut c_void) -> u64 {
     // The job is internal to the microtask queue. Its own properties keep the JS
     // objects alive through the asynchronous read and the subsequent checkpoint.
     let job = make_fn(g, "", 0, finish_pull);
-    define_many(g, job, &["source", "controller", "resolve", "reject"], &[source, controller, resolve, reject], 0);
+    define_many(
+        g,
+        job,
+        &["source", "controller", "resolve", "reject"],
+        &[source, controller, resolve, reject],
+        0,
+    );
     if matches!(range.source, Source::Disk(_)) {
         range.len = range.len.min(STREAM_DISK_BLOCK);
         crate::ffi::redjs_protect(g, job);
-        read_async(g, range, Box::new(move |g, result| unsafe {
-            let source = get(g, job, "source");
-            let cursor = host_data::<StreamSource>(g, stream_source_class(), source).unwrap();
-            if let Some(remaining) = &mut cursor.remaining {
-                match result {
-                    Ok(bytes) => {
-                        let len = bytes.len() as u64;
-                        remaining.offset += len;
-                        remaining.len -= len;
-                        cursor.buffered = Some(Range { offset: 0, len, source: Source::Memory(Arc::new(bytes)) });
+        read_async(
+            g,
+            range,
+            Box::new(move |g, result| unsafe {
+                let source = get(g, job, "source");
+                let cursor = host_data::<StreamSource>(g, stream_source_class(), source).unwrap();
+                if let Some(remaining) = &mut cursor.remaining {
+                    match result {
+                        Ok(bytes) => {
+                            let len = bytes.len() as u64;
+                            remaining.offset += len;
+                            remaining.len -= len;
+                            cursor.buffered = Some(Range {
+                                offset: 0,
+                                len,
+                                source: Source::Memory(Arc::new(bytes)),
+                            });
+                        }
+                        Err(e) => remaining.source = Source::Unreadable(e),
                     }
-                    Err(e) => remaining.source = Source::Unreadable(e),
                 }
-            }
-            glue::rjs_queue_microtask(g, job);
-            crate::ffi::redjs_unprotect(g, job);
-        }));
+                glue::rjs_queue_microtask(g, job);
+                crate::ffi::redjs_unprotect(g, job);
+            }),
+        );
     } else {
         // Awaiting a memory read still yields once before delivering the chunk.
         glue::rjs_queue_microtask(g, job);
@@ -1195,13 +1347,34 @@ unsafe fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "Blob.prototype.stream called on a non-Blob");
     };
     let range = b.range();
-    let ctor = stream_constructors().lock().unwrap().get(&(g as usize)).copied();
+    let ctor = stream_constructors()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied();
     let Some(ctor) = ctor else {
-        return throw_type_error(g, "Blob.prototype.stream: this context has no ReadableStream");
+        return throw_type_error(
+            g,
+            "Blob.prototype.stream: this context has no ReadableStream",
+        );
     };
-    let source = host_create(g, stream_source_class(), UNDEF, StreamSource { remaining: Some(range), buffered: None });
+    let source = host_create(
+        g,
+        stream_source_class(),
+        UNDEF,
+        StreamSource {
+            remaining: Some(range),
+            buffered: None,
+        },
+    );
     define(g, source, "pull", make_fn(g, "pull", 1, stream_pull), 0);
-    define(g, source, "cancel", make_fn(g, "cancel", 0, stream_cancel), 0);
+    define(
+        g,
+        source,
+        "cancel",
+        make_fn(g, "cancel", 0, stream_cancel),
+        0,
+    );
     let strategy = new_object(g, UNDEF);
     define(g, strategy, "highWaterMark", enc_i32(0), 0);
     let args = [source, strategy];
@@ -1213,25 +1386,31 @@ unsafe fn stream(g: *mut c_void, cf: *mut c_void) -> u64 {
     stream
 }
 
-
 pub unsafe fn install(g: *mut c_void) -> (crate::capi::JSClassRef, Class) {
     let cls = make_host_class::<BlobData>("Blob");
-    let class = define_class(g, &ClassSpec {
-        name: "Blob",
-        arity: 0,
-        construct: Some(construct),
-        parent_proto: 0,
-        methods: &[
-            ("arrayBuffer", 0, array_buffer),
-            ("bytes", 0, bytes_fn),
-            ("text", 0, text),
-            ("slice", 0, slice),
-            ("stream", 0, stream),
-        ],
-        getters: &[("size", get_size), ("type", get_type)],
-        accessors: &[],
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "Blob",
+            arity: 0,
+            construct: Some(construct),
+            parent_proto: 0,
+            methods: &[
+                ("arrayBuffer", 0, array_buffer),
+                ("bytes", 0, bytes_fn),
+                ("text", 0, text),
+                ("slice", 0, slice),
+                ("stream", 0, stream),
+            ],
+            getters: &[("size", get_size), ("type", get_type)],
+            accessors: &[],
+        },
+    );
+    crate::web::register_pump_source(crate::web::PumpSource {
+        inflight: src_inflight,
+        ready: src_ready,
+        drain: src_drain,
     });
-    crate::web::register_pump_source(crate::web::PumpSource { inflight: src_inflight, ready: src_ready, drain: src_drain });
     (cls, class)
 }
 
@@ -1240,7 +1419,10 @@ pub(crate) unsafe fn install_stream(g: *mut c_void) {
     let ctor = get(g, glue::rjs_global(g), "ReadableStream");
     if is_cell(ctor) {
         crate::ffi::redjs_protect(g, ctor);
-        stream_constructors().lock().unwrap().insert(g as usize, ctor);
+        stream_constructors()
+            .lock()
+            .unwrap()
+            .insert(g as usize, ctor);
     }
 }
 
@@ -1260,7 +1442,11 @@ pub(crate) unsafe fn from_data(g: *mut c_void, data: BlobData) -> u64 {
 /// The bytes of a Blob value, read NOW on this thread, for a consumer that
 /// cannot wait (see the module docs). `None` = not a Blob. A path-backed
 /// range past 16 MiB says so once per `consumer` (A-F2).
-pub unsafe fn bytes_of(g: *mut c_void, v: u64, consumer: &str) -> Option<Result<Vec<u8>, ReadError>> {
+pub unsafe fn bytes_of(
+    g: *mut c_void,
+    v: u64,
+    consumer: &str,
+) -> Option<Result<Vec<u8>, ReadError>> {
     let st = state(g);
     let b = host_data::<BlobData>(g, st.blob_class, v)?;
     let r = b.range();
@@ -1295,20 +1481,38 @@ mod tests {
         let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(&p, &bytes).unwrap();
         let m = std::fs::metadata(&p).unwrap();
-        let disk = Arc::new(DiskFile { path: p.clone(), size: m.len(), mtime: m.modified().ok() });
-        let r = Range { source: Source::Disk(disk.clone()), offset: 70_000, len: 100_000 };
+        let disk = Arc::new(DiskFile {
+            path: p.clone(),
+            size: m.len(),
+            mtime: m.modified().ok(),
+        });
+        let r = Range {
+            source: Source::Disk(disk.clone()),
+            offset: 70_000,
+            len: 100_000,
+        };
         let mut out = Vec::new();
         r.copy_into(&mut out).unwrap();
         assert_eq!(out, &bytes[70_000..170_000]);
-        let mem = Range { source: Source::Memory(Arc::new(b"hello".to_vec())), offset: 1, len: 3 };
+        let mem = Range {
+            source: Source::Memory(Arc::new(b"hello".to_vec())),
+            offset: 1,
+            len: 3,
+        };
         let mut out = Vec::new();
         mem.copy_into(&mut out).unwrap();
         assert_eq!(out, b"ell");
         // The file changed since the snapshot: the copy refuses, as a read does.
         std::fs::write(&p, b"changed").unwrap();
-        assert!(matches!(r.copy_into(&mut Vec::new()), Err(CopyError::Read(ReadError::NotReadable))));
+        assert!(matches!(
+            r.copy_into(&mut Vec::new()),
+            Err(CopyError::Read(ReadError::NotReadable))
+        ));
         std::fs::remove_file(&p).unwrap();
-        assert!(matches!(r.copy_into(&mut Vec::new()), Err(CopyError::Read(ReadError::NotFound))));
+        assert!(matches!(
+            r.copy_into(&mut Vec::new()),
+            Err(CopyError::Read(ReadError::NotFound))
+        ));
         let _ = std::fs::remove_dir(&dir);
         // A destination that refuses is the caller's own error, untouched.
         struct Full;
@@ -1338,23 +1542,35 @@ mod tests {
         submit(Box::new(move || {
             let _ = tx.send(());
         }));
-        rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the pool still runs jobs after panics");
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the pool still runs jobs after panics");
     }
 
     #[test]
     fn native_endings_normalise_every_line_break() {
         let nl = if cfg!(windows) { "\r\n" } else { "\n" };
-        assert_eq!(native_line_endings("a\nb\r\nc\rd"), format!("a{nl}b{nl}c{nl}d"));
+        assert_eq!(
+            native_line_endings("a\nb\r\nc\rd"),
+            format!("a{nl}b{nl}c{nl}d")
+        );
         assert_eq!(native_line_endings("none"), "none");
     }
 
     #[test]
     fn a_memory_range_reads_its_window_only() {
-        let r = Range { source: Source::Memory(Arc::new(b"hello".to_vec())), offset: 1, len: 3 };
+        let r = Range {
+            source: Source::Memory(Arc::new(b"hello".to_vec())),
+            offset: 1,
+            len: 3,
+        };
         assert_eq!(r.in_memory(), Some(&b"ell"[..]));
         assert_eq!(r.read().unwrap(), b"ell");
         assert!(r.fits());
-        let bad = Range { source: Source::Memory(Arc::new(b"hi".to_vec())), offset: 1, len: 5 };
+        let bad = Range {
+            source: Source::Memory(Arc::new(b"hi".to_vec())),
+            offset: 1,
+            len: 5,
+        };
         assert!(!bad.fits());
         assert_eq!(bad.read(), Err(ReadError::NotReadable));
     }
@@ -1362,21 +1578,43 @@ mod tests {
     #[test]
     fn a_failed_part_makes_an_unreadable_blob_of_the_full_size() {
         let gone = Range {
-            source: Source::Disk(Arc::new(DiskFile { path: std::env::temp_dir().join("redjs-no-such-file-ever"), size: 4, mtime: None })),
+            source: Source::Disk(Arc::new(DiskFile {
+                path: std::env::temp_dir().join("redjs-no-such-file-ever"),
+                size: 4,
+                mtime: None,
+            })),
             offset: 0,
             len: 4,
         };
-        let r = assemble(vec![Part::Text("ab".into()), Part::Blob(gone)], false, "test");
+        let r = assemble(
+            vec![Part::Text("ab".into()), Part::Blob(gone)],
+            false,
+            "test",
+        );
         assert_eq!(r.len, 6);
         assert_eq!(r.read(), Err(ReadError::NotFound));
     }
 
     #[test]
     fn one_blob_part_is_shared_and_many_are_joined() {
-        let r = Range { source: Source::Memory(Arc::new(b"abc".to_vec())), offset: 0, len: 3 };
+        let r = Range {
+            source: Source::Memory(Arc::new(b"abc".to_vec())),
+            offset: 0,
+            len: 3,
+        };
         let shared = assemble(vec![Part::Blob(r.clone())], false, "test");
-        assert!(matches!((&shared.source, &r.source), (Source::Memory(a), Source::Memory(b)) if Arc::ptr_eq(a, b)));
-        let joined = assemble(vec![Part::Blob(r), Part::Text("d".into()), Part::Bytes(vec![b'e'])], false, "test");
+        assert!(
+            matches!((&shared.source, &r.source), (Source::Memory(a), Source::Memory(b)) if Arc::ptr_eq(a, b))
+        );
+        let joined = assemble(
+            vec![
+                Part::Blob(r),
+                Part::Text("d".into()),
+                Part::Bytes(vec![b'e']),
+            ],
+            false,
+            "test",
+        );
         assert_eq!(joined.read().unwrap(), b"abcde");
     }
 }
@@ -1393,7 +1631,13 @@ mod jsc_tests {
         file.expose(&c, "picked");
         s(&c, "globalThis.stream = picked.slice(2, 5).stream(); 0");
         drop(file);
-        assert_eq!(run(&c, "try { await stream.getReader().read(); } catch (error) { return error.name; }"), "NotFoundError");
+        assert_eq!(
+            run(
+                &c,
+                "try { await stream.getReader().read(); } catch (error) { return error.name; }"
+            ),
+            "NotFoundError"
+        );
     }
 
     #[test]
@@ -1413,9 +1657,15 @@ mod jsc_tests {
         let c = file_ctx();
         let file = TempFile::new("stream-cancel.bin", &[9; 150_000]);
         file.expose(&c, "picked");
-        assert_eq!(run(&c, "const reader = picked.stream().getReader(); await Promise.resolve(); \
+        assert_eq!(
+            run(
+                &c,
+                "const reader = picked.stream().getReader(); await Promise.resolve(); \
             const pending = reader.read(); await reader.cancel(); \
-            return [(await pending).done, (await reader.read()).done].join(',');"), "true,true");
+            return [(await pending).done, (await reader.read()).done].join(',');"
+            ),
+            "true,true"
+        );
         // Retire the realm while an outstanding file read may still be in its inbox.
     }
 
@@ -1427,7 +1677,10 @@ mod jsc_tests {
         let c = file_ctx();
         let t = TempFile::new("range.bin", b"0123456789");
         t.expose(&c, "picked");
-        s(&c, "globalThis.part = picked.slice(2, 6); globalThis.mem = new Blob(['abc']); 0");
+        s(
+            &c,
+            "globalThis.part = picked.slice(2, 6); globalThis.mem = new Blob(['abc']); 0",
+        );
         let g = c.raw();
         let global = unsafe { crate::glue::rjs_global(g) };
         let get = |name: &str| unsafe { crate::webapi::util::get(g, global, name) };
@@ -1459,10 +1712,16 @@ mod jsc_tests {
         for _ in 0..super::MAX_READS_IN_FLIGHT {
             let gate = Arc::clone(&gate);
             super::submit(Box::new(move || {
-                let _ = gate.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10));
+                let _ = gate
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(10));
             }));
         }
-        s(&c, "f.arrayBuffer().then(() => { globalThis.late = 1; }); 0");
+        s(
+            &c,
+            "f.arrayBuffer().then(() => { globalThis.late = 1; }); 0",
+        );
         assert!(super::has_inbox_work(g), "the read is outstanding");
         // The teardown, as the context registry runs it for a recycled address.
         let before = crate::context::id_of(g).unwrap();
@@ -1480,20 +1739,48 @@ mod jsc_tests {
         }));
         rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(!crate::web::has_scheduler(g), "nothing re-created the dead context's queue");
-        assert!(!super::has_inbox_work(g), "nothing is waiting for the new context either");
+        assert!(
+            !crate::web::has_scheduler(g),
+            "nothing re-created the dead context's queue"
+        );
+        assert!(
+            !super::has_inbox_work(g),
+            "nothing is waiting for the new context either"
+        );
     }
 
     #[test]
     fn parts_convert_as_a_webidl_sequence() {
         let c = file_ctx();
-        assert_eq!(run(&c, "return await new Blob(new Set(['a', 'b'])).text();"), "ab");
+        assert_eq!(
+            run(&c, "return await new Blob(new Set(['a', 'b'])).text();"),
+            "ab"
+        );
         assert_eq!(run(&c, "return await new Blob((function* () { yield 'x'; yield new Uint8Array([121]); })()).text();"), "xy");
-        assert_eq!(run(&c, "return await new Blob([1, null, { toString() { return 'o'; } }]).text();"), "1nullo");
-        for bad in ["new Blob('abc')", "new Blob({ length: 1, 0: 'a' })", "new Blob(5)"] {
-            assert!(throws(&c, bad).contains("cannot be converted to a sequence"), "{bad}");
+        assert_eq!(
+            run(
+                &c,
+                "return await new Blob([1, null, { toString() { return 'o'; } }]).text();"
+            ),
+            "1nullo"
+        );
+        for bad in [
+            "new Blob('abc')",
+            "new Blob({ length: 1, 0: 'a' })",
+            "new Blob(5)",
+        ] {
+            assert!(
+                throws(&c, bad).contains("cannot be converted to a sequence"),
+                "{bad}"
+            );
         }
-        assert_eq!(throws(&c, "new Blob([{ toString() { throw new Error('mine'); } }])"), "mine");
+        assert_eq!(
+            throws(
+                &c,
+                "new Blob([{ toString() { throw new Error('mine'); } }])"
+            ),
+            "mine"
+        );
         assert!(throws(&c, "new Blob([], 'text/plain')").contains("BlobPropertyBag"));
     }
 
@@ -1501,7 +1788,13 @@ mod jsc_tests {
     fn the_bag_reads_endings_then_type() {
         let c = file_ctx();
         let nl = if cfg!(windows) { "13,10" } else { "10" };
-        assert_eq!(run(&c, "return [...await new Blob(['\\n'], { endings: 'native' }).bytes()].join();"), nl);
+        assert_eq!(
+            run(
+                &c,
+                "return [...await new Blob(['\\n'], { endings: 'native' }).bytes()].join();"
+            ),
+            nl
+        );
         assert_eq!(run(&c, "return [...await new Blob(['\\r\\n'], { endings: 'transparent' }).bytes()].join();"), "13,10");
         assert!(throws(&c, "new Blob([], { endings: 'unix' })").contains("EndingType"));
         ok(&c, "(() => { const order = []; new Blob([], { get type() { order.push('type'); return 'A/B'; }, get endings() { order.push('endings'); } }); \
@@ -1512,20 +1805,60 @@ mod jsc_tests {
     #[test]
     fn slice_clamps_rounds_and_converts_like_webidl() {
         let c = file_ctx();
-        assert_eq!(run(&c, "return await new Blob(['0123456789']).slice(1.5, 4.5).text();"), "23", "[Clamp] rounds half to even");
-        assert_eq!(run(&c, "return await new Blob(['0123456789']).slice(-3).text();"), "789");
-        assert_eq!(run(&c, "return await new Blob(['0123456789']).slice(NaN, Infinity).text();"), "0123456789");
-        assert_eq!(run(&c, "return await new Blob(['0123456789']).slice(8, 2).text();"), "");
-        ok(&c, "Blob.prototype.slice.length === 0 && new Blob(['x']).slice(0, 1, 5).type === '5'");
-        assert_eq!(throws(&c, "new Blob(['x']).slice({ valueOf() { throw new Error('vo'); } })"), "vo");
-        ok(&c, "Object.prototype.toString.call(new Blob([])) === '[object Blob]'");
+        assert_eq!(
+            run(
+                &c,
+                "return await new Blob(['0123456789']).slice(1.5, 4.5).text();"
+            ),
+            "23",
+            "[Clamp] rounds half to even"
+        );
+        assert_eq!(
+            run(
+                &c,
+                "return await new Blob(['0123456789']).slice(-3).text();"
+            ),
+            "789"
+        );
+        assert_eq!(
+            run(
+                &c,
+                "return await new Blob(['0123456789']).slice(NaN, Infinity).text();"
+            ),
+            "0123456789"
+        );
+        assert_eq!(
+            run(
+                &c,
+                "return await new Blob(['0123456789']).slice(8, 2).text();"
+            ),
+            ""
+        );
+        ok(
+            &c,
+            "Blob.prototype.slice.length === 0 && new Blob(['x']).slice(0, 1, 5).type === '5'",
+        );
+        assert_eq!(
+            throws(
+                &c,
+                "new Blob(['x']).slice({ valueOf() { throw new Error('vo'); } })"
+            ),
+            "vo"
+        );
+        ok(
+            &c,
+            "Object.prototype.toString.call(new Blob([])) === '[object Blob]'",
+        );
     }
 
     #[test]
     fn reads_of_a_memory_blob_settle_without_the_pump() {
         // No scheduler in this context: a memory read must not need one.
         let c = ctx();
-        s(&c, "globalThis.got = null; new Blob(['abc']).text().then(t => { got = t; }); 0");
+        s(
+            &c,
+            "globalThis.got = null; new Blob(['abc']).text().then(t => { got = t; }); 0",
+        );
         c.drain_microtasks();
         ok(&c, "got === 'abc'");
         assert!(throws(&c, "Blob.prototype.stream.call({})").contains("non-Blob"));

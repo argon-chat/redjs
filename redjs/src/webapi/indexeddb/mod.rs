@@ -90,7 +90,9 @@ pub enum IdbEncryption {
     Plaintext,
     Encrypted([u8; 32]),
     /// Encrypted files are rekeyed to plaintext.
-    Decrypting { old_key: [u8; 32] },
+    Decrypting {
+        old_key: [u8; 32],
+    },
 }
 
 /// Where an app's databases live and how they are protected. Read ONCE, on
@@ -144,9 +146,15 @@ impl IndexedDbHost for ConfiguredHost {
 /// Configures IndexedDB on disk without a Rust host (the C ABI's
 /// `redjs_idb_configure`). Only before the first IndexedDB use: after it the
 /// configuration is latched and this is refused.
-pub fn configure(folder: std::path::PathBuf, key: Option<[u8; 32]>, quota: u64) -> Result<(), String> {
+pub fn configure(
+    folder: std::path::PathBuf,
+    key: Option<[u8; 32]>,
+    quota: u64,
+) -> Result<(), String> {
     if server::started() {
-        return Err("IndexedDB is already in use; its folder and key were latched at the first use".into());
+        return Err(
+            "IndexedDB is already in use; its folder and key were latched at the first use".into(),
+        );
     }
     let quota = if quota == 0 { DEFAULT_QUOTA } else { quota };
     set_host(Box::leak(Box::new(ConfiguredHost { folder, key, quota })));
@@ -183,7 +191,11 @@ pub fn config_changed() {
     if !server::started() {
         return;
     }
-    let at = latched().lock().unwrap().clone().unwrap_or_else(|| "this process's memory".into());
+    let at = latched()
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "this process's memory".into());
     advise(
         "config-changed",
         format!(
@@ -284,7 +296,10 @@ pub(crate) struct Intrinsics {
 pub(crate) fn intrinsics(g: *mut c_void) -> Option<Intrinsics> {
     let c = client::try_cl(g)?;
     let c = c.borrow();
-    Some(Intrinsics { ident_re: c.ident_re, regexp_exec: c.regexp_exec })
+    Some(Intrinsics {
+        ident_re: c.ident_re,
+        regexp_exec: c.regexp_exec,
+    })
 }
 
 unsafe fn keep(g: *mut c_void, v: u64) -> u64 {
@@ -299,7 +314,9 @@ unsafe fn keep(g: *mut c_void, v: u64) -> u64 {
 /// (it hangs `navigator.storage` there). Nothing connects or spawns here:
 /// the server thread starts at the first open / deleteDatabase / databases.
 pub unsafe fn install(g: *mut c_void, ev_proto: u64, et_proto: u64) {
-    let Some(ctx) = crate::context::id_of(g) else { return };
+    let Some(ctx) = crate::context::id_of(g) else {
+        return;
+    };
     if client::try_cl(g).is_some() {
         return;
     }
@@ -335,8 +352,19 @@ pub unsafe fn install(g: *mut c_void, ev_proto: u64, et_proto: u64) {
             opaque: false,
         },
     );
-    let factory = keep(g, host_create(g, cls.factory, cls.factory_proto, client::Unit));
-    let storage = keep(g, host_create(g, cls.storage_manager, cls.storage_manager_proto, client::Unit));
+    let factory = keep(
+        g,
+        host_create(g, cls.factory, cls.factory_proto, client::Unit),
+    );
+    let storage = keep(
+        g,
+        host_create(
+            g,
+            cls.storage_manager,
+            cls.storage_manager_proto,
+            client::Unit,
+        ),
+    );
     {
         let c = client::cl(g);
         let mut c = c.borrow_mut();
@@ -352,8 +380,16 @@ pub unsafe fn install(g: *mut c_void, ev_proto: u64, et_proto: u64) {
 
     // `navigator.storage` — on Navigator.prototype, like the other members.
     let nav_ctor = get(g, global, "Navigator");
-    let nav_proto = if is_cell(nav_ctor) { get(g, nav_ctor, "prototype") } else { UNDEF };
-    let target = if is_cell(nav_proto) { nav_proto } else { get(g, global, "navigator") };
+    let nav_proto = if is_cell(nav_ctor) {
+        get(g, nav_ctor, "prototype")
+    } else {
+        UNDEF
+    };
+    let target = if is_cell(nav_proto) {
+        nav_proto
+    } else {
+        get(g, global, "navigator")
+    };
     if is_cell(target) {
         let getter = make_fn(g, "get storage", 0, factory::get_storage);
         let a = atom(g, "storage");
@@ -408,7 +444,6 @@ pub fn shutdown(timeout: Duration) -> bool {
     server::send(server::ToServer::Shutdown { done: tx });
     rx.recv_timeout(timeout).is_ok()
 }
-
 
 #[cfg(test)]
 mod tests;

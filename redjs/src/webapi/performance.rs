@@ -93,10 +93,28 @@ mod tests {
     fn missing_clock_is_refused_without_partial_host_state() {
         let context = crate::api::Context::new();
         unsafe {
-            assert_eq!(crate::ffi::redjs_webshim_install(context.raw(), core::ptr::null(), 0, core::ptr::null(), 0), 2);
+            assert_eq!(
+                crate::ffi::redjs_webshim_install(
+                    context.raw(),
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    0
+                ),
+                2
+            );
             assert!(!super::super::util::has_state(context.raw()));
             assert_eq!(crate::ffi::redjs_web_install(context.raw()), 0);
-            assert_eq!(crate::ffi::redjs_webshim_install(context.raw(), core::ptr::null(), 0, core::ptr::null(), 0), 0);
+            assert_eq!(
+                crate::ffi::redjs_webshim_install(
+                    context.raw(),
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    0
+                ),
+                0
+            );
         }
         ok(&context, "performance instanceof Performance");
     }

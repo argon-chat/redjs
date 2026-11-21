@@ -24,7 +24,11 @@ unsafe fn proto_of_global_class(g: *mut c_void, name: &str) -> u64 {
 
 #[crate::host_fn]
 unsafe fn encoder_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
-    ordinary_create(g, cf_new_target(cf), proto_of_global_class(g, "TextEncoder"))
+    ordinary_create(
+        g,
+        cf_new_target(cf),
+        proto_of_global_class(g, "TextEncoder"),
+    )
 }
 
 #[crate::host_fn]
@@ -48,8 +52,12 @@ unsafe fn encode(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn encode_into(g: *mut c_void, cf: *mut c_void) -> u64 {
     let s = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let mut ta = crate::ffi::RjsTaInfo::default();
-    if glue::rjs_typedarray_info(g, cf_arg(cf, 1), &mut ta) != 0 || ta.kind != 2 || ta.detached != 0 {
-        return throw_type_error(g, "TextEncoder.encodeInto: destination must be a Uint8Array");
+    if glue::rjs_typedarray_info(g, cf_arg(cf, 1), &mut ta) != 0 || ta.kind != 2 || ta.detached != 0
+    {
+        return throw_type_error(
+            g,
+            "TextEncoder.encodeInto: destination must be a Uint8Array",
+        );
     }
     let dst = if ta.data.is_null() {
         &mut [][..]
@@ -78,15 +86,31 @@ unsafe fn encode_into(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn decoder_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let label_v = cf_arg(cf, 0);
-    let label = if label_v == UNDEF { "utf-8".to_string() } else { read_string(g, label_v).unwrap_or_default() };
+    let label = if label_v == UNDEF {
+        "utf-8".to_string()
+    } else {
+        read_string(g, label_v).unwrap_or_default()
+    };
     let Some(enc) = encoding_rs::Encoding::for_label(label.trim().as_bytes()) else {
-        return throw_error(g, 2, &format!("TextDecoder: unknown encoding label \"{label}\""));
+        return throw_error(
+            g,
+            2,
+            &format!("TextDecoder: unknown encoding label \"{label}\""),
+        );
     };
     // The Encoding Standard forbids the replacement encoding for TextDecoder.
     if enc == encoding_rs::REPLACEMENT {
-        return throw_error(g, 2, &format!("TextDecoder: \"{label}\" is not a supported encoding"));
+        return throw_error(
+            g,
+            2,
+            &format!("TextDecoder: \"{label}\" is not a supported encoding"),
+        );
     }
-    let obj = ordinary_create(g, cf_new_target(cf), proto_of_global_class(g, "TextDecoder"));
+    let obj = ordinary_create(
+        g,
+        cf_new_target(cf),
+        proto_of_global_class(g, "TextDecoder"),
+    );
     let opts = cf_arg(cf, 1);
     let flag = |name: &str| -> u64 {
         if is_cell(opts) {
@@ -98,7 +122,13 @@ unsafe fn decoder_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     // Own props (readonly): the spec `encoding` getter returns the canonical
     // lowercase name of the RESOLVED encoding, not the label passed in.
-    define(g, obj, "encoding", js_string(g, &enc.name().to_ascii_lowercase()), 1 | 2);
+    define(
+        g,
+        obj,
+        "encoding",
+        js_string(g, &enc.name().to_ascii_lowercase()),
+        1 | 2,
+    );
     define(g, obj, "fatal", flag("fatal"), 1 | 2);
     define(g, obj, "ignoreBOM", flag("ignoreBOM"), 1 | 2);
     obj
@@ -117,7 +147,10 @@ unsafe fn decode(g: *mut c_void, cf: *mut c_void) -> u64 {
         return js_string(g, "");
     }
     let Some(bytes) = bufferish(g, v) else {
-        return throw_type_error(g, "TextDecoder.decode: expected an ArrayBuffer or ArrayBufferView");
+        return throw_type_error(
+            g,
+            "TextDecoder.decode: expected an ArrayBuffer or ArrayBufferView",
+        );
     };
 
     let ignore_bom = truthy_flag(get(g, this, "ignoreBOM"));
@@ -145,22 +178,28 @@ unsafe fn decoder_get_encoding(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 pub unsafe fn install(g: *mut c_void) {
-    define_class(g, &ClassSpec {
-        name: "TextEncoder",
-        arity: 0,
-        construct: Some(encoder_construct),
-        parent_proto: 0,
-        methods: &[("encode", 1, encode), ("encodeInto", 2, encode_into)],
-        getters: &[("encoding", encoder_get_encoding)],
-        accessors: &[],
-    });
-    define_class(g, &ClassSpec {
-        name: "TextDecoder",
-        arity: 0,
-        construct: Some(decoder_construct),
-        parent_proto: 0,
-        methods: &[("decode", 1, decode)],
-        getters: &[("encoding", decoder_get_encoding)],
-        accessors: &[],
-    });
+    define_class(
+        g,
+        &ClassSpec {
+            name: "TextEncoder",
+            arity: 0,
+            construct: Some(encoder_construct),
+            parent_proto: 0,
+            methods: &[("encode", 1, encode), ("encodeInto", 2, encode_into)],
+            getters: &[("encoding", encoder_get_encoding)],
+            accessors: &[],
+        },
+    );
+    define_class(
+        g,
+        &ClassSpec {
+            name: "TextDecoder",
+            arity: 0,
+            construct: Some(decoder_construct),
+            parent_proto: 0,
+            methods: &[("decode", 1, decode)],
+            getters: &[("encoding", decoder_get_encoding)],
+            accessors: &[],
+        },
+    );
 }

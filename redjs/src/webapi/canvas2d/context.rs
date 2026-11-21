@@ -20,11 +20,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke};
 
-use super::cmd::{Clip, Cmd, CompositeOp, Draw, Gradient, GradientKind, Image, ImageRef, Paint, Pattern, Quality};
-use super::color::{self, Parsed};
-use super::surface::{register_present, Options, Surface, SurfaceRef};
 use super::super::path2d::{self, Path, Seg};
 use super::super::util::*;
+use super::cmd::{
+    Clip, Cmd, CompositeOp, Draw, Gradient, GradientKind, Image, ImageRef, Paint, Pattern, Quality,
+};
+use super::color::{self, Parsed};
+use super::surface::{register_present, Options, Surface, SurfaceRef};
 use crate::{capi, glue};
 
 // ---------------------------------------------------------------------------
@@ -58,7 +60,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static Classes>> {
 }
 
 fn classes(g: *mut c_void) -> &'static Classes {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::canvas2d not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::canvas2d not installed")
 }
 
 fn classes_opt(g: *mut c_void) -> Option<&'static Classes> {
@@ -190,13 +197,18 @@ impl Ctx {
     fn draw(&self) -> Draw {
         let s = &self.st;
         Draw {
-            op: s.op, alpha: s.alpha as f32, clip: s.clip.clone(),
+            op: s.op,
+            alpha: s.alpha as f32,
+            clip: s.clip.clone(),
             effects: super::effects::Effects {
                 blurs: super::effects::blurs(&s.filter).unwrap_or_default(),
-                shadow: (s.shadow_color[3] > 0 && (s.shadow_blur > 0.0 || s.shadow_x != 0.0 || s.shadow_y != 0.0))
+                shadow: (s.shadow_color[3] > 0
+                    && (s.shadow_blur > 0.0 || s.shadow_x != 0.0 || s.shadow_y != 0.0))
                     .then(|| super::effects::Shadow {
-                        color: color::to_f32(s.shadow_color), x: s.shadow_x as f32,
-                        y: s.shadow_y as f32, sigma: (s.shadow_blur * 0.5) as f32,
+                        color: color::to_f32(s.shadow_color),
+                        x: s.shadow_x as f32,
+                        y: s.shadow_y as f32,
+                        sigma: (s.shadow_blur * 0.5) as f32,
                     }),
             },
         }
@@ -214,7 +226,10 @@ impl Ctx {
     }
 
     fn stroke_style(&self) -> Stroke {
-        let mut s = Stroke::new(self.st.line_width).with_join(self.st.join).with_miter_limit(self.st.miter).with_caps(self.st.cap);
+        let mut s = Stroke::new(self.st.line_width)
+            .with_join(self.st.join)
+            .with_miter_limit(self.st.miter)
+            .with_caps(self.st.cap);
         if !self.st.dash.is_empty() {
             s = s.with_dashes(self.st.dash_offset, self.st.dash.iter().copied());
         }
@@ -223,7 +238,13 @@ impl Ctx {
 
     fn advise_unpainted(&self) {
         if super::effects::blurs(&self.st.filter).is_none() {
-            super::advise("canvas:filter", format!("canvas: ctx.filter = \"{}\" is not implemented; supported: none and blur()", self.st.filter));
+            super::advise(
+                "canvas:filter",
+                format!(
+                    "canvas: ctx.filter = \"{}\" is not implemented; supported: none and blur()",
+                    self.st.filter
+                ),
+            );
         }
     }
 
@@ -247,7 +268,14 @@ fn paint_of(style: &Style) -> Paint {
             let g = g.lock().unwrap().clone();
             let degenerate = match g.kind {
                 GradientKind::Linear { x0, y0, x1, y1 } => x0 == x1 && y0 == y1,
-                GradientKind::Radial { x0, y0, r0, x1, y1, r1 } => x0 == x1 && y0 == y1 && r0 == r1,
+                GradientKind::Radial {
+                    x0,
+                    y0,
+                    r0,
+                    x1,
+                    y1,
+                    r1,
+                } => x0 == x1 && y0 == y1 && r0 == r1,
                 GradientKind::Conic { .. } => false,
             };
             match g.stops.len() {
@@ -301,7 +329,15 @@ pub(crate) fn bez_of(path: &Path) -> BezPath {
 // Construction (shared by OffscreenCanvas and the embedder's element)
 // ---------------------------------------------------------------------------
 
-pub(crate) unsafe fn new_context(g: *mut c_void, canvas: u64, w: u32, h: u32, options: Options, key: Option<u64>, offscreen: bool) -> u64 {
+pub(crate) unsafe fn new_context(
+    g: *mut c_void,
+    canvas: u64,
+    w: u32,
+    h: u32,
+    options: Options,
+    key: Option<u64>,
+    offscreen: bool,
+) -> u64 {
     let c = classes(g);
     let surface: SurfaceRef = Arc::new(Mutex::new(Surface::new(w, h, options)));
     if options.opaque {
@@ -315,8 +351,18 @@ pub(crate) unsafe fn new_context(g: *mut c_void, canvas: u64, w: u32, h: u32, op
     if let Some(k) = key {
         register_present(k, &surface);
     }
-    let ctx = Ctx { surface, st: State::default(), stack: Vec::new(), path: Path::new(), present_key: key };
-    let proto = if offscreen { c.offctx.proto } else { c.ctx2d.proto };
+    let ctx = Ctx {
+        surface,
+        st: State::default(),
+        stack: Vec::new(),
+        path: Path::new(),
+        present_key: key,
+    };
+    let proto = if offscreen {
+        c.offctx.proto
+    } else {
+        c.ctx2d.proto
+    };
     let obj = host_create(g, c.ctx_cls, proto, ctx);
     glue::rjs_define(g, obj, c.s_canvas, canvas, 0);
     glue::rjs_define(g, obj, c.s_styles, new_array(g), 0);
@@ -365,11 +411,23 @@ pub(crate) unsafe fn image_source(g: *mut c_void, v: u64) -> Result<Source, ()> 
     let st = state(g);
     if let Some(b) = super::super::image::bitmap_of(g, v) {
         if b.width == 0 || b.height == 0 {
-            domexception_throw(g, "InvalidStateError", "The image source is detached (a closed ImageBitmap)");
+            domexception_throw(
+                g,
+                "InvalidStateError",
+                "The image source is detached (a closed ImageBitmap)",
+            );
             return Err(());
         }
         let clean = b.origin_clean;
-        return Ok(Source::Pixels(Arc::new(Image::from_straight(b.width, b.height, b.rgba.clone(), clean)), clean));
+        return Ok(Source::Pixels(
+            Arc::new(Image::from_straight(
+                b.width,
+                b.height,
+                b.rgba.clone(),
+                clean,
+            )),
+            clean,
+        ));
     }
     if is_cell(v) && proto_chain_has(g, v, st.image.proto) {
         let bmp = get_a(g, v, st.s_image);
@@ -378,14 +436,26 @@ pub(crate) unsafe fn image_source(g: *mut c_void, v: u64) -> Result<Source, ()> 
                 return Ok(Source::Nothing);
             }
             let clean = image_origin_clean(g, v);
-            return Ok(Source::Pixels(Arc::new(Image::from_straight(b.width, b.height, b.rgba.clone(), clean)), clean));
+            return Ok(Source::Pixels(
+                Arc::new(Image::from_straight(
+                    b.width,
+                    b.height,
+                    b.rgba.clone(),
+                    clean,
+                )),
+                clean,
+            ));
         }
         return Ok(Source::Nothing);
     }
     let c = classes(g);
     if let Some(off) = host_data::<Off>(g, c.off_cls, v) {
         if off.width == 0 || off.height == 0 {
-            domexception_throw(g, "InvalidStateError", "The canvas image source has a zero width or height");
+            domexception_throw(
+                g,
+                "InvalidStateError",
+                "The canvas image source has a zero width or height",
+            );
             return Err(());
         }
         let (width, height, kind) = (off.width, off.height, off.kind);
@@ -483,7 +553,15 @@ fn surface_source(s: &SurfaceRef) -> Source {
 }
 
 fn blank(w: u32, h: u32) -> Source {
-    Source::Pixels(Arc::new(Image::from_premul(w, h, vec![0; w as usize * h as usize * 4], true)), true)
+    Source::Pixels(
+        Arc::new(Image::from_premul(
+            w,
+            h,
+            vec![0; w as usize * h as usize * 4],
+            true,
+        )),
+        true,
+    )
 }
 
 /// An `Image` fetched over http(s) without `crossOrigin` is cross-origin to
@@ -514,7 +592,13 @@ pub(crate) unsafe fn canvas_pixels(g: *mut c_void, v: u64) -> Option<(Vec<u8>, u
         }
         match ctx_of(g, get_a(g, v, c.s_ctx)) {
             Some(cx) => cx.surface.clone(),
-            None => return Some((vec![0; off.width as usize * off.height as usize * 4], off.width, off.height)),
+            None => {
+                return Some((
+                    vec![0; off.width as usize * off.height as usize * 4],
+                    off.width,
+                    off.height,
+                ))
+            }
         }
     } else if let Some(cx) = ctx_of(g, v) {
         cx.surface.clone()
@@ -637,7 +721,10 @@ macro_rules! this_ctx {
         match ctx_of($g, cf_this($cf)) {
             Some(c) => c,
             None => {
-                return throw_type_error($g, concat!("CanvasRenderingContext2D.", $what, ": illegal invocation"));
+                return throw_type_error(
+                    $g,
+                    concat!("CanvasRenderingContext2D.", $what, ": illegal invocation"),
+                );
             }
         }
     };
@@ -727,7 +814,13 @@ unsafe fn m_get_context_attributes(g: *mut c_void, cf: *mut c_void) -> u64 {
     define(g, out, "alpha", enc_bool(!o.opaque), 0);
     define(g, out, "colorSpace", js_string(g, "srgb"), 0);
     define(g, out, "desynchronized", FALSE, 0);
-    define(g, out, "willReadFrequently", enc_bool(o.will_read_frequently), 0);
+    define(
+        g,
+        out,
+        "willReadFrequently",
+        enc_bool(o.will_read_frequently),
+        0,
+    );
     out
 }
 
@@ -740,7 +833,9 @@ macro_rules! num_attr {
         }
         #[crate::host_fn]
         unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
-            let Ok($v) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
+            let Ok($v) = to_number(g, cf_arg(cf, 0)) else {
+                return UNDEF;
+            };
             let cx = this_ctx!(g, cf, $what);
             if $v.is_finite() && $ok {
                 cx.st.$field = $v;
@@ -750,13 +845,42 @@ macro_rules! num_attr {
     };
 }
 
-num_attr!(get_global_alpha, set_global_alpha, alpha, "globalAlpha", |v| (0.0..=1.0).contains(&v));
-num_attr!(get_line_width, set_line_width, line_width, "lineWidth", |v| v > 0.0);
-num_attr!(get_miter_limit, set_miter_limit, miter, "miterLimit", |v| v > 0.0);
-num_attr!(get_line_dash_offset, set_line_dash_offset, dash_offset, "lineDashOffset", |v| true);
-num_attr!(get_shadow_blur, set_shadow_blur, shadow_blur, "shadowBlur", |v| v >= 0.0);
-num_attr!(get_shadow_x, set_shadow_x, shadow_x, "shadowOffsetX", |v| true);
-num_attr!(get_shadow_y, set_shadow_y, shadow_y, "shadowOffsetY", |v| true);
+num_attr!(
+    get_global_alpha,
+    set_global_alpha,
+    alpha,
+    "globalAlpha",
+    |v| (0.0..=1.0).contains(&v)
+);
+num_attr!(
+    get_line_width,
+    set_line_width,
+    line_width,
+    "lineWidth",
+    |v| v > 0.0
+);
+num_attr!(get_miter_limit, set_miter_limit, miter, "miterLimit", |v| v
+    > 0.0);
+num_attr!(
+    get_line_dash_offset,
+    set_line_dash_offset,
+    dash_offset,
+    "lineDashOffset",
+    |v| true
+);
+num_attr!(
+    get_shadow_blur,
+    set_shadow_blur,
+    shadow_blur,
+    "shadowBlur",
+    |v| v >= 0.0
+);
+num_attr!(get_shadow_x, set_shadow_x, shadow_x, "shadowOffsetX", |v| {
+    true
+});
+num_attr!(get_shadow_y, set_shadow_y, shadow_y, "shadowOffsetY", |v| {
+    true
+});
 
 /// An enumerated attribute: the setter ignores anything not in `$values`.
 macro_rules! enum_attr {
@@ -768,7 +892,9 @@ macro_rules! enum_attr {
         }
         #[crate::host_fn]
         unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
-            let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
+            let Ok(s) = arg_str(g, cf, 0) else {
+                return UNDEF;
+            };
             let cx = this_ctx!(g, cf, $what);
             let values: &[&'static str] = &$values;
             if let Some(v) = values.iter().find(|v| **v == s) {
@@ -779,37 +905,91 @@ macro_rules! enum_attr {
     };
 }
 
-enum_attr!(get_quality, set_quality, quality, "imageSmoothingQuality", ["low", "medium", "high"]);
-enum_attr!(get_text_align, set_text_align, text_align, "textAlign", ["start", "end", "left", "right", "center"]);
+enum_attr!(
+    get_quality,
+    set_quality,
+    quality,
+    "imageSmoothingQuality",
+    ["low", "medium", "high"]
+);
+enum_attr!(
+    get_text_align,
+    set_text_align,
+    text_align,
+    "textAlign",
+    ["start", "end", "left", "right", "center"]
+);
 enum_attr!(
     get_text_baseline,
     set_text_baseline,
     text_baseline,
     "textBaseline",
-    ["top", "hanging", "middle", "alphabetic", "ideographic", "bottom"]
+    [
+        "top",
+        "hanging",
+        "middle",
+        "alphabetic",
+        "ideographic",
+        "bottom"
+    ]
 );
-enum_attr!(get_direction, set_direction, direction, "direction", ["ltr", "rtl", "inherit"]);
-enum_attr!(get_font_kerning, set_font_kerning, font_kerning, "fontKerning", ["auto", "normal", "none"]);
+enum_attr!(
+    get_direction,
+    set_direction,
+    direction,
+    "direction",
+    ["ltr", "rtl", "inherit"]
+);
+enum_attr!(
+    get_font_kerning,
+    set_font_kerning,
+    font_kerning,
+    "fontKerning",
+    ["auto", "normal", "none"]
+);
 enum_attr!(
     get_font_stretch,
     set_font_stretch,
     font_stretch,
     "fontStretch",
-    ["ultra-condensed", "extra-condensed", "condensed", "semi-condensed", "normal", "semi-expanded", "expanded", "extra-expanded", "ultra-expanded"]
+    [
+        "ultra-condensed",
+        "extra-condensed",
+        "condensed",
+        "semi-condensed",
+        "normal",
+        "semi-expanded",
+        "expanded",
+        "extra-expanded",
+        "ultra-expanded"
+    ]
 );
 enum_attr!(
     get_font_variant_caps,
     set_font_variant_caps,
     font_variant_caps,
     "fontVariantCaps",
-    ["normal", "small-caps", "all-small-caps", "petite-caps", "all-petite-caps", "unicase", "titling-caps"]
+    [
+        "normal",
+        "small-caps",
+        "all-small-caps",
+        "petite-caps",
+        "all-petite-caps",
+        "unicase",
+        "titling-caps"
+    ]
 );
 enum_attr!(
     get_text_rendering,
     set_text_rendering,
     text_rendering,
     "textRendering",
-    ["auto", "optimizeSpeed", "optimizeLegibility", "geometricPrecision"]
+    [
+        "auto",
+        "optimizeSpeed",
+        "optimizeLegibility",
+        "geometricPrecision"
+    ]
 );
 
 macro_rules! string_attr {
@@ -821,7 +1001,9 @@ macro_rules! string_attr {
         }
         #[crate::host_fn]
         unsafe fn $set(g: *mut c_void, cf: *mut c_void) -> u64 {
-            let Ok($s) = arg_str(g, cf, 0) else { return UNDEF };
+            let Ok($s) = arg_str(g, cf, 0) else {
+                return UNDEF;
+            };
             let cx = this_ctx!(g, cf, $what);
             if $ok {
                 cx.st.$field = $s.trim().to_string();
@@ -834,19 +1016,41 @@ macro_rules! string_attr {
 /// A CSS length, as `letterSpacing` / `wordSpacing` take it.
 fn is_length(s: &str) -> bool {
     let s = s.trim();
-    let num_end = s.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+')).unwrap_or(s.len());
+    let num_end = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
+        .unwrap_or(s.len());
     let (num, unit) = s.split_at(num_end);
-    num.parse::<f64>().is_ok() && ["px", "em", "rem", "pt", "pc", "in", "cm", "mm", "ex", "ch", "vw", "vh", ""].contains(&unit)
+    num.parse::<f64>().is_ok()
+        && [
+            "px", "em", "rem", "pt", "pc", "in", "cm", "mm", "ex", "ch", "vw", "vh", "",
+        ]
+        .contains(&unit)
         && !(unit.is_empty() && num.parse::<f64>().ok() != Some(0.0))
 }
 
 /// A valid CSS font shorthand; invalid assignments retain the prior font.
-fn is_font(s: &str) -> bool { super::text::Font::parse(s).is_some() }
+fn is_font(s: &str) -> bool {
+    super::text::Font::parse(s).is_some()
+}
 
 string_attr!(get_font, set_font, font, "font", |s| is_font(&s));
-string_attr!(get_filter, set_filter, filter, "filter", |s| !s.trim().is_empty());
-string_attr!(get_letter_spacing, set_letter_spacing, letter_spacing, "letterSpacing", |s| is_length(&s));
-string_attr!(get_word_spacing, set_word_spacing, word_spacing, "wordSpacing", |s| is_length(&s));
+string_attr!(get_filter, set_filter, filter, "filter", |s| !s
+    .trim()
+    .is_empty());
+string_attr!(
+    get_letter_spacing,
+    set_letter_spacing,
+    letter_spacing,
+    "letterSpacing",
+    |s| is_length(&s)
+);
+string_attr!(
+    get_word_spacing,
+    set_word_spacing,
+    word_spacing,
+    "wordSpacing",
+    |s| is_length(&s)
+);
 string_attr!(get_lang, set_lang, lang, "lang", |s| true);
 
 #[crate::host_fn]
@@ -857,7 +1061,9 @@ unsafe fn get_composite(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn set_composite(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
+    let Ok(s) = arg_str(g, cf, 0) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "globalCompositeOperation");
     if let Some(op) = CompositeOp::parse(&s) {
         cx.st.op = op;
@@ -882,16 +1088,21 @@ unsafe fn set_smoothing(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn get_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "lineCap");
-    js_string(g, match cx.st.cap {
-        Cap::Butt => "butt",
-        Cap::Round => "round",
-        Cap::Square => "square",
-    })
+    js_string(
+        g,
+        match cx.st.cap {
+            Cap::Butt => "butt",
+            Cap::Round => "round",
+            Cap::Square => "square",
+        },
+    )
 }
 
 #[crate::host_fn]
 unsafe fn set_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
+    let Ok(s) = arg_str(g, cf, 0) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "lineCap");
     match s.as_str() {
         "butt" => cx.st.cap = Cap::Butt,
@@ -905,16 +1116,21 @@ unsafe fn set_line_cap(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn get_line_join(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "lineJoin");
-    js_string(g, match cx.st.join {
-        Join::Miter => "miter",
-        Join::Round => "round",
-        Join::Bevel => "bevel",
-    })
+    js_string(
+        g,
+        match cx.st.join {
+            Join::Miter => "miter",
+            Join::Round => "round",
+            Join::Bevel => "bevel",
+        },
+    )
 }
 
 #[crate::host_fn]
 unsafe fn set_line_join(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
+    let Ok(s) = arg_str(g, cf, 0) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "lineJoin");
     match s.as_str() {
         "miter" => cx.st.join = Join::Miter,
@@ -933,7 +1149,9 @@ unsafe fn get_shadow_color(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn set_shadow_color(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(s) = arg_str(g, cf, 0) else { return UNDEF };
+    let Ok(s) = arg_str(g, cf, 0) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "shadowColor");
     match color::parse(&s) {
         Some(Parsed::Rgba(c)) => cx.st.shadow_color = c,
@@ -963,7 +1181,9 @@ unsafe fn set_style(g: *mut c_void, cf: *mut c_void, stroke: bool) -> u64 {
     } else if let Some(p) = host_data::<Arc<Mutex<Pattern>>>(g, c.pat_cls, v) {
         (Style::Pattern(p.clone()), v)
     } else {
-        let Ok(s) = to_js_string(g, v) else { return UNDEF };
+        let Ok(s) = to_js_string(g, v) else {
+            return UNDEF;
+        };
         let s = read_string(g, s).unwrap_or_default();
         match color::parse(&s) {
             Some(Parsed::Rgba(c)) => (Style::Color(c), UNDEF),
@@ -1011,12 +1231,17 @@ unsafe fn set_stroke_style(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn m_set_line_dash(g: *mut c_void, cf: *mut c_void) -> u64 {
     let v = cf_arg(cf, 0);
     if !is_cell(v) {
-        return throw_type_error(g, "CanvasRenderingContext2D.setLineDash: the argument is not a sequence");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.setLineDash: the argument is not a sequence",
+        );
     }
     let len = array_len(g, v);
     let mut segs = Vec::with_capacity(len as usize);
     for i in 0..len {
-        let Ok(x) = to_number(g, get_i(g, v, i)) else { return UNDEF };
+        let Ok(x) = to_number(g, get_i(g, v, i)) else {
+            return UNDEF;
+        };
         if !x.is_finite() || x < 0.0 {
             return UNDEF;
         }
@@ -1026,7 +1251,11 @@ unsafe fn m_set_line_dash(g: *mut c_void, cf: *mut c_void) -> u64 {
         segs.extend_from_within(..);
     }
     let cx = this_ctx!(g, cf, "setLineDash");
-    cx.st.dash = if segs.iter().all(|s| *s == 0.0) { Vec::new() } else { segs };
+    cx.st.dash = if segs.iter().all(|s| *s == 0.0) {
+        Vec::new()
+    } else {
+        segs
+    };
     UNDEF
 }
 
@@ -1076,7 +1305,14 @@ unsafe fn m_translate(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn six(g: *mut c_void, cf: *mut c_void) -> [f64; 6] {
-    [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4), n(g, cf, 5)]
+    [
+        n(g, cf, 0),
+        n(g, cf, 1),
+        n(g, cf, 2),
+        n(g, cf, 3),
+        n(g, cf, 4),
+        n(g, cf, 5),
+    ]
 }
 
 #[crate::host_fn]
@@ -1097,9 +1333,19 @@ unsafe fn m_set_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
             [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
         } else {
             let Some(m) = super::super::geometry::mat_of(g, v) else {
-                return throw_type_error(g, "CanvasRenderingContext2D.setTransform: the argument is not a DOMMatrix2DInit");
+                return throw_type_error(
+                    g,
+                    "CanvasRenderingContext2D.setTransform: the argument is not a DOMMatrix2DInit",
+                );
             };
-            [m.get(1, 1), m.get(1, 2), m.get(2, 1), m.get(2, 2), m.get(4, 1), m.get(4, 2)]
+            [
+                m.get(1, 1),
+                m.get(1, 2),
+                m.get(2, 1),
+                m.get(2, 2),
+                m.get(4, 1),
+                m.get(4, 2),
+            ]
         }
     } else {
         six(g, cf)
@@ -1196,7 +1442,12 @@ unsafe fn m_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "rect");
     if finite(&a) {
         let [x, y, w, h] = a;
-        let p = [cx.pt(x, y), cx.pt(x + w, y), cx.pt(x + w, y + h), cx.pt(x, y + h)];
+        let p = [
+            cx.pt(x, y),
+            cx.pt(x + w, y),
+            cx.pt(x + w, y + h),
+            cx.pt(x, y + h),
+        ];
         cx.path.move_to(p[0].0, p[0].1);
         for q in &p[1..] {
             cx.path.line_to(q.0, q.1);
@@ -1209,7 +1460,10 @@ unsafe fn m_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 /// Builds arc-like geometry in USER space on a scratch path that starts at
 /// the current point (inverse-transformed), then appends it, transformed.
-fn user_geometry(cx: &mut Ctx, f: impl FnOnce(&mut Path) -> Result<(), &'static str>) -> Result<(), &'static str> {
+fn user_geometry(
+    cx: &mut Ctx,
+    f: impl FnOnce(&mut Path) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
     let Some(inv) = cx.inverse() else {
         return Ok(());
     };
@@ -1244,7 +1498,13 @@ fn user_geometry(cx: &mut Ctx, f: impl FnOnce(&mut Path) -> Result<(), &'static 
 
 #[crate::host_fn]
 unsafe fn m_arc(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4)];
+    let a = [
+        n(g, cf, 0),
+        n(g, cf, 1),
+        n(g, cf, 2),
+        n(g, cf, 3),
+        n(g, cf, 4),
+    ];
     let ccw = truthy_flag(cf_arg(cf, 5));
     let cx = this_ctx!(g, cf, "arc");
     match user_geometry(cx, |p| p.arc(a[0], a[1], a[2], a[3], a[4], ccw)) {
@@ -1255,10 +1515,20 @@ unsafe fn m_arc(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn m_ellipse(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4), n(g, cf, 5), n(g, cf, 6)];
+    let a = [
+        n(g, cf, 0),
+        n(g, cf, 1),
+        n(g, cf, 2),
+        n(g, cf, 3),
+        n(g, cf, 4),
+        n(g, cf, 5),
+        n(g, cf, 6),
+    ];
     let ccw = truthy_flag(cf_arg(cf, 7));
     let cx = this_ctx!(g, cf, "ellipse");
-    match user_geometry(cx, |p| p.ellipse(a[0], a[1], a[2], a[3], a[4], a[5], a[6], ccw)) {
+    match user_geometry(cx, |p| {
+        p.ellipse(a[0], a[1], a[2], a[3], a[4], a[5], a[6], ccw)
+    }) {
         Ok(()) => UNDEF,
         Err(e) => path2d::throw_geometry_error(g, e),
     }
@@ -1266,7 +1536,13 @@ unsafe fn m_ellipse(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn m_arc_to(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3), n(g, cf, 4)];
+    let a = [
+        n(g, cf, 0),
+        n(g, cf, 1),
+        n(g, cf, 2),
+        n(g, cf, 3),
+        n(g, cf, 4),
+    ];
     let cx = this_ctx!(g, cf, "arcTo");
     match user_geometry(cx, |p| p.arc_to(a[0], a[1], a[2], a[3], a[4])) {
         Ok(()) => UNDEF,
@@ -1301,7 +1577,12 @@ unsafe fn fill_rule(g: *mut c_void, v: u64) -> Result<bool, ()> {
         "nonzero" => Ok(false),
         "evenodd" => Ok(true),
         _ => {
-            throw_type_error(g, &format!("The provided value '{s}' is not a valid enum value of type CanvasFillRule."));
+            throw_type_error(
+                g,
+                &format!(
+                    "The provided value '{s}' is not a valid enum value of type CanvasFillRule."
+                ),
+            );
             Err(())
         }
     }
@@ -1320,12 +1601,22 @@ unsafe fn path_and_rule(g: *mut c_void, cf: *mut c_void) -> Result<(Option<BezPa
 
 #[crate::host_fn]
 unsafe fn m_fill(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok((user, even_odd)) = path_and_rule(g, cf) else { return UNDEF };
+    let Ok((user, even_odd)) = path_and_rule(g, cf) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "fill");
-    let Some(inv) = cx.inverse() else { return UNDEF };
+    let Some(inv) = cx.inverse() else {
+        return UNDEF;
+    };
     let path = user.unwrap_or_else(|| inv * bez_of(&cx.path));
     cx.advise_unpainted();
-    cx.push(Cmd::Fill { path, even_odd, transform: cx.st.xf, paint: paint_of(&cx.st.fill), draw: cx.draw() });
+    cx.push(Cmd::Fill {
+        path,
+        even_odd,
+        transform: cx.st.xf,
+        paint: paint_of(&cx.st.fill),
+        draw: cx.draw(),
+    });
     UNDEF
 }
 
@@ -1333,22 +1624,36 @@ unsafe fn m_fill(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn m_stroke(g: *mut c_void, cf: *mut c_void) -> u64 {
     let user = path2d::path_of(g, cf_arg(cf, 0)).map(|p| bez_of(&p.p));
     let cx = this_ctx!(g, cf, "stroke");
-    let Some(inv) = cx.inverse() else { return UNDEF };
+    let Some(inv) = cx.inverse() else {
+        return UNDEF;
+    };
     let path = user.unwrap_or_else(|| inv * bez_of(&cx.path));
     cx.advise_unpainted();
-    cx.push(Cmd::Stroke { path, style: cx.stroke_style(), transform: cx.st.xf, paint: paint_of(&cx.st.stroke), draw: cx.draw() });
+    cx.push(Cmd::Stroke {
+        path,
+        style: cx.stroke_style(),
+        transform: cx.st.xf,
+        paint: paint_of(&cx.st.stroke),
+        draw: cx.draw(),
+    });
     UNDEF
 }
 
 #[crate::host_fn]
 unsafe fn m_clip(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok((user, even_odd)) = path_and_rule(g, cf) else { return UNDEF };
+    let Ok((user, even_odd)) = path_and_rule(g, cf) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "clip");
     let path = match user {
         Some(u) => cx.st.xf * u,
         None => bez_of(&cx.path),
     };
-    cx.st.clip = Some(Arc::new(Clip { path, even_odd, parent: cx.st.clip.take() }));
+    cx.st.clip = Some(Arc::new(Clip {
+        path,
+        even_odd,
+        parent: cx.st.clip.take(),
+    }));
     UNDEF
 }
 
@@ -1359,7 +1664,9 @@ unsafe fn m_is_point_in_path(g: *mut c_void, cf: *mut c_void) -> u64 {
         Some(p) => (Some(bez_of(&p.p)), n(g, cf, 1), n(g, cf, 2), cf_arg(cf, 3)),
         None => (None, n(g, cf, 0), n(g, cf, 1), cf_arg(cf, 2)),
     };
-    let Ok(even_odd) = fill_rule(g, rule_arg) else { return UNDEF };
+    let Ok(even_odd) = fill_rule(g, rule_arg) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "isPointInPath");
     if !finite(&[x, y]) {
         return FALSE;
@@ -1383,9 +1690,16 @@ unsafe fn m_is_point_in_stroke(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !finite(&[x, y]) {
         return FALSE;
     }
-    let Some(inv) = cx.inverse() else { return FALSE };
+    let Some(inv) = cx.inverse() else {
+        return FALSE;
+    };
     let path = user.unwrap_or_else(|| inv * bez_of(&cx.path));
-    let outline = kurbo::stroke(path.iter(), &cx.stroke_style(), &kurbo::StrokeOpts::default(), 0.05);
+    let outline = kurbo::stroke(
+        path.iter(),
+        &cx.stroke_style(),
+        &kurbo::StrokeOpts::default(),
+        0.05,
+    );
     enc_bool((cx.st.xf * outline).winding(Point::new(x, y)) != 0)
 }
 
@@ -1400,7 +1714,11 @@ unsafe fn m_clear_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
     let cx = this_ctx!(g, cf, "clearRect");
     if let Some(r) = r {
         if r.width() != 0.0 && r.height() != 0.0 {
-            cx.push(Cmd::Clear { rect: r.abs(), transform: cx.st.xf, clip: cx.st.clip.clone() });
+            cx.push(Cmd::Clear {
+                rect: r.abs(),
+                transform: cx.st.xf,
+                clip: cx.st.clip.clone(),
+            });
         }
     }
     UNDEF
@@ -1442,7 +1760,13 @@ unsafe fn m_stroke_rect(g: *mut c_void, cf: *mut c_void) -> u64 {
         path = Rect::new(r.x0, r.y0, r.x1, r.y1).to_path(0.1);
     }
     cx.advise_unpainted();
-    cx.push(Cmd::Stroke { path, style: cx.stroke_style(), transform: cx.st.xf, paint: paint_of(&cx.st.stroke), draw: cx.draw() });
+    cx.push(Cmd::Stroke {
+        path,
+        style: cx.stroke_style(),
+        transform: cx.st.xf,
+        paint: paint_of(&cx.st.stroke),
+        draw: cx.draw(),
+    });
     UNDEF
 }
 
@@ -1468,9 +1792,18 @@ unsafe fn m_draw_image(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (img, clean) = src;
     let (iw, ih) = (img.width as f64, img.height as f64);
     let (mut s, mut d) = match argc {
-        3 => (Rect::new(0.0, 0.0, iw, ih), Rect::new(a[0], a[1], a[0] + iw, a[1] + ih)),
-        5 => (Rect::new(0.0, 0.0, iw, ih), Rect::new(a[0], a[1], a[0] + a[2], a[1] + a[3])),
-        _ => (Rect::new(a[0], a[1], a[0] + a[2], a[1] + a[3]), Rect::new(a[4], a[5], a[4] + a[6], a[5] + a[7])),
+        3 => (
+            Rect::new(0.0, 0.0, iw, ih),
+            Rect::new(a[0], a[1], a[0] + iw, a[1] + ih),
+        ),
+        5 => (
+            Rect::new(0.0, 0.0, iw, ih),
+            Rect::new(a[0], a[1], a[0] + a[2], a[1] + a[3]),
+        ),
+        _ => (
+            Rect::new(a[0], a[1], a[0] + a[2], a[1] + a[3]),
+            Rect::new(a[4], a[5], a[4] + a[6], a[5] + a[7]),
+        ),
     };
     // Negative sizes flip into place; then the source is clipped to the image
     // and the destination shrinks in proportion (HTML drawImage step 5).
@@ -1494,7 +1827,14 @@ unsafe fn m_draw_image(g: *mut c_void, cf: *mut c_void) -> u64 {
         cx.surface.lock().unwrap().origin_clean = false;
     }
     cx.advise_unpainted();
-    cx.push(Cmd::Image { image: img, src: clipped, dst: d, transform: cx.st.xf, quality: cx.quality(), draw: cx.draw() });
+    cx.push(Cmd::Image {
+        image: img,
+        src: clipped,
+        dst: d,
+        transform: cx.st.xf,
+        quality: cx.quality(),
+        draw: cx.draw(),
+    });
     UNDEF
 }
 
@@ -1521,11 +1861,21 @@ unsafe fn new_image_data(g: *mut c_void, w: u32, h: u32, bytes: Option<&[u8]>) -
 unsafe fn checked_size(g: *mut c_void, w: f64, h: f64, what: &str) -> Option<(u32, u32)> {
     let (w, h) = (w.abs().trunc(), h.abs().trunc());
     if w == 0.0 || h == 0.0 || !w.is_finite() || !h.is_finite() {
-        domexception_throw(g, "IndexSizeError", &format!("CanvasRenderingContext2D.{what}: the source width and height must be non-zero"));
+        domexception_throw(
+            g,
+            "IndexSizeError",
+            &format!(
+                "CanvasRenderingContext2D.{what}: the source width and height must be non-zero"
+            ),
+        );
         return None;
     }
     if w * h > super::surface::MAX_AREA as f64 {
-        throw_error(g, 2, &format!("CanvasRenderingContext2D.{what}: {w}x{h} is too large"));
+        throw_error(
+            g,
+            2,
+            &format!("CanvasRenderingContext2D.{what}: {w}x{h} is too large"),
+        );
         return None;
     }
     Some((w as u32, h as u32))
@@ -1534,16 +1884,24 @@ unsafe fn checked_size(g: *mut c_void, w: f64, h: f64, what: &str) -> Option<(u3
 #[crate::host_fn]
 unsafe fn m_create_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if ctx_of(g, cf_this(cf)).is_none() {
-        return throw_type_error(g, "CanvasRenderingContext2D.createImageData: illegal invocation");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.createImageData: illegal invocation",
+        );
     }
     let a0 = cf_arg(cf, 0);
     if let Some((_, w, h)) = super::super::platform::image_data_parts(g, a0) {
         return new_image_data(g, w, h, None);
     }
     if cf_argc(cf) < 2 {
-        return throw_type_error(g, "CanvasRenderingContext2D.createImageData: expected (sw, sh) or (imagedata)");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.createImageData: expected (sw, sh) or (imagedata)",
+        );
     }
-    let Some((w, h)) = checked_size(g, n(g, cf, 0), n(g, cf, 1), "createImageData") else { return UNDEF };
+    let Some((w, h)) = checked_size(g, n(g, cf, 0), n(g, cf, 1), "createImageData") else {
+        return UNDEF;
+    };
     new_image_data(g, w, h, None)
 }
 
@@ -1551,12 +1909,20 @@ unsafe fn m_create_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn m_get_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3)];
     if ctx_of(g, cf_this(cf)).is_none() {
-        return throw_type_error(g, "CanvasRenderingContext2D.getImageData: illegal invocation");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.getImageData: illegal invocation",
+        );
     }
     if !finite(&a) {
-        return throw_type_error(g, "CanvasRenderingContext2D.getImageData: the arguments must be finite");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.getImageData: the arguments must be finite",
+        );
     }
-    let Some((w, h)) = checked_size(g, a[2], a[3], "getImageData") else { return UNDEF };
+    let Some((w, h)) = checked_size(g, a[2], a[3], "getImageData") else {
+        return UNDEF;
+    };
     let (mut x, mut y) = (a[0].trunc() as i64, a[1].trunc() as i64);
     if a[2] < 0.0 {
         x -= w as i64;
@@ -1569,7 +1935,11 @@ unsafe fn m_get_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
         let mut s = cx.surface.lock().unwrap();
         if s.readable().is_err() {
             drop(s);
-            domexception_throw(g, "SecurityError", "The canvas has been tainted by cross-origin data.");
+            domexception_throw(
+                g,
+                "SecurityError",
+                "The canvas has been tainted by cross-origin data.",
+            );
             return UNDEF;
         }
         s.read_straight(x, y, w, h)
@@ -1581,18 +1951,30 @@ unsafe fn m_get_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn m_put_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     let argc = cf_argc(cf);
     if argc != 3 && argc != 7 {
-        return throw_type_error(g, "CanvasRenderingContext2D.putImageData: expected 3 or 7 arguments");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.putImageData: expected 3 or 7 arguments",
+        );
     }
     let Some((data, w, h)) = super::super::platform::image_data_parts(g, cf_arg(cf, 0)) else {
-        return throw_type_error(g, "CanvasRenderingContext2D.putImageData: the argument is not an ImageData");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.putImageData: the argument is not an ImageData",
+        );
     };
     let a: Vec<f64> = (1..argc).map(|i| n(g, cf, i)).collect();
     if !finite(&a) {
         return UNDEF;
     }
-    let Some(bytes) = bufferish(g, data) else { return UNDEF };
+    let Some(bytes) = bufferish(g, data) else {
+        return UNDEF;
+    };
     if bytes.len() < w as usize * h as usize * 4 {
-        return domexception_throw_val(g, "InvalidStateError", "putImageData: the ImageData's buffer is detached");
+        return domexception_throw_val(
+            g,
+            "InvalidStateError",
+            "putImageData: the ImageData's buffer is detached",
+        );
     }
     let (dx, dy) = (a[0].trunc() as i64, a[1].trunc() as i64);
     let (mut rx, mut ry, mut rw, mut rh) = if argc == 7 {
@@ -1633,7 +2015,11 @@ unsafe fn m_put_image_data(g: *mut c_void, cf: *mut c_void) -> u64 {
     if x > i32::MAX as i64 || y > i32::MAX as i64 || x < i32::MIN as i64 || y < i32::MIN as i64 {
         return UNDEF;
     }
-    cx.push(Cmd::Put { x: x as i32, y: y as i32, image });
+    cx.push(Cmd::Put {
+        x: x as i32,
+        y: y as i32,
+        image,
+    });
     UNDEF
 }
 
@@ -1647,64 +2033,114 @@ unsafe fn domexception_throw_val(g: *mut c_void, name: &str, msg: &str) -> u64 {
 
 fn text_options(st: &State) -> super::text::Options<'_> {
     super::text::Options {
-        font: &st.font, direction: st.direction, letter_spacing: &st.letter_spacing,
-        word_spacing: &st.word_spacing, kerning: st.font_kerning,
-        stretch: st.font_stretch, caps: st.font_variant_caps, lang: &st.lang,
+        font: &st.font,
+        direction: st.direction,
+        letter_spacing: &st.letter_spacing,
+        word_spacing: &st.word_spacing,
+        kerning: st.font_kerning,
+        stretch: st.font_stretch,
+        caps: st.font_variant_caps,
+        lang: &st.lang,
     }
 }
 
 unsafe fn draw_text(g: *mut c_void, cf: *mut c_void, stroke: bool) -> u64 {
     // Complete JS conversions before borrowing the native context: a valueOf
     // or toString callback is allowed to reenter and mutate canvas state.
-    let Ok(value) = arg_str(g, cf, 0) else { return UNDEF };
+    let Ok(value) = arg_str(g, cf, 0) else {
+        return UNDEF;
+    };
     let x = n(g, cf, 1);
     let y = n(g, cf, 2);
-    let max_width = if cf_arg(cf, 3) == UNDEF { f64::INFINITY } else { n(g, cf, 3) };
-    let cx = if stroke { this_ctx!(g, cf, "strokeText") } else { this_ctx!(g, cf, "fillText") };
-    if !finite(&[x, y]) || max_width.is_nan() || max_width <= 0.0 { return UNDEF; }
-    let Some(id) = crate::context::id_of(g) else { return UNDEF };
+    let max_width = if cf_arg(cf, 3) == UNDEF {
+        f64::INFINITY
+    } else {
+        n(g, cf, 3)
+    };
+    let cx = if stroke {
+        this_ctx!(g, cf, "strokeText")
+    } else {
+        this_ctx!(g, cf, "fillText")
+    };
+    if !finite(&[x, y]) || max_width.is_nan() || max_width <= 0.0 {
+        return UNDEF;
+    }
+    let Some(id) = crate::context::id_of(g) else {
+        return UNDEF;
+    };
     let layout = super::text::layout(id, &value, text_options(&cx.st));
     let path = layout.positioned(x, y, cx.st.text_align, cx.st.text_baseline, max_width);
-    if path.elements().is_empty() { return UNDEF; }
+    if path.elements().is_empty() {
+        return UNDEF;
+    }
     cx.advise_unpainted();
     if stroke {
-        cx.push(Cmd::Stroke { path, style: cx.stroke_style(), transform: cx.st.xf,
-            paint: paint_of(&cx.st.stroke), draw: cx.draw() });
+        cx.push(Cmd::Stroke {
+            path,
+            style: cx.stroke_style(),
+            transform: cx.st.xf,
+            paint: paint_of(&cx.st.stroke),
+            draw: cx.draw(),
+        });
     } else {
-        cx.push(Cmd::Fill { path, even_odd: false, transform: cx.st.xf,
-            paint: paint_of(&cx.st.fill), draw: cx.draw() });
+        cx.push(Cmd::Fill {
+            path,
+            even_odd: false,
+            transform: cx.st.xf,
+            paint: paint_of(&cx.st.fill),
+            draw: cx.draw(),
+        });
     }
     UNDEF
 }
 
 #[crate::host_fn]
-unsafe fn m_fill_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, false) }
+unsafe fn m_fill_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+    draw_text(g, cf, false)
+}
 #[crate::host_fn]
-unsafe fn m_stroke_text(g: *mut c_void, cf: *mut c_void) -> u64 { draw_text(g, cf, true) }
+unsafe fn m_stroke_text(g: *mut c_void, cf: *mut c_void) -> u64 {
+    draw_text(g, cf, true)
+}
 
 #[crate::host_fn]
 unsafe fn m_measure_text(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(value) = arg_str(g, cf, 0) else { return UNDEF };
+    let Ok(value) = arg_str(g, cf, 0) else {
+        return UNDEF;
+    };
     let cx = this_ctx!(g, cf, "measureText");
-    let Some(id) = crate::context::id_of(g) else { return UNDEF };
+    let Some(id) = crate::context::id_of(g) else {
+        return UNDEF;
+    };
     let layout = super::text::layout(id, &value, text_options(&cx.st));
     let (x, y) = layout.anchor(cx.st.text_align, cx.st.text_baseline);
     let (left, right, ascent, descent) = match layout.bounds() {
-        Some(bounds) => (-(bounds.x0 + x), bounds.x1 + x, -(bounds.y0 + y), bounds.y1 + y),
+        Some(bounds) => (
+            -(bounds.x0 + x),
+            bounds.x1 + x,
+            -(bounds.y0 + y),
+            bounds.y1 + y,
+        ),
         None => (0.0, 0.0, 0.0, 0.0),
     };
     let c = classes(g);
     let m = new_object(g, c.metrics.proto);
     for (k, v) in [
         ("width", layout.width),
-        ("actualBoundingBoxLeft", left), ("actualBoundingBoxRight", right),
+        ("actualBoundingBoxLeft", left),
+        ("actualBoundingBoxRight", right),
         ("fontBoundingBoxAscent", layout.ascent - y),
         ("fontBoundingBoxDescent", layout.descent + y),
-        ("actualBoundingBoxAscent", ascent), ("actualBoundingBoxDescent", descent),
-        ("emHeightAscent", layout.ascent - y), ("emHeightDescent", layout.descent + y),
+        ("actualBoundingBoxAscent", ascent),
+        ("actualBoundingBoxDescent", descent),
+        ("emHeightAscent", layout.ascent - y),
+        ("emHeightDescent", layout.descent + y),
         ("hangingBaseline", layout.ascent * 0.8 - y),
-        ("alphabeticBaseline", -y), ("ideographicBaseline", -layout.descent - y),
-    ] { define(g, m, k, enc_f64(v), 1); }
+        ("alphabeticBaseline", -y),
+        ("ideographicBaseline", -layout.descent - y),
+    ] {
+        define(g, m, k, enc_f64(v), 1);
+    }
     m
 }
 #[crate::host_fn]
@@ -1718,7 +2154,15 @@ unsafe fn m_noop(_g: *mut c_void, _cf: *mut c_void) -> u64 {
 
 unsafe fn new_gradient(g: *mut c_void, kind: GradientKind) -> u64 {
     let c = classes(g);
-    host_create(g, c.grad_cls, c.grad.proto, Arc::new(Mutex::new(Gradient { kind, stops: Vec::new() })))
+    host_create(
+        g,
+        c.grad_cls,
+        c.grad.proto,
+        Arc::new(Mutex::new(Gradient {
+            kind,
+            stops: Vec::new(),
+        })),
+    )
 }
 
 #[crate::host_fn]
@@ -1726,9 +2170,20 @@ unsafe fn m_linear_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2), n(g, cf, 3)];
     let _ = this_ctx!(g, cf, "createLinearGradient");
     if !finite(&a) {
-        return throw_type_error(g, "CanvasRenderingContext2D.createLinearGradient: the arguments must be finite");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.createLinearGradient: the arguments must be finite",
+        );
     }
-    new_gradient(g, GradientKind::Linear { x0: a[0], y0: a[1], x1: a[2], y1: a[3] })
+    new_gradient(
+        g,
+        GradientKind::Linear {
+            x0: a[0],
+            y0: a[1],
+            x1: a[2],
+            y1: a[3],
+        },
+    )
 }
 
 #[crate::host_fn]
@@ -1736,12 +2191,29 @@ unsafe fn m_radial_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = six(g, cf);
     let _ = this_ctx!(g, cf, "createRadialGradient");
     if !finite(&a) {
-        return throw_type_error(g, "CanvasRenderingContext2D.createRadialGradient: the arguments must be finite");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.createRadialGradient: the arguments must be finite",
+        );
     }
     if a[2] < 0.0 || a[5] < 0.0 {
-        return domexception_throw_val(g, "IndexSizeError", "createRadialGradient: a radius is negative");
+        return domexception_throw_val(
+            g,
+            "IndexSizeError",
+            "createRadialGradient: a radius is negative",
+        );
     }
-    new_gradient(g, GradientKind::Radial { x0: a[0], y0: a[1], r0: a[2], x1: a[3], y1: a[4], r1: a[5] })
+    new_gradient(
+        g,
+        GradientKind::Radial {
+            x0: a[0],
+            y0: a[1],
+            r0: a[2],
+            x1: a[3],
+            y1: a[4],
+            r1: a[5],
+        },
+    )
 }
 
 #[crate::host_fn]
@@ -1749,15 +2221,29 @@ unsafe fn m_conic_gradient(g: *mut c_void, cf: *mut c_void) -> u64 {
     let a = [n(g, cf, 0), n(g, cf, 1), n(g, cf, 2)];
     let _ = this_ctx!(g, cf, "createConicGradient");
     if !finite(&a) {
-        return throw_type_error(g, "CanvasRenderingContext2D.createConicGradient: the arguments must be finite");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.createConicGradient: the arguments must be finite",
+        );
     }
-    new_gradient(g, GradientKind::Conic { angle: a[0], x: a[1], y: a[2] })
+    new_gradient(
+        g,
+        GradientKind::Conic {
+            angle: a[0],
+            x: a[1],
+            y: a[2],
+        },
+    )
 }
 
 #[crate::host_fn]
 unsafe fn m_add_color_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(offset) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
-    let Ok(text) = arg_str(g, cf, 1) else { return UNDEF };
+    let Ok(offset) = to_number(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let Ok(text) = arg_str(g, cf, 1) else {
+        return UNDEF;
+    };
     let c = classes(g);
     let Some(gr) = host_data::<Arc<Mutex<Gradient>>>(g, c.grad_cls, cf_this(cf)) else {
         return throw_type_error(g, "CanvasGradient.addColorStop: illegal invocation");
@@ -1766,17 +2252,29 @@ unsafe fn m_add_color_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "CanvasGradient.addColorStop: the offset must be finite");
     }
     if !(0.0..=1.0).contains(&offset) {
-        return domexception_throw_val(g, "IndexSizeError", &format!("CanvasGradient.addColorStop: the offset {offset} is outside 0..1"));
+        return domexception_throw_val(
+            g,
+            "IndexSizeError",
+            &format!("CanvasGradient.addColorStop: the offset {offset} is outside 0..1"),
+        );
     }
     let rgba = match color::parse(&text) {
         Some(Parsed::Rgba(c)) => c,
         Some(Parsed::CurrentColor) => [0, 0, 0, 255],
         None => {
-            return domexception_throw_val(g, "SyntaxError", &format!("CanvasGradient.addColorStop: '{text}' could not be parsed as a color"))
+            return domexception_throw_val(
+                g,
+                "SyntaxError",
+                &format!("CanvasGradient.addColorStop: '{text}' could not be parsed as a color"),
+            )
         }
     };
     let mut gr = gr.lock().unwrap();
-    let at = gr.stops.iter().position(|(o, _)| *o as f64 > offset).unwrap_or(gr.stops.len());
+    let at = gr
+        .stops
+        .iter()
+        .position(|(o, _)| *o as f64 > offset)
+        .unwrap_or(gr.stops.len());
     gr.stops.insert(at, (offset as f32, color::to_f32(rgba)));
     UNDEF
 }
@@ -1784,7 +2282,10 @@ unsafe fn m_add_color_stop(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn m_create_pattern(g: *mut c_void, cf: *mut c_void) -> u64 {
     if ctx_of(g, cf_this(cf)).is_none() {
-        return throw_type_error(g, "CanvasRenderingContext2D.createPattern: illegal invocation");
+        return throw_type_error(
+            g,
+            "CanvasRenderingContext2D.createPattern: illegal invocation",
+        );
     }
     let img = match image_source(g, cf_arg(cf, 0)) {
         Ok(Source::Pixels(img, _)) => img,
@@ -1795,7 +2296,9 @@ unsafe fn m_create_pattern(g: *mut c_void, cf: *mut c_void) -> u64 {
     let rep = if rep == NULL {
         String::new()
     } else {
-        let Ok(s) = arg_str(g, cf, 1) else { return UNDEF };
+        let Ok(s) = arg_str(g, cf, 1) else {
+            return UNDEF;
+        };
         s
     };
     let (rx, ry) = match rep.as_str() {
@@ -1803,14 +2306,25 @@ unsafe fn m_create_pattern(g: *mut c_void, cf: *mut c_void) -> u64 {
         "repeat-x" => (true, false),
         "repeat-y" => (false, true),
         "no-repeat" => (false, false),
-        _ => return domexception_throw_val(g, "SyntaxError", &format!("createPattern: '{rep}' is not a repetition")),
+        _ => {
+            return domexception_throw_val(
+                g,
+                "SyntaxError",
+                &format!("createPattern: '{rep}' is not a repetition"),
+            )
+        }
     };
     let c = classes(g);
     host_create(
         g,
         c.pat_cls,
         c.pat.proto,
-        Arc::new(Mutex::new(Pattern { image: img, repeat_x: rx, repeat_y: ry, transform: Affine::IDENTITY })),
+        Arc::new(Mutex::new(Pattern {
+            image: img,
+            repeat_x: rx,
+            repeat_y: ry,
+            transform: Affine::IDENTITY,
+        })),
     )
 }
 
@@ -1822,9 +2336,21 @@ unsafe fn m_pattern_set_transform(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "CanvasPattern.setTransform: illegal invocation");
     };
     let xf = match m {
-        Some(m) => Affine::new([m.get(1, 1), m.get(1, 2), m.get(2, 1), m.get(2, 2), m.get(4, 1), m.get(4, 2)]),
+        Some(m) => Affine::new([
+            m.get(1, 1),
+            m.get(1, 2),
+            m.get(2, 1),
+            m.get(2, 2),
+            m.get(4, 1),
+            m.get(4, 2),
+        ]),
         None if cf_arg(cf, 0) == UNDEF => Affine::IDENTITY,
-        None => return throw_type_error(g, "CanvasPattern.setTransform: the argument is not a DOMMatrix2DInit"),
+        None => {
+            return throw_type_error(
+                g,
+                "CanvasPattern.setTransform: the argument is not a DOMMatrix2DInit",
+            )
+        }
     };
     if finite(&xf.as_coeffs()) {
         p.lock().unwrap().transform = xf;
@@ -1846,7 +2372,10 @@ pub(crate) struct Off {
 unsafe fn enforce_dim(g: *mut c_void, v: u64, what: &str) -> Option<u32> {
     let Ok(d) = to_number(g, v) else { return None };
     if !d.is_finite() || d < 0.0 || d > 4294967295.0 {
-        throw_type_error(g, &format!("OffscreenCanvas: the {what} {d} is outside the range of unsigned long long"));
+        throw_type_error(
+            g,
+            &format!("OffscreenCanvas: the {what} {d} is outside the range of unsigned long long"),
+        );
         return None;
     }
     Some(d.trunc() as u32)
@@ -1854,22 +2383,48 @@ unsafe fn enforce_dim(g: *mut c_void, v: u64, what: &str) -> Option<u32> {
 
 #[crate::host_fn]
 unsafe fn off_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(w) = enforce_dim(g, cf_arg(cf, 0), "width") else { return UNDEF };
-    let Some(h) = enforce_dim(g, cf_arg(cf, 1), "height") else { return UNDEF };
+    let Some(w) = enforce_dim(g, cf_arg(cf, 0), "width") else {
+        return UNDEF;
+    };
+    let Some(h) = enforce_dim(g, cf_arg(cf, 1), "height") else {
+        return UNDEF;
+    };
     let c = classes(g);
     let nt = cf_new_target(cf);
     let proto = {
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(p) { p } else { c.off.proto }
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(p) {
+            p
+        } else {
+            c.off.proto
+        }
     };
-    host_create(g, c.off_cls, proto, Off { width: w, height: h, kind: 0 })
+    host_create(
+        g,
+        c.off_cls,
+        proto,
+        Off {
+            width: w,
+            height: h,
+            kind: 0,
+        },
+    )
 }
 
 macro_rules! this_off {
     ($g:ident, $cf:ident, $what:literal) => {
         match host_data::<Off>($g, classes($g).off_cls, cf_this($cf)) {
             Some(o) => o,
-            None => return throw_type_error($g, concat!("OffscreenCanvas.", $what, ": illegal invocation")),
+            None => {
+                return throw_type_error(
+                    $g,
+                    concat!("OffscreenCanvas.", $what, ": illegal invocation"),
+                )
+            }
         }
     };
 }
@@ -1995,7 +2550,11 @@ unsafe fn off_pixels(g: *mut c_void, this: u64, w: u32, h: u32) -> Vec<u8> {
 }
 
 unsafe fn type_and_quality(g: *mut c_void, ty: u64, q: u64) -> (String, Option<f64>) {
-    let t = if ty == UNDEF { "image/png".to_string() } else { read_string(g, ty).unwrap_or_default() };
+    let t = if ty == UNDEF {
+        "image/png".to_string()
+    } else {
+        read_string(g, ty).unwrap_or_default()
+    };
     (t, dec_f64(q))
 }
 
@@ -2003,9 +2562,17 @@ unsafe fn type_and_quality(g: *mut c_void, ty: u64, q: u64) -> (String, Option<f
 unsafe fn off_convert_to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let opts = cf_arg(cf, 0);
-    let (ty, q) = if is_cell(opts) { type_and_quality(g, get(g, opts, "type"), get(g, opts, "quality")) } else { ("image/png".into(), None) };
+    let (ty, q) = if is_cell(opts) {
+        type_and_quality(g, get(g, opts, "type"), get(g, opts, "quality"))
+    } else {
+        ("image/png".into(), None)
+    };
     let Some(o) = host_data::<Off>(g, classes(g).off_cls, this) else {
-        return super::super::domexception::rejected(g, "TypeError", "OffscreenCanvas.convertToBlob: illegal invocation");
+        return super::super::domexception::rejected(
+            g,
+            "TypeError",
+            "OffscreenCanvas.convertToBlob: illegal invocation",
+        );
     };
     let (w, h, kind) = (o.width, o.height, o.kind);
     if let (3, Some(ext)) = (kind, gpu()) {
@@ -2013,7 +2580,11 @@ unsafe fn off_convert_to_blob(g: *mut c_void, cf: *mut c_void) -> u64 {
         return ext.convert_to_blob(g, ctx, opts);
     }
     if w == 0 || h == 0 {
-        return super::super::domexception::rejected(g, "IndexSizeError", "OffscreenCanvas.convertToBlob: the canvas has no pixels");
+        return super::super::domexception::rejected(
+            g,
+            "IndexSizeError",
+            "OffscreenCanvas.convertToBlob: the canvas has no pixels",
+        );
     }
     let px = off_pixels(g, this, w, h);
     let (mime, bytes) = super::encode::encode(&px, w, h, &ty, q);
@@ -2032,7 +2603,11 @@ unsafe fn off_transfer(g: *mut c_void, cf: *mut c_void) -> u64 {
         return ext.transfer_to_image_bitmap(g, ctx);
     }
     let Some(cx) = ctx_of(g, get_a(g, this, c.s_ctx)) else {
-        return domexception_throw_val(g, "InvalidStateError", "OffscreenCanvas.transferToImageBitmap: the canvas has no context");
+        return domexception_throw_val(
+            g,
+            "InvalidStateError",
+            "OffscreenCanvas.transferToImageBitmap: the canvas has no context",
+        );
     };
     let px = {
         let mut s = cx.surface.lock().unwrap();
@@ -2048,17 +2623,30 @@ unsafe fn off_transfer(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 unsafe fn dim(v: u64) -> u32 {
-    dec_f64(v).filter(|d| d.is_finite() && *d >= 0.0).map(|d| d.min(u32::MAX as f64) as u32).unwrap_or(0)
+    dec_f64(v)
+        .filter(|d| d.is_finite() && *d >= 0.0)
+        .map(|d| d.min(u32::MAX as f64) as u32)
+        .unwrap_or(0)
 }
 
 /// `__rjs_canvas_context(canvas, width, height, options, key?)`
 #[crate::host_fn]
 unsafe fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let key = dec_f64(cf_arg(cf, 4)).filter(|k| *k > 0.0).map(|k| k as u64);
+    let key = dec_f64(cf_arg(cf, 4))
+        .filter(|k| *k > 0.0)
+        .map(|k| k as u64);
     let Ok(options) = read_options(g, cf_arg(cf, 3)) else {
         return UNDEF;
     };
-    new_context(g, cf_arg(cf, 0), dim(cf_arg(cf, 1)), dim(cf_arg(cf, 2)), options, key, false)
+    new_context(
+        g,
+        cf_arg(cf, 0),
+        dim(cf_arg(cf, 1)),
+        dim(cf_arg(cf, 2)),
+        options,
+        key,
+        false,
+    )
 }
 
 /// `__rjs_canvas_resize(ctx, width, height)`
@@ -2066,7 +2654,9 @@ unsafe fn h_context(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn h_resize(g: *mut c_void, cf: *mut c_void) -> u64 {
     let (w, h) = (dim(cf_arg(cf, 1)), dim(cf_arg(cf, 2)));
     let ctx = cf_arg(cf, 0);
-    let Some(cx) = ctx_of(g, ctx) else { return throw_type_error(g, "__rjs_canvas_resize: not a context") };
+    let Some(cx) = ctx_of(g, ctx) else {
+        return throw_type_error(g, "__rjs_canvas_resize: not a context");
+    };
     resize(cx, w, h);
     glue::rjs_define(g, ctx, classes(g).s_styles, new_array(g), 0);
     UNDEF
@@ -2130,14 +2720,22 @@ unsafe fn h_source_hook(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// `__rjs_canvas_info(ctx)` → `{ backend, width, height, generation, originClean }` (tests, devtools).
 #[crate::host_fn]
 unsafe fn h_info(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(cx) = ctx_of(g, cf_arg(cf, 0)) else { return NULL };
+    let Some(cx) = ctx_of(g, cf_arg(cf, 0)) else {
+        return NULL;
+    };
     let s = cx.surface.lock().unwrap();
     let out = new_object(g, UNDEF);
     define(g, out, "backend", js_string(g, s.backend_name()), 0);
     define(g, out, "width", enc_f64(s.width() as f64), 0);
     define(g, out, "height", enc_f64(s.height() as f64), 0);
     define(g, out, "generation", enc_f64(s.generation() as f64), 0);
-    define(g, out, "originClean", if s.origin_clean { TRUE } else { FALSE }, 0);
+    define(
+        g,
+        out,
+        "originClean",
+        if s.origin_clean { TRUE } else { FALSE },
+        0,
+    );
     out
 }
 
@@ -2175,7 +2773,11 @@ pub(crate) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         ("letterSpacing", get_letter_spacing, set_letter_spacing),
         ("fontKerning", get_font_kerning, set_font_kerning),
         ("fontStretch", get_font_stretch, set_font_stretch),
-        ("fontVariantCaps", get_font_variant_caps, set_font_variant_caps),
+        (
+            "fontVariantCaps",
+            get_font_variant_caps,
+            set_font_variant_caps,
+        ),
         ("textRendering", get_text_rendering, set_text_rendering),
         ("wordSpacing", get_word_spacing, set_word_spacing),
         ("lang", get_lang, set_lang),
@@ -2230,64 +2832,85 @@ pub(crate) unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     element_methods.push(("drawFocusIfNeeded", 1, m_noop));
     element_methods.push(("scrollPathIntoView", 0, m_noop));
 
-    let ctx2d = define_class(g, &ClassSpec {
-        name: "CanvasRenderingContext2D",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &element_methods,
-        getters: &[("canvas", get_canvas)],
-        accessors,
-    });
-    let offctx = define_class(g, &ClassSpec {
-        name: "OffscreenCanvasRenderingContext2D",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: common,
-        getters: &[("canvas", get_canvas)],
-        accessors,
-    });
-    let grad = define_class(g, &ClassSpec {
-        name: "CanvasGradient",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("addColorStop", 2, m_add_color_stop)],
-        getters: &[],
-        accessors: &[],
-    });
-    let pat = define_class(g, &ClassSpec {
-        name: "CanvasPattern",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("setTransform", 0, m_pattern_set_transform)],
-        getters: &[],
-        accessors: &[],
-    });
-    let metrics = define_class(g, &ClassSpec {
-        name: "TextMetrics",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
-    let off = define_class(g, &ClassSpec {
-        name: "OffscreenCanvas",
-        arity: 2,
-        construct: Some(off_construct),
-        parent_proto: event_target_proto,
-        methods: &[
-            ("getContext", 1, off_get_context),
-            ("convertToBlob", 0, off_convert_to_blob),
-            ("transferToImageBitmap", 0, off_transfer),
-        ],
-        getters: &[],
-        accessors: &[("width", off_get_width, off_set_width), ("height", off_get_height, off_set_height)],
-    });
+    let ctx2d = define_class(
+        g,
+        &ClassSpec {
+            name: "CanvasRenderingContext2D",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &element_methods,
+            getters: &[("canvas", get_canvas)],
+            accessors,
+        },
+    );
+    let offctx = define_class(
+        g,
+        &ClassSpec {
+            name: "OffscreenCanvasRenderingContext2D",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: common,
+            getters: &[("canvas", get_canvas)],
+            accessors,
+        },
+    );
+    let grad = define_class(
+        g,
+        &ClassSpec {
+            name: "CanvasGradient",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("addColorStop", 2, m_add_color_stop)],
+            getters: &[],
+            accessors: &[],
+        },
+    );
+    let pat = define_class(
+        g,
+        &ClassSpec {
+            name: "CanvasPattern",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("setTransform", 0, m_pattern_set_transform)],
+            getters: &[],
+            accessors: &[],
+        },
+    );
+    let metrics = define_class(
+        g,
+        &ClassSpec {
+            name: "TextMetrics",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
+    let off = define_class(
+        g,
+        &ClassSpec {
+            name: "OffscreenCanvas",
+            arity: 2,
+            construct: Some(off_construct),
+            parent_proto: event_target_proto,
+            methods: &[
+                ("getContext", 1, off_get_context),
+                ("convertToBlob", 0, off_convert_to_blob),
+                ("transferToImageBitmap", 0, off_transfer),
+            ],
+            getters: &[],
+            accessors: &[
+                ("width", off_get_width, off_set_width),
+                ("height", off_get_height, off_set_height),
+            ],
+        },
+    );
 
     let leaked: &'static Classes = Box::leak(Box::new(Classes {
         ctx_cls,

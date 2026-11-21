@@ -35,18 +35,30 @@ unsafe fn is_error(g: *mut c_void, value: u64) -> Result<bool, u64> {
     let global = state(g).global_proxy;
     let error = property(g, global, "Error")?;
     let instance = property(g, property(g, global, "Symbol")?, "hasInstance")?;
-    let has_instance = invoke(g, property(g, global, "Reflect")?, "get", &[error, instance])?;
+    let has_instance = invoke(
+        g,
+        property(g, global, "Reflect")?,
+        "get",
+        &[error, instance],
+    )?;
     if to_bool(g, call(g, has_instance, error, &[value])?) {
         return Ok(true);
     }
     let proto = property(g, property(g, global, "Object")?, "prototype")?;
     let tag = call(g, property(g, proto, "toString")?, value, &[])?;
-    Ok(matches!(read_string(g, tag).as_deref(), Some("[object Error]" | "[object DOMException]")))
+    Ok(matches!(
+        read_string(g, tag).as_deref(),
+        Some("[object Error]" | "[object DOMException]")
+    ))
 }
 
 unsafe fn error_head(g: *mut c_void, error: u64) -> Result<Vec<u16>, u64> {
     let name = property(g, error, "name")?;
-    let mut units = if to_bool(g, name) { string_units(g, name)? } else { "Error".encode_utf16().collect() };
+    let mut units = if to_bool(g, name) {
+        string_units(g, name)?
+    } else {
+        "Error".encode_utf16().collect()
+    };
     let message = property(g, error, "message")?;
     if to_bool(g, message) {
         units.extend_from_slice(&[b':' as u16, b' ' as u16]);
@@ -160,8 +172,12 @@ unsafe fn forward(g: *mut c_void, cf: *mut c_void) -> u64 {
             let _ = invoke(g, host, &method, &args);
         }
     } else if let Ok(units) = format(g, &args, get_i(g, capture, 3)) {
-        let _ =
-            invoke(g, state(g).global_proxy, "__rjs_print", &[get_i(g, capture, 2), js_string16(g, &units)]);
+        let _ = invoke(
+            g,
+            state(g).global_proxy,
+            "__rjs_print",
+            &[get_i(g, capture, 2), js_string16(g, &units)],
+        );
     }
     UNDEF
 }
@@ -171,7 +187,8 @@ unsafe fn console_assert(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !to_bool(g, cf_arg(cf, 0)) {
         let mut args = vec![js_string(g, "Assertion failed:")];
         args.extend((1..cf_argc(cf)).map(|i| cf_arg(cf, i)));
-        let result = property(g, state(g).global_proxy, "console").and_then(|c| invoke(g, c, "error", &args));
+        let result = property(g, state(g).global_proxy, "console")
+            .and_then(|c| invoke(g, c, "error", &args));
         if let Err(exc) = result {
             glue::rjs_throw(g, exc);
         }
@@ -223,8 +240,9 @@ unsafe fn console(g: *mut c_void, global: u64) -> JsResult {
                     _ => 1,
                 };
                 let capture = new_array(g);
-                for (i, value) in
-                    [host, js_string(g, target), enc_i32(level), replacer].into_iter().enumerate()
+                for (i, value) in [host, js_string(g, target), enc_i32(level), replacer]
+                    .into_iter()
+                    .enumerate()
                 {
                     set_i(g, capture, i as u32, value);
                 }
@@ -269,14 +287,23 @@ unsafe fn element(g: *mut c_void, canvas: bool) -> JsResult {
     let proto = new_object(g, UNDEF);
     to_string_tag(g, proto, name);
     define(g, proto, "constructor", ctor, 2);
-    define(g, ctor, "prototype", proto, if canvas { 2 | 4 } else { 1 | 2 | 4 });
+    define(
+        g,
+        ctor,
+        "prototype",
+        proto,
+        if canvas { 2 | 4 } else { 1 | 2 | 4 },
+    );
     if canvas {
         let symbol = glue::rjs_atom_wellknown(g, 3); // Symbol.hasInstance
         let method = make_fn(g, "value", 1, is_canvas);
         let rc = glue::rjs_define(g, ctor, symbol, method, 1 | 2 | 4);
         glue::rjs_atom_free(g, symbol);
         if rc != 0 {
-            return Err(js_string(g, "Cannot install HTMLCanvasElement[Symbol.hasInstance]"));
+            return Err(js_string(
+                g,
+                "Cannot install HTMLCanvasElement[Symbol.hasInstance]",
+            ));
         }
     }
     Ok(ctor)
@@ -348,7 +375,10 @@ mod tests {
                 console.log('%s %d %i %f %c%%', '\\ud800', Symbol('x'), 3n, '1.25x', 'css'); \
                 line === '\\ud800 Symbol(x) 3 1.25 %'",
         );
-        ok(&c, "let cycle = {}; cycle.self = cycle; console.log(cycle); line === '[object Object]'");
+        ok(
+            &c,
+            "let cycle = {}; cycle.self = cycle; console.log(cycle); line === '[object Object]'",
+        );
     }
 
     #[test]
@@ -373,7 +403,10 @@ mod tests {
         );
         s(&c, "globalThis.location = { custom: true }; globalThis.HTMLVideoElement = class Existing {}; 0");
         unsafe { install(c.raw()).unwrap() };
-        ok(&c, "location.custom && HTMLVideoElement.name === 'Existing'");
+        ok(
+            &c,
+            "location.custom && HTMLVideoElement.name === 'Existing'",
+        );
     }
 
     #[cfg(not(feature = "canvas"))]

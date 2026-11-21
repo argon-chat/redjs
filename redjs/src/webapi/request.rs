@@ -86,7 +86,12 @@ pub(crate) fn forget(gone: crate::context::Gone) {
 }
 
 fn request_class(g: *mut c_void) -> &'static RequestClass {
-    request_registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::fetch not installed")
+    request_registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::fetch not installed")
 }
 
 pub unsafe fn request_data<'a>(g: *mut c_void, v: u64) -> Option<&'a mut RequestData> {
@@ -167,13 +172,22 @@ unsafe fn req_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 unsafe fn req_take_body(g: *mut c_void, cf: *mut c_void, who: &str) -> Result<Vec<u8>, u64> {
     let Some(d) = request_data(g, cf_this(cf)) else {
-        return Err(reject_refusal(g, &format!("Request.{who} called on a non-Request")));
+        return Err(reject_refusal(
+            g,
+            &format!("Request.{who} called on a non-Request"),
+        ));
     };
     if d.body_used {
-        return Err(reject_refusal(g, &format!("Request.{who}: body has already been consumed")));
+        return Err(reject_refusal(
+            g,
+            &format!("Request.{who}: body has already been consumed"),
+        ));
     }
     d.body_used = true;
-    Ok(d.body.as_ref().map(|b| b.as_slice().to_vec()).unwrap_or_default())
+    Ok(d.body
+        .as_ref()
+        .map(|b| b.as_slice().to_vec())
+        .unwrap_or_default())
 }
 
 #[crate::host_fn]
@@ -317,7 +331,8 @@ pub unsafe fn build_plan(g: *mut c_void, input: u64, init: u64) -> Result<Plan, 
             plan.method = read_string(g, m).unwrap_or_default();
         }
     } else {
-        plan.url = read_string(g, input).ok_or_else(|| "the URL could not be read as a string".to_string())?;
+        plan.url = read_string(g, input)
+            .ok_or_else(|| "the URL could not be read as a string".to_string())?;
     }
 
     // -- init --------------------------------------------------------------
@@ -374,9 +389,16 @@ pub unsafe fn build_plan(g: *mut c_void, input: u64, init: u64) -> Result<Plan, 
 pub fn check_supported(plan: &Plan) -> Result<(), String> {
     // Fetch §"forbidden method": a browser refuses these outright.
     if matches!(plan.method.as_str(), "CONNECT" | "TRACE" | "TRACK") {
-        return Err(format!("method {:?} is forbidden by the Fetch specification", plan.method));
+        return Err(format!(
+            "method {:?} is forbidden by the Fetch specification",
+            plan.method
+        ));
     }
-    if !plan.method.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) {
+    if !plan
+        .method
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+    {
         return Err(format!("{:?} is not a valid HTTP method", plan.method));
     }
 
@@ -395,7 +417,10 @@ pub fn check_supported(plan: &Plan) -> Result<(), String> {
     // and writes (and `same-origin`, against the opaque page origin, means no
     // cookies for any network URL — see that module's header).
     if super::cookies::Credentials::parse(&plan.credentials).is_none() {
-        return Err(format!("credentials: {:?} is not a valid credentials mode", plan.credentials));
+        return Err(format!(
+            "credentials: {:?} is not a valid credentials mode",
+            plan.credentials
+        ));
     }
 
     match plan.mode.as_str() {
@@ -417,10 +442,14 @@ pub fn check_supported(plan: &Plan) -> Result<(), String> {
     match plan.cache.as_str() {
         "default" | "no-store" | "no-cache" | "reload" | "force-cache" => {}
         "only-if-cached" if plan.mode != "same-origin" => {
-            return Err("cache: \"only-if-cached\" can be set only with mode: \"same-origin\"".into())
+            return Err(
+                "cache: \"only-if-cached\" can be set only with mode: \"same-origin\"".into(),
+            )
         }
         "only-if-cached" if !super::http::cache::installed() => {
-            return Err("cache: \"only-if-cached\" cannot succeed here: no HTTP cache is installed".into())
+            return Err(
+                "cache: \"only-if-cached\" cannot succeed here: no HTTP cache is installed".into(),
+            )
         }
         "only-if-cached" => {}
         other => return Err(format!("cache: {other:?} is not a valid cache mode")),
@@ -445,23 +474,32 @@ unsafe fn request_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = request_class(g);
     // Subclassing: the instance prototype comes from new.target.
     let nt = cf_new_target(cf);
-    let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    let p = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
     let proto = if is_cell(p) { p } else { c.class.proto };
     let signal = plan.signal;
-    let obj = host_create(g, c.cls, proto, RequestData {
-        method: plan.method,
-        url: plan.url,
-        headers: plan.headers,
-        body: plan.body.map(Arc::new),
-        redirect: plan.redirect,
-        credentials: plan.credentials,
-        mode: plan.mode,
-        cache: plan.cache,
-        integrity: plan.integrity,
-        keepalive: plan.keepalive,
-        signal,
-        body_used: false,
-    });
+    let obj = host_create(
+        g,
+        c.cls,
+        proto,
+        RequestData {
+            method: plan.method,
+            url: plan.url,
+            headers: plan.headers,
+            body: plan.body.map(Arc::new),
+            redirect: plan.redirect,
+            credentials: plan.credentials,
+            mode: plan.mode,
+            cache: plan.cache,
+            integrity: plan.integrity,
+            keepalive: plan.keepalive,
+            signal,
+            body_used: false,
+        },
+    );
     // Keeps the signal reachable for the GC for as long as the Request is.
     if is_cell(signal) {
         let slot = atom_priv(g, "redjs#reqSignal");
@@ -476,7 +514,10 @@ unsafe fn request_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `Ok(None)` = no body. `Ok(Some((bytes, implied content-type)))` otherwise.
-pub unsafe fn extract_body(g: *mut c_void, v: u64) -> Result<Option<(Vec<u8>, Option<String>)>, String> {
+pub unsafe fn extract_body(
+    g: *mut c_void,
+    v: u64,
+) -> Result<Option<(Vec<u8>, Option<String>)>, String> {
     if v == UNDEF || v == NULL {
         return Ok(None);
     }
@@ -499,21 +540,28 @@ pub unsafe fn extract_body(g: *mut c_void, v: u64) -> Result<Option<(Vec<u8>, Op
     }
     if let Some(r) = blob::bytes_of(g, v, "a fetch/Request/Response body") {
         let bytes = r.map_err(|e| blob::sync_read_failed("a fetch/Request/Response body", e))?;
-        let t = blob::data_of(g, v).map(|b| b.mime.clone()).unwrap_or_default();
+        let t = blob::data_of(g, v)
+            .map(|b| b.mime.clone())
+            .unwrap_or_default();
         return Ok(Some((bytes, (!t.is_empty()).then_some(t))));
     }
     let st = state(g);
     if is_cell(v) && capi::JSValueIsObjectOfClass(g, v as usize as capi::JSValueRef, st.usp_class) {
         let s = read_string(g, v).unwrap_or_default();
-        return Ok(Some((s.into_bytes(), Some("application/x-www-form-urlencoded;charset=UTF-8".into()))));
+        return Ok(Some((
+            s.into_bytes(),
+            Some("application/x-www-form-urlencoded;charset=UTF-8".into()),
+        )));
     }
     if let Some(b) = bufferish(g, v) {
         return Ok(Some((b.to_vec(), None)));
     }
     let s = read_string(g, v).ok_or_else(|| "the body could not be read".to_string())?;
-    Ok(Some((s.into_bytes(), Some("text/plain;charset=UTF-8".into()))))
+    Ok(Some((
+        s.into_bytes(),
+        Some("text/plain;charset=UTF-8".into()),
+    )))
 }
-
 
 // ---------------------------------------------------------------------------
 // install
@@ -524,33 +572,36 @@ pub unsafe fn extract_body(g: *mut c_void, v: u64) -> Result<Option<(Vec<u8>, Op
 /// `typeof g.Request !== 'function'`) from ever being installed.
 pub unsafe fn install(g: *mut c_void) {
     let cls = make_host_class::<RequestData>("Request");
-    let class = define_class(g, &ClassSpec {
-        name: "Request",
-        arity: 1,
-        construct: Some(request_construct),
-        parent_proto: 0,
-        methods: &[
-            ("clone", 0, req_clone),
-            ("text", 0, req_text),
-            ("json", 0, req_json),
-            ("arrayBuffer", 0, req_array_buffer),
-            ("bytes", 0, req_bytes),
-        ],
-        getters: &[
-            ("method", req_method),
-            ("url", req_url),
-            ("headers", req_headers),
-            ("redirect", req_redirect),
-            ("credentials", req_credentials),
-            ("mode", req_mode),
-            ("cache", req_cache),
-            ("integrity", req_integrity),
-            ("keepalive", req_keepalive),
-            ("signal", req_signal),
-            ("bodyUsed", req_body_used),
-        ],
-        accessors: &[],
-    });
+    let class = define_class(
+        g,
+        &ClassSpec {
+            name: "Request",
+            arity: 1,
+            construct: Some(request_construct),
+            parent_proto: 0,
+            methods: &[
+                ("clone", 0, req_clone),
+                ("text", 0, req_text),
+                ("json", 0, req_json),
+                ("arrayBuffer", 0, req_array_buffer),
+                ("bytes", 0, req_bytes),
+            ],
+            getters: &[
+                ("method", req_method),
+                ("url", req_url),
+                ("headers", req_headers),
+                ("redirect", req_redirect),
+                ("credentials", req_credentials),
+                ("mode", req_mode),
+                ("cache", req_cache),
+                ("integrity", req_integrity),
+                ("keepalive", req_keepalive),
+                ("signal", req_signal),
+                ("bodyUsed", req_body_used),
+            ],
+            accessors: &[],
+        },
+    );
     let boxed: &'static RequestClass = Box::leak(Box::new(RequestClass { cls, class }));
     request_registry().lock().unwrap().insert(g as usize, boxed);
 }

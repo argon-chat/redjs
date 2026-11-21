@@ -214,7 +214,11 @@ pub(super) fn put(g: *mut c_void, c: Client) {
 }
 
 pub(super) fn try_cl(g: *mut c_void) -> Option<&'static RefCell<Client>> {
-    registry().lock().unwrap().get(&(g as usize)).map(|p| unsafe { &*p.0 })
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .map(|p| unsafe { &*p.0 })
 }
 
 pub(super) fn cl(g: *mut c_void) -> &'static RefCell<Client> {
@@ -302,7 +306,9 @@ pub(super) unsafe fn unprotect(g: *mut c_void, v: u64) {
 
 pub(super) unsafe fn dom(g: *mut c_void, f: &Fail) -> u64 {
     match f.quota {
-        Some((q, r)) => domexception::create_quota_exceeded(g, &f.message, Some(q as f64), Some(r as f64)),
+        Some((q, r)) => {
+            domexception::create_quota_exceeded(g, &f.message, Some(q as f64), Some(r as f64))
+        }
         None => domexception::create(g, f.name, &f.message),
     }
 }
@@ -318,7 +324,18 @@ pub(super) unsafe fn abort_error(g: *mut c_void, msg: &str) -> u64 {
 pub(super) unsafe fn new_database(g: *mut c_void, conn: ConnId, meta: DbMeta) -> u64 {
     let c = cls(g);
     let next_id = meta.next_id();
-    let db = host_create(g, c.database, c.database_proto, DbData { conn, meta, close_pending: false, upgrade: 0, next_id });
+    let db = host_create(
+        g,
+        c.database,
+        c.database_proto,
+        DbData {
+            conn,
+            meta,
+            close_pending: false,
+            upgrade: 0,
+            next_id,
+        },
+    );
     new_bag(g, db);
     for h in ["onabort", "onclose", "onerror", "onversionchange"] {
         bset(g, db, h, NULL);
@@ -345,10 +362,30 @@ pub(super) unsafe fn new_transaction(g: *mut c_void, data: TxData, db: u64) -> u
     tx
 }
 
-pub(super) unsafe fn new_request(g: *mut c_void, id: ReqId, open: bool, source: u64, tx: u64) -> u64 {
+pub(super) unsafe fn new_request(
+    g: *mut c_void,
+    id: ReqId,
+    open: bool,
+    source: u64,
+    tx: u64,
+) -> u64 {
     let c = cls(g);
-    let (class, proto) = if open { (c.open_request, c.open_request_proto) } else { (c.request, c.request_proto) };
-    let req = host_create(g, class, proto, ReqData { id, done: false, open, aborted: false });
+    let (class, proto) = if open {
+        (c.open_request, c.open_request_proto)
+    } else {
+        (c.request, c.request_proto)
+    };
+    let req = host_create(
+        g,
+        class,
+        proto,
+        ReqData {
+            id,
+            done: false,
+            open,
+            aborted: false,
+        },
+    );
     new_bag(g, req);
     bset(g, req, "result", UNDEF);
     bset(g, req, "error", NULL);
@@ -374,7 +411,16 @@ pub(super) unsafe fn store_handle(g: *mut c_void, tx: u64, meta: &StoreMeta) -> 
         return get_i(g, arr, i as u32);
     }
     let c = cls(g);
-    let h = host_create(g, c.store, c.store_proto, StoreData { meta: meta.clone(), deleted: false, handles: Vec::new() });
+    let h = host_create(
+        g,
+        c.store,
+        c.store_proto,
+        StoreData {
+            meta: meta.clone(),
+            deleted: false,
+            handles: Vec::new(),
+        },
+    );
     new_bag(g, h);
     bset(g, h, "transaction", tx);
     bset(g, h, "indexes", new_array(g));
@@ -389,16 +435,28 @@ pub(super) unsafe fn store_handle(g: *mut c_void, tx: u64, meta: &StoreMeta) -> 
 /// The index handle of store handle `store` for `meta` (SameObject).
 pub(super) unsafe fn index_handle(g: *mut c_void, store: u64, meta: &IndexMeta) -> u64 {
     let arr = bget(g, store, "indexes");
-    if let Some(i) = store_of(g, store).and_then(|sd| sd.handles.iter().position(|x| *x == meta.id)) {
+    if let Some(i) = store_of(g, store).and_then(|sd| sd.handles.iter().position(|x| *x == meta.id))
+    {
         return get_i(g, arr, i as u32);
     }
     let c = cls(g);
     let store_id = store_of(g, store).map(|s| s.meta.id).unwrap_or(0);
-    let h = host_create(g, c.index, c.index_proto, IndexData { store: store_id, meta: meta.clone(), deleted: false });
+    let h = host_create(
+        g,
+        c.index,
+        c.index_proto,
+        IndexData {
+            store: store_id,
+            meta: meta.clone(),
+            deleted: false,
+        },
+    );
     new_bag(g, h);
     bset(g, h, "objectStore", store);
     bset(g, h, "keyPath", UNDEF);
-    let Some(sd) = store_of(g, store) else { return h };
+    let Some(sd) = store_of(g, store) else {
+        return h;
+    };
     let n = sd.handles.len() as u32;
     sd.handles.push(meta.id);
     glue::rjs_define_index(g, arr, n, h);
@@ -426,7 +484,13 @@ pub(super) unsafe fn vc_event(g: *mut c_void, ty: &str, old: u64, new: Option<u6
     if let Some(s) = events::state_of(g, ev) {
         define(g, s, "isTrusted", TRUE, 0);
         define(g, s, "idbOld", enc_f64(old as f64), 0);
-        define(g, s, "idbNew", new.map(|n| enc_f64(n as f64)).unwrap_or(NULL), 0);
+        define(
+            g,
+            s,
+            "idbNew",
+            new.map(|n| enc_f64(n as f64)).unwrap_or(NULL),
+            0,
+        );
     }
     ev
 }
@@ -461,13 +525,21 @@ pub(super) unsafe fn rearm(g: *mut c_void, tx: u64, req: u64, id: ReqId, op: Op)
         c.reqs.insert(id, req);
         c.inflight += 1;
     }
-    server::send(ToServer::Op { tx: txid, req: id, op });
+    server::send(ToServer::Op {
+        tx: txid,
+        req: id,
+        op,
+    });
 }
 
 /// A schema step of the upgrade (no request: a failure aborts the upgrade).
 pub(super) unsafe fn schema_op(g: *mut c_void, tx: u64, op: Op) {
     let Some(td) = tx_of(g, tx) else { return };
-    server::send(ToServer::Op { tx: td.id, req: 0, op });
+    server::send(ToServer::Op {
+        tx: td.id,
+        req: 0,
+        op,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -593,11 +665,17 @@ unsafe fn revert_upgrade(g: *mut c_void, tx: u64) {
 /// delivery skips the event object, the dispatch and the checkpoint (§3.3's
 /// fast path — what makes a bulk put cost microseconds per result).
 pub(super) unsafe fn listened(g: *mut c_void, path: &[u64], ty: &str) -> bool {
-    path.iter().any(|n| is_cell(*n) && events::has_listener(g, *n, ty))
+    path.iter()
+        .any(|n| is_cell(*n) && events::has_listener(g, *n, ty))
 }
 
 /// A plain dispatch (no transaction state involved).
-unsafe fn fire_plain(g: *mut c_void, path: &[u64], ty: &str, mk: impl FnOnce() -> u64) -> events::DispatchOutcome {
+unsafe fn fire_plain(
+    g: *mut c_void,
+    path: &[u64],
+    ty: &str,
+    mk: impl FnOnce() -> u64,
+) -> events::DispatchOutcome {
     if !listened(g, path, ty) {
         return events::DispatchOutcome::default();
     }
@@ -610,7 +688,14 @@ unsafe fn fire_plain(g: *mut c_void, path: &[u64], ty: &str, mk: impl FnOnce() -
 /// dispatch; then a listener that threw aborts it with AbortError, an `error`
 /// nobody canceled aborts it with the request's error, and otherwise it
 /// commits once nothing is pending.
-unsafe fn fire_request_event(g: *mut c_void, path: &[u64], tx: u64, ty: &str, error: bool, mk: impl FnOnce() -> u64) {
+unsafe fn fire_request_event(
+    g: *mut c_void,
+    path: &[u64],
+    tx: u64,
+    ty: &str,
+    error: bool,
+    mk: impl FnOnce() -> u64,
+) {
     if let Some(td) = tx_of(g, tx) {
         if td.state == TxState::Inactive {
             td.state = TxState::Active;
@@ -634,7 +719,12 @@ unsafe fn fire_request_event(g: *mut c_void, path: &[u64], tx: u64, ty: &str, er
     }
     td.state = TxState::Inactive;
     if out.listener_threw {
-        abort_tx(g, tx, abort_error(g, "A listener threw, so the transaction was aborted."), true);
+        abort_tx(
+            g,
+            tx,
+            abort_error(g, "A listener threw, so the transaction was aborted."),
+            true,
+        );
     } else if error && !out.canceled {
         let e = bget(g, path[0], "error");
         abort_tx(g, tx, e, true);
@@ -667,7 +757,11 @@ pub(super) unsafe fn src_drain(g: *mut c_void) -> usize {
     // transaction becomes active: browser order.
     crate::web::checkpoint(g);
     let budget_us = crate::web::pump_budget_us();
-    let cap = if budget_us == 0 { inbox.len() } else { usize::MAX };
+    let cap = if budget_us == 0 {
+        inbox.len()
+    } else {
+        usize::MAX
+    };
     let budget = Duration::from_micros(budget_us as u64);
     let start = Instant::now();
     let mut n = 0usize;
@@ -727,7 +821,13 @@ unsafe fn deliver(g: *mut c_void, m: ToClient) {
             }
         }
         ToClient::AbortEvents { tx } => on_abort_events(g, tx),
-        ToClient::Upgrade { req, conn, tx, old, meta } => on_upgrade(g, req, conn, tx, old, meta),
+        ToClient::Upgrade {
+            req,
+            conn,
+            tx,
+            old,
+            meta,
+        } => on_upgrade(g, req, conn, tx, old, meta),
         ToClient::Opened { req, conn, meta } => {
             let Some(open) = take_open(g, req, false) else {
                 server::send(ToServer::Close { conn });
@@ -738,7 +838,9 @@ unsafe fn deliver(g: *mut c_void, m: ToClient) {
             succeed_open(g, open);
         }
         ToClient::OpenFailed { req, err } => {
-            let Some(open) = take_open(g, req, false) else { return };
+            let Some(open) = take_open(g, req, false) else {
+                return;
+            };
             let e = dom(g, &err);
             fail_open(g, open, e);
         }
@@ -758,13 +860,17 @@ unsafe fn deliver(g: *mut c_void, m: ToClient) {
             let db = cl(g).borrow().conns.get(&conn).copied();
             if let Some(db) = db {
                 if db_of(g, db).map(|d| !d.close_pending).unwrap_or(false) {
-                    fire_plain(g, &[db], "versionchange", || vc_event(g, "versionchange", old, new));
+                    fire_plain(g, &[db], "versionchange", || {
+                        vc_event(g, "versionchange", old, new)
+                    });
                 }
             }
             server::send(ToServer::VersionChangeDone { conn });
         }
         ToClient::Deleted { req, old } => {
-            let Some(open) = take_open(g, req, false) else { return };
+            let Some(open) = take_open(g, req, false) else {
+                return;
+            };
             if let Some(rd) = req_of(g, open) {
                 rd.done = true;
             }
@@ -851,7 +957,9 @@ unsafe fn succeed_open(g: *mut c_void, open: u64) {
         rd.done = true;
     }
     bset(g, open, "error", NULL);
-    fire_plain(g, &[open], "success", || events::new_trusted_event_with(g, "success", false, false));
+    fire_plain(g, &[open], "success", || {
+        events::new_trusted_event_with(g, "success", false, false)
+    });
     finish_open(g, open);
 }
 
@@ -861,7 +969,9 @@ unsafe fn fail_open(g: *mut c_void, open: u64, err: u64) {
     }
     bset(g, open, "result", UNDEF);
     bset(g, open, "error", err);
-    fire_plain(g, &[open], "error", || events::new_trusted_event_with(g, "error", true, true));
+    fire_plain(g, &[open], "error", || {
+        events::new_trusted_event_with(g, "error", true, true)
+    });
     finish_open(g, open);
 }
 
@@ -903,7 +1013,9 @@ unsafe fn on_upgrade(g: *mut c_void, req: ReqId, conn: ConnId, tx: TxId, old: u6
     bset(g, open, "result", db);
     bset(g, open, "error", NULL);
     bset(g, open, "transaction", txo);
-    fire_request_event(g, &[open], txo, "upgradeneeded", false, || vc_event(g, "upgradeneeded", old, Some(new)));
+    fire_request_event(g, &[open], txo, "upgradeneeded", false, || {
+        vc_event(g, "upgradeneeded", old, Some(new))
+    });
 }
 
 unsafe fn on_completed(g: *mut c_void, tx: TxId) {
@@ -928,7 +1040,9 @@ unsafe fn on_completed(g: *mut c_void, tx: TxId) {
             dd.upgrade = 0;
         }
     }
-    fire_plain(g, &[txo, db], "complete", || events::new_trusted_event_with(g, "complete", false, false));
+    fire_plain(g, &[txo, db], "complete", || {
+        events::new_trusted_event_with(g, "complete", false, false)
+    });
     if upgrade {
         crate::web::checkpoint(g);
         let open = bget(g, txo, "openRequest");
@@ -938,7 +1052,11 @@ unsafe fn on_completed(g: *mut c_void, tx: TxId) {
             // close() during upgradeneeded: the upgrade committed, the open
             // fails (WPT close-in-upgradeneeded).
             bset(g, open, "result", UNDEF);
-            fail_open(g, open, abort_error(g, "The connection was closed before the upgrade finished."));
+            fail_open(
+                g,
+                open,
+                abort_error(g, "The connection was closed before the upgrade finished."),
+            );
         } else {
             succeed_open(g, open);
         }
@@ -961,8 +1079,18 @@ unsafe fn on_abort_events(g: *mut c_void, tx: TxId) {
             rd.done = true;
         }
         bset(g, o, "result", UNDEF);
-        bset(g, o, "error", abort_error(g, "The transaction was aborted, so the request cannot be fulfilled."));
-        fire_plain(g, &[o, txo, db], "error", || events::new_trusted_event_with(g, "error", true, true));
+        bset(
+            g,
+            o,
+            "error",
+            abort_error(
+                g,
+                "The transaction was aborted, so the request cannot be fulfilled.",
+            ),
+        );
+        fire_plain(g, &[o, txo, db], "error", || {
+            events::new_trusted_event_with(g, "error", true, true)
+        });
         unprotect(g, o);
         crate::web::checkpoint(g);
     }
@@ -971,13 +1099,19 @@ unsafe fn on_abort_events(g: *mut c_void, tx: TxId) {
             dd.upgrade = 0;
         }
     }
-    fire_plain(g, &[txo, db], "abort", || events::new_trusted_event_with(g, "abort", true, false));
+    fire_plain(g, &[txo, db], "abort", || {
+        events::new_trusted_event_with(g, "abort", true, false)
+    });
     if upgrade {
         crate::web::checkpoint(g);
         let open = bget(g, txo, "openRequest");
         if is_cell(open) {
             bset(g, open, "transaction", NULL);
-            fail_open(g, open, abort_error(g, "The upgrade transaction was aborted."));
+            fail_open(
+                g,
+                open,
+                abort_error(g, "The upgrade transaction was aborted."),
+            );
         }
     }
     cl(g).borrow_mut().txs.remove(&tx);
@@ -1021,9 +1155,13 @@ unsafe fn on_result(g: *mut c_void, req: ReqId, r: Result<Payload, Fail>) {
     let db = bget(g, txo, "db");
     let path = [ro, txo, db];
     if error == NULL {
-        fire_request_event(g, &path, txo, "success", false, || events::new_trusted_event_with(g, "success", false, false));
+        fire_request_event(g, &path, txo, "success", false, || {
+            events::new_trusted_event_with(g, "success", false, false)
+        });
     } else {
-        fire_request_event(g, &path, txo, "error", true, || events::new_trusted_event_with(g, "error", true, true));
+        fire_request_event(g, &path, txo, "error", true, || {
+            events::new_trusted_event_with(g, "error", true, true)
+        });
     }
     if server_failed {
         // The server holds this transaction's commit until the failure is
@@ -1067,12 +1205,18 @@ unsafe fn result_value(g: *mut c_void, req: u64, p: Payload) -> Result<u64, u64>
         Payload::Count(n) => enc_f64(n as f64),
         Payload::Cursor(hit) => {
             let cur = bget(g, req, "cursor");
-            let Some(cd) = cursor_of(g, cur) else { return Ok(NULL) };
+            let Some(cd) = cursor_of(g, cur) else {
+                return Ok(NULL);
+            };
             let (store_cursor, key_only) = (matches!(cd.source, Source::Store(_)), cd.key_only);
             match hit {
                 Some(h) => {
                     let k = key::bytes_to_js(g, &h.key);
-                    let pk = if store_cursor { k } else { key::bytes_to_js(g, &h.pkey) };
+                    let pk = if store_cursor {
+                        k
+                    } else {
+                        key::bytes_to_js(g, &h.pkey)
+                    };
                     let val = match (&h.value, key_only) {
                         (Some(v), false) => value_to_js(g, v)?,
                         _ => UNDEF,

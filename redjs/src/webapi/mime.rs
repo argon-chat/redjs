@@ -140,11 +140,20 @@ const TABLE: &[(&str, &str)] = &[
     ("pdf", "application/pdf"),
     ("doc", "application/msword"),
     ("dot", "application/msword"),
-    ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    (
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
     ("xls", "application/vnd.ms-excel"),
-    ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
     ("ppt", "application/vnd.ms-powerpoint"),
-    ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    (
+        "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ),
     ("odt", "application/vnd.oasis.opendocument.text"),
     ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
     ("odp", "application/vnd.oasis.opendocument.presentation"),
@@ -200,7 +209,10 @@ const ALIASES: &[(&str, &str)] = &[
 /// The table's type for an extension (without the dot, any case).
 pub fn type_for_extension(ext: &str) -> Option<&'static str> {
     let ext = ext.strip_prefix('.').unwrap_or(ext);
-    TABLE.iter().find(|(e, _)| e.eq_ignore_ascii_case(ext)).map(|(_, t)| *t)
+    TABLE
+        .iter()
+        .find(|(e, _)| e.eq_ignore_ascii_case(ext))
+        .map(|(_, t)| *t)
 }
 
 /// The type for a file NAME (or a path, or a URL key): the extension after the
@@ -220,9 +232,18 @@ pub fn type_for_name(name: &str) -> Option<&'static str> {
 /// half, a character outside the RFC 9110 token set) — which is also what
 /// keeps a malformed `accept` token out of a registry path.
 pub fn essence(mime: &str) -> Option<String> {
-    let head = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let head = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     let (t, s) = head.split_once('/')?;
-    let token = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+    let token = |p: &str| {
+        !p.is_empty()
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+    };
     (token(t) && token(s)).then_some(head)
 }
 
@@ -233,7 +254,9 @@ pub fn essence(mime: &str) -> Option<String> {
 /// On Windows an exact type also gets the registry's `Extension` for it
 /// (Chromium's `GetExtensionsForMimeType` does the same), deduplicated.
 pub fn exts_for(mime: &str) -> Vec<String> {
-    let Some(m) = essence(mime) else { return Vec::new() };
+    let Some(m) = essence(mime) else {
+        return Vec::new();
+    };
     let mut out: Vec<String> = Vec::new();
     let mut push = |e: &str| {
         if !out.iter().any(|x| x == e) {
@@ -252,7 +275,11 @@ pub fn exts_for(mime: &str) -> Vec<String> {
         }
         return out;
     }
-    let canonical = ALIASES.iter().find(|(a, _)| *a == m).map(|(_, t)| *t).unwrap_or(m.as_str());
+    let canonical = ALIASES
+        .iter()
+        .find(|(a, _)| *a == m)
+        .map(|(_, t)| *t)
+        .unwrap_or(m.as_str());
     for (e, t) in TABLE {
         if *t == canonical {
             push(e);
@@ -325,7 +352,11 @@ mod registry {
         let s = s.trim_end_matches('\0');
         // `.ext` and nothing stranger: the value is somebody else's data.
         let ext = s.strip_prefix('.')?.to_ascii_lowercase();
-        let sane = !ext.is_empty() && ext.len() <= 16 && ext.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        let sane = !ext.is_empty()
+            && ext.len() <= 16
+            && ext
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
         sane.then_some(ext)
     }
 
@@ -339,8 +370,12 @@ mod registry {
             return hit.clone();
         }
         let sub = format!("MIME\\Database\\Content Type\\{essence}");
-        let found = read(HKEY_CURRENT_USER, &format!("Software\\Classes\\{sub}")).or_else(|| read(HKEY_CLASSES_ROOT, &sub));
-        cache.lock().unwrap().insert(essence.to_string(), found.clone());
+        let found = read(HKEY_CURRENT_USER, &format!("Software\\Classes\\{sub}"))
+            .or_else(|| read(HKEY_CLASSES_ROOT, &sub));
+        cache
+            .lock()
+            .unwrap()
+            .insert(essence.to_string(), found.clone());
         found
     }
 }
@@ -352,11 +387,23 @@ mod tests {
     #[test]
     fn the_common_extensions_get_chromiums_types() {
         assert_eq!(type_for_extension("png"), Some("image/png"));
-        assert_eq!(type_for_extension("PNG"), Some("image/png"), "case-insensitive");
-        assert_eq!(type_for_extension(".jpg"), Some("image/jpeg"), "a leading dot is fine");
+        assert_eq!(
+            type_for_extension("PNG"),
+            Some("image/png"),
+            "case-insensitive"
+        );
+        assert_eq!(
+            type_for_extension(".jpg"),
+            Some("image/jpeg"),
+            "a leading dot is fine"
+        );
         assert_eq!(type_for_extension("jpeg"), Some("image/jpeg"));
         assert_eq!(type_for_extension("js"), Some("text/javascript"));
-        assert_eq!(type_for_extension("xml"), Some("text/xml"), "Chromium's, not mime-db's application/xml");
+        assert_eq!(
+            type_for_extension("xml"),
+            Some("text/xml"),
+            "Chromium's, not mime-db's application/xml"
+        );
         assert_eq!(type_for_extension("m4a"), Some("audio/x-m4a"));
         assert_eq!(type_for_extension("svg"), Some("image/svg+xml"));
         assert_eq!(type_for_extension("csv"), Some("text/csv"));
@@ -367,8 +414,15 @@ mod tests {
     #[test]
     fn a_name_is_typed_by_the_extension_of_its_last_segment() {
         assert_eq!(type_for_name("photo.JPG"), Some("image/jpeg"));
-        assert_eq!(type_for_name("C:\\a.b\\report.pdf"), Some("application/pdf"));
-        assert_eq!(type_for_name("dir.d/notes"), None, "a dot in a folder is not an extension");
+        assert_eq!(
+            type_for_name("C:\\a.b\\report.pdf"),
+            Some("application/pdf")
+        );
+        assert_eq!(
+            type_for_name("dir.d/notes"),
+            None,
+            "a dot in a folder is not an extension"
+        );
         assert_eq!(type_for_name("archive.tar.gz"), Some("application/gzip"));
         assert_eq!(type_for_name("README"), None);
         assert_eq!(type_for_name("trailing."), None);
@@ -393,24 +447,42 @@ mod tests {
     #[test]
     fn reverse_lookups_are_ordered_and_take_parameters_and_aliases() {
         let jpeg = exts_for("image/jpeg");
-        assert_eq!(jpeg[..2], ["jpg".to_string(), "jpeg".to_string()], "{jpeg:?}");
+        assert_eq!(
+            jpeg[..2],
+            ["jpg".to_string(), "jpeg".to_string()],
+            "{jpeg:?}"
+        );
         assert!(exts_for("Text/Plain; charset=utf-8").contains(&"txt".to_string()));
-        assert!(exts_for("image/jpg").contains(&"jpg".to_string()), "a common misspelling in accept=");
+        assert!(
+            exts_for("image/jpg").contains(&"jpg".to_string()),
+            "a common misspelling in accept="
+        );
         assert!(exts_for("application/javascript").contains(&"js".to_string()));
         assert!(exts_for("not a type").is_empty());
         assert!(exts_for("image/").is_empty());
-        assert!(exts_for("image/png\\..\\x").is_empty(), "a backslash never reaches a registry path");
+        assert!(
+            exts_for("image/png\\..\\x").is_empty(),
+            "a backslash never reaches a registry path"
+        );
     }
 
     #[test]
     fn wildcards_cover_their_top_level_type_only() {
         let images = exts_for("image/*");
-        for e in ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"] {
-            assert!(images.iter().any(|x| x == e), "image/* lacks {e}: {images:?}");
+        for e in [
+            "png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico",
+        ] {
+            assert!(
+                images.iter().any(|x| x == e),
+                "image/* lacks {e}: {images:?}"
+            );
         }
         assert!(!images.iter().any(|x| x == "mp4"), "{images:?}");
         let video = exts_for("VIDEO/*");
-        assert!(video.contains(&"mp4".to_string()) && video.contains(&"webm".to_string()), "{video:?}");
+        assert!(
+            video.contains(&"mp4".to_string()) && video.contains(&"webm".to_string()),
+            "{video:?}"
+        );
         assert!(exts_for("audio/*").contains(&"mp3".to_string()));
         assert!(exts_for("*/*").is_empty(), "anything is not a filter");
     }
@@ -427,6 +499,10 @@ mod tests {
         // The table's answer comes first; the registry only adds.
         let png = exts_for("image/png");
         assert_eq!(png.first().map(String::as_str), Some("png"));
-        assert_eq!(png.iter().filter(|e| *e == "png").count(), 1, "deduplicated: {png:?}");
+        assert_eq!(
+            png.iter().filter(|e| *e == "png").count(),
+            1,
+            "deduplicated: {png:?}"
+        );
     }
 }

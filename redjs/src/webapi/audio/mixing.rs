@@ -4,8 +4,8 @@
 
 use firewheel::channel_config::{ChannelConfig, ChannelCount};
 use firewheel::node::{
-    AudioNode, AudioNodeInfo, AudioNodeProcessor, ConstructProcessorContext, EmptyConfig, ProcBuffers, ProcExtra,
-    ProcInfo, ProcessStatus,
+    AudioNode, AudioNodeInfo, AudioNodeProcessor, ConstructProcessorContext, EmptyConfig,
+    ProcBuffers, ProcExtra, ProcInfo, ProcessStatus,
 };
 
 /// Chromium's `BaseAudioContext::MaxNumberOfChannels()`.
@@ -128,8 +128,22 @@ pub fn web_mix(from: u32, to: u32, interp: Interp) -> Matrix {
         (4, 1) => (0..4).map(|c| (c, 0, 0.25)).collect(),
         (6, 1) => vec![(0, 0, H), (1, 0, H), (2, 0, 1.0), (4, 0, 0.5), (5, 0, 0.5)],
         (4, 2) => vec![(0, 0, 0.5), (2, 0, 0.5), (1, 1, 0.5), (3, 1, 0.5)],
-        (6, 2) => vec![(0, 0, 1.0), (2, 0, H), (4, 0, H), (1, 1, 1.0), (2, 1, H), (5, 1, H)],
-        (6, 4) => vec![(0, 0, 1.0), (2, 0, H), (1, 1, 1.0), (2, 1, H), (4, 2, 1.0), (5, 3, 1.0)],
+        (6, 2) => vec![
+            (0, 0, 1.0),
+            (2, 0, H),
+            (4, 0, H),
+            (1, 1, 1.0),
+            (2, 1, H),
+            (5, 1, H),
+        ],
+        (6, 4) => vec![
+            (0, 0, 1.0),
+            (2, 0, H),
+            (1, 1, 1.0),
+            (2, 1, H),
+            (4, 2, 1.0),
+            (5, 3, 1.0),
+        ],
         _ => discrete(from, to),
     }
 }
@@ -157,7 +171,9 @@ fn place(from: u32, mask: u32) -> Option<Matrix> {
     let mut m = Matrix::new();
     for (c, &(spk, alt)) in speakers.iter().enumerate() {
         let c = c as u32;
-        if let Some(i) = index_in(mask, spk).or_else(|| (alt != 0).then(|| index_in(mask, alt)).flatten()) {
+        if let Some(i) =
+            index_in(mask, spk).or_else(|| (alt != 0).then(|| index_in(mask, alt)).flatten())
+        {
             m.push((c, i, 1.0));
         } else if from == 1 && mask & speaker::STEREO == speaker::STEREO {
             m.push((0, index_in(mask, speaker::FL)?, 1.0));
@@ -233,7 +249,13 @@ pub enum Route {
 }
 
 /// `src` maps a source channel to its port; `dst` a destination channel to the ports it feeds.
-pub fn route(m: Matrix, n_in: u32, n_out: u32, src: impl Fn(u32) -> u32, dst: impl Fn(u32) -> Vec<u32>) -> Route {
+pub fn route(
+    m: Matrix,
+    n_in: u32,
+    n_out: u32,
+    src: impl Fn(u32) -> u32,
+    dst: impl Fn(u32) -> Vec<u32>,
+) -> Route {
     if is_port_map(&m) {
         let mut ports = Vec::new();
         for &(i, o, _) in &m {
@@ -301,9 +323,13 @@ impl AudioNodeProcessor for MixProcessor {
         _events: &mut firewheel::event::ProcEvents,
         _extra: &mut ProcExtra,
     ) -> ProcessStatus {
-        let mask = mix_block(&self.matrix, buffers.inputs, buffers.outputs, info.frames, |c| {
-            info.in_silence_mask.is_channel_silent(c)
-        });
+        let mask = mix_block(
+            &self.matrix,
+            buffers.inputs,
+            buffers.outputs,
+            info.frames,
+            |c| info.in_silence_mask.is_channel_silent(c),
+        );
         ProcessStatus::outputs_modified_with_silence_mask(mask)
     }
 }
@@ -358,7 +384,10 @@ mod tests {
         let st = apply(&web_mix(6, 2, s), &five_one, 2);
         assert!((st[0] - (1.0 + H * (3.0 + 5.0))).abs() < 1e-6);
         assert!((st[1] - (2.0 + H * (3.0 + 6.0))).abs() < 1e-6);
-        assert_eq!(apply(&web_mix(4, 2, s), &[1.0, 2.0, 3.0, 4.0], 2), vec![2.0, 3.0]);
+        assert_eq!(
+            apply(&web_mix(4, 2, s), &[1.0, 2.0, 3.0, 4.0], 2),
+            vec![2.0, 3.0]
+        );
         assert_eq!(apply(&web_mix(2, 1, s), &[1.0, 3.0], 1), vec![2.0]);
         let q = apply(&web_mix(6, 4, s), &five_one, 4);
         assert!((q[0] - (1.0 + H * 3.0)).abs() < 1e-6 && q[2] == 5.0 && q[3] == 6.0);
@@ -372,7 +401,10 @@ mod tests {
         }
         assert_eq!(web_mix(1, 6, s), vec![(0, 2, 1.0)]);
         assert_eq!(web_mix(4, 6, s)[2..], [(2, 4, 1.0), (3, 5, 1.0)]);
-        assert_eq!(web_mix(6, 2, Interp::Discrete), vec![(0, 0, 1.0), (1, 1, 1.0)]);
+        assert_eq!(
+            web_mix(6, 2, Interp::Discrete),
+            vec![(0, 0, 1.0), (1, 1, 1.0)]
+        );
         assert_eq!(web_mix(3, 2, s), vec![(0, 0, 1.0), (1, 1, 1.0)]);
         assert_eq!(web_mix(2, 3, s), vec![(0, 0, 1.0), (1, 1, 1.0)]);
     }
@@ -393,12 +425,24 @@ mod tests {
         );
         let back_five_one = FL | FR | FC | LFE | BL | BR;
         assert_eq!(device_mix(6, s, 6, back_five_one), web_mix(6, 6, s));
-        assert_eq!(device_mix(4, s, 6, back_five_one)[2..], [(2, 4, 1.0), (3, 5, 1.0)]);
-        assert_eq!(device_mix(4, s, 6, FIVE_ONE)[2..], [(2, 4, 1.0), (3, 5, 1.0)]);
+        assert_eq!(
+            device_mix(4, s, 6, back_five_one)[2..],
+            [(2, 4, 1.0), (3, 5, 1.0)]
+        );
+        assert_eq!(
+            device_mix(4, s, 6, FIVE_ONE)[2..],
+            [(2, 4, 1.0), (3, 5, 1.0)]
+        );
         assert_eq!(device_mix(1, s, 2, 0), vec![(0, 0, 1.0), (0, 1, 1.0)]);
         assert_eq!(device_mix(1, s, 12, SEVEN_ONE_FOUR), vec![(0, 2, 1.0)]);
-        assert_eq!(device_mix(6, s, 12, SEVEN_ONE_FOUR)[4..], [(4, 6, 1.0), (5, 7, 1.0)]);
-        assert_eq!(device_mix(2, s, 12, SEVEN_ONE_FOUR), vec![(0, 0, 1.0), (1, 1, 1.0)]);
+        assert_eq!(
+            device_mix(6, s, 12, SEVEN_ONE_FOUR)[4..],
+            [(4, 6, 1.0), (5, 7, 1.0)]
+        );
+        assert_eq!(
+            device_mix(2, s, 12, SEVEN_ONE_FOUR),
+            vec![(0, 0, 1.0), (1, 1, 1.0)]
+        );
     }
 
     #[test]
@@ -406,8 +450,15 @@ mod tests {
         let s = Interp::Speakers;
         assert_eq!(device_mix(6, s, 2, 0), web_mix(6, 2, s));
         assert_eq!(device_mix(6, s, 4, 0), web_mix(6, 4, s));
-        let out = apply(&device_mix(6, s, 3, FL | FR | FC), &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 3);
-        assert!((out[0] - (1.0 + 2.0 * H)).abs() < 1e-6 && out[2] == 0.0, "{out:?}");
+        let out = apply(
+            &device_mix(6, s, 3, FL | FR | FC),
+            &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            3,
+        );
+        assert!(
+            (out[0] - (1.0 + 2.0 * H)).abs() < 1e-6 && out[2] == 0.0,
+            "{out:?}"
+        );
         assert_eq!(device_mix(3, s, 6, 0), discrete(3, 6));
     }
 
@@ -421,9 +472,19 @@ mod tests {
             |o| vec![10 + 2 * o, 11 + 2 * o],
         );
         assert_eq!(r, Route::Ports(vec![(0, 10), (0, 11), (0, 12), (0, 13)]));
-        match route(web_mix(2, 1, Interp::Speakers), 2, 1, |c| c + 4, |o| vec![o]) {
+        match route(
+            web_mix(2, 1, Interp::Speakers),
+            2,
+            1,
+            |c| c + 4,
+            |o| vec![o],
+        ) {
             Route::Mix {
-                from, to, n_in, n_out, ..
+                from,
+                to,
+                n_in,
+                n_out,
+                ..
             } => {
                 assert_eq!((from, to, n_in, n_out), (vec![4, 5], vec![(0, 0)], 2, 1));
             }

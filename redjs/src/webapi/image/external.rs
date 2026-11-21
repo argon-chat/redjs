@@ -36,11 +36,7 @@ pub(crate) unsafe fn fail<T>(g: *mut c_void, name: &str, message: &str) -> Resul
 
 /// Snapshot only after the WebGPU descriptor getters finished. The hook may
 /// reenter JS, close a bitmap, resize a canvas or collect the resolved wrapper.
-pub unsafe fn external_pixels(
-    g: *mut c_void,
-    value: u64,
-    depth: u8,
-) -> Result<ExternalImage, ()> {
+pub unsafe fn external_pixels(g: *mut c_void, value: u64, depth: u8) -> Result<ExternalImage, ()> {
     if !is_cell(value) || depth > 8 {
         return fail(
             g,

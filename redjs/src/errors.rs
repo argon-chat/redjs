@@ -131,7 +131,11 @@ pub(crate) unsafe fn describe(g: *mut c_void, exc: u64) -> (String, String) {
         // Neither: a thrown/rejected non-Error. Say what it actually was.
         (true, true) => {
             let mut s = 0u64;
-            if glue::rjs_to_string(g, exc, &mut s) == 0 { read_string(g, s) } else { String::new() }
+            if glue::rjs_to_string(g, exc, &mut s) == 0 {
+                read_string(g, s)
+            } else {
+                String::new()
+            }
         }
     };
     (header, stack)
@@ -236,7 +240,11 @@ pub unsafe fn install_rejection(g: *mut c_void) -> i32 {
     // cheaper than depending on that detail of the prebuilt.
     capi::JSValueProtect(g, f as usize as capi::JSValueRef);
     let mut exc: capi::JSValueRef = core::ptr::null();
-    capi::JSGlobalContextSetUnhandledRejectionCallback(g, f as usize as capi::JSObjectRef, &mut exc);
+    capi::JSGlobalContextSetUnhandledRejectionCallback(
+        g,
+        f as usize as capi::JSObjectRef,
+        &mut exc,
+    );
     if !exc.is_null() {
         return crate::ffi::REDJS_EXCEPTION;
     }
@@ -264,7 +272,12 @@ mod tests {
 
     unsafe extern "C" fn record(g: *mut c_void, exc: u64) {
         let (header, stack) = describe(g, exc);
-        reports().lock().unwrap().entry(g as usize).or_default().push(format!("{header}\u{1}{stack}"));
+        reports()
+            .lock()
+            .unwrap()
+            .entry(g as usize)
+            .or_default()
+            .push(format!("{header}\u{1}{stack}"));
     }
 
     /// A context with the funnel pointed at [`record`]. Setting the global
@@ -278,7 +291,11 @@ mod tests {
     /// Everything reported for `c` since it was created, and drains it.
     fn taken(c: &Context) -> Vec<String> {
         c.drain_microtasks();
-        reports().lock().unwrap().remove(&(c.raw() as usize)).unwrap_or_default()
+        reports()
+            .lock()
+            .unwrap()
+            .remove(&(c.raw() as usize))
+            .unwrap_or_default()
     }
 
     fn headers(v: &[String]) -> Vec<&str> {
@@ -288,7 +305,8 @@ mod tests {
     #[test]
     fn an_unawaited_async_throw_is_reported() {
         let c = ctx();
-        c.eval("(async () => { throw new Error('async boom'); })();").unwrap();
+        c.eval("(async () => { throw new Error('async boom'); })();")
+            .unwrap();
         let got = taken(&c);
         assert_eq!(headers(&got), vec!["Error: async boom"], "got {got:?}");
     }
@@ -296,7 +314,8 @@ mod tests {
     #[test]
     fn a_bare_promise_rejection_is_reported() {
         let c = ctx();
-        c.eval("Promise.reject(new TypeError('bare boom'));").unwrap();
+        c.eval("Promise.reject(new TypeError('bare boom'));")
+            .unwrap();
         let got = taken(&c);
         assert_eq!(headers(&got), vec!["TypeError: bare boom"], "got {got:?}");
     }
@@ -304,8 +323,13 @@ mod tests {
     #[test]
     fn a_handled_rejection_is_not_reported() {
         let c = ctx();
-        c.eval("Promise.reject(new Error('caught')).catch(() => {});").unwrap();
-        assert_eq!(taken(&c), Vec::<String>::new(), "a .catch()-ed rejection must stay silent");
+        c.eval("Promise.reject(new Error('caught')).catch(() => {});")
+            .unwrap();
+        assert_eq!(
+            taken(&c),
+            Vec::<String>::new(),
+            "a .catch()-ed rejection must stay silent"
+        );
 
         // …and the same context still reports the unhandled one right after,
         // so "silent" cannot be passing because reporting is simply broken.
@@ -316,15 +340,21 @@ mod tests {
     #[test]
     fn an_awaited_throw_inside_a_try_is_not_reported() {
         let c = ctx();
-        c.eval("(async () => { try { await Promise.reject(new Error('handled')); } catch (e) {} })();").unwrap();
+        c.eval(
+            "(async () => { try { await Promise.reject(new Error('handled')); } catch (e) {} })();",
+        )
+        .unwrap();
         assert_eq!(taken(&c), Vec::<String>::new());
     }
 
     #[test]
     fn the_report_carries_the_message_and_the_stack_separately() {
         let c = ctx();
-        c.eval_named("function boom() { throw new Error('has a message'); }\nPromise.resolve().then(boom);", "game/main.js")
-            .unwrap();
+        c.eval_named(
+            "function boom() { throw new Error('has a message'); }\nPromise.resolve().then(boom);",
+            "game/main.js",
+        )
+        .unwrap();
         let got = taken(&c);
         assert_eq!(got.len(), 1, "got {got:?}");
         let (header, stack) = got[0].split_once('\u{1}').unwrap();
@@ -332,8 +362,14 @@ mod tests {
         // `stack || message`, and JSC's stack has no `Name: message` header —
         // so the message vanishes. Assert it is present.
         assert_eq!(header, "Error: has a message");
-        assert!(stack.contains("boom"), "stack should name the frame, got {stack:?}");
-        assert!(!stack.contains("has a message"), "JSC stacks carry no message — if this fires, the join above is now double-printing");
+        assert!(
+            stack.contains("boom"),
+            "stack should name the frame, got {stack:?}"
+        );
+        assert!(
+            !stack.contains("has a message"),
+            "JSC stacks carry no message — if this fires, the join above is now double-printing"
+        );
     }
 
     #[test]
@@ -357,7 +393,8 @@ mod tests {
         // the rejection is born inside a frame callback.
         let c = ctx();
         unsafe { crate::ffi::redjs_web_install(c.raw()) };
-        c.eval("requestAnimationFrame(async () => { throw new Error('frame boom'); });").unwrap();
+        c.eval("requestAnimationFrame(async () => { throw new Error('frame boom'); });")
+            .unwrap();
         unsafe { crate::ffi::redjs_pump(c.raw(), 7, core::ptr::null_mut()) };
         assert_eq!(headers(&taken(&c)), vec!["Error: frame boom"]);
     }

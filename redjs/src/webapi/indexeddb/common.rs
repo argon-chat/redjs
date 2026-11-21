@@ -17,7 +17,13 @@ pub(super) unsafe fn illegal(g: *mut c_void) -> u64 {
 }
 
 /// WebIDL's argument-count check; `false` after throwing.
-pub(super) unsafe fn args(g: *mut c_void, cf: *mut c_void, n: u32, iface: &str, method: &str) -> bool {
+pub(super) unsafe fn args(
+    g: *mut c_void,
+    cf: *mut c_void,
+    n: u32,
+    iface: &str,
+    method: &str,
+) -> bool {
     let got = cf_argc(cf);
     if got >= n {
         return true;
@@ -29,7 +35,11 @@ pub(super) unsafe fn args(g: *mut c_void, cf: *mut c_void, n: u32, iface: &str, 
 
 /// Throws a DOMException `name` with a browser-shaped message.
 pub(super) unsafe fn fail(g: *mut c_void, name: &str, iface: &str, method: &str, msg: &str) -> u64 {
-    domexception::throw(g, name, &format!("Failed to execute '{method}' on '{iface}': {msg}"))
+    domexception::throw(
+        g,
+        name,
+        &format!("Failed to execute '{method}' on '{iface}': {msg}"),
+    )
 }
 
 pub(super) unsafe fn is_object(g: *mut c_void, v: u64) -> bool {
@@ -43,11 +53,22 @@ pub(super) unsafe fn str16(g: *mut c_void, v: u64) -> Result<Vec<u16>, ()> {
 }
 
 /// "Convert a value to a key", throwing DataError for an invalid key.
-pub(super) unsafe fn conv_key(g: *mut c_void, v: u64, iface: &str, method: &str) -> Result<Key, ()> {
+pub(super) unsafe fn conv_key(
+    g: *mut c_void,
+    v: u64,
+    iface: &str,
+    method: &str,
+) -> Result<Key, ()> {
     match key::from_js(g, v)? {
         Conv::Key(k) => Ok(k),
         Conv::Invalid => {
-            fail(g, "DataError", iface, method, "The parameter is not a valid key.");
+            fail(
+                g,
+                "DataError",
+                iface,
+                method,
+                "The parameter is not a valid key.",
+            );
             Err(())
         }
     }
@@ -55,13 +76,25 @@ pub(super) unsafe fn conv_key(g: *mut c_void, v: u64, iface: &str, method: &str)
 
 /// "Convert a value to a key range" (§7.3): a range as is; undefined/null →
 /// everything (or DataError with `null_disallowed`); a key → only it.
-pub(super) unsafe fn to_range(g: *mut c_void, v: u64, null_disallowed: bool, iface: &str, method: &str) -> Result<Range, ()> {
+pub(super) unsafe fn to_range(
+    g: *mut c_void,
+    v: u64,
+    null_disallowed: bool,
+    iface: &str,
+    method: &str,
+) -> Result<Range, ()> {
     if let Some(r) = range_of(g, v) {
         return Ok(r.range.clone());
     }
     if v == UNDEF || v == NULL {
         if null_disallowed {
-            fail(g, "DataError", iface, method, "No key or key range specified.");
+            fail(
+                g,
+                "DataError",
+                iface,
+                method,
+                "No key or key range specified.",
+            );
             return Err(());
         }
         return Ok(Range::all());
@@ -71,7 +104,12 @@ pub(super) unsafe fn to_range(g: *mut c_void, v: u64, null_disallowed: bool, ifa
 }
 
 /// `[EnforceRange] unsigned long`.
-pub(super) unsafe fn enforce_u32(g: *mut c_void, v: u64, iface: &str, method: &str) -> Result<u32, ()> {
+pub(super) unsafe fn enforce_u32(
+    g: *mut c_void,
+    v: u64,
+    iface: &str,
+    method: &str,
+) -> Result<u32, ()> {
     let d = to_number(g, v)?;
     let t = d.trunc();
     if !d.is_finite() || !(0.0..=4_294_967_295.0).contains(&t) {
@@ -88,11 +126,20 @@ pub(super) fn to_u64_modulo(d: f64) -> f64 {
     }
     let m = 18_446_744_073_709_551_616.0f64;
     let t = d.trunc() % m;
-    if t < 0.0 { t + m } else { t }
+    if t < 0.0 {
+        t + m
+    } else {
+        t
+    }
 }
 
 /// The `IDBCursorDirection` enum; `undefined` = "next".
-pub(super) unsafe fn direction(g: *mut c_void, v: u64, iface: &str, method: &str) -> Result<Dir, ()> {
+pub(super) unsafe fn direction(
+    g: *mut c_void,
+    v: u64,
+    iface: &str,
+    method: &str,
+) -> Result<Dir, ()> {
     if v == UNDEF {
         return Ok(Dir::Next);
     }
@@ -125,7 +172,13 @@ pub(super) fn dir_str(d: Dir) -> &'static str {
 /// "A clone of value … during transaction": the transaction is inactive
 /// while the serializer runs (a getter that issues a request gets
 /// TransactionInactiveError — WPT structured-clone-transaction-state).
-pub(super) unsafe fn clone_for(g: *mut c_void, tx: u64, value: u64, iface: &str, method: &str) -> Result<Vec<u8>, ()> {
+pub(super) unsafe fn clone_for(
+    g: *mut c_void,
+    tx: u64,
+    value: u64,
+    iface: &str,
+    method: &str,
+) -> Result<Vec<u8>, ()> {
     let prev = match tx_of(g, tx) {
         Some(td) => {
             let p = td.state;
@@ -134,7 +187,14 @@ pub(super) unsafe fn clone_for(g: *mut c_void, tx: u64, value: u64, iface: &str,
         }
         None => return Err(()),
     };
-    let r = serialize::serialize(g, value, &serialize::Options { for_storage: true, transfer: &[] });
+    let r = serialize::serialize(
+        g,
+        value,
+        &serialize::Options {
+            for_storage: true,
+            transfer: &[],
+        },
+    );
     let still = match tx_of(g, tx) {
         Some(td) if td.state == TxState::Inactive => {
             td.state = prev;
@@ -145,7 +205,13 @@ pub(super) unsafe fn clone_for(g: *mut c_void, tx: u64, value: u64, iface: &str,
     match r {
         Ok(s) if still => Ok(s.bytes),
         Ok(_) => {
-            fail(g, "TransactionInactiveError", iface, method, "The transaction finished while the value was being cloned.");
+            fail(
+                g,
+                "TransactionInactiveError",
+                iface,
+                method,
+                "The transaction finished while the value was being cloned.",
+            );
             Err(())
         }
         Err(e) => {
@@ -170,7 +236,11 @@ macro_rules! handler {
                 return super::common::illegal(g);
             }
             let v = super::client::bget(g, this, $name);
-            if v == crate::webapi::util::UNDEF { crate::webapi::util::NULL } else { v }
+            if v == crate::webapi::util::UNDEF {
+                crate::webapi::util::NULL
+            } else {
+                v
+            }
         }
         #[crate::host_fn]
         pub(super) unsafe fn $set(g: *mut core::ffi::c_void, cf: *mut core::ffi::c_void) -> u64 {
@@ -179,7 +249,11 @@ macro_rules! handler {
                 return super::common::illegal(g);
             }
             let v = crate::webapi::util::cf_arg(cf, 0);
-            let v = if super::common::is_object(g, v) { v } else { crate::webapi::util::NULL };
+            let v = if super::common::is_object(g, v) {
+                v
+            } else {
+                crate::webapi::util::NULL
+            };
             super::client::bset(g, this, $name, v);
             crate::webapi::util::UNDEF
         }

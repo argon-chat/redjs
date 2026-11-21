@@ -38,7 +38,11 @@ impl Value {
         Value(layout().value_null)
     }
     pub fn boolean(b: bool) -> Value {
-        Value(if b { layout().value_true } else { layout().value_false })
+        Value(if b {
+            layout().value_true
+        } else {
+            layout().value_false
+        })
     }
     pub fn int32(i: i32) -> Value {
         Value(layout().tag_number | (i as u32 as u64))
@@ -178,10 +182,17 @@ impl Context {
     pub fn with_options(options: &str) -> Context {
         let c = std::ffi::CString::new(options).unwrap();
         unsafe {
-            glue::init(if options.is_empty() { core::ptr::null() } else { c.as_ptr() });
+            glue::init(if options.is_empty() {
+                core::ptr::null()
+            } else {
+                c.as_ptr()
+            });
             let g = ffi::redjs_context_create();
             assert!(!g.is_null(), "JSGlobalContextCreate failed");
-            Context { g, _not_send: core::marker::PhantomData }
+            Context {
+                g,
+                _not_send: core::marker::PhantomData,
+            }
         }
     }
 
@@ -204,7 +215,14 @@ impl Context {
         let _profile = crate::profiling::span("js", "Evaluate JavaScript");
         let mut out = 0u64;
         let status = unsafe {
-            glue::rjs_eval8(self.g, src.as_ptr(), src.len(), url.as_ptr(), url.len(), &mut out)
+            glue::rjs_eval8(
+                self.g,
+                src.as_ptr(),
+                src.len(),
+                url.as_ptr(),
+                url.len(),
+                &mut out,
+            )
         };
         check(status, out)
     }
@@ -339,7 +357,14 @@ impl Context {
         let name16: Vec<u16> = name.encode_utf16().collect();
         let mut out = 0u64;
         let status = unsafe {
-            glue::rjs_function_create(self.g, name16.as_ptr(), name16.len(), arity, entry, &mut out)
+            glue::rjs_function_create(
+                self.g,
+                name16.as_ptr(),
+                name16.len(),
+                arity,
+                entry,
+                &mut out,
+            )
         };
         check(status, out)
     }
@@ -353,7 +378,8 @@ impl Context {
     pub unsafe fn function_sysv(&self, name: &str, arity: u32, f: *const c_void) -> Result<Value> {
         let name16: Vec<u16> = name.encode_utf16().collect();
         let mut out = 0u64;
-        let status = glue::rjs_function_create(self.g, name16.as_ptr(), name16.len(), arity, f, &mut out);
+        let status =
+            glue::rjs_function_create(self.g, name16.as_ptr(), name16.len(), arity, f, &mut out);
         check(status, out)
     }
 
@@ -361,7 +387,14 @@ impl Context {
         let _profile = unsafe { crate::profiling::js_span(self.g, f.0, "JavaScript callback") };
         let mut out = 0u64;
         let status = unsafe {
-            glue::rjs_call(self.g, f.0, this.0, args.as_ptr() as *const u64, args.len() as u32, &mut out)
+            glue::rjs_call(
+                self.g,
+                f.0,
+                this.0,
+                args.as_ptr() as *const u64,
+                args.len() as u32,
+                &mut out,
+            )
         };
         check(status, out)
     }
@@ -369,7 +402,13 @@ impl Context {
     pub fn construct(&self, ctor: Value, args: &[Value]) -> Result<Value> {
         let mut out = 0u64;
         let status = unsafe {
-            glue::rjs_construct(self.g, ctor.0, args.as_ptr() as *const u64, args.len() as u32, &mut out)
+            glue::rjs_construct(
+                self.g,
+                ctor.0,
+                args.as_ptr() as *const u64,
+                args.len() as u32,
+                &mut out,
+            )
         };
         check(status, out)
     }
@@ -379,7 +418,8 @@ impl Context {
     pub fn error(&self, kind: u32, msg: &str) -> Value {
         let msg16: Vec<u16> = msg.encode_utf16().collect();
         let mut out = 0u64;
-        let status = unsafe { glue::rjs_error_create(self.g, kind, msg16.as_ptr(), msg16.len(), &mut out) };
+        let status =
+            unsafe { glue::rjs_error_create(self.g, kind, msg16.as_ptr(), msg16.len(), &mut out) };
         check(status, out).expect("error creation failed")
     }
 
@@ -413,7 +453,14 @@ impl Context {
         dealloc_ctx: *mut c_void,
     ) -> Result<Value> {
         let mut out = 0u64;
-        let status = ffi::redjs_arraybuffer_external(self.g, bytes, len, core::mem::transmute(dealloc), dealloc_ctx, &mut out);
+        let status = ffi::redjs_arraybuffer_external(
+            self.g,
+            bytes,
+            len,
+            core::mem::transmute(dealloc),
+            dealloc_ctx,
+            &mut out,
+        );
         check(status, out)
     }
 
@@ -444,7 +491,15 @@ impl Context {
         dealloc_ctx: *mut c_void,
     ) -> Result<Value> {
         let mut out = 0u64;
-        let status = ffi::redjs_typedarray_external(self.g, kind as u32, bytes, byte_len, core::mem::transmute(dealloc), dealloc_ctx, &mut out);
+        let status = ffi::redjs_typedarray_external(
+            self.g,
+            kind as u32,
+            bytes,
+            byte_len,
+            core::mem::transmute(dealloc),
+            dealloc_ctx,
+            &mut out,
+        );
         check(status, out)
     }
 
@@ -461,7 +516,8 @@ impl Context {
         let mut resolve = 0u64;
         let mut reject = 0u64;
         let mut out = 0u64;
-        let status = unsafe { ffi::redjs_promise_create(self.g, &mut resolve, &mut reject, &mut out) };
+        let status =
+            unsafe { ffi::redjs_promise_create(self.g, &mut resolve, &mut reject, &mut out) };
         check(status, out).map(|p| (p, Value(resolve), Value(reject)))
     }
 

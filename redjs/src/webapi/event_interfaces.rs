@@ -58,7 +58,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static State>> {
 }
 
 fn st(g: *mut c_void) -> &'static State {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::event_interfaces not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::event_interfaces not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -177,34 +182,85 @@ const IFACES: &[Iface] = &[
         name: "TransitionEvent",
         parent: Parent::Event,
         construct: c_transition,
-        members: &[("propertyName", Str, tr_property_name), ("elapsedTime", Num, tr_elapsed_time), ("pseudoElement", Str, tr_pseudo_element)],
+        members: &[
+            ("propertyName", Str, tr_property_name),
+            ("elapsedTime", Num, tr_elapsed_time),
+            ("pseudoElement", Str, tr_pseudo_element),
+        ],
     },
     Iface {
         name: "AnimationEvent",
         parent: Parent::Event,
         construct: c_animation,
-        members: &[("animationName", Str, an_animation_name), ("elapsedTime", Num, an_elapsed_time), ("pseudoElement", Str, an_pseudo_element)],
+        members: &[
+            ("animationName", Str, an_animation_name),
+            ("elapsedTime", Num, an_elapsed_time),
+            ("pseudoElement", Str, an_pseudo_element),
+        ],
     },
-    Iface { name: "CompositionEvent", parent: Parent::UiEvent, construct: c_composition, members: &[("data", Str, co_data)] },
-    Iface { name: "HashChangeEvent", parent: Parent::Event, construct: c_hash_change, members: &[("oldURL", Str, hc_old_url), ("newURL", Str, hc_new_url)] },
-    Iface { name: "PopStateEvent", parent: Parent::Event, construct: c_pop_state, members: &[("state", OrNull, ps_state)] },
-    Iface { name: "PageTransitionEvent", parent: Parent::Event, construct: c_page_transition, members: &[("persisted", Bool, pt_persisted)] },
+    Iface {
+        name: "CompositionEvent",
+        parent: Parent::UiEvent,
+        construct: c_composition,
+        members: &[("data", Str, co_data)],
+    },
+    Iface {
+        name: "HashChangeEvent",
+        parent: Parent::Event,
+        construct: c_hash_change,
+        members: &[("oldURL", Str, hc_old_url), ("newURL", Str, hc_new_url)],
+    },
+    Iface {
+        name: "PopStateEvent",
+        parent: Parent::Event,
+        construct: c_pop_state,
+        members: &[("state", OrNull, ps_state)],
+    },
+    Iface {
+        name: "PageTransitionEvent",
+        parent: Parent::Event,
+        construct: c_page_transition,
+        members: &[("persisted", Bool, pt_persisted)],
+    },
     Iface {
         name: "PromiseRejectionEvent",
         parent: Parent::Event,
         construct: c_promise_rejection,
         members: &[("promise", Any, pr_promise), ("reason", Any, pr_reason)],
     },
-    Iface { name: "ToggleEvent", parent: Parent::Event, construct: c_toggle, members: &[("oldState", Str, to_old_state), ("newState", Str, to_new_state)] },
+    Iface {
+        name: "ToggleEvent",
+        parent: Parent::Event,
+        construct: c_toggle,
+        members: &[
+            ("oldState", Str, to_old_state),
+            ("newState", Str, to_new_state),
+        ],
+    },
     Iface {
         name: "MediaQueryListEvent",
         parent: Parent::Event,
         construct: c_media_query_list,
         members: &[("media", Str, mq_media), ("matches", Bool, mq_matches)],
     },
-    Iface { name: "FormDataEvent", parent: Parent::Event, construct: c_form_data, members: &[("formData", Any, fd_form_data)] },
-    Iface { name: "SubmitEvent", parent: Parent::Event, construct: c_submit, members: &[("submitter", OrNull, su_submitter)] },
-    Iface { name: "ClipboardEvent", parent: Parent::Event, construct: c_clipboard, members: &[("clipboardData", OrNull, cl_clipboard_data)] },
+    Iface {
+        name: "FormDataEvent",
+        parent: Parent::Event,
+        construct: c_form_data,
+        members: &[("formData", Any, fd_form_data)],
+    },
+    Iface {
+        name: "SubmitEvent",
+        parent: Parent::Event,
+        construct: c_submit,
+        members: &[("submitter", OrNull, su_submitter)],
+    },
+    Iface {
+        name: "ClipboardEvent",
+        parent: Parent::Event,
+        construct: c_clipboard,
+        members: &[("clipboardData", OrNull, cl_clipboard_data)],
+    },
     Iface {
         name: "TouchEvent",
         parent: Parent::UiEvent,
@@ -269,7 +325,11 @@ unsafe fn touch_list(g: *mut c_void, items: &[u64]) -> u64 {
 }
 
 unsafe fn list_items(g: *mut c_void, list: u64) -> Option<u64> {
-    let a = if is_cell(list) { get_a(g, list, st(g).items as *mut c_void) } else { UNDEF };
+    let a = if is_cell(list) {
+        get_a(g, list, st(g).items as *mut c_void)
+    } else {
+        UNDEF
+    };
     is_cell(a).then_some(a)
 }
 
@@ -283,13 +343,24 @@ unsafe fn tl_length(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn tl_item(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Some(a) = list_items(g, cf_this(cf)) else { return throw_type_error(g, "Illegal invocation") };
+    let Some(a) = list_items(g, cf_this(cf)) else {
+        return throw_type_error(g, "Illegal invocation");
+    };
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to execute 'item' on 'TouchList': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to execute 'item' on 'TouchList': 1 argument required, but only 0 present.",
+        );
     }
-    let Ok(n) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(n) = to_number(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let i = to_int32(n) as u32;
-    if i < array_len(g, a) { get_i(g, a, i) } else { NULL }
+    if i < array_len(g, a) {
+        get_i(g, a, i)
+    } else {
+        NULL
+    }
 }
 
 /// A `sequence<Touch>` from the init dictionary; `Err` with an exception pending.
@@ -300,7 +371,12 @@ unsafe fn touches(g: *mut c_void, v: u64, member: &str) -> Result<u64, ()> {
     let global = glue::rjs_global(g);
     let reflect = get(g, global, "Reflect");
     let iterator = get(g, get(g, global, "Symbol"), "iterator");
-    let iter_fn = if is_cell(v) { call(g, get(g, reflect, "get"), reflect, &[v, iterator]).map_err(|e| glue::rjs_throw(g, e))? } else { UNDEF };
+    let iter_fn = if is_cell(v) {
+        call(g, get(g, reflect, "get"), reflect, &[v, iterator])
+            .map_err(|e| glue::rjs_throw(g, e))?
+    } else {
+        UNDEF
+    };
     if !events::is_callable(g, iter_fn) {
         throw_type_error(
             g,
@@ -328,7 +404,12 @@ unsafe fn touches(g: *mut c_void, v: u64, member: &str) -> Result<u64, ()> {
 unsafe fn construct(g: *mut c_void, cf: *mut c_void, id: usize) -> u64 {
     let iface = &IFACES[id];
     let init = cf_arg(cf, if iface.parent == Parent::None { 0 } else { 1 });
-    let missing = || format!("Failed to construct '{}': 1 argument required, but only 0 present.", iface.name);
+    let missing = || {
+        format!(
+            "Failed to construct '{}': 1 argument required, but only 0 present.",
+            iface.name
+        )
+    };
     if cf_argc(cf) < 1 || (iface.parent == Parent::None && !is_cell(init)) {
         return throw_type_error(g, &missing());
     }
@@ -386,17 +467,24 @@ unsafe fn construct(g: *mut c_void, cf: *mut c_void, id: usize) -> u64 {
 pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     let global = glue::rjs_global(g);
     let ui_ctor = get(g, global, "UIEvent");
-    let ui_proto = if is_cell(ui_ctor) { get(g, ui_ctor, "prototype") } else { event_proto };
+    let ui_proto = if is_cell(ui_ctor) {
+        get(g, ui_ctor, "prototype")
+    } else {
+        event_proto
+    };
 
-    let touch_list = define_class(g, &ClassSpec {
-        name: "TouchList",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[("item", 1, tl_item)],
-        getters: &[("length", tl_length)],
-        accessors: &[],
-    });
+    let touch_list = define_class(
+        g,
+        &ClassSpec {
+            name: "TouchList",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[("item", 1, tl_item)],
+            getters: &[("length", tl_length)],
+            accessors: &[],
+        },
+    );
     let values = get(g, get(g, get(g, global, "Array"), "prototype"), "values");
     let object = get(g, global, "Object");
     let desc = new_object(g, UNDEF);
@@ -404,7 +492,12 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
     define(g, desc, "writable", TRUE, 0);
     define(g, desc, "configurable", TRUE, 0);
     let iterator = get(g, get(g, global, "Symbol"), "iterator");
-    let _ = call(g, get(g, object, "defineProperty"), object, &[touch_list.proto, iterator, desc]);
+    let _ = call(
+        g,
+        get(g, object, "defineProperty"),
+        object,
+        &[touch_list.proto, iterator, desc],
+    );
     crate::ffi::redjs_protect(g, touch_list.proto);
 
     let mut protos = Vec::with_capacity(IFACES.len());
@@ -415,15 +508,18 @@ pub unsafe fn install(g: *mut c_void, event_proto: u64) {
             Parent::UiEvent => ui_proto,
             Parent::None => 0,
         };
-        let c = define_class(g, &ClassSpec {
-            name: iface.name,
-            arity: 1,
-            construct: Some(iface.construct),
-            parent_proto,
-            methods: &[],
-            getters: &getters,
-            accessors: &[],
-        });
+        let c = define_class(
+            g,
+            &ClassSpec {
+                name: iface.name,
+                arity: 1,
+                construct: Some(iface.construct),
+                parent_proto,
+                methods: &[],
+                getters: &getters,
+                accessors: &[],
+            },
+        );
         crate::ffi::redjs_protect(g, c.proto);
         protos.push(c.proto);
     }
@@ -452,8 +548,14 @@ mod tests {
         );
         ok(&c, "new CompositionEvent('compositionend', { data: 'あ' }).data === 'あ' && new CompositionEvent('x') instanceof UIEvent");
         ok(&c, "new PopStateEvent('popstate').state === null && new PopStateEvent('popstate', { state: { a: 1 } }).state.a === 1");
-        ok(&c, "new PromiseRejectionEvent('unhandledrejection').reason === undefined");
-        ok(&c, "new MediaQueryListEvent('change', { matches: 1, media: '(x)' }).matches === true");
+        ok(
+            &c,
+            "new PromiseRejectionEvent('unhandledrejection').reason === undefined",
+        );
+        ok(
+            &c,
+            "new MediaQueryListEvent('change', { matches: 1, media: '(x)' }).matches === true",
+        );
         ok(&c, "new SubmitEvent('submit').submitter === null && new ClipboardEvent('copy').clipboardData === null");
         ok(&c, "(() => { try { new HashChangeEvent(); return false; } catch (e) { return e instanceof TypeError; } })()");
         ok(&c, "(() => { try { Object.getOwnPropertyDescriptor(AnimationEvent.prototype, 'elapsedTime').get.call(new TransitionEvent('x')); return false; } \

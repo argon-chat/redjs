@@ -64,8 +64,12 @@ pub fn package() -> Option<String> {
         if read_u32(start, size) == 0 {
             return None;
         }
-        let name = core::ffi::CStr::from_ptr(linked.add(size + read_u32(start, size + 4) as usize).cast());
-        name.to_str().ok()?.split_once('/').map(|(p, _)| p.to_owned())
+        let name =
+            core::ffi::CStr::from_ptr(linked.add(size + read_u32(start, size + 4) as usize).cast());
+        name.to_str()
+            .ok()?
+            .split_once('/')
+            .map(|(p, _)| p.to_owned())
     }
 }
 
@@ -80,7 +84,10 @@ pub fn set_common_data(data: &'static [u8]) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         if INITIALIZED.load(Ordering::Acquire) {
-            return Err("the engine is already initialized; ICU data is set before the first context".into());
+            return Err(
+                "the engine is already initialized; ICU data is set before the first context"
+                    .into(),
+            );
         }
         if data.as_ptr() as usize % 16 != 0 {
             return Err("ICU data must be 16-byte aligned".into());
@@ -89,13 +96,17 @@ pub fn set_common_data(data: &'static [u8]) -> Result<(), String> {
         let want = package().ok_or("the linked ICU data has no package name")?;
         let have = toc.package().ok_or("the ICU package is empty")?;
         if have != want {
-            return Err(format!("the ICU data is {have}, this engine's ICU reads {want}"));
+            return Err(format!(
+                "the ICU data is {have}, this engine's ICU reads {want}"
+            ));
         }
         if let Some(item) = toc.first_compressed() {
             let mut length = item.len() as i32;
             let decoded = unsafe { bun_icu_maybe_decompress(item.as_ptr().cast(), &mut length) };
             if decoded == item.as_ptr().cast() {
-                return Err("the ICU data is compressed with another dictionary than this engine's".into());
+                return Err(
+                    "the ICU data is compressed with another dictionary than this engine's".into(),
+                );
             }
         }
         unsafe { crate::glue::rjs_icu_set_common_data(data.as_ptr().cast()) };
@@ -129,8 +140,14 @@ impl<'a> Toc<'a> {
         if header + 4 + 8 * count > data.len() {
             return None;
         }
-        let toc = Toc { data, header, count };
-        (0..count).all(|i| toc.name(i).is_some() && toc.offset(i) < data.len()).then_some(toc)
+        let toc = Toc {
+            data,
+            header,
+            count,
+        };
+        (0..count)
+            .all(|i| toc.name(i).is_some() && toc.offset(i) < data.len())
+            .then_some(toc)
     }
 
     fn offset(&self, i: usize) -> usize {
@@ -144,12 +161,18 @@ impl<'a> Toc<'a> {
     }
 
     fn package(&self) -> Option<&'a str> {
-        (self.count > 0).then(|| self.name(0)?.split_once('/').map(|(p, _)| p)).flatten()
+        (self.count > 0)
+            .then(|| self.name(0)?.split_once('/').map(|(p, _)| p))
+            .flatten()
     }
 
     fn item(&self, i: usize) -> &'a [u8] {
         let start = self.offset(i);
-        let end = if i + 1 < self.count { self.offset(i + 1) } else { self.data.len() };
+        let end = if i + 1 < self.count {
+            self.offset(i + 1)
+        } else {
+            self.data.len()
+        };
         &self.data[start..end.max(start)]
     }
 
@@ -230,14 +253,21 @@ mod compressed {
             } else {
                 0
             };
-            Mutex::new(State { dctx, ddict, cache: HashMap::new() })
+            Mutex::new(State {
+                dctx,
+                ddict,
+                cache: HashMap::new(),
+            })
         })
     }
 
     /// Called by the patched ICU udata.cpp for every common-data item lookup.
     /// `length` is the TOC-derived item length (may be <= 0 for the last item).
     #[no_mangle]
-    pub unsafe extern "C" fn bun_icu_maybe_decompress(p: *const c_void, length: *mut i32) -> *const c_void {
+    pub unsafe extern "C" fn bun_icu_maybe_decompress(
+        p: *const c_void,
+        length: *mut i32,
+    ) -> *const c_void {
         if p.is_null() {
             return p;
         }
@@ -249,7 +279,11 @@ mod compressed {
         let mut st = state().lock().unwrap();
 
         let toc_len = if length.is_null() { 0 } else { *length };
-        let bound = if toc_len > 0 { toc_len as usize } else { 1usize << 20 };
+        let bound = if toc_len > 0 {
+            toc_len as usize
+        } else {
+            1usize << 20
+        };
 
         if let Some(&(buf, dlen)) = st.cache.get(&(p as usize)) {
             if !length.is_null() {
@@ -291,7 +325,8 @@ mod compressed {
         }
 
         let leaked = Box::leak(buf);
-        st.cache.insert(p as usize, (leaked.as_ptr() as usize, dlen as i32));
+        st.cache
+            .insert(p as usize, (leaked.as_ptr() as usize, dlen as i32));
         if !length.is_null() {
             *length = dlen as i32;
         }

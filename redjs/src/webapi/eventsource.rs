@@ -43,7 +43,11 @@ const BOM: &[u8] = b"\xEF\xBB\xBF";
 
 impl Parser {
     pub fn new(last_id: &str) -> Self {
-        Parser { id_buf: last_id.into(), last_id: last_id.into(), ..Default::default() }
+        Parser {
+            id_buf: last_id.into(),
+            last_id: last_id.into(),
+            ..Default::default()
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<SseEvent>) {
@@ -92,7 +96,10 @@ impl Parser {
             return;
         }
         let (field, value) = match line.find(':') {
-            Some(i) => (&line[..i], line[i + 1..].strip_prefix(' ').unwrap_or(&line[i + 1..])),
+            Some(i) => (
+                &line[..i],
+                line[i + 1..].strip_prefix(' ').unwrap_or(&line[i + 1..]),
+            ),
             None => (&line[..], ""),
         };
         match field {
@@ -119,8 +126,16 @@ impl Parser {
         }
         let mut data = std::mem::take(&mut self.data);
         data.pop();
-        let ty = if ty.is_empty() { "message".to_string() } else { ty };
-        out.push(SseEvent { ty, data, id: self.last_id.clone() });
+        let ty = if ty.is_empty() {
+            "message".to_string()
+        } else {
+            ty
+        };
+        out.push(SseEvent {
+            ty,
+            data,
+            id: self.last_id.clone(),
+        });
     }
 }
 
@@ -151,7 +166,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static Classes>> {
 }
 
 fn classes(g: *mut c_void) -> &'static Classes {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::eventsource not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::eventsource not installed")
 }
 
 /// `(context key, source id)` → the protected `EventSource`, while it is not CLOSED.
@@ -201,7 +221,12 @@ impl Shared {
         };
         if queue {
             let me = Arc::clone(self);
-            crate::web::schedule_native_from(self.ctx.0, self.cid, 0.0, Box::new(move |g| unsafe { tick(g, &me) }));
+            crate::web::schedule_native_from(
+                self.ctx.0,
+                self.cid,
+                0.0,
+                Box::new(move |g| unsafe { tick(g, &me) }),
+            );
         }
     }
 }
@@ -215,17 +240,34 @@ struct Obs {
 
 fn verdict(h: &http::ProgressHead<'_>) -> Result<String, String> {
     if h.status != 200 {
-        return Err(format!("the server answered {} {}", h.status, h.status_text));
+        return Err(format!(
+            "the server answered {} {}",
+            h.status, h.status_text
+        ));
     }
     let ct = http::header(h.headers, "content-type").unwrap_or("");
-    if !ct.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/event-stream") {
-        return Err(format!("the response's MIME type ({ct:?}) is not \"text/event-stream\""));
+    if !ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("text/event-stream")
+    {
+        return Err(format!(
+            "the response's MIME type ({ct:?}) is not \"text/event-stream\""
+        ));
     }
-    let enc = http::header(h.headers, "content-encoding").unwrap_or("").trim();
+    let enc = http::header(h.headers, "content-encoding")
+        .unwrap_or("")
+        .trim();
     if !enc.is_empty() && !enc.eq_ignore_ascii_case("identity") {
-        return Err(format!("the response is {enc}-encoded; an event stream must not be"));
+        return Err(format!(
+            "the response is {enc}-encoded; an event stream must not be"
+        ));
     }
-    Ok(url::Url::parse(h.url).map(|u| u.origin().ascii_serialization()).unwrap_or_default())
+    Ok(url::Url::parse(h.url)
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_default())
 }
 
 impl http::Observe for Obs {
@@ -248,7 +290,10 @@ impl http::Observe for Obs {
             let mut p = self.parser.lock().unwrap();
             let before = p.last_id.clone();
             p.feed(chunk, &mut evs);
-            ((p.last_id != before).then(|| p.last_id.clone()), p.retry.take())
+            (
+                (p.last_id != before).then(|| p.last_id.clone()),
+                p.retry.take(),
+            )
         };
         if evs.is_empty() && last_id.is_none() && retry.is_none() {
             return;
@@ -275,7 +320,9 @@ unsafe fn fire(g: *mut c_void, obj: u64, ty: &str) {
 
 unsafe fn current(g: *mut c_void, id: u64, attempt: u64) -> Option<u64> {
     let obj = live().lock().unwrap().get(&(g as usize, id)).copied()?;
-    es(g, obj).is_some_and(|d| d.attempt == attempt && d.state != CLOSED).then_some(obj)
+    es(g, obj)
+        .is_some_and(|d| d.attempt == attempt && d.state != CLOSED)
+        .then_some(obj)
 }
 
 unsafe fn close_down(g: *mut c_void, obj: u64) {
@@ -292,7 +339,10 @@ unsafe fn close_down(g: *mut c_void, obj: u64) {
 
 unsafe fn fail(g: *mut c_void, obj: u64, why: &str) {
     if let Some(d) = es(g, obj) {
-        eprintln!("[redjs] EventSource {}: {why}; the connection is closed", d.url);
+        eprintln!(
+            "[redjs] EventSource {}: {why}; the connection is closed",
+            d.url
+        );
     }
     close_down(g, obj);
     fire(g, obj, "error");
@@ -323,9 +373,17 @@ unsafe fn tick(g: *mut c_void, sh: &Arc<Shared>) {
     let (head, evs, last_id, retry, ended) = {
         let mut i = sh.inbox.lock().unwrap();
         i.queued = false;
-        (i.head.take(), std::mem::take(&mut i.events), i.last_id.take(), i.retry.take(), std::mem::take(&mut i.ended))
+        (
+            i.head.take(),
+            std::mem::take(&mut i.events),
+            i.last_id.take(),
+            i.retry.take(),
+            std::mem::take(&mut i.ended),
+        )
     };
-    let Some(obj) = current(g, sh.id, sh.attempt) else { return };
+    let Some(obj) = current(g, sh.id, sh.attempt) else {
+        return;
+    };
     if let Some(d) = es(g, obj) {
         if let Some(id) = last_id {
             d.last_id = id;
@@ -346,10 +404,18 @@ unsafe fn tick(g: *mut c_void, sh: &Arc<Shared>) {
         None => {}
     }
     for ev in evs {
-        let Some(obj) = current(g, sh.id, sh.attempt) else { return };
+        let Some(obj) = current(g, sh.id, sh.attempt) else {
+            return;
+        };
         let Some(d) = es(g, obj) else { return };
         let origin = d.origin.clone();
-        let msg = super::websocket::new_message_event_with_id(g, &ev.ty, js_string(g, &ev.data), &origin, &ev.id);
+        let msg = super::websocket::new_message_event_with_id(
+            g,
+            &ev.ty,
+            js_string(g, &ev.data),
+            &origin,
+            &ev.id,
+        );
         events::dispatch(g, obj, msg);
     }
     if ended {
@@ -378,21 +444,36 @@ unsafe fn connect(g: *mut c_void, obj: u64) {
     if !d.last_id.is_empty() {
         headers.push(("Last-Event-ID".to_string(), d.last_id.clone()));
     }
-    let obs = Obs { sh: Arc::clone(&sh), cancel: cancel.clone(), accepted: AtomicBool::new(false), parser: Mutex::new(Parser::new(&d.last_id)) };
+    let obs = Obs {
+        sh: Arc::clone(&sh),
+        cancel: cancel.clone(),
+        accepted: AtomicBool::new(false),
+        parser: Mutex::new(Parser::new(&d.last_id)),
+    };
     let req = http::Request {
         method: "GET".into(),
         url: d.url.clone(),
         headers,
         body: None,
         redirect: http::Redirect::Follow,
-        credentials: if d.with_credentials { cookies::Credentials::Include } else { cookies::Credentials::SameOrigin },
+        credentials: if d.with_credentials {
+            cookies::Credentials::Include
+        } else {
+            cookies::Credentials::SameOrigin
+        },
         connect_timeout: CONNECT_TIMEOUT,
         io_timeout: IO_TIMEOUT,
         observer: Some(http::Observer(Arc::new(obs))),
         cache: http::cache::CacheMode::NoStore,
     };
     let worker = Arc::clone(&sh);
-    if http::start(req, cancel, Box::new(move |_| worker.post(|i| i.ended = true))).is_err() {
+    if http::start(
+        req,
+        cancel,
+        Box::new(move |_| worker.post(|i| i.ended = true)),
+    )
+    .is_err()
+    {
         sh.post(|i| i.ended = true);
     }
 }
@@ -400,9 +481,14 @@ unsafe fn connect(g: *mut c_void, obj: u64) {
 #[crate::host_fn]
 unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to construct 'EventSource': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to construct 'EventSource': 1 argument required, but only 0 present.",
+        );
     }
-    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let raw = read_string(g, s).unwrap_or_default();
     let init = cf_arg(cf, 1);
     let with_credentials = if blob::is_object(g, init) {
@@ -415,11 +501,19 @@ unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     let base = super::xhr::base_url(g);
     let Ok(url) = url::Url::options().base_url(base.as_ref()).parse(&raw) else {
-        return super::domexception::throw(g, "SyntaxError", &format!("Failed to construct 'EventSource': The URL '{raw}' is invalid."));
+        return super::domexception::throw(
+            g,
+            "SyntaxError",
+            &format!("Failed to construct 'EventSource': The URL '{raw}' is invalid."),
+        );
     };
     let c = classes(g);
     let nt = cf_new_target(cf);
-    let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    let mut proto = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
     if !is_cell(proto) {
         proto = c.source.proto;
     }
@@ -462,7 +556,12 @@ unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn this_es<'a>(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<&'a mut EsData, u64> {
-    es(g, cf_this(cf)).ok_or_else(|| throw_type_error(g, &format!("Illegal invocation: EventSource.{what} on a non-EventSource")))
+    es(g, cf_this(cf)).ok_or_else(|| {
+        throw_type_error(
+            g,
+            &format!("Illegal invocation: EventSource.{what} on a non-EventSource"),
+        )
+    })
 }
 
 #[crate::host_fn]
@@ -514,7 +613,11 @@ macro_rules! handler_accessor {
         #[crate::host_fn]
         unsafe fn $get_fn(g: *mut c_void, cf: *mut c_void) -> u64 {
             let bag = handler_bag(g, cf_this(cf), false);
-            let v = if is_cell(bag) { get(g, bag, $name) } else { NULL };
+            let v = if is_cell(bag) {
+                get(g, bag, $name)
+            } else {
+                NULL
+            };
             if blob::is_object(g, v) {
                 v
             } else {
@@ -526,7 +629,13 @@ macro_rules! handler_accessor {
             let bag = handler_bag(g, cf_this(cf), true);
             if is_cell(bag) {
                 let v = cf_arg(cf, 0);
-                define(g, bag, $name, if blob::is_object(g, v) { v } else { NULL }, 0);
+                define(
+                    g,
+                    bag,
+                    $name,
+                    if blob::is_object(g, v) { v } else { NULL },
+                    0,
+                );
             }
             UNDEF
         }
@@ -539,25 +648,43 @@ handler_accessor!(get_onerror, set_onerror, "onerror");
 
 pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     let host = make_host_class::<EsData>("EventSource");
-    let source = define_class(g, &ClassSpec {
-        name: "EventSource",
-        arity: 1,
-        construct: Some(construct),
-        parent_proto: event_target_proto,
-        methods: &[("close", 0, close)],
-        getters: &[("url", get_url), ("withCredentials", get_with_credentials), ("readyState", get_ready_state)],
-        accessors: &[
-            ("onopen", get_onopen, set_onopen),
-            ("onmessage", get_onmessage, set_onmessage),
-            ("onerror", get_onerror, set_onerror),
-        ],
-    });
-    for (name, v) in [("CONNECTING", CONNECTING), ("OPEN", OPEN), ("CLOSED", CLOSED)] {
+    let source = define_class(
+        g,
+        &ClassSpec {
+            name: "EventSource",
+            arity: 1,
+            construct: Some(construct),
+            parent_proto: event_target_proto,
+            methods: &[("close", 0, close)],
+            getters: &[
+                ("url", get_url),
+                ("withCredentials", get_with_credentials),
+                ("readyState", get_ready_state),
+            ],
+            accessors: &[
+                ("onopen", get_onopen, set_onopen),
+                ("onmessage", get_onmessage, set_onmessage),
+                ("onerror", get_onerror, set_onerror),
+            ],
+        },
+    );
+    for (name, v) in [
+        ("CONNECTING", CONNECTING),
+        ("OPEN", OPEN),
+        ("CLOSED", CLOSED),
+    ] {
         define(g, source.ctor, name, enc_i32(v as i32), 1 | 2 | 4);
         define(g, source.proto, name, enc_i32(v as i32), 1 | 2 | 4);
     }
-    let c = Classes { host, source, s_handlers: atom_priv(g, "redjs#esHandlers") };
-    registry().lock().unwrap().insert(g as usize, Box::leak(Box::new(c)));
+    let c = Classes {
+        host,
+        source,
+        s_handlers: atom_priv(g, "redjs#esHandlers"),
+    };
+    registry()
+        .lock()
+        .unwrap()
+        .insert(g as usize, Box::leak(Box::new(c)));
 }
 
 #[cfg(test)]

@@ -108,7 +108,12 @@ extern "C" {
     fn rjs_sql_autocommit(db: *mut c_void) -> c_int;
     fn rjs_sql_version() -> *const c_char;
     fn rjs_sql_mc_version() -> *const c_char;
-    fn rjs_sql_prepare(db: *mut c_void, sql: *const c_char, n: c_int, out: *mut *mut c_void) -> c_int;
+    fn rjs_sql_prepare(
+        db: *mut c_void,
+        sql: *const c_char,
+        n: c_int,
+        out: *mut *mut c_void,
+    ) -> c_int;
     fn rjs_sql_step(s: *mut c_void) -> c_int;
     fn rjs_sql_reset(s: *mut c_void) -> c_int;
     fn rjs_sql_clear_bindings(s: *mut c_void) -> c_int;
@@ -176,32 +181,63 @@ unsafe impl Send for Conn {}
 
 impl Conn {
     fn open(path: &Path) -> SR<Conn> {
-        let p = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| SqlErr { code: 1, msg: "a NUL in the path".into() })?;
+        let p = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| SqlErr {
+            code: 1,
+            msg: "a NUL in the path".into(),
+        })?;
         let mut db = core::ptr::null_mut();
         let rc = unsafe { rjs_sql_open(p.as_ptr(), &mut db) };
         let c = Conn { db };
         if rc != OK {
-            let e = if db.is_null() { SqlErr { code: rc, msg: errstr(rc) } } else { c.err(rc) };
+            let e = if db.is_null() {
+                SqlErr {
+                    code: rc,
+                    msg: errstr(rc),
+                }
+            } else {
+                c.err(rc)
+            };
             return Err(e);
         }
         Ok(c)
     }
 
     fn open_readonly(path: &Path, key: Option<&[u8; 32]>) -> SR<Conn> {
-        let path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| SqlErr { code: 1, msg: "a NUL in the path".into() })?;
+        let path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| SqlErr {
+            code: 1,
+            msg: "a NUL in the path".into(),
+        })?;
         let mut db = core::ptr::null_mut();
         let result = unsafe { rjs_sql_open_readonly(path.as_ptr(), &mut db) };
         let connection = Conn { db };
-        if result != OK { return Err(if db.is_null() { SqlErr { code: result, msg: errstr(result) } } else { connection.err(result) }); }
-        if let Some(key) = key { connection.key(key)?; }
+        if result != OK {
+            return Err(if db.is_null() {
+                SqlErr {
+                    code: result,
+                    msg: errstr(result),
+                }
+            } else {
+                connection.err(result)
+            });
+        }
+        if let Some(key) = key {
+            connection.key(key)?;
+        }
         connection.exec("PRAGMA query_only=ON")?;
         Ok(connection)
     }
 
     fn err(&self, rc: c_int) -> SqlErr {
-        let msg = unsafe { CStr::from_ptr(rjs_sql_errmsg(self.db)).to_string_lossy().into_owned() };
+        let msg = unsafe {
+            CStr::from_ptr(rjs_sql_errmsg(self.db))
+                .to_string_lossy()
+                .into_owned()
+        };
         let code = unsafe { rjs_sql_errcode(self.db) };
-        SqlErr { code: if code != 0 { code } else { rc }, msg }
+        SqlErr {
+            code: if code != 0 { code } else { rc },
+            msg,
+        }
     }
 
     fn exec(&self, sql: &str) -> SR<()> {
@@ -215,7 +251,14 @@ impl Conn {
 
     fn prepare(&self, sql: &str) -> SR<Stmt> {
         let mut s = core::ptr::null_mut();
-        let rc = unsafe { rjs_sql_prepare(self.db, sql.as_ptr() as *const c_char, sql.len() as c_int, &mut s) };
+        let rc = unsafe {
+            rjs_sql_prepare(
+                self.db,
+                sql.as_ptr() as *const c_char,
+                sql.len() as c_int,
+                &mut s,
+            )
+        };
         if rc != OK {
             return Err(self.err(rc));
         }
@@ -231,7 +274,12 @@ impl Conn {
     }
 
     fn rekey(&self, key: Option<&[u8; 32]>) -> SR<()> {
-        let rc = unsafe { rjs_sql_rekey(self.db, key.map(|k| k.as_ptr()).unwrap_or(core::ptr::null())) };
+        let rc = unsafe {
+            rjs_sql_rekey(
+                self.db,
+                key.map(|k| k.as_ptr()).unwrap_or(core::ptr::null()),
+            )
+        };
         if rc != OK {
             return Err(self.err(rc));
         }
@@ -265,7 +313,9 @@ impl Conn {
                 let i = (i + 1) as c_int;
                 let rc = unsafe {
                     match p {
-                        P::B(b) => rjs_sql_bind_blob(s.0, i, b.as_ptr() as *const c_void, b.len() as c_int),
+                        P::B(b) => {
+                            rjs_sql_bind_blob(s.0, i, b.as_ptr() as *const c_void, b.len() as c_int)
+                        }
                         P::I(v) => rjs_sql_bind_i64(s.0, i, *v),
                         P::F(v) => rjs_sql_bind_f64(s.0, i, *v),
                     }
@@ -304,7 +354,11 @@ impl Drop for Conn {
 }
 
 fn errstr(rc: c_int) -> String {
-    unsafe { CStr::from_ptr(rjs_sql_errstr(rc)).to_string_lossy().into_owned() }
+    unsafe {
+        CStr::from_ptr(rjs_sql_errstr(rc))
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 struct Stmt(*mut c_void);
@@ -357,7 +411,9 @@ fn u16le(s: &[u16]) -> Vec<u8> {
 }
 
 fn from_u16le(b: &[u8]) -> Vec<u16> {
-    b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+    b.chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect()
 }
 
 fn enc_key_path(p: &KeyPath) -> Vec<u8> {
@@ -401,7 +457,11 @@ pub fn file_stem(name: &[u16]) -> String {
     let mut h = Sha256::new();
     h.update(b"redjs-idb-v1\0");
     h.update(u16le(name));
-    h.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect()
+    h.finalize()
+        .iter()
+        .take(16)
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +478,9 @@ enum Kind {
 }
 
 fn classify(path: &Path) -> Kind {
-    let Ok(mut f) = File::open(path) else { return Kind::Absent };
+    let Ok(mut f) = File::open(path) else {
+        return Kind::Absent;
+    };
     let mut head = [0u8; 16];
     let mut n = 0;
     while n < 16 {
@@ -439,17 +501,27 @@ fn classify(path: &Path) -> Kind {
 
 fn sidecars(path: &Path) -> [PathBuf; 3] {
     let s = path.as_os_str().to_string_lossy();
-    [PathBuf::from(format!("{s}-wal")), PathBuf::from(format!("{s}-journal")), PathBuf::from(format!("{s}-shm"))]
+    [
+        PathBuf::from(format!("{s}-wal")),
+        PathBuf::from(format!("{s}-journal")),
+        PathBuf::from(format!("{s}-shm")),
+    ]
 }
 
 fn file_bytes(path: &Path) -> u64 {
     let main = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    main + sidecars(path).iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum::<u64>()
+    main + sidecars(path)
+        .iter()
+        .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+        .sum::<u64>()
 }
 
 /// `20261028T191502Z` — for moved-aside file names.
 fn utc_stamp() -> String {
-    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Howard Hinnant's civil_from_days.
     let z = days + 719_468;
@@ -462,12 +534,20 @@ fn utc_stamp() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 /// Moves `<h>.sqlite3` (and its WAL) to `<h>.unreadable-<utc>.sqlite3`.
 fn move_aside(path: &Path, why: &str) -> PathBuf {
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut to = dir.join(format!("{stem}.unreadable-{}.sqlite3", utc_stamp()));
     let mut n = 1;
@@ -506,12 +586,16 @@ fn take_lock(folder: &Path) -> Result<File, String> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        o.share_mode(1 /* FILE_SHARE_READ: others may read who we are, nobody may write */);
+        o.share_mode(
+            1, /* FILE_SHARE_READ: others may read who we are, nobody may write */
+        );
     }
     let opened = o.open(&path).and_then(|file| {
         #[cfg(unix)]
         file.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => std::io::Error::from(std::io::ErrorKind::WouldBlock),
+            std::fs::TryLockError::WouldBlock => {
+                std::io::Error::from(std::io::ErrorKind::WouldBlock)
+            }
             std::fs::TryLockError::Error(error) => error,
         })?;
         Ok(file)
@@ -519,13 +603,17 @@ fn take_lock(folder: &Path) -> Result<File, String> {
     match opened {
         Ok(mut f) => {
             let _ = f.set_len(0);
-            let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+            let exe = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
             let _ = write!(f, "pid {}\nexe {exe}\n", std::process::id());
             let _ = f.flush();
             Ok(f)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-            || (cfg!(windows) && matches!(e.raw_os_error(), Some(32) | Some(33))) => {
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || (cfg!(windows) && matches!(e.raw_os_error(), Some(32) | Some(33))) =>
+        {
             let mut holder = String::new();
             let mut r = OpenOptions::new();
             r.read(true);
@@ -537,7 +625,12 @@ fn take_lock(folder: &Path) -> Result<File, String> {
             if let Ok(mut f) = r.open(&path) {
                 let _ = f.read_to_string(&mut holder);
             }
-            let pid = holder.lines().find_map(|l| l.strip_prefix("pid ")).unwrap_or("?").trim().to_string();
+            let pid = holder
+                .lines()
+                .find_map(|l| l.strip_prefix("pid "))
+                .unwrap_or("?")
+                .trim()
+                .to_string();
             Err(format!("held by pid {pid}, lock file {}", path.display()))
         }
         Err(e) => Err(format!("cannot take {}: {e}", path.display())),
@@ -638,7 +731,10 @@ impl SqliteDb {
         if e.primary() == FULL {
             let mut s = self.shared.lock().unwrap();
             let quota = s.quota(true);
-            return BackendError::Quota { quota, requested: self.tx_bytes };
+            return BackendError::Quota {
+                quota,
+                requested: self.tx_bytes,
+            };
         }
         io(e)
     }
@@ -647,7 +743,9 @@ impl SqliteDb {
     fn touch(&mut self) -> R<()> {
         if self.sp_wanted && self.in_tx {
             if self.sp_open {
-                self.conn.run(&self.st.sp_release, &[], |_| true).map_err(io)?;
+                self.conn
+                    .run(&self.st.sp_release, &[], |_| true)
+                    .map_err(io)?;
             }
             self.conn.run(&self.st.sp, &[], |_| true).map_err(io)?;
             self.sp_open = true;
@@ -672,13 +770,27 @@ impl SqliteDb {
 
     fn publish(&self) {
         let mut s = self.shared.lock().unwrap();
-        s.open.insert(self.stem.clone(), (self.meta.name.clone(), self.meta.version));
+        s.open.insert(
+            self.stem.clone(),
+            (self.meta.name.clone(), self.meta.version),
+        );
     }
 
-    fn range(&mut self, index: bool, lo: &Bound<&[u8]>, hi: &Bound<&[u8]>, reverse: bool, count: bool) -> R<&Stmt> {
+    fn range(
+        &mut self,
+        index: bool,
+        lo: &Bound<&[u8]>,
+        hi: &Bound<&[u8]>,
+        reverse: bool,
+        count: bool,
+    ) -> R<&Stmt> {
         let k = (index, bk(lo), bk(hi), reverse, count);
         if !self.ranges.contains_key(&k) {
-            let (table, owner, col) = if index { ("entry", "index_id", "entry") } else { ("record", "store_id", "key") };
+            let (table, owner, col) = if index {
+                ("entry", "index_id", "entry")
+            } else {
+                ("record", "store_id", "key")
+            };
             let mut sql = if count {
                 format!("SELECT count(*) FROM {table} WHERE {owner}=?1")
             } else {
@@ -686,17 +798,33 @@ impl SqliteDb {
             };
             let mut n = 1;
             match k.1 {
-                1 => { n += 1; sql.push_str(&format!(" AND {col}>=?{n}")) }
-                2 => { n += 1; sql.push_str(&format!(" AND {col}>?{n}")) }
+                1 => {
+                    n += 1;
+                    sql.push_str(&format!(" AND {col}>=?{n}"))
+                }
+                2 => {
+                    n += 1;
+                    sql.push_str(&format!(" AND {col}>?{n}"))
+                }
                 _ => {}
             }
             match k.2 {
-                1 => { n += 1; sql.push_str(&format!(" AND {col}<=?{n}")) }
-                2 => { n += 1; sql.push_str(&format!(" AND {col}<?{n}")) }
+                1 => {
+                    n += 1;
+                    sql.push_str(&format!(" AND {col}<=?{n}"))
+                }
+                2 => {
+                    n += 1;
+                    sql.push_str(&format!(" AND {col}<?{n}"))
+                }
                 _ => {}
             }
             if !count {
-                sql.push_str(&format!(" ORDER BY {col}{} LIMIT ?{}", if reverse { " DESC" } else { "" }, n + 1));
+                sql.push_str(&format!(
+                    " ORDER BY {col}{} LIMIT ?{}",
+                    if reverse { " DESC" } else { "" },
+                    n + 1
+                ));
             }
             let s = self.conn.prepare(&sql).map_err(io)?;
             self.ranges.insert(k, s);
@@ -704,8 +832,20 @@ impl SqliteDb {
         Ok(&self.ranges[&k])
     }
 
-    fn scan(&mut self, index: bool, owner: u64, lo: Bound<&[u8]>, hi: Bound<&[u8]>, reverse: bool, limit: usize) -> R<Vec<Vec<u8>>> {
-        let lim = if limit >= i64::MAX as usize { -1 } else { limit as i64 };
+    fn scan(
+        &mut self,
+        index: bool,
+        owner: u64,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        reverse: bool,
+        limit: usize,
+    ) -> R<Vec<Vec<u8>>> {
+        let lim = if limit >= i64::MAX as usize {
+            -1
+        } else {
+            limit as i64
+        };
         let mut params = vec![P::I(owner as i64)];
         if let Bound::Included(b) | Bound::Excluded(b) = lo {
             params.push(P::B(b));
@@ -726,7 +866,13 @@ impl SqliteDb {
         Ok(out)
     }
 
-    fn count_range(&mut self, index: bool, owner: u64, lo: Bound<&[u8]>, hi: Bound<&[u8]>) -> R<u64> {
+    fn count_range(
+        &mut self,
+        index: bool,
+        owner: u64,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+    ) -> R<u64> {
         let mut params = vec![P::I(owner as i64)];
         if let Bound::Included(b) | Bound::Excluded(b) = lo {
             params.push(P::B(b));
@@ -756,7 +902,9 @@ impl Drop for SqliteDb {
         if self.in_tx || self.conn.in_transaction() {
             let _ = self.conn.run(&self.st.rollback, &[], |_| true);
         }
-        if !self.inspection_only { self.shared.lock().unwrap().open.remove(&self.stem); }
+        if !self.inspection_only {
+            self.shared.lock().unwrap().open.remove(&self.stem);
+        }
         // Then the fields drop: statements first, then the connection, whose
         // close checkpoints the WAL into the main file and removes it.
     }
@@ -812,13 +960,19 @@ fn load_meta(c: &Conn) -> SR<DbMeta> {
         m.stores.push(StoreMeta {
             id: r.i64(0) as u64,
             name: from_u16le(r.blob(1)),
-            key_path: if r.is_null(2) { None } else { dec_key_path(r.blob(2)) },
+            key_path: if r.is_null(2) {
+                None
+            } else {
+                dec_key_path(r.blob(2))
+            },
             auto_increment: r.i64(3) != 0,
             indexes: Vec::new(),
         });
         true
     })?;
-    let s = c.prepare("SELECT id, store_id, name, key_path, is_unique, multi_entry FROM idx ORDER BY id")?;
+    let s = c.prepare(
+        "SELECT id, store_id, name, key_path, is_unique, multi_entry FROM idx ORDER BY id",
+    )?;
     let mut ixs = Vec::new();
     c.run(&s, &[], |r| {
         ixs.push((
@@ -873,13 +1027,21 @@ fn ensure_schema(c: &Conn, name: &[u16]) -> SR<()> {
         return Ok(());
     }
     if v > FORMAT {
-        return Err(SqlErr { code: 1, msg: format!("the database is in IndexedDB format {v}; this build reads format {FORMAT}") });
+        return Err(SqlErr {
+            code: 1,
+            msg: format!(
+                "the database is in IndexedDB format {v}; this build reads format {FORMAT}"
+            ),
+        });
     }
     c.exec("BEGIN IMMEDIATE")?;
     let r = (|| {
         c.exec(SCHEMA)?;
         c.once("INSERT INTO meta(k,v) VALUES('format',?1)", &[P::I(FORMAT)])?;
-        c.once("INSERT INTO meta(k,v) VALUES('name',?1)", &[P::B(&u16le(name))])?;
+        c.once(
+            "INSERT INTO meta(k,v) VALUES('name',?1)",
+            &[P::B(&u16le(name))],
+        )?;
         c.once("INSERT INTO meta(k,v) VALUES('version',0)", &[])?;
         c.exec(&format!("PRAGMA user_version={FORMAT}"))?;
         c.exec("COMMIT")
@@ -896,9 +1058,15 @@ impl Database for SqliteDb {
     }
 
     fn begin_write(&mut self, durability: Durability) -> R<()> {
-        if self.inspection_only { return Err(BackendError::Io("Inspector database handles are read-only".into())); }
+        if self.inspection_only {
+            return Err(BackendError::Io(
+                "Inspector database handles are read-only".into(),
+            ));
+        }
         if self.in_tx {
-            return Err(BackendError::Io("a write transaction is already open".into()));
+            return Err(BackendError::Io(
+                "a write transaction is already open".into(),
+            ));
         }
         self.strict = durability == Durability::Strict;
         if self.strict {
@@ -931,7 +1099,10 @@ impl Database for SqliteDb {
                 let written = std::mem::take(&mut self.tx_bytes);
                 let mut s = self.shared.lock().unwrap();
                 *s.sizes.entry(self.stem.clone()).or_insert(0) += written;
-                s.open.insert(self.stem.clone(), (self.meta.name.clone(), self.meta.version));
+                s.open.insert(
+                    self.stem.clone(),
+                    (self.meta.name.clone(), self.meta.version),
+                );
                 Ok(())
             }
             Err(e) => {
@@ -1025,7 +1196,10 @@ impl Database for SqliteDb {
 
     fn delete_store(&mut self, id: StoreId) -> R<()> {
         let i = id as i64;
-        self.schema_write("DELETE FROM entry WHERE index_id IN (SELECT id FROM idx WHERE store_id=?1)", &[P::I(i)])?;
+        self.schema_write(
+            "DELETE FROM entry WHERE index_id IN (SELECT id FROM idx WHERE store_id=?1)",
+            &[P::I(i)],
+        )?;
         self.schema_write("DELETE FROM idx WHERE store_id=?1", &[P::I(i)])?;
         self.schema_write("DELETE FROM record WHERE store_id=?1", &[P::I(i)])?;
         self.schema_write("DELETE FROM store WHERE id=?1", &[P::I(i)])?;
@@ -1034,7 +1208,10 @@ impl Database for SqliteDb {
     }
 
     fn rename_store(&mut self, id: StoreId, name: Vec<u16>) -> R<()> {
-        self.schema_write("UPDATE store SET name=?2 WHERE id=?1", &[P::I(id as i64), P::B(&u16le(&name))])?;
+        self.schema_write(
+            "UPDATE store SET name=?2 WHERE id=?1",
+            &[P::I(id as i64), P::B(&u16le(&name))],
+        )?;
         if let Some(s) = self.meta.stores.iter_mut().find(|s| s.id == id) {
             s.name = name;
         }
@@ -1069,7 +1246,10 @@ impl Database for SqliteDb {
     }
 
     fn rename_index(&mut self, store: StoreId, id: IndexId, name: Vec<u16>) -> R<()> {
-        self.schema_write("UPDATE idx SET name=?2 WHERE id=?1", &[P::I(id as i64), P::B(&u16le(&name))])?;
+        self.schema_write(
+            "UPDATE idx SET name=?2 WHERE id=?1",
+            &[P::I(id as i64), P::B(&u16le(&name))],
+        )?;
         if let Some(s) = self.meta.stores.iter_mut().find(|s| s.id == store) {
             if let Some(i) = s.indexes.iter_mut().find(|i| i.id == id) {
                 i.name = name;
@@ -1091,7 +1271,8 @@ impl Database for SqliteDb {
 
     fn set_key_generator(&mut self, store: StoreId, v: f64) -> R<()> {
         self.touch()?;
-        self.exec_st(|s| &s.kg_set, &[P::I(store as i64), P::F(v)]).map_err(|e| self.write_err(e))
+        self.exec_st(|s| &s.kg_set, &[P::I(store as i64), P::F(v)])
+            .map_err(|e| self.write_err(e))
     }
 
     fn get(&mut self, store: StoreId, key: &[u8]) -> R<Option<Value>> {
@@ -1107,24 +1288,58 @@ impl Database for SqliteDb {
 
     fn inspection_budget(&mut self, instructions: Option<u32>) {
         self.inspection_remaining = instructions.unwrap_or(0).div_ceil(1000).max(1) as c_int;
-        unsafe { rjs_sql_inspection_budget(self.conn.db, if instructions.is_some() { &mut self.inspection_remaining } else { core::ptr::null_mut() }); }
+        unsafe {
+            rjs_sql_inspection_budget(
+                self.conn.db,
+                if instructions.is_some() {
+                    &mut self.inspection_remaining
+                } else {
+                    core::ptr::null_mut()
+                },
+            );
+        }
     }
 
-    fn inspect_value(&mut self, store: StoreId, key: &[u8], maximum: usize) -> R<Option<(u64, Vec<u8>)>> {
+    fn inspect_value(
+        &mut self,
+        store: StoreId,
+        key: &[u8],
+        maximum: usize,
+    ) -> R<Option<(u64, Vec<u8>)>> {
         // length() avoids materializing the value; incremental Blob I/O reads
         // only the requested prefix, including encrypted pages transparently.
-        let statement = self.conn.prepare("SELECT rowid,length(value) FROM record WHERE store_id=?1 AND key=?2").map_err(io)?;
+        let statement = self
+            .conn
+            .prepare("SELECT rowid,length(value) FROM record WHERE store_id=?1 AND key=?2")
+            .map_err(io)?;
         let mut row = None;
-        self.conn.run(&statement, &[P::I(store as i64), P::B(key)], |value| { row = Some((value.i64(0), value.i64(1).max(0) as u64)); false }).map_err(io)?;
-        let Some((rowid, length)) = row else { return Ok(None); };
+        self.conn
+            .run(&statement, &[P::I(store as i64), P::B(key)], |value| {
+                row = Some((value.i64(0), value.i64(1).max(0) as u64));
+                false
+            })
+            .map_err(io)?;
+        let Some((rowid, length)) = row else {
+            return Ok(None);
+        };
         let mut blob = core::ptr::null_mut();
         let result = unsafe { rjs_sql_blob_open_readonly(self.conn.db, rowid, &mut blob) };
-        if result != OK { return Err(io(self.conn.err(result))); }
+        if result != OK {
+            return Err(io(self.conn.err(result)));
+        }
         let mut bytes = vec![0u8; length.min(maximum.min(65536) as u64) as usize];
-        let result = if bytes.is_empty() { OK } else { unsafe { rjs_sql_blob_read(blob, bytes.as_mut_ptr().cast(), bytes.len() as c_int) } };
+        let result = if bytes.is_empty() {
+            OK
+        } else {
+            unsafe { rjs_sql_blob_read(blob, bytes.as_mut_ptr().cast(), bytes.len() as c_int) }
+        };
         let close = unsafe { rjs_sql_blob_close(blob) };
-        if result != OK { return Err(io(self.conn.err(result))); }
-        if close != OK { return Err(io(self.conn.err(close))); }
+        if result != OK {
+            return Err(io(self.conn.err(result)));
+        }
+        if close != OK {
+            return Err(io(self.conn.err(close)));
+        }
         Ok(Some((length, bytes)))
     }
 
@@ -1133,22 +1348,35 @@ impl Database for SqliteDb {
         {
             let mut s = self.shared.lock().unwrap();
             let quota = s.quota(false);
-            if s.usage().saturating_add(self.tx_bytes).saturating_add(requested) > quota {
+            if s.usage()
+                .saturating_add(self.tx_bytes)
+                .saturating_add(requested)
+                > quota
+            {
                 return Err(BackendError::Quota { quota, requested });
             }
         }
         self.touch()?;
-        self.exec_st(|s| &s.put, &[P::I(store as i64), P::B(key), P::B(&value)]).map_err(|e| self.write_err(e))?;
+        self.exec_st(|s| &s.put, &[P::I(store as i64), P::B(key), P::B(&value)])
+            .map_err(|e| self.write_err(e))?;
         self.tx_bytes += requested;
         Ok(())
     }
 
     fn delete(&mut self, store: StoreId, key: &[u8]) -> R<()> {
         self.touch()?;
-        self.exec_st(|s| &s.del, &[P::I(store as i64), P::B(key)]).map_err(|e| self.write_err(e))
+        self.exec_st(|s| &s.del, &[P::I(store as i64), P::B(key)])
+            .map_err(|e| self.write_err(e))
     }
 
-    fn keys(&mut self, store: StoreId, lo: Bound<&[u8]>, hi: Bound<&[u8]>, reverse: bool, limit: usize) -> R<Vec<Vec<u8>>> {
+    fn keys(
+        &mut self,
+        store: StoreId,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        reverse: bool,
+        limit: usize,
+    ) -> R<Vec<Vec<u8>>> {
         self.scan(false, store, lo, hi, reverse, limit)
     }
 
@@ -1158,22 +1386,32 @@ impl Database for SqliteDb {
 
     fn clear(&mut self, store: StoreId) -> R<()> {
         self.touch()?;
-        self.exec_st(|s| &s.clear, &[P::I(store as i64)]).map_err(|e| self.write_err(e))
+        self.exec_st(|s| &s.clear, &[P::I(store as i64)])
+            .map_err(|e| self.write_err(e))
     }
 
     fn index_add(&mut self, index: IndexId, entry: Vec<u8>) -> R<()> {
         self.touch()?;
-        self.exec_st(|s| &s.ix_add, &[P::I(index as i64), P::B(&entry)]).map_err(|e| self.write_err(e))?;
+        self.exec_st(|s| &s.ix_add, &[P::I(index as i64), P::B(&entry)])
+            .map_err(|e| self.write_err(e))?;
         self.tx_bytes += entry.len() as u64;
         Ok(())
     }
 
     fn index_remove(&mut self, index: IndexId, entry: &[u8]) -> R<()> {
         self.touch()?;
-        self.exec_st(|s| &s.ix_del, &[P::I(index as i64), P::B(entry)]).map_err(|e| self.write_err(e))
+        self.exec_st(|s| &s.ix_del, &[P::I(index as i64), P::B(entry)])
+            .map_err(|e| self.write_err(e))
     }
 
-    fn index_scan(&mut self, index: IndexId, lo: Bound<&[u8]>, hi: Bound<&[u8]>, reverse: bool, limit: usize) -> R<Vec<Vec<u8>>> {
+    fn index_scan(
+        &mut self,
+        index: IndexId,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        reverse: bool,
+        limit: usize,
+    ) -> R<Vec<Vec<u8>>> {
         self.scan(true, index, lo, hi, reverse, limit)
     }
 
@@ -1183,7 +1421,8 @@ impl Database for SqliteDb {
 
     fn index_clear(&mut self, index: IndexId) -> R<()> {
         self.touch()?;
-        self.exec_st(|s| &s.ix_clear, &[P::I(index as i64)]).map_err(|e| self.write_err(e))
+        self.exec_st(|s| &s.ix_clear, &[P::I(index as i64)])
+            .map_err(|e| self.write_err(e))
     }
 }
 
@@ -1256,7 +1495,12 @@ impl SqliteBackend {
     /// A backend that refuses everything with `why` — what a host whose folder
     /// or key could not be read gets, instead of a silent memory fallback.
     pub fn broken(folder: PathBuf, why: String) -> SqliteBackend {
-        let mut b = SqliteBackend::bare(SqliteConfig { folder, encryption: IdbEncryption::Plaintext, quota: Arc::new(|_| 0), migrated: None });
+        let mut b = SqliteBackend::bare(SqliteConfig {
+            folder,
+            encryption: IdbEncryption::Plaintext,
+            quota: Arc::new(|_| 0),
+            migrated: None,
+        });
         b.broken = Some(why);
         b
     }
@@ -1290,13 +1534,16 @@ impl SqliteBackend {
 
     /// Every database file, as `(path, stem)`.
     fn files(&self) -> Vec<(PathBuf, String)> {
-        let Ok(rd) = std::fs::read_dir(&self.folder) else { return Vec::new() };
+        let Ok(rd) = std::fs::read_dir(&self.folder) else {
+            return Vec::new();
+        };
         let mut v: Vec<(PathBuf, String)> = rd
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let n = e.file_name().to_string_lossy().into_owned();
                 let stem = n.strip_suffix(".sqlite3")?;
-                (stem.len() == 32 && stem.bytes().all(|b| b.is_ascii_hexdigit())).then(|| (e.path(), stem.to_string()))
+                (stem.len() == 32 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .then(|| (e.path(), stem.to_string()))
             })
             .collect();
         v.sort();
@@ -1316,7 +1563,10 @@ impl SqliteBackend {
                 (Kind::Plain, IdbEncryption::Encrypted(k)) => {
                     if let Err(e) = rekey(&path, None, Some(k)) {
                         clean = false;
-                        super::advise(&format!("rekey:{}", path.display()), format!("IndexedDB: could not encrypt {}: {e}", path.display()));
+                        super::advise(
+                            &format!("rekey:{}", path.display()),
+                            format!("IndexedDB: could not encrypt {}: {e}", path.display()),
+                        );
                     }
                 }
                 (Kind::Encrypted, IdbEncryption::Encrypted(k)) => {
@@ -1337,12 +1587,18 @@ impl SqliteBackend {
                         }
                         Err(e) => {
                             clean = false;
-                            super::advise(&format!("rekey:{}", path.display()), format!("IndexedDB: could not decrypt {}: {e}", path.display()));
+                            super::advise(
+                                &format!("rekey:{}", path.display()),
+                                format!("IndexedDB: could not decrypt {}: {e}", path.display()),
+                            );
                         }
                     }
                 }
                 (Kind::Encrypted, IdbEncryption::Plaintext) => {
-                    move_aside(&path, "it is encrypted and this run has no key (storage is not encrypted)");
+                    move_aside(
+                        &path,
+                        "it is encrypted and this run has no key (storage is not encrypted)",
+                    );
                 }
                 _ => {}
             }
@@ -1416,7 +1672,11 @@ impl SqliteBackend {
             inspection_only: false,
         };
         db.publish();
-        self.shared.lock().unwrap().sizes.insert(stem, file_bytes(&path));
+        self.shared
+            .lock()
+            .unwrap()
+            .sizes
+            .insert(stem, file_bytes(&path));
         Ok(db)
     }
 
@@ -1446,7 +1706,15 @@ fn rekey(path: &Path, from: Option<&[u8; 32]>, to: Option<&[u8; 32]>) -> SR<()> 
 
 impl Backend for SqliteBackend {
     fn describe(&self) -> String {
-        format!("{}{}", self.folder.display(), if self.key.is_some() { " (encrypted)" } else { "" })
+        format!(
+            "{}{}",
+            self.folder.display(),
+            if self.key.is_some() {
+                " (encrypted)"
+            } else {
+                ""
+            }
+        )
     }
 
     fn persistent(&self) -> bool {
@@ -1470,8 +1738,16 @@ impl Backend for SqliteBackend {
 
     fn open(&mut self, name: &[u16]) -> R<Box<dyn Database>> {
         self.ensure_lock()?;
-        if self.shared.lock().unwrap().open.contains_key(&file_stem(name)) {
-            return Err(BackendError::Io("this database is already open in this process".into()));
+        if self
+            .shared
+            .lock()
+            .unwrap()
+            .open
+            .contains_key(&file_stem(name))
+        {
+            return Err(BackendError::Io(
+                "this database is already open in this process".into(),
+            ));
         }
         match self.open_db(name) {
             Ok(db) => Ok(Box::new(db)),
@@ -1484,7 +1760,10 @@ impl Backend for SqliteBackend {
         let open = self.shared.lock().unwrap().open.clone();
         let mut output = Vec::new();
         for (path, stem) in self.files().into_iter().take(257) {
-            if let Some(metadata) = open.get(&stem) { output.push(metadata.clone()); continue; }
+            if let Some(metadata) = open.get(&stem) {
+                output.push(metadata.clone());
+                continue;
+            }
             let key = self.key_for(&path);
             let connection = Conn::open_readonly(&path, key.as_ref()).map_err(io)?;
             if connection.query_i64("PRAGMA user_version").map_err(io)? == Some(FORMAT) {
@@ -1501,11 +1780,33 @@ impl Backend for SqliteBackend {
         let path = self.path_of(name);
         let key = self.key_for(&path);
         let conn = Conn::open_readonly(&path, key.as_ref()).map_err(io)?;
-        if conn.query_i64("PRAGMA user_version").map_err(io)? != Some(FORMAT) { return Err(BackendError::Io("Unsupported IndexedDB format; inspector never repairs or upgrades databases".into())); }
+        if conn.query_i64("PRAGMA user_version").map_err(io)? != Some(FORMAT) {
+            return Err(BackendError::Io(
+                "Unsupported IndexedDB format; inspector never repairs or upgrades databases"
+                    .into(),
+            ));
+        }
         let meta = load_meta(&conn).map_err(io)?;
-        if meta.name != name { return Err(BackendError::Io("Database identity mismatch".into())); }
+        if meta.name != name {
+            return Err(BackendError::Io("Database identity mismatch".into()));
+        }
         let st = prepare_all(&conn).map_err(io)?;
-        Ok(Box::new(SqliteDb { st, ranges: HashMap::new(), conn, meta, stem: file_stem(name), shared: self.shared.clone(), in_tx: false, strict: false, sp_wanted: false, sp_open: false, sp_schema: false, tx_bytes: 0, inspection_remaining: 0, inspection_only: true }))
+        Ok(Box::new(SqliteDb {
+            st,
+            ranges: HashMap::new(),
+            conn,
+            meta,
+            stem: file_stem(name),
+            shared: self.shared.clone(),
+            in_tx: false,
+            strict: false,
+            sp_wanted: false,
+            sp_open: false,
+            sp_schema: false,
+            tx_bytes: 0,
+            inspection_remaining: 0,
+            inspection_only: true,
+        }))
     }
 
     fn delete(&mut self, name: &[u16]) -> R<u64> {
@@ -1532,7 +1833,11 @@ impl Backend for SqliteBackend {
 
     fn usage(&mut self) -> u64 {
         // Measured, not tracked: a closed database's WAL has been folded away.
-        let sizes: HashMap<String, u64> = self.files().into_iter().map(|(p, s)| (s, file_bytes(&p))).collect();
+        let sizes: HashMap<String, u64> = self
+            .files()
+            .into_iter()
+            .map(|(p, s)| (s, file_bytes(&p)))
+            .collect();
         let mut s = self.shared.lock().unwrap();
         s.sizes = sizes;
         s.usage()
@@ -1551,7 +1856,10 @@ pub fn from_host(h: &'static dyn super::IndexedDbHost) -> Box<dyn Backend> {
         Ok(f) => f,
         Err(e) => {
             super::advise("host-folder", format!("IndexedDB: the storage host has no folder ({e}); every open() fails with UnknownError."));
-            return Box::new(SqliteBackend::broken(PathBuf::new(), format!("no IndexedDB folder: {e}")));
+            return Box::new(SqliteBackend::broken(
+                PathBuf::new(),
+                format!("no IndexedDB folder: {e}"),
+            ));
         }
     };
     let encryption = match h.encryption() {
@@ -1561,7 +1869,10 @@ pub fn from_host(h: &'static dyn super::IndexedDbHost) -> Box<dyn Backend> {
                 "host-key",
                 format!("IndexedDB: the storage host could not provide its key ({e}); every open() fails with UnknownError."),
             );
-            return Box::new(SqliteBackend::broken(folder, format!("no IndexedDB key: {e}")));
+            return Box::new(SqliteBackend::broken(
+                folder,
+                format!("no IndexedDB key: {e}"),
+            ));
         }
     };
     Box::new(SqliteBackend::new(SqliteConfig {
@@ -1575,10 +1886,16 @@ pub fn from_host(h: &'static dyn super::IndexedDbHost) -> Box<dyn Backend> {
 /// `PRAGMA integrity_check` over the database `name` in `folder` (opened
 /// with `key`): `Ok("ok")` for a sound file. For diagnostics and the
 /// crash-safety test; never called on a database the server has open.
-pub fn integrity_check(folder: &Path, name: &[u16], key: Option<&[u8; 32]>) -> Result<String, String> {
+pub fn integrity_check(
+    folder: &Path,
+    name: &[u16],
+    key: Option<&[u8; 32]>,
+) -> Result<String, String> {
     let path = folder.join(format!("{}.sqlite3", file_stem(name)));
     let c = connect(&path, key).map_err(|e| e.to_string())?;
-    let s = c.prepare("PRAGMA integrity_check").map_err(|e| e.to_string())?;
+    let s = c
+        .prepare("PRAGMA integrity_check")
+        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     c.run(&s, &[], |r| {
         out.push(String::from_utf8_lossy(r.blob(0)).into_owned());
@@ -1591,7 +1908,14 @@ pub fn integrity_check(folder: &Path, name: &[u16], key: Option<&[u8; 32]>) -> R
 /// A factory for [`super::set_backend_factory`]: SQLite in `folder` (tests,
 /// conformance runs, embedders that configure through the C ABI).
 pub fn factory(folder: PathBuf, encryption: IdbEncryption, quota: u64) -> super::BackendFactory {
-    Box::new(move || Box::new(SqliteBackend::new(SqliteConfig { folder, encryption, quota: Arc::new(move |_| quota), migrated: None })))
+    Box::new(move || {
+        Box::new(SqliteBackend::new(SqliteConfig {
+            folder,
+            encryption,
+            quota: Arc::new(move |_| quota),
+            migrated: None,
+        }))
+    })
 }
 
 #[cfg(test)]
@@ -1607,15 +1931,30 @@ mod tests {
     }
     fn dir() -> Dir {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let p = std::env::temp_dir().join(format!("redjs-idb-sqlite-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let p = std::env::temp_dir().join(format!(
+            "redjs-idb-sqlite-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&p);
         Dir(p)
     }
     fn backend(d: &Dir, enc: IdbEncryption, quota: u64) -> SqliteBackend {
-        SqliteBackend::new(SqliteConfig { folder: d.0.clone(), encryption: enc, quota: Arc::new(move |_| quota), migrated: None })
+        SqliteBackend::new(SqliteConfig {
+            folder: d.0.clone(),
+            encryption: enc,
+            quota: Arc::new(move |_| quota),
+            migrated: None,
+        })
     }
     fn st(id: u64, name: &str) -> StoreMeta {
-        StoreMeta { id, name: name.encode_utf16().collect(), key_path: Some(KeyPath::List(vec![vec![b'a' as u16], vec![]])), auto_increment: true, indexes: vec![] }
+        StoreMeta {
+            id,
+            name: name.encode_utf16().collect(),
+            key_path: Some(KeyPath::List(vec![vec![b'a' as u16], vec![]])),
+            auto_increment: true,
+            indexes: vec![],
+        }
     }
     fn n(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
@@ -1643,7 +1982,9 @@ mod tests {
         database.begin_write(Durability::Default).unwrap();
         database.set_version(3).unwrap();
         database.create_store(st(1, "records")).unwrap();
-        database.put(1, b"key", Arc::new(vec![63; 1 << 20])).unwrap();
+        database
+            .put(1, b"key", Arc::new(vec![63; 1 << 20]))
+            .unwrap();
         database.commit_write().unwrap();
         drop(database);
         let path = backend.path_of(&name);
@@ -1653,14 +1994,25 @@ mod tests {
         let (length, prefix) = inspection.inspect_value(1, b"key", 32).unwrap().unwrap();
         assert_eq!(length, 1 << 20);
         assert_eq!(prefix, vec![63; 32]);
-        assert!(inspection.begin_write(Durability::Default).is_err(), "read-only inspector accepted a write transaction");
+        assert!(
+            inspection.begin_write(Durability::Default).is_err(),
+            "read-only inspector accepted a write transaction"
+        );
         drop(inspection);
-        assert_eq!(std::fs::read(&path).unwrap(), before, "inspection rewrote the encrypted database");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "inspection rewrote the encrypted database"
+        );
         let corrupt_name = n("corrupt-inspection");
         let corrupt_path = backend.path_of(&corrupt_name);
         std::fs::write(&corrupt_path, b"not a sqlite file").unwrap();
         assert!(backend.inspect_existing(&corrupt_name).is_err());
-        assert_eq!(std::fs::read(&corrupt_path).unwrap(), b"not a sqlite file", "inspector moved or repaired corrupt bytes");
+        assert_eq!(
+            std::fs::read(&corrupt_path).unwrap(),
+            b"not a sqlite file",
+            "inspector moved or repaired corrupt bytes"
+        );
     }
 
     #[test]
@@ -1682,13 +2034,30 @@ mod tests {
             db.put(1, b"k2", Arc::new(vec![9])).unwrap();
             db.set_key_generator(1, 7.0).unwrap();
             db.rollback_to(sp);
-            assert_eq!(db.get(1, b"k2").unwrap(), None, "the savepoint undid only its own request");
+            assert_eq!(
+                db.get(1, b"k2").unwrap(),
+                None,
+                "the savepoint undid only its own request"
+            );
             assert_eq!(db.get(1, b"k1").unwrap().as_deref(), Some(&vec![9]));
             assert_eq!(db.key_generator(1).unwrap(), 1.0);
             let sp = db.savepoint();
-            db.create_index(1, IndexMeta { id: 2, name: n("i"), key_path: KeyPath::String(n("a.b")), unique: true, multi_entry: false }).unwrap();
+            db.create_index(
+                1,
+                IndexMeta {
+                    id: 2,
+                    name: n("i"),
+                    key_path: KeyPath::String(n("a.b")),
+                    unique: true,
+                    multi_entry: false,
+                },
+            )
+            .unwrap();
             db.rollback_to(sp);
-            assert!(db.meta().stores[0].indexes.is_empty(), "schema reverts with its savepoint");
+            assert!(
+                db.meta().stores[0].indexes.is_empty(),
+                "schema reverts with its savepoint"
+            );
             db.clear(1).unwrap();
             db.set_version(2).unwrap();
             db.rollback_write();
@@ -1697,7 +2066,17 @@ mod tests {
             assert_eq!(db.key_generator(1).unwrap(), 1.0);
 
             db.begin_write(Durability::Default).unwrap();
-            db.create_index(1, IndexMeta { id: 2, name: n("i"), key_path: KeyPath::String(n("a.b")), unique: true, multi_entry: true }).unwrap();
+            db.create_index(
+                1,
+                IndexMeta {
+                    id: 2,
+                    name: n("i"),
+                    key_path: KeyPath::String(n("a.b")),
+                    unique: true,
+                    multi_entry: true,
+                },
+            )
+            .unwrap();
             db.index_add(2, b"ab".to_vec()).unwrap();
             db.set_key_generator(1, f64::INFINITY).unwrap();
             db.commit_write().unwrap();
@@ -1709,15 +2088,25 @@ mod tests {
         let m = db.meta().clone();
         assert_eq!(m.name, n("x"));
         assert_eq!(m.version, 1);
-        assert_eq!(m.stores[0].key_path, Some(KeyPath::List(vec![vec![b'a' as u16], vec![]])));
+        assert_eq!(
+            m.stores[0].key_path,
+            Some(KeyPath::List(vec![vec![b'a' as u16], vec![]]))
+        );
         assert!(m.stores[0].auto_increment);
         assert_eq!(m.stores[0].indexes[0].key_path, KeyPath::String(n("a.b")));
         assert!(m.stores[0].indexes[0].unique && m.stores[0].indexes[0].multi_entry);
         assert_eq!(db.get(1, b"k1").unwrap().as_deref(), Some(&vec![1, 2, 3]));
         assert_eq!(db.key_generator(1).unwrap(), f64::INFINITY);
-        assert_eq!(db.index_scan(2, Bound::Unbounded, Bound::Unbounded, false, 10).unwrap(), vec![b"ab".to_vec()]);
+        assert_eq!(
+            db.index_scan(2, Bound::Unbounded, Bound::Unbounded, false, 10)
+                .unwrap(),
+            vec![b"ab".to_vec()]
+        );
         drop(db);
-        assert!(!sidecars(&b.path_of(&n("x")))[0].exists(), "closing checkpoints the WAL away");
+        assert!(
+            !sidecars(&b.path_of(&n("x")))[0].exists(),
+            "closing checkpoints the WAL away"
+        );
         assert_eq!(b.delete(&n("x")).unwrap(), 1);
         assert!(b.databases().unwrap().is_empty());
     }
@@ -1732,13 +2121,46 @@ mod tests {
         for k in [&b"a"[..], b"b", b"c", b"d", b"", b"\xff", b"b\x00"] {
             db.put(1, k, Arc::new(vec![0])).unwrap();
         }
-        let all = db.keys(1, Bound::Unbounded, Bound::Unbounded, false, usize::MAX).unwrap();
-        assert_eq!(all, vec![b"".to_vec(), b"a".to_vec(), b"b".to_vec(), b"b\x00".to_vec(), b"c".to_vec(), b"d".to_vec(), b"\xff".to_vec()], "memcmp order, prefixes first");
-        assert_eq!(db.keys(1, Bound::Excluded(b"a"), Bound::Included(b"c"), false, 10).unwrap(), vec![b"b".to_vec(), b"b\x00".to_vec(), b"c".to_vec()]);
-        assert_eq!(db.keys(1, Bound::Unbounded, Bound::Excluded(b"\xff"), true, 1).unwrap(), vec![b"d".to_vec()]);
-        assert_eq!(db.count(1, Bound::Included(b"b"), Bound::Unbounded).unwrap(), 5);
-        assert!(db.keys(1, Bound::Included(b"z"), Bound::Included(b"a"), false, 10).unwrap().is_empty());
-        assert_eq!(db.get(1, b"").unwrap().as_deref(), Some(&vec![0]), "an empty key is a key, not NULL");
+        let all = db
+            .keys(1, Bound::Unbounded, Bound::Unbounded, false, usize::MAX)
+            .unwrap();
+        assert_eq!(
+            all,
+            vec![
+                b"".to_vec(),
+                b"a".to_vec(),
+                b"b".to_vec(),
+                b"b\x00".to_vec(),
+                b"c".to_vec(),
+                b"d".to_vec(),
+                b"\xff".to_vec()
+            ],
+            "memcmp order, prefixes first"
+        );
+        assert_eq!(
+            db.keys(1, Bound::Excluded(b"a"), Bound::Included(b"c"), false, 10)
+                .unwrap(),
+            vec![b"b".to_vec(), b"b\x00".to_vec(), b"c".to_vec()]
+        );
+        assert_eq!(
+            db.keys(1, Bound::Unbounded, Bound::Excluded(b"\xff"), true, 1)
+                .unwrap(),
+            vec![b"d".to_vec()]
+        );
+        assert_eq!(
+            db.count(1, Bound::Included(b"b"), Bound::Unbounded)
+                .unwrap(),
+            5
+        );
+        assert!(db
+            .keys(1, Bound::Included(b"z"), Bound::Included(b"a"), false, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.get(1, b"").unwrap().as_deref(),
+            Some(&vec![0]),
+            "an empty key is a key, not NULL"
+        );
         db.delete(1, b"a").unwrap();
         assert_eq!(db.count(1, Bound::Unbounded, Bound::Unbounded).unwrap(), 6);
         db.commit_write().unwrap();
@@ -1769,22 +2191,36 @@ mod tests {
             db.begin_write(Durability::Default).unwrap();
             db.set_version(3).unwrap();
             db.create_store(st(1, "sk-secret-store")).unwrap();
-            db.put(1, b"sk-secret-key-abcdef", Arc::new(secret.to_vec())).unwrap();
+            db.put(1, b"sk-secret-key-abcdef", Arc::new(secret.to_vec()))
+                .unwrap();
             db.commit_write().unwrap();
             // While open: the WAL holds the commit — it must be ciphertext too.
             let raw = bytes_of(&d);
-            assert!(!contains(&raw, secret) && !contains(&raw, b"sk-secret-key-abcdef"), "plaintext in the WAL");
+            assert!(
+                !contains(&raw, secret) && !contains(&raw, b"sk-secret-key-abcdef"),
+                "plaintext in the WAL"
+            );
             assert!(!contains(&raw, b"SQLite format 3"));
         }
         let raw = bytes_of(&d);
-        assert!(!contains(&raw, secret) && !contains(&raw, b"sk-secret-key") && !contains(&raw, &u16le(&n("sk-secret-store"))));
-        assert!(!contains(&raw, b"SQLite format 3"), "not a plaintext SQLite file");
+        assert!(
+            !contains(&raw, secret)
+                && !contains(&raw, b"sk-secret-key")
+                && !contains(&raw, &u16le(&n("sk-secret-store")))
+        );
+        assert!(
+            !contains(&raw, b"SQLite format 3"),
+            "not a plaintext SQLite file"
+        );
         // The same key reads it back.
         {
             let mut b = backend(&d, IdbEncryption::Encrypted(key), 1 << 30);
             assert_eq!(b.databases().unwrap(), vec![(n("sk-secret-db"), 3)]);
             let mut db = b.open(&n("sk-secret-db")).unwrap();
-            assert_eq!(db.get(1, b"sk-secret-key-abcdef").unwrap().as_deref(), Some(&secret.to_vec()));
+            assert_eq!(
+                db.get(1, b"sk-secret-key-abcdef").unwrap().as_deref(),
+                Some(&secret.to_vec())
+            );
         }
         // Another key cannot, and the file is moved aside — never deleted.
         {
@@ -1793,8 +2229,15 @@ mod tests {
             let db = b.open(&n("sk-secret-db")).unwrap();
             assert_eq!(db.meta().version, 0, "a fresh database in its place");
         }
-        let names: Vec<String> = std::fs::read_dir(&d.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert!(names.iter().any(|n| n.contains(".unreadable-")), "{names:?}");
+        let names: Vec<String> = std::fs::read_dir(&d.0)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains(".unreadable-")),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -1807,7 +2250,8 @@ mod tests {
             db.begin_write(Durability::Default).unwrap();
             db.set_version(1).unwrap();
             db.create_store(st(1, "s")).unwrap();
-            db.put(1, b"k", Arc::new(b"plain-then-sealed".to_vec())).unwrap();
+            db.put(1, b"k", Arc::new(b"plain-then-sealed".to_vec()))
+                .unwrap();
             db.commit_write().unwrap();
         }
         assert!(contains(&bytes_of(&d), b"plain-then-sealed"));
@@ -1823,16 +2267,28 @@ mod tests {
                 })),
             });
             assert_eq!(migrated.load(Ordering::Relaxed), 1);
-            assert!(!contains(&bytes_of(&d), b"plain-then-sealed"), "encrypted at start, before any open");
+            assert!(
+                !contains(&bytes_of(&d), b"plain-then-sealed"),
+                "encrypted at start, before any open"
+            );
             let mut db = b.open(&n("m")).unwrap();
-            assert_eq!(db.get(1, b"k").unwrap().as_deref(), Some(&b"plain-then-sealed".to_vec()));
+            assert_eq!(
+                db.get(1, b"k").unwrap().as_deref(),
+                Some(&b"plain-then-sealed".to_vec())
+            );
         }
         {
             let mut b = backend(&d, IdbEncryption::Decrypting { old_key: key }, 1 << 30);
             assert!(!b.encrypted());
-            assert!(contains(&bytes_of(&d), b"plain-then-sealed"), "decrypted at start");
+            assert!(
+                contains(&bytes_of(&d), b"plain-then-sealed"),
+                "decrypted at start"
+            );
             let mut db = b.open(&n("m")).unwrap();
-            assert_eq!(db.get(1, b"k").unwrap().as_deref(), Some(&b"plain-then-sealed".to_vec()));
+            assert_eq!(
+                db.get(1, b"k").unwrap().as_deref(),
+                Some(&b"plain-then-sealed".to_vec())
+            );
         }
         // An encrypted file and no key at all: moved aside.
         {
@@ -1841,8 +2297,15 @@ mod tests {
         }
         let b = backend(&d, IdbEncryption::Plaintext, 1 << 30);
         drop(b);
-        let names: Vec<String> = std::fs::read_dir(&d.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert!(names.iter().any(|n| n.contains(".unreadable-")), "{names:?}");
+        let names: Vec<String> = std::fs::read_dir(&d.0)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains(".unreadable-")),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -1852,13 +2315,19 @@ mod tests {
         drop(a.open(&n("x")).unwrap());
         let mut b = backend(&d, IdbEncryption::Plaintext, 1 << 30);
         match b.open(&n("x")) {
-            Err(BackendError::Locked(holder)) => assert!(holder.contains(&format!("pid {}", std::process::id())), "{holder}"),
+            Err(BackendError::Locked(holder)) => assert!(
+                holder.contains(&format!("pid {}", std::process::id())),
+                "{holder}"
+            ),
             other => panic!("{:?}", other.map(|_| ())),
         }
         assert!(matches!(b.databases(), Err(BackendError::Locked(_))));
         assert!(matches!(b.delete(&n("x")), Err(BackendError::Locked(_))));
         drop(a);
-        assert!(b.open(&n("x")).is_ok(), "the next open after the holder is gone takes the lock");
+        assert!(
+            b.open(&n("x")).is_ok(),
+            "the next open after the holder is gone takes the lock"
+        );
     }
 
     #[test]
@@ -1913,10 +2382,24 @@ mod tests {
     fn names_hash_to_stable_file_names() {
         assert_eq!(file_stem(&[]).len(), 32);
         assert_ne!(file_stem(&n("a")), file_stem(&n("A")));
-        assert_eq!(file_stem(&[0xD800]), file_stem(&[0xD800]), "lone surrogates are names too");
-        assert_eq!(dec_key_path(&enc_key_path(&KeyPath::List(vec![vec![], n("x.y")]))), Some(KeyPath::List(vec![vec![], n("x.y")])));
-        assert_eq!(dec_key_path(&enc_key_path(&KeyPath::String(vec![]))), Some(KeyPath::String(vec![])));
+        assert_eq!(
+            file_stem(&[0xD800]),
+            file_stem(&[0xD800]),
+            "lone surrogates are names too"
+        );
+        assert_eq!(
+            dec_key_path(&enc_key_path(&KeyPath::List(vec![vec![], n("x.y")]))),
+            Some(KeyPath::List(vec![vec![], n("x.y")]))
+        );
+        assert_eq!(
+            dec_key_path(&enc_key_path(&KeyPath::String(vec![]))),
+            Some(KeyPath::String(vec![]))
+        );
         assert!(utc_stamp().ends_with('Z') && utc_stamp().len() == 16);
-        assert!(version().contains("3.54.0") && version().contains("2.6.1"), "{}", version());
+        assert!(
+            version().contains("3.54.0") && version().contains("2.6.1"),
+            "{}",
+            version()
+        );
     }
 }

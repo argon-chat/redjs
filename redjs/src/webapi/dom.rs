@@ -42,7 +42,11 @@ unsafe fn get_element_by_id(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
     let id = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let v = get(g, st.elements, &id);
-    if is_cell(v) { v } else { NULL }
+    if is_cell(v) {
+        v
+    } else {
+        NULL
+    }
 }
 
 #[crate::host_fn]
@@ -64,7 +68,9 @@ unsafe fn query_selector(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn create_element(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
-    let tag = read_string(g, cf_arg(cf, 0)).unwrap_or_default().to_ascii_lowercase();
+    let tag = read_string(g, cf_arg(cf, 0))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if tag == "img" {
         // new Image()
         let image_ctor = get(g, glue::rjs_global(g), "Image");
@@ -76,13 +82,27 @@ unsafe fn create_element(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
     // Generic dumb element on HTMLElement.prototype (instanceof works).
     let html_proto = get(g, get(g, glue::rjs_global(g), "HTMLElement"), "prototype");
-    let el = new_object(g, if is_cell(html_proto) { html_proto } else { st.event_target.proto });
+    let el = new_object(
+        g,
+        if is_cell(html_proto) {
+            html_proto
+        } else {
+            st.event_target.proto
+        },
+    );
     define(g, el, "tagName", js_string(g, &tag.to_ascii_uppercase()), 0);
     define(g, el, "style", new_object(g, UNDEF), 0);
     let noop = {
         let n16: Vec<u16> = "noop".encode_utf16().collect();
         let mut f = UNDEF;
-        glue::rjs_function_create(g, n16.as_ptr(), n16.len(), 0, dom_noop as *const c_void, &mut f);
+        glue::rjs_function_create(
+            g,
+            n16.as_ptr(),
+            n16.len(),
+            0,
+            dom_noop as *const c_void,
+            &mut f,
+        );
         f
     };
     define(g, el, "setAttribute", noop, 2);
@@ -126,8 +146,20 @@ unsafe fn io_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     // this runtime; observe/unobserve/disconnect are no-ops, records are empty.
     let proto = {
         let nt = cf_new_target(cf);
-        let p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
-        if is_cell(p) { p } else { get(g, get(g, glue::rjs_global(g), "IntersectionObserver"), "prototype") }
+        let p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
+        if is_cell(p) {
+            p
+        } else {
+            get(
+                g,
+                get(g, glue::rjs_global(g), "IntersectionObserver"),
+                "prototype",
+            )
+        }
     };
     let obj = new_object(g, proto);
     define(g, obj, "root", NULL, 0);
@@ -149,36 +181,51 @@ unsafe fn io_take_records(g: *mut c_void, _cf: *mut c_void) -> u64 {
 /// `x instanceof HTMLElement` works (and is false for non-elements). Illegal
 /// constructors per spec. Returns HTMLElement.prototype for createElement.
 unsafe fn install_element_classes(g: *mut c_void, event_target_proto: u64) -> u64 {
-    let element = define_class(g, &ClassSpec {
-        name: "Element",
-        arity: 0,
-        construct: None,
-        parent_proto: event_target_proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
+    let element = define_class(
+        g,
+        &ClassSpec {
+            name: "Element",
+            arity: 0,
+            construct: None,
+            parent_proto: event_target_proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     // Node alias: some libs check `instanceof Node`.
-    define(g, glue::rjs_global(g), "Node", get(g, glue::rjs_global(g), "Element"), 2);
+    define(
+        g,
+        glue::rjs_global(g),
+        "Node",
+        get(g, glue::rjs_global(g), "Element"),
+        2,
+    );
 
-    let html_element = define_class(g, &ClassSpec {
-        name: "HTMLElement",
-        arity: 0,
-        construct: None,
-        parent_proto: element.proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
-    define_class(g, &ClassSpec {
-        name: "SVGElement",
-        arity: 0,
-        construct: None,
-        parent_proto: element.proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
+    let html_element = define_class(
+        g,
+        &ClassSpec {
+            name: "HTMLElement",
+            arity: 0,
+            construct: None,
+            parent_proto: element.proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
+    define_class(
+        g,
+        &ClassSpec {
+            name: "SVGElement",
+            arity: 0,
+            construct: None,
+            parent_proto: element.proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     html_element.proto
 }
 
@@ -207,34 +254,40 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     let html_proto = install_element_classes(g, event_target_proto);
     let _ = html_proto;
 
-    let node_filter = define_class(g, &ClassSpec {
-        name: "NodeFilter",
-        arity: 0,
-        construct: None,
-        parent_proto: 0,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
+    let node_filter = define_class(
+        g,
+        &ClassSpec {
+            name: "NodeFilter",
+            arity: 0,
+            construct: None,
+            parent_proto: 0,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
     for (name, v) in NODE_FILTER {
         define(g, node_filter.ctor, name, enc_f64(*v as f64), 1 | 4);
     }
 
     // IntersectionObserver (inert) + matchMedia.
-    define_class(g, &ClassSpec {
-        name: "IntersectionObserver",
-        arity: 1,
-        construct: Some(io_construct),
-        parent_proto: 0,
-        methods: &[
-            ("observe", 1, io_noop),
-            ("unobserve", 1, io_noop),
-            ("disconnect", 0, io_noop),
-            ("takeRecords", 0, io_take_records),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    define_class(
+        g,
+        &ClassSpec {
+            name: "IntersectionObserver",
+            arity: 1,
+            construct: Some(io_construct),
+            parent_proto: 0,
+            methods: &[
+                ("observe", 1, io_noop),
+                ("unobserve", 1, io_noop),
+                ("disconnect", 0, io_noop),
+                ("takeRecords", 0, io_take_records),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
     // elements registry (plain object, native-only).
     let elements = new_object(g, UNDEF);
@@ -250,7 +303,14 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     let def_fn = |target: u64, name: &str, arity: u32, f: HostFn| {
         let n16: Vec<u16> = name.encode_utf16().collect();
         let mut func = UNDEF;
-        glue::rjs_function_create(g, n16.as_ptr(), n16.len(), arity, f as *const c_void, &mut func);
+        glue::rjs_function_create(
+            g,
+            n16.as_ptr(),
+            n16.len(),
+            arity,
+            f as *const c_void,
+            &mut func,
+        );
         define(g, target, name, func, 2);
     };
     def_fn(document, "getElementById", 1, get_element_by_id);
@@ -269,8 +329,18 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
         glue::rjs_atom_free(g, a);
     }
 
-    for (name, tag) in [("body", "body"), ("head", "head"), ("documentElement", "html")] {
-        define(g, document, name, dumb_element(g, event_target_proto, document, tag), 0);
+    for (name, tag) in [
+        ("body", "body"),
+        ("head", "head"),
+        ("documentElement", "html"),
+    ] {
+        define(
+            g,
+            document,
+            name,
+            dumb_element(g, event_target_proto, document, tag),
+            0,
+        );
     }
 
     crate::ffi::redjs_protect(g, document);
@@ -286,7 +356,12 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) -> (u64, u64) {
     // add/remove/dispatchEventListener come from EventTarget.prototype methods
     // defined as bare globals (their `this` defaults to the global object).
     def_fn(global, "addEventListener", 2, events::add_event_listener);
-    def_fn(global, "removeEventListener", 2, events::remove_event_listener);
+    def_fn(
+        global,
+        "removeEventListener",
+        2,
+        events::remove_event_listener,
+    );
     def_fn(global, "dispatchEvent", 1, events::dispatch_event);
     def_fn(global, "matchMedia", 1, match_media);
 
@@ -335,7 +410,11 @@ unsafe fn bag_key(g: *mut c_void, cf: *mut c_void) -> Option<(u64, String)> {
 unsafe fn bag_set_property(g: *mut c_void, cf: *mut c_void) -> u64 {
     if let Some((bag, key)) = bag_key(g, cf) {
         let v = cf_arg(cf, 1);
-        let text = if v == UNDEF || v == NULL { js_string(g, "") } else { to_js_string(g, v).unwrap_or(UNDEF) };
+        let text = if v == UNDEF || v == NULL {
+            js_string(g, "")
+        } else {
+            to_js_string(g, v).unwrap_or(UNDEF)
+        };
         define(g, bag, &key, text, 0);
     }
     UNDEF
@@ -429,7 +508,13 @@ pub fn set_viewport(inner: (i32, i32), outer: (i32, i32), dpr: f64) {
 pub unsafe fn set_visibility(g: *mut c_void, hidden: bool) {
     let st = state(g);
     define(g, st.document, "hidden", enc_bool(hidden), 0);
-    define(g, st.document, "visibilityState", js_string(g, if hidden { "hidden" } else { "visible" }), 0);
+    define(
+        g,
+        st.document,
+        "visibilityState",
+        js_string(g, if hidden { "hidden" } else { "visible" }),
+        0,
+    );
     let ev = events::new_trusted_event(g, "visibilitychange");
     events::dispatch(g, st.document, ev);
 }
@@ -510,7 +595,11 @@ unsafe fn install_viewport(g: *mut c_void, global: u64) {
         ("innerHeight", inner_height, replace_inner_height),
         ("outerWidth", outer_width, replace_outer_width),
         ("outerHeight", outer_height, replace_outer_height),
-        ("devicePixelRatio", device_pixel_ratio, replace_device_pixel_ratio),
+        (
+            "devicePixelRatio",
+            device_pixel_ratio,
+            replace_device_pixel_ratio,
+        ),
         // The window itself never scrolls: the app root is the scroll container.
         ("scrollX", no_scroll, replace_scroll_x),
         ("scrollY", no_scroll, replace_scroll_y),

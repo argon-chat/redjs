@@ -28,14 +28,14 @@
 pub use redjs_macros::host_fn;
 
 pub mod api;
-pub mod capi;
 pub mod bytecode;
+pub mod capi;
 pub mod context;
 pub mod errors;
-pub mod profiling;
 pub mod ffi;
 pub mod glue;
 pub mod icu;
+pub mod profiling;
 pub mod trampoline;
 pub mod web;
 pub mod webapi;

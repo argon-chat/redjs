@@ -187,7 +187,12 @@ mod tests {
         let context = ctx();
         context.eval("crypto.subtle.digest('SHA-256', new Uint8Array([1,2,3])).then(bytes => { globalThis.__digestHex = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join(''); })").unwrap();
         context.drain_microtasks();
-        assert_eq!(context.to_rust_string(context.global_get("__digestHex").unwrap()).unwrap(), "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81");
+        assert_eq!(
+            context
+                .to_rust_string(context.global_get("__digestHex").unwrap())
+                .unwrap(),
+            "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81"
+        );
     }
 
     #[test]

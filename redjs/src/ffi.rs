@@ -82,7 +82,11 @@ pub struct RjsStr {
 
 impl Default for RjsStr {
     fn default() -> Self {
-        Self { ptr: core::ptr::null(), len: 0, is8bit: 1 }
+        Self {
+            ptr: core::ptr::null(),
+            len: 0,
+            is8bit: 1,
+        }
     }
 }
 
@@ -103,7 +107,15 @@ pub struct RjsTaInfo {
 
 impl Default for RjsTaInfo {
     fn default() -> Self {
-        Self { data: core::ptr::null_mut(), length: 0, byte_length: 0, byte_offset: 0, kind: 0, detached: 0, shared: 0 }
+        Self {
+            data: core::ptr::null_mut(),
+            length: 0,
+            byte_length: 0,
+            byte_offset: 0,
+            kind: 0,
+            detached: 0,
+            shared: 0,
+        }
     }
 }
 
@@ -118,7 +130,12 @@ pub struct RjsAbInfo {
 
 impl Default for RjsAbInfo {
     fn default() -> Self {
-        Self { data: core::ptr::null_mut(), byte_length: 0, detached: 0, shared: 0 }
+        Self {
+            data: core::ptr::null_mut(),
+            byte_length: 0,
+            detached: 0,
+            shared: 0,
+        }
     }
 }
 
@@ -184,7 +201,11 @@ pub unsafe extern "C" fn redjs_context_create() -> *mut c_void {
     let aot_global = crate::aot::create_context_if_active();
     #[cfg(not(feature = "native-aot"))]
     let aot_global: *mut c_void = null_mut();
-    let g = if aot_global.is_null() { capi::JSGlobalContextCreate(null_mut()) } else { aot_global };
+    let g = if aot_global.is_null() {
+        capi::JSGlobalContextCreate(null_mut())
+    } else {
+        aot_global
+    };
     if !g.is_null() {
         // Before anything is keyed by this address: if it belonged to a context
         // released earlier, that context's registrations are purged here, so
@@ -280,11 +301,29 @@ pub unsafe extern "C" fn redjs_report_extra_memory(ctx: *mut c_void, bytes: u64)
 /// functions. Keep the exact source/URL and use only with this engine/options.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_bytecode_generate(
-    ctx: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
-    depth: u32, handle: *mut *mut c_void, bytes: *mut *const u8,
-    byte_length: *mut usize, out: *mut u64,
+    ctx: *mut c_void,
+    src: *const u8,
+    len: usize,
+    url: *const u8,
+    url_len: usize,
+    depth: u32,
+    handle: *mut *mut c_void,
+    bytes: *mut *const u8,
+    byte_length: *mut usize,
+    out: *mut u64,
 ) -> i32 {
-    glue::rjs_bytecode_generate(ctx, src, len, url, url_len, depth, handle, bytes, byte_length, out)
+    glue::rjs_bytecode_generate(
+        ctx,
+        src,
+        len,
+        url,
+        url_len,
+        depth,
+        handle,
+        bytes,
+        byte_length,
+        out,
+    )
 }
 
 /// Frees a compiler-produced bytecode handle; null is accepted.
@@ -299,8 +338,15 @@ pub unsafe extern "C" fn redjs_bytecode_free(handle: *mut c_void) {
 /// its own byte copy, so the compiler handle can be freed after this call.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_eval8_cached(
-    ctx: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
-    bytes: *const u8, byte_length: usize, used: *mut u32, out: *mut u64,
+    ctx: *mut c_void,
+    src: *const u8,
+    len: usize,
+    url: *const u8,
+    url_len: usize,
+    bytes: *const u8,
+    byte_length: usize,
+    used: *mut u32,
+    out: *mut u64,
 ) -> i32 {
     glue::rjs_eval8_cached(ctx, src, len, url, url_len, bytes, byte_length, used, out)
 }
@@ -322,7 +368,10 @@ pub unsafe extern "C" fn redjs_aot_build_info(destination: *mut u8, capacity: us
         info.len()
     }
     #[cfg(not(feature = "native-aot"))]
-    { let _ = (destination, capacity); 0 }
+    {
+        let _ = (destination, capacity);
+        0
+    }
 }
 
 /// Loads an already verified native image before JSC initialization. `file`
@@ -331,31 +380,51 @@ pub unsafe extern "C" fn redjs_aot_build_info(destination: *mut u8, capacity: us
 /// loader retains its own handle; returns 1 for acceptance, otherwise rejects.
 /// Profile 0 uses engine defaults; 1 is compact. Native-AOT-disabled builds reject.
 #[no_mangle]
-pub unsafe extern "C" fn redjs_aot_load_handle(file: isize, identity: *const u8, profile: u32) -> u32 {
+pub unsafe extern "C" fn redjs_aot_load_handle(
+    file: isize,
+    identity: *const u8,
+    profile: u32,
+) -> u32 {
     #[cfg(feature = "native-aot")]
-    { glue::rjs_aot_load_handle_with_profile(file, identity, profile) }
+    {
+        glue::rjs_aot_load_handle_with_profile(file, identity, profile)
+    }
     #[cfg(not(feature = "native-aot"))]
-    { let _ = (file, identity, profile); 0 }
+    {
+        let _ = (file, identity, profile);
+        0
+    }
 }
 
 /// Starts a one-based native entry module. Status 3 means pending top-level
 /// await (not completed success); otherwise normal redjs eval statuses apply.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_aot_run(ctx: *mut c_void, module: u32, out: *mut u64) -> i32 {
-    if ctx.is_null() || out.is_null() { return REDJS_BAD_ARG; }
+    if ctx.is_null() || out.is_null() {
+        return REDJS_BAD_ARG;
+    }
     #[cfg(feature = "native-aot")]
-    { glue::rjs_aot_run(ctx, module, out) }
+    {
+        glue::rjs_aot_run(ctx, module, out)
+    }
     #[cfg(not(feature = "native-aot"))]
-    { let _ = module; REDJS_BAD_ARG }
+    {
+        let _ = module;
+        REDJS_BAD_ARG
+    }
 }
 
 /// Returns 1 after a native image has been selected on this VM thread.
 #[no_mangle]
 pub unsafe extern "C" fn redjs_aot_is_active() -> i32 {
     #[cfg(feature = "native-aot")]
-    { glue::rjs_aot_is_active() }
+    {
+        glue::rjs_aot_is_active()
+    }
     #[cfg(not(feature = "native-aot"))]
-    { 0 }
+    {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -441,12 +510,22 @@ pub unsafe extern "C" fn redjs_unprotect(ctx: *mut c_void, v: u64) {
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
-pub unsafe extern "C" fn redjs_string16(ctx: *mut c_void, p: *const u16, len: usize, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn redjs_string16(
+    ctx: *mut c_void,
+    p: *const u16,
+    len: usize,
+    out: *mut u64,
+) -> i32 {
     glue::rjs_string16(ctx, p, len, out)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn redjs_string8(ctx: *mut c_void, p: *const u8, len: usize, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn redjs_string8(
+    ctx: *mut c_void,
+    p: *const u8,
+    len: usize,
+    out: *mut u64,
+) -> i32 {
     glue::rjs_string8(ctx, p, len, out)
 }
 
@@ -477,7 +556,11 @@ pub unsafe extern "C" fn redjs_atom8(ctx: *mut c_void, p: *const u8, len: usize)
 /// Each call mints a DISTINCT symbol even for the same name: create once,
 /// cache on the host side, reuse.
 #[no_mangle]
-pub unsafe extern "C" fn redjs_atom_private(ctx: *mut c_void, p: *const u8, len: usize) -> *mut c_void {
+pub unsafe extern "C" fn redjs_atom_private(
+    ctx: *mut c_void,
+    p: *const u8,
+    len: usize,
+) -> *mut c_void {
     glue::rjs_atom_private(ctx, p, len)
 }
 
@@ -495,7 +578,12 @@ pub unsafe extern "C" fn redjs_atom_free(ctx: *mut c_void, atom: *mut c_void) {
 
 /// `base[atom]` with full JS semantics (prototype chain, getters).
 #[no_mangle]
-pub unsafe extern "C" fn redjs_get(ctx: *mut c_void, base: u64, atom: *mut c_void, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn redjs_get(
+    ctx: *mut c_void,
+    base: u64,
+    atom: *mut c_void,
+    out: *mut u64,
+) -> i32 {
     glue::rjs_get(ctx, base, atom, out)
 }
 
@@ -508,12 +596,23 @@ pub unsafe extern "C" fn redjs_set(ctx: *mut c_void, obj: u64, atom: *mut c_void
 /// Defines an own property directly (no setters). attrs bits: 1 readonly,
 /// 2 dontenum, 4 dontdelete. Use for building namespaces/prototypes.
 #[no_mangle]
-pub unsafe extern "C" fn redjs_define(ctx: *mut c_void, obj: u64, atom: *mut c_void, v: u64, attrs: u32) -> i32 {
+pub unsafe extern "C" fn redjs_define(
+    ctx: *mut c_void,
+    obj: u64,
+    atom: *mut c_void,
+    v: u64,
+    attrs: u32,
+) -> i32 {
     glue::rjs_define(ctx, obj, atom, v, attrs)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn redjs_get_index(ctx: *mut c_void, base: u64, index: u32, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn redjs_get_index(
+    ctx: *mut c_void,
+    base: u64,
+    index: u32,
+    out: *mut u64,
+) -> i32 {
     glue::rjs_get_index(ctx, base, index, out)
 }
 
@@ -670,7 +769,12 @@ pub unsafe extern "C" fn redjs_error_create(
 /// Extracts `message` and `stack` as JS strings from an exception value
 /// (never throws; falls back to ToString / empty).
 #[no_mangle]
-pub unsafe extern "C" fn redjs_error_info(ctx: *mut c_void, err: u64, msg_out: *mut u64, stack_out: *mut u64) -> i32 {
+pub unsafe extern "C" fn redjs_error_info(
+    ctx: *mut c_void,
+    err: u64,
+    msg_out: *mut u64,
+    stack_out: *mut u64,
+) -> i32 {
     glue::rjs_error_info(ctx, err, msg_out, stack_out)
 }
 
@@ -699,12 +803,23 @@ pub unsafe extern "C" fn redjs_arraybuffer_external(
 ) -> i32 {
     let mut exc: capi::JSValueRef = core::ptr::null();
     let dealloc: capi::JSTypedArrayBytesDeallocator = core::mem::transmute(dealloc);
-    let obj = capi::JSObjectMakeArrayBufferWithBytesNoCopy(ctx, bytes, byte_len, dealloc, dealloc_ctx, &mut exc);
+    let obj = capi::JSObjectMakeArrayBufferWithBytesNoCopy(
+        ctx,
+        bytes,
+        byte_len,
+        dealloc,
+        dealloc_ctx,
+        &mut exc,
+    );
     finish_capi_make(obj, exc, out)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn redjs_arraybuffer_info(ctx: *mut c_void, v: u64, out: *mut RjsAbInfo) -> i32 {
+pub unsafe extern "C" fn redjs_arraybuffer_info(
+    ctx: *mut c_void,
+    v: u64,
+    out: *mut RjsAbInfo,
+) -> i32 {
     glue::rjs_arraybuffer_info(ctx, v, out)
 }
 
@@ -719,7 +834,12 @@ pub unsafe extern "C" fn redjs_arraybuffer_detach(ctx: *mut c_void, v: u64) -> i
 /// 4 i16, 5 u16, 6 i32, 7 u32, 8 f32, 9 f64, 10 bigi64, 11 bigu64) with a
 /// fresh buffer of `length` elements.
 #[no_mangle]
-pub unsafe extern "C" fn redjs_typedarray_create(ctx: *mut c_void, kind: u32, length: usize, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn redjs_typedarray_create(
+    ctx: *mut c_void,
+    kind: u32,
+    length: usize,
+    out: *mut u64,
+) -> i32 {
     let capi_kind = capi::ta_kind_to_capi(kind);
     if capi_kind == capi::K_JS_TYPED_ARRAY_TYPE_NONE {
         return REDJS_BAD_ARG;
@@ -746,7 +866,15 @@ pub unsafe extern "C" fn redjs_typedarray_external(
     }
     let mut exc: capi::JSValueRef = core::ptr::null();
     let dealloc: capi::JSTypedArrayBytesDeallocator = core::mem::transmute(dealloc);
-    let obj = capi::JSObjectMakeTypedArrayWithBytesNoCopy(ctx, capi_kind, bytes, byte_len, dealloc, dealloc_ctx, &mut exc);
+    let obj = capi::JSObjectMakeTypedArrayWithBytesNoCopy(
+        ctx,
+        capi_kind,
+        bytes,
+        byte_len,
+        dealloc,
+        dealloc_ctx,
+        &mut exc,
+    );
     finish_capi_make(obj, exc, out)
 }
 
@@ -781,7 +909,11 @@ pub unsafe extern "C" fn redjs_typedarray_wrap(
 /// element count, byte length/offset, detached/shared flags). THE fast path
 /// for `writeBuffer(queue, ..., Float32Array)` — read JS memory directly.
 #[no_mangle]
-pub unsafe extern "C" fn redjs_typedarray_info(ctx: *mut c_void, v: u64, out: *mut RjsTaInfo) -> i32 {
+pub unsafe extern "C" fn redjs_typedarray_info(
+    ctx: *mut c_void,
+    v: u64,
+    out: *mut RjsTaInfo,
+) -> i32 {
     glue::rjs_typedarray_info(ctx, v, out)
 }
 
@@ -833,7 +965,12 @@ pub unsafe extern "C" fn redjs_promise_create(
 /// status: 0 pending, 1 fulfilled, 2 rejected; `result_out` = value/reason
 /// (undefined while pending).
 #[no_mangle]
-pub unsafe extern "C" fn redjs_promise_info(ctx: *mut c_void, v: u64, status_out: *mut u32, result_out: *mut u64) -> i32 {
+pub unsafe extern "C" fn redjs_promise_info(
+    ctx: *mut c_void,
+    v: u64,
+    status_out: *mut u32,
+    result_out: *mut u64,
+) -> i32 {
     glue::rjs_promise_info(ctx, v, status_out, result_out)
 }
 
@@ -1051,7 +1188,8 @@ pub extern "C" fn redjs_idb_set_budget_us(us: u32) {
 pub extern "C" fn redjs_idb_shutdown(timeout_ms: u32) -> i32 {
     #[cfg(feature = "indexeddb")]
     {
-        crate::webapi::indexeddb::shutdown(std::time::Duration::from_millis(timeout_ms as u64)) as i32
+        crate::webapi::indexeddb::shutdown(std::time::Duration::from_millis(timeout_ms as u64))
+            as i32
     }
     #[cfg(not(feature = "indexeddb"))]
     {
@@ -1072,13 +1210,20 @@ pub extern "C" fn redjs_idb_shutdown(timeout_ms: u32) -> i32 {
 /// # Safety
 /// `folder_utf8` must point at `len` readable bytes; `key32` at 32 or be null.
 #[no_mangle]
-pub unsafe extern "C" fn redjs_idb_configure(folder_utf8: *const u8, len: usize, key32: *const u8, quota_bytes: u64) -> i32 {
+pub unsafe extern "C" fn redjs_idb_configure(
+    folder_utf8: *const u8,
+    len: usize,
+    key32: *const u8,
+    quota_bytes: u64,
+) -> i32 {
     #[cfg(feature = "indexeddb-sqlite")]
     {
         if folder_utf8.is_null() || len == 0 {
             return 2;
         }
-        let Ok(folder) = std::str::from_utf8(std::slice::from_raw_parts(folder_utf8, len)) else { return 2 };
+        let Ok(folder) = std::str::from_utf8(std::slice::from_raw_parts(folder_utf8, len)) else {
+            return 2;
+        };
         let key = if key32.is_null() {
             None
         } else {
@@ -1086,7 +1231,11 @@ pub unsafe extern "C" fn redjs_idb_configure(folder_utf8: *const u8, len: usize,
             k.copy_from_slice(std::slice::from_raw_parts(key32, 32));
             Some(k)
         };
-        match crate::webapi::indexeddb::configure(std::path::PathBuf::from(folder), key, quota_bytes) {
+        match crate::webapi::indexeddb::configure(
+            std::path::PathBuf::from(folder),
+            key,
+            quota_bytes,
+        ) {
             Ok(()) => 0,
             Err(_) => 1,
         }
@@ -1111,7 +1260,10 @@ pub unsafe extern "C" fn redjs_content_provider_set(ctx: *mut c_void, read_fn: *
     let read = if read_fn.is_null() {
         None
     } else {
-        Some(core::mem::transmute::<*const c_void, crate::webapi::fsutil::ContentReadFn>(read_fn))
+        Some(core::mem::transmute::<
+            *const c_void,
+            crate::webapi::fsutil::ContentReadFn,
+        >(read_fn))
     };
     // Registered first, so a recycled address is purged BEFORE this hook lands
     // rather than by the install that follows it.
@@ -1160,7 +1312,12 @@ pub unsafe extern "C" fn redjs_dom_content_loaded(ctx: *mut c_void) {
 /// Registers a value under `document.getElementById(id)` (the host canvas
 /// wrapper, etc). UTF-16 id.
 #[no_mangle]
-pub unsafe extern "C" fn redjs_dom_register_element(ctx: *mut c_void, id: *const u16, id_len: usize, value: u64) {
+pub unsafe extern "C" fn redjs_dom_register_element(
+    ctx: *mut c_void,
+    id: *const u16,
+    id_len: usize,
+    value: u64,
+) {
     let id = String::from_utf16_lossy(core::slice::from_raw_parts(id, id_len));
     crate::webapi::dom::register_element(ctx, &id, value)
 }
@@ -1181,11 +1338,18 @@ pub unsafe extern "C" fn redjs_image_pixels(
 ) -> i32 {
     let st = crate::webapi::util::state(ctx);
     // ImageBitmap directly, else an HTMLImageElement's loaded bitmap.
-    let bmp = if let Some(b) = crate::webapi::util::host_data::<crate::webapi::image::BitmapData>(ctx, st.bitmap_class, v) {
+    let bmp = if let Some(b) =
+        crate::webapi::util::host_data::<crate::webapi::image::BitmapData>(ctx, st.bitmap_class, v)
+    {
         Some(&*b)
     } else {
         let slot = crate::webapi::util::get_a(ctx, v, st.s_image);
-        crate::webapi::util::host_data::<crate::webapi::image::BitmapData>(ctx, st.bitmap_class, slot).map(|b| &*b)
+        crate::webapi::util::host_data::<crate::webapi::image::BitmapData>(
+            ctx,
+            st.bitmap_class,
+            slot,
+        )
+        .map(|b| &*b)
     };
     match bmp {
         Some(b) => {
@@ -1253,7 +1417,10 @@ pub unsafe extern "C" fn redjs_dialog_handler_set(ctx: *mut c_void, handler: *co
     let f = if handler.is_null() {
         None
     } else {
-        Some(core::mem::transmute::<*const c_void, crate::webapi::dialogs::DialogFn>(handler))
+        Some(core::mem::transmute::<
+            *const c_void,
+            crate::webapi::dialogs::DialogFn,
+        >(handler))
     };
     crate::context::ensure(ctx); // see redjs_content_provider_set
     crate::webapi::dialogs::set_handler(ctx, f);

@@ -96,7 +96,15 @@ const IO_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_FLIGHT: AtomicU64 = AtomicU64::new(1);
 
 /// The event types an `XMLHttpRequestEventTarget` has handlers for.
-const PROGRESS_TYPES: [&str; 7] = ["loadstart", "progress", "abort", "error", "load", "timeout", "loadend"];
+const PROGRESS_TYPES: [&str; 7] = [
+    "loadstart",
+    "progress",
+    "abort",
+    "error",
+    "load",
+    "timeout",
+    "loadend",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RType {
@@ -265,7 +273,12 @@ fn classes_reg() -> &'static Mutex<HashMap<usize, &'static XhrClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static XhrClasses {
-    classes_reg().lock().unwrap().get(&(g as usize)).copied().expect("webapi::xhr not installed")
+    classes_reg()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::xhr not installed")
 }
 
 /// `(context key, request id)` → the protected `XMLHttpRequest` it belongs to.
@@ -275,7 +288,11 @@ fn flights() -> &'static Mutex<HashMap<(usize, u64), u64>> {
 }
 
 fn flight_obj(g: *mut c_void, flight: u64) -> Option<u64> {
-    flights().lock().unwrap().get(&(g as usize, flight)).copied()
+    flights()
+        .lock()
+        .unwrap()
+        .get(&(g as usize, flight))
+        .copied()
 }
 
 /// `crate::context` fan-out: the heap is gone, so nothing is unprotected.
@@ -341,7 +358,10 @@ unsafe fn slots(g: *mut c_void, obj: u64) -> Option<u64> {
 unsafe fn pe_slot(g: *mut c_void, cf: *mut c_void, key: &str) -> u64 {
     match slots(g, cf_this(cf)) {
         Some(s) => get(g, s, key),
-        None => throw_type_error(g, &format!("ProgressEvent.{key} called on a non-ProgressEvent")),
+        None => throw_type_error(
+            g,
+            &format!("ProgressEvent.{key} called on a non-ProgressEvent"),
+        ),
     }
 }
 
@@ -399,8 +419,12 @@ unsafe fn progress_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     } else {
         false
     };
-    let Ok(loaded) = ull(g, init, "loaded") else { return UNDEF };
-    let Ok(total) = ull(g, init, "total") else { return UNDEF };
+    let Ok(loaded) = ull(g, init, "loaded") else {
+        return UNDEF;
+    };
+    let Ok(total) = ull(g, init, "total") else {
+        return UNDEF;
+    };
     if let Some(s) = slots(g, obj) {
         define(g, s, "lengthComputable", enc_bool(computable), 0);
         define(g, s, "loaded", enc_f64(loaded), 0);
@@ -473,7 +497,13 @@ macro_rules! handler_accessor {
             let bag = handler_bag(g, cf_this(cf), true);
             if is_cell(bag) {
                 let v = cf_arg(cf, 0);
-                define(g, bag, $name, if blob::is_object(g, v) { v } else { NULL }, 0);
+                define(
+                    g,
+                    bag,
+                    $name,
+                    if blob::is_object(g, v) { v } else { NULL },
+                    0,
+                );
             }
             UNDEF
         }
@@ -487,7 +517,11 @@ handler_accessor!(get_onerror, set_onerror, "onerror");
 handler_accessor!(get_onload, set_onload, "onload");
 handler_accessor!(get_ontimeout, set_ontimeout, "ontimeout");
 handler_accessor!(get_onloadend, set_onloadend, "onloadend");
-handler_accessor!(get_onreadystatechange, set_onreadystatechange, "onreadystatechange");
+handler_accessor!(
+    get_onreadystatechange,
+    set_onreadystatechange,
+    "onreadystatechange"
+);
 
 // ---------------------------------------------------------------------------
 // The network side: what the transport reports, queued for the pump
@@ -565,8 +599,9 @@ impl http::Observe for Obs {
     }
 
     fn head(&self, h: &http::ProgressHead<'_>) {
-        let identity = http::header(h.headers, "content-encoding")
-            .map_or(true, |v| v.trim().is_empty() || v.trim().eq_ignore_ascii_case("identity"));
+        let identity = http::header(h.headers, "content-encoding").map_or(true, |v| {
+            v.trim().is_empty() || v.trim().eq_ignore_ascii_case("identity")
+        });
         let msg = HeadMsg {
             status: h.status,
             status_text: h.status_text.to_string(),
@@ -597,7 +632,9 @@ impl http::Observe for Obs {
 
 /// One delivery: everything the request's inbox accumulated, as events.
 unsafe fn tick(g: *mut c_void, sh: &Arc<Shared>) {
-    let Some(obj) = flight_obj(g, sh.flight) else { return };
+    let Some(obj) = flight_obj(g, sh.flight) else {
+        return;
+    };
     let flight = sh.flight;
     let (upload, head, chunk, received, total, moved, done) = {
         let mut i = sh.inbox.lock().unwrap();
@@ -698,7 +735,9 @@ unsafe fn process_head(g: *mut c_void, obj: u64, h: HeadMsg) {
     d.resp_headers = h
         .headers
         .into_iter()
-        .filter(|(k, _)| !k.eq_ignore_ascii_case("set-cookie") && !k.eq_ignore_ascii_case("set-cookie2"))
+        .filter(|(k, _)| {
+            !k.eq_ignore_ascii_case("set-cookie") && !k.eq_ignore_ascii_case("set-cookie2")
+        })
         .collect();
     d.resp_url = match h.url.split_once('#') {
         Some((u, _)) => u.to_string(),
@@ -710,7 +749,13 @@ unsafe fn process_head(g: *mut c_void, obj: u64, h: HeadMsg) {
 }
 
 /// "Process response body chunk": `LOADING`, `readystatechange`, `progress`.
-unsafe fn process_chunk(g: *mut c_void, obj: u64, chunk: Vec<u8>, received: u64, total: Option<u64>) {
+unsafe fn process_chunk(
+    g: *mut c_void,
+    obj: u64,
+    chunk: Vec<u8>,
+    received: u64,
+    total: Option<u64>,
+) {
     let Some(d) = xd(g, obj) else { return };
     if d.state != HEADERS_RECEIVED && d.state != LOADING {
         return;
@@ -793,7 +838,10 @@ unsafe fn finish(g: *mut c_void, obj: u64, result: Result<http::Response, http::
             } else {
                 // A browser's console says so too (net::ERR_…); the event
                 // itself carries no reason.
-                eprintln!("[redjs] XMLHttpRequest: {} {} failed: {}", d.method, d.url, e.message);
+                eprintln!(
+                    "[redjs] XMLHttpRequest: {} {} failed: {}",
+                    d.method, d.url, e.message
+                );
                 "error"
             };
             let owed = end_flight(g, obj, false);
@@ -837,15 +885,26 @@ unsafe fn arm_timeout(g: *mut c_void, d: &mut XhrData) {
         return;
     }
     let elapsed = d.started.map_or(0, |t| t.elapsed().as_millis() as u64);
-    queue_timeout_check(g, d.flight, d.timer, (d.timeout_ms as u64).saturating_sub(elapsed));
+    queue_timeout_check(
+        g,
+        d.flight,
+        d.timer,
+        (d.timeout_ms as u64).saturating_sub(elapsed),
+    );
 }
 
 unsafe fn queue_timeout_check(g: *mut c_void, flight: u64, timer: u64, delay_ms: u64) {
-    crate::web::schedule_native(g, delay_ms as f64, Box::new(move |g| unsafe { check_timeout(g, flight, timer) }));
+    crate::web::schedule_native(
+        g,
+        delay_ms as f64,
+        Box::new(move |g| unsafe { check_timeout(g, flight, timer) }),
+    );
 }
 
 unsafe fn check_timeout(g: *mut c_void, flight: u64, timer: u64) {
-    let Some(obj) = flight_obj(g, flight) else { return };
+    let Some(obj) = flight_obj(g, flight) else {
+        return;
+    };
     let Some(d) = xd(g, obj) else { return };
     if d.flight != flight || d.timer != timer || d.timeout_ms == 0 {
         return;
@@ -868,18 +927,31 @@ unsafe fn check_timeout(g: *mut c_void, flight: u64, timer: u64) {
 // ---------------------------------------------------------------------------
 
 fn refused(message: String) -> http::HttpError {
-    http::HttpError { kind: http::ErrorKind::Refused, message }
+    http::HttpError {
+        kind: http::ErrorKind::Refused,
+        message,
+    }
 }
 
 fn failed(message: String) -> http::HttpError {
-    http::HttpError { kind: http::ErrorKind::Network, message }
+    http::HttpError {
+        kind: http::ErrorKind::Network,
+        message,
+    }
 }
 
 /// A complete answer made here rather than by the transport, delivered the
 /// way the transport delivers one: the head, the body as one piece, the end.
 /// So the events are a network response's: `readystatechange` 2, 3 and 4,
 /// one `progress`, then `load`.
-fn answer(sh: &Arc<Shared>, status: u16, status_text: &str, headers: Vec<(String, String)>, url: &str, body: Vec<u8>) {
+fn answer(
+    sh: &Arc<Shared>,
+    status: u16,
+    status_text: &str,
+    headers: Vec<(String, String)>,
+    url: &str,
+    body: Vec<u8>,
+) {
     // `responseURL` excludes the fragment, as for a network response.
     let url = url.split('#').next().unwrap_or_default().to_string();
     let len = body.len() as u64;
@@ -896,7 +968,12 @@ fn answer(sh: &Arc<Shared>, status: u16, status_text: &str, headers: Vec<(String
         remote_addr: None,
         cache: http::cache::Outcome::Off,
     };
-    let head = HeadMsg { status, status_text: status_text.to_string(), headers, url };
+    let head = HeadMsg {
+        status,
+        status_text: status_text.to_string(),
+        headers,
+        url,
+    };
     sh.post(move |i| {
         i.identity = true;
         i.head = Some(head);
@@ -923,7 +1000,11 @@ unsafe fn local_blob(
     headers: &[(String, String)],
 ) {
     if method != "GET" {
-        sh.post(|i| i.done = Some(Err(failed(format!("a blob: URL can only be fetched with GET, not {method}")))));
+        sh.post(|i| {
+            i.done = Some(Err(failed(format!(
+                "a blob: URL can only be fetched with GET, not {method}"
+            ))))
+        });
         return;
     }
     let Some(entry) = entry else {
@@ -943,12 +1024,23 @@ unsafe fn local_blob(
         }
     };
     let status: u16 = if content_range.is_some() { 206 } else { 200 };
-    let status_text = if status == 206 { "Partial Content" } else { "OK" };
-    let mut hs = vec![("content-length".to_string(), len.to_string()), ("content-type".to_string(), entry.mime.clone())];
+    let status_text = if status == 206 {
+        "Partial Content"
+    } else {
+        "OK"
+    };
+    let mut hs = vec![
+        ("content-length".to_string(), len.to_string()),
+        ("content-type".to_string(), entry.mime.clone()),
+    ];
     if let Some(cr) = content_range {
         hs.push(("content-range".to_string(), cr));
     }
-    let window = blob::Range { source: entry.range.source.clone(), offset: entry.range.offset + start, len };
+    let window = blob::Range {
+        source: entry.range.source.clone(),
+        offset: entry.range.offset + start,
+        len,
+    };
     if let Some(bytes) = window.in_memory() {
         answer(sh, status, status_text, hs, url, bytes.to_vec());
         return;
@@ -959,7 +1051,9 @@ unsafe fn local_blob(
         window,
         Box::new(move |_g, r| match r {
             Ok(bytes) => answer(&sh, status, status_text, hs, &url, bytes),
-            Err(e) => sh.post(|i| i.done = Some(Err(failed(format!("{}: {}", e.name(), e.message()))))),
+            Err(e) => {
+                sh.post(|i| i.done = Some(Err(failed(format!("{}: {}", e.name(), e.message())))))
+            }
         }),
     );
 }
@@ -971,7 +1065,9 @@ unsafe fn local_blob(
 unsafe fn local_read(g: *mut c_void, sh: &Arc<Shared>, method: &str, raw_url: &str, url: &str) {
     if method != "GET" && method != "HEAD" {
         sh.post(|i| {
-            i.done = Some(Err(failed(format!("{method} is not supported for local and data: URLs; only GET and HEAD are"))))
+            i.done = Some(Err(failed(format!(
+                "{method} is not supported for local and data: URLs; only GET and HEAD are"
+            ))))
         });
         return;
     }
@@ -981,7 +1077,14 @@ unsafe fn local_read(g: *mut c_void, sh: &Arc<Shared>, method: &str, raw_url: &s
         return;
     }
     let body = if method == "GET" { f.bytes } else { Vec::new() };
-    answer(sh, f.status as u16, f.status_text, vec![("content-type".to_string(), f.mime)], url, body);
+    answer(
+        sh,
+        f.status as u16,
+        f.status_text,
+        vec![("content-type".to_string(), f.mime)],
+        url,
+        body,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,7 +1129,9 @@ fn http_trim(s: &str) -> &str {
 pub(super) fn charset_of(mime: &str) -> Option<String> {
     mime.split(';').skip(1).find_map(|p| {
         let (k, v) = p.split_once('=')?;
-        k.trim().eq_ignore_ascii_case("charset").then(|| v.trim().trim_matches('"').to_string())
+        k.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| v.trim().trim_matches('"').to_string())
     })
 }
 
@@ -1035,7 +1140,9 @@ fn final_mime(d: &XhrData) -> String {
     if let Some(m) = &d.override_mime {
         return m.clone();
     }
-    http::header(&d.resp_headers, "content-type").unwrap_or("").to_string()
+    http::header(&d.resp_headers, "content-type")
+        .unwrap_or("")
+        .to_string()
 }
 
 /// "Text response": the body decoded by the final charset (UTF-8 without
@@ -1056,9 +1163,16 @@ fn decode_text(d: &mut XhrData) -> &str {
 // XMLHttpRequest
 // ---------------------------------------------------------------------------
 
-unsafe fn this_xhr<'a>(g: *mut c_void, cf: *mut c_void, what: &str) -> Result<&'a mut XhrData, u64> {
+unsafe fn this_xhr<'a>(
+    g: *mut c_void,
+    cf: *mut c_void,
+    what: &str,
+) -> Result<&'a mut XhrData, u64> {
     xd(g, cf_this(cf)).ok_or_else(|| {
-        throw_type_error(g, &format!("Illegal invocation: XMLHttpRequest.{what} called on a non-XMLHttpRequest"))
+        throw_type_error(
+            g,
+            &format!("Illegal invocation: XMLHttpRequest.{what} called on a non-XMLHttpRequest"),
+        )
     })
 }
 
@@ -1080,7 +1194,11 @@ unsafe fn xhr_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     // OrdinaryCreateFromConstructor: a subclass's prototype, else ours.
     let nt = cf_new_target(cf);
-    let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    let mut proto = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
     if !is_cell(proto) {
         proto = c.xhr.proto;
     }
@@ -1103,7 +1221,10 @@ pub(super) unsafe fn base_url(g: *mut c_void) -> Option<url::Url> {
 unsafe fn xhr_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     if xd(g, this).is_none() {
-        return throw_type_error(g, "Illegal invocation: XMLHttpRequest.open called on a non-XMLHttpRequest");
+        return throw_type_error(
+            g,
+            "Illegal invocation: XMLHttpRequest.open called on a non-XMLHttpRequest",
+        );
     }
     if cf_argc(cf) < 2 {
         return throw_type_error(
@@ -1114,19 +1235,34 @@ unsafe fn xhr_open(g: *mut c_void, cf: *mut c_void) -> u64 {
             ),
         );
     }
-    let Ok(m) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(m) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let method = read_string(g, m).unwrap_or_default();
-    let Ok(u) = to_js_string(g, cf_arg(cf, 1)) else { return UNDEF };
+    let Ok(u) = to_js_string(g, cf_arg(cf, 1)) else {
+        return UNDEF;
+    };
     let raw_url = read_string(g, u).unwrap_or_default();
     if !headers::valid_name(&method) {
-        return domexception::throw(g, "SyntaxError", &format!("'{method}' is not a valid HTTP method."));
+        return domexception::throw(
+            g,
+            "SyntaxError",
+            &format!("'{method}' is not a valid HTTP method."),
+        );
     }
     let upper = method.to_ascii_uppercase();
     if matches!(upper.as_str(), "CONNECT" | "TRACE" | "TRACK") {
-        return domexception::throw(g, "SecurityError", &format!("'{method}' HTTP method is unsupported."));
+        return domexception::throw(
+            g,
+            "SecurityError",
+            &format!("'{method}' HTTP method is unsupported."),
+        );
     }
     // Normalize: the six standard methods are upper-cased, others kept.
-    let method = if matches!(upper.as_str(), "DELETE" | "GET" | "HEAD" | "OPTIONS" | "POST" | "PUT") {
+    let method = if matches!(
+        upper.as_str(),
+        "DELETE" | "GET" | "HEAD" | "OPTIONS" | "POST" | "PUT"
+    ) {
         upper
     } else {
         method
@@ -1177,7 +1313,11 @@ unsafe fn xhr_open(g: *mut c_void, cf: *mut c_void) -> u64 {
     d.upload_listened = false;
     d.method = method;
     d.url = parsed.to_string();
-    d.blob = if parsed.scheme() == "blob" { super::url::lookup(g, parsed.as_str()) } else { None };
+    d.blob = if parsed.scheme() == "blob" {
+        super::url::lookup(g, parsed.as_str())
+    } else {
+        None
+    };
     d.raw_url = raw_url;
     d.headers.clear();
     d.network_error();
@@ -1212,24 +1352,43 @@ unsafe fn xhr_set_request_header(g: *mut c_void, cf: *mut c_void) -> u64 {
     if d.send_flag {
         return invalid_state(g, "Failed to execute 'setRequestHeader' on 'XMLHttpRequest': send() has already been called.");
     }
-    let Ok(n) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
-    let Ok(v) = to_js_string(g, cf_arg(cf, 1)) else { return UNDEF };
+    let Ok(n) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
+    let Ok(v) = to_js_string(g, cf_arg(cf, 1)) else {
+        return UNDEF;
+    };
     let name = read_string(g, n).unwrap_or_default();
     let value = http_trim(&read_string(g, v).unwrap_or_default()).to_string();
     if !headers::valid_name(&name) {
-        return domexception::throw(g, "SyntaxError", &format!("'{name}' is not a valid HTTP header field name."));
+        return domexception::throw(
+            g,
+            "SyntaxError",
+            &format!("'{name}' is not a valid HTTP header field name."),
+        );
     }
     if !headers::valid_value(&value) {
-        return domexception::throw(g, "SyntaxError", &format!("'{value}' is not a valid HTTP header field value."));
+        return domexception::throw(
+            g,
+            "SyntaxError",
+            &format!("'{value}' is not a valid HTTP header field value."),
+        );
     }
     if forbidden_request_header(&name) {
         // Chromium's console line, word for word.
-        advise(&format!("unsafe:{}", name.to_ascii_lowercase()), &format!("Refused to set unsafe header \"{name}\""));
+        advise(
+            &format!("unsafe:{}", name.to_ascii_lowercase()),
+            &format!("Refused to set unsafe header \"{name}\""),
+        );
         return UNDEF;
     }
     // `to_js_string` can run script; take the data again.
     let d = this_or_throw!(g, cf, "setRequestHeader");
-    match d.headers.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&name)) {
+    match d
+        .headers
+        .iter_mut()
+        .find(|(k, _)| k.eq_ignore_ascii_case(&name))
+    {
         Some((_, existing)) => {
             existing.push_str(", ");
             existing.push_str(&value);
@@ -1242,7 +1401,10 @@ unsafe fn xhr_set_request_header(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// Does anything listen on the upload object? (The spec's "upload listener
 /// flag", taken at `send()`.)
 unsafe fn upload_listened(g: *mut c_void, upload: u64) -> bool {
-    is_cell(upload) && PROGRESS_TYPES.iter().any(|t| events::has_listener(g, upload, t))
+    is_cell(upload)
+        && PROGRESS_TYPES
+            .iter()
+            .any(|t| events::has_listener(g, upload, t))
 }
 
 #[crate::host_fn]
@@ -1250,17 +1412,28 @@ unsafe fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     let this = cf_this(cf);
     let d = this_or_throw!(g, cf, "send");
     if d.state != OPENED {
-        return invalid_state(g, "Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.");
+        return invalid_state(
+            g,
+            "Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.",
+        );
     }
     if d.send_flag {
-        return invalid_state(g, "Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.");
+        return invalid_state(
+            g,
+            "Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.",
+        );
     }
     let body = if d.method == "GET" || d.method == "HEAD" {
         None
     } else {
         match request::extract_body(g, cf_arg(cf, 0)) {
             Ok(b) => b,
-            Err(m) => return throw_type_error(g, &format!("Failed to execute 'send' on 'XMLHttpRequest': {m}")),
+            Err(m) => {
+                return throw_type_error(
+                    g,
+                    &format!("Failed to execute 'send' on 'XMLHttpRequest': {m}"),
+                )
+            }
         }
     };
     // Extracting a body can run script (a FormData entry's getter, toString).
@@ -1274,7 +1447,10 @@ unsafe fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
         None => (None, None),
     };
     if let Some(t) = content_type {
-        if !req_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+        if !req_headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        {
             req_headers.push(("Content-Type".into(), t));
         }
     }
@@ -1324,7 +1500,9 @@ unsafe fn xhr_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     } else if let Some(scheme) = super::fetch::unsupported_scheme(&lower) {
         advise(
             &format!("scheme:{scheme}"),
-            &format!("{scheme}: URLs are not supported (as for fetch); the request is a network error"),
+            &format!(
+                "{scheme}: URLs are not supported (as for fetch); the request is a network error"
+            ),
         );
         Some(format!("the {scheme}: scheme is not supported"))
     } else {
@@ -1407,7 +1585,9 @@ unsafe fn xhr_abort(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn xhr_get_response_header(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(n) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(n) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let name = read_string(g, n).unwrap_or_default();
     let d = this_or_throw!(g, cf, "getResponseHeader");
     if d.state < HEADERS_RECEIVED || d.error {
@@ -1432,8 +1612,11 @@ unsafe fn xhr_get_all_response_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
     if d.state < HEADERS_RECEIVED || d.error {
         return js_string(g, "");
     }
-    let lowered: Vec<(String, String)> =
-        d.resp_headers.iter().map(|(k, v)| (k.to_ascii_lowercase(), v.clone())).collect();
+    let lowered: Vec<(String, String)> = d
+        .resp_headers
+        .iter()
+        .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))
+        .collect();
     let mut out = String::new();
     for (k, v) in headers::sorted_combined(&lowered) {
         out.push_str(&k);
@@ -1446,7 +1629,9 @@ unsafe fn xhr_get_all_response_headers(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn xhr_override_mime_type(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(m) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(m) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let mime = read_string(g, m).unwrap_or_default();
     let d = this_or_throw!(g, cf, "overrideMimeType");
     if d.state == LOADING || d.state == DONE {
@@ -1456,8 +1641,14 @@ unsafe fn xhr_override_mime_type(g: *mut c_void, cf: *mut c_void) -> u64 {
         );
     }
     let essence = mime.split(';').next().unwrap_or("").trim();
-    let valid = essence.split_once('/').is_some_and(|(t, s)| headers::valid_name(t) && headers::valid_name(s));
-    d.override_mime = Some(if valid { mime.trim().to_ascii_lowercase() } else { "application/octet-stream".into() });
+    let valid = essence
+        .split_once('/')
+        .is_some_and(|(t, s)| headers::valid_name(t) && headers::valid_name(s));
+    d.override_mime = Some(if valid {
+        mime.trim().to_ascii_lowercase()
+    } else {
+        "application/octet-stream".into()
+    });
     d.text = None;
     UNDEF
 }
@@ -1483,14 +1674,22 @@ unsafe fn xhr_status(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn xhr_status_text(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "statusText");
-    let t = if d.error { String::new() } else { d.status_text.clone() };
+    let t = if d.error {
+        String::new()
+    } else {
+        d.status_text.clone()
+    };
     js_string(g, &t)
 }
 
 #[crate::host_fn]
 unsafe fn xhr_response_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     let d = this_or_throw!(g, cf, "responseURL");
-    let u = if d.error { String::new() } else { d.resp_url.clone() };
+    let u = if d.error {
+        String::new()
+    } else {
+        d.resp_url.clone()
+    };
     js_string(g, &u)
 }
 
@@ -1528,7 +1727,10 @@ unsafe fn xhr_response_xml(g: *mut c_void, cf: *mut c_void) -> u64 {
         );
     }
     if d.state == DONE && d.has_body {
-        advise("xml", "responseXML is null: this runtime has no XML/HTML parser (read responseText instead)");
+        advise(
+            "xml",
+            "responseXML is null: this runtime has no XML/HTML parser (read responseText instead)",
+        );
     }
     NULL
 }
@@ -1562,7 +1764,11 @@ unsafe fn xhr_response(g: *mut c_void, cf: *mut c_void) -> u64 {
             }
         }
         RType::Blob => {
-            let mime = if d.has_body { final_mime(d) } else { String::new() };
+            let mime = if d.has_body {
+                final_mime(d)
+            } else {
+                String::new()
+            };
             let bytes = d.body.clone();
             blob::create(g, UNDEF, bytes, mime)
         }
@@ -1578,7 +1784,10 @@ unsafe fn xhr_response(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         RType::Document => {
             if d.has_body {
-                advise("xml", "responseType \"document\" gives null: this runtime has no XML/HTML parser");
+                advise(
+                    "xml",
+                    "responseType \"document\" gives null: this runtime has no XML/HTML parser",
+                );
             }
             NULL
         }
@@ -1596,11 +1805,15 @@ unsafe fn xhr_response_type_get(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn xhr_response_type_set(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(v) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(v) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let s = read_string(g, v).unwrap_or_default();
     let d = this_or_throw!(g, cf, "responseType");
     // WebIDL: an unknown enum value is ignored on assignment.
-    let Some(t) = RType::parse(&s) else { return UNDEF };
+    let Some(t) = RType::parse(&s) else {
+        return UNDEF;
+    };
     if d.state == LOADING || d.state == DONE {
         return invalid_state(
             g,
@@ -1620,9 +1833,15 @@ unsafe fn xhr_timeout_get(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn xhr_timeout_set(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let Ok(n) = to_number(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(n) = to_number(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     // WebIDL `unsigned long`: modulo 2^32.
-    let ms = if n.is_finite() { n.trunc().rem_euclid(4294967296.0) as u32 } else { 0 };
+    let ms = if n.is_finite() {
+        n.trunc().rem_euclid(4294967296.0) as u32
+    } else {
+        0
+    };
     let d = this_or_throw!(g, cf, "timeout");
     d.timeout_ms = ms;
     arm_timeout(g, d);
@@ -1658,77 +1877,107 @@ unsafe fn xhr_with_credentials_set(g: *mut c_void, cf: *mut c_void) -> u64 {
 pub unsafe fn install(g: *mut c_void, event_proto: u64, event_target_proto: u64) {
     let xhr_class = make_host_class::<XhrData>("XMLHttpRequest");
 
-    let progress = define_class(g, &ClassSpec {
-        name: "ProgressEvent",
-        arity: 1,
-        construct: Some(progress_event_construct),
-        parent_proto: event_proto,
-        methods: &[],
-        getters: &[("lengthComputable", pe_length_computable), ("loaded", pe_loaded), ("total", pe_total)],
-        accessors: &[],
-    });
+    let progress = define_class(
+        g,
+        &ClassSpec {
+            name: "ProgressEvent",
+            arity: 1,
+            construct: Some(progress_event_construct),
+            parent_proto: event_proto,
+            methods: &[],
+            getters: &[
+                ("lengthComputable", pe_length_computable),
+                ("loaded", pe_loaded),
+                ("total", pe_total),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let target = define_class(g, &ClassSpec {
-        name: "XMLHttpRequestEventTarget",
-        arity: 0,
-        construct: None,
-        parent_proto: event_target_proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[
-            ("onloadstart", get_onloadstart, set_onloadstart),
-            ("onprogress", get_onprogress, set_onprogress),
-            ("onabort", get_onabort, set_onabort),
-            ("onerror", get_onerror, set_onerror),
-            ("onload", get_onload, set_onload),
-            ("ontimeout", get_ontimeout, set_ontimeout),
-            ("onloadend", get_onloadend, set_onloadend),
-        ],
-    });
+    let target = define_class(
+        g,
+        &ClassSpec {
+            name: "XMLHttpRequestEventTarget",
+            arity: 0,
+            construct: None,
+            parent_proto: event_target_proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[
+                ("onloadstart", get_onloadstart, set_onloadstart),
+                ("onprogress", get_onprogress, set_onprogress),
+                ("onabort", get_onabort, set_onabort),
+                ("onerror", get_onerror, set_onerror),
+                ("onload", get_onload, set_onload),
+                ("ontimeout", get_ontimeout, set_ontimeout),
+                ("onloadend", get_onloadend, set_onloadend),
+            ],
+        },
+    );
 
-    let upload = define_class(g, &ClassSpec {
-        name: "XMLHttpRequestUpload",
-        arity: 0,
-        construct: None,
-        parent_proto: target.proto,
-        methods: &[],
-        getters: &[],
-        accessors: &[],
-    });
+    let upload = define_class(
+        g,
+        &ClassSpec {
+            name: "XMLHttpRequestUpload",
+            arity: 0,
+            construct: None,
+            parent_proto: target.proto,
+            methods: &[],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
-    let xhr = define_class(g, &ClassSpec {
-        name: "XMLHttpRequest",
-        arity: 0,
-        construct: Some(xhr_construct),
-        parent_proto: target.proto,
-        methods: &[
-            ("open", 2, xhr_open),
-            ("setRequestHeader", 2, xhr_set_request_header),
-            ("send", 0, xhr_send),
-            ("abort", 0, xhr_abort),
-            ("getResponseHeader", 1, xhr_get_response_header),
-            ("getAllResponseHeaders", 0, xhr_get_all_response_headers),
-            ("overrideMimeType", 1, xhr_override_mime_type),
-        ],
-        getters: &[
-            ("readyState", xhr_ready_state),
-            ("upload", xhr_upload),
-            ("status", xhr_status),
-            ("statusText", xhr_status_text),
-            ("responseURL", xhr_response_url),
-            ("response", xhr_response),
-            ("responseText", xhr_response_text),
-            ("responseXML", xhr_response_xml),
-        ],
-        accessors: &[
-            ("timeout", xhr_timeout_get, xhr_timeout_set),
-            ("withCredentials", xhr_with_credentials_get, xhr_with_credentials_set),
-            ("responseType", xhr_response_type_get, xhr_response_type_set),
-            ("onreadystatechange", get_onreadystatechange, set_onreadystatechange),
-        ],
-    });
+    let xhr = define_class(
+        g,
+        &ClassSpec {
+            name: "XMLHttpRequest",
+            arity: 0,
+            construct: Some(xhr_construct),
+            parent_proto: target.proto,
+            methods: &[
+                ("open", 2, xhr_open),
+                ("setRequestHeader", 2, xhr_set_request_header),
+                ("send", 0, xhr_send),
+                ("abort", 0, xhr_abort),
+                ("getResponseHeader", 1, xhr_get_response_header),
+                ("getAllResponseHeaders", 0, xhr_get_all_response_headers),
+                ("overrideMimeType", 1, xhr_override_mime_type),
+            ],
+            getters: &[
+                ("readyState", xhr_ready_state),
+                ("upload", xhr_upload),
+                ("status", xhr_status),
+                ("statusText", xhr_status_text),
+                ("responseURL", xhr_response_url),
+                ("response", xhr_response),
+                ("responseText", xhr_response_text),
+                ("responseXML", xhr_response_xml),
+            ],
+            accessors: &[
+                ("timeout", xhr_timeout_get, xhr_timeout_set),
+                (
+                    "withCredentials",
+                    xhr_with_credentials_get,
+                    xhr_with_credentials_set,
+                ),
+                ("responseType", xhr_response_type_get, xhr_response_type_set),
+                (
+                    "onreadystatechange",
+                    get_onreadystatechange,
+                    set_onreadystatechange,
+                ),
+            ],
+        },
+    );
     // WebIDL `const` members, on both the constructor and the prototype.
-    for (name, v) in [("UNSENT", 0), ("OPENED", 1), ("HEADERS_RECEIVED", 2), ("LOADING", 3), ("DONE", 4)] {
+    for (name, v) in [
+        ("UNSENT", 0),
+        ("OPENED", 1),
+        ("HEADERS_RECEIVED", 2),
+        ("LOADING", 3),
+        ("DONE", 4),
+    ] {
         define(g, xhr.ctor, name, enc_i32(v), 1 | 2 | 4);
         define(g, xhr.proto, name, enc_i32(v), 1 | 2 | 4);
     }

@@ -22,7 +22,12 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static Classes>> {
 }
 
 fn classes(g: *mut c_void) -> &'static Classes {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::report_error not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::report_error not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
@@ -62,7 +67,15 @@ unsafe fn ee_error(g: *mut c_void, cf: *mut c_void) -> u64 {
     field(g, cf, "error")
 }
 
-unsafe fn fill(g: *mut c_void, obj: u64, message: &str, filename: &str, lineno: u32, colno: u32, error: u64) {
+unsafe fn fill(
+    g: *mut c_void,
+    obj: u64,
+    message: &str,
+    filename: &str,
+    lineno: u32,
+    colno: u32,
+    error: u64,
+) {
     if let Some(s) = slots(g, obj) {
         define(g, s, "message", js_string(g, message), 0);
         define(g, s, "filename", js_string(g, filename), 0);
@@ -92,21 +105,36 @@ unsafe fn init_u32(g: *mut c_void, init: u64, key: &str) -> Result<u32, ()> {
         return Ok(0);
     }
     let n = to_number(g, v)?;
-    Ok(if n.is_finite() { n.trunc().rem_euclid(4294967296.0) as u32 } else { 0 })
+    Ok(if n.is_finite() {
+        n.trunc().rem_euclid(4294967296.0) as u32
+    } else {
+        0
+    })
 }
 
 #[crate::host_fn]
 unsafe fn ee_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to construct 'ErrorEvent': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to construct 'ErrorEvent': 1 argument required, but only 0 present.",
+        );
     }
     let init = cf_arg(cf, 1);
     let obj = ordinary_create(g, cf_new_target(cf), classes(g).error_event.proto);
     events::init_event(g, obj, cf_arg(cf, 0), init, false);
-    let Ok(message) = init_string(g, init, "message") else { return UNDEF };
-    let Ok(filename) = init_string(g, init, "filename") else { return UNDEF };
-    let Ok(lineno) = init_u32(g, init, "lineno") else { return UNDEF };
-    let Ok(colno) = init_u32(g, init, "colno") else { return UNDEF };
+    let Ok(message) = init_string(g, init, "message") else {
+        return UNDEF;
+    };
+    let Ok(filename) = init_string(g, init, "filename") else {
+        return UNDEF;
+    };
+    let Ok(lineno) = init_u32(g, init, "lineno") else {
+        return UNDEF;
+    };
+    let Ok(colno) = init_u32(g, init, "colno") else {
+        return UNDEF;
+    };
     let error = if is_cell(init) {
         match try_get(g, init, "error") {
             Ok(v) if v != UNDEF => v,
@@ -121,7 +149,9 @@ unsafe fn ee_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 unsafe fn number_prop(g: *mut c_void, obj: u64, key: &str) -> u32 {
-    dec_f64(get(g, obj, key)).filter(|n| n.is_finite() && *n >= 0.0).map_or(0, |n| n as u32)
+    dec_f64(get(g, obj, key))
+        .filter(|n| n.is_finite() && *n >= 0.0)
+        .map_or(0, |n| n as u32)
 }
 
 /// Fires a cancelable `error` at the global (`onerror` called with HTML's five arguments, `true`
@@ -130,7 +160,11 @@ pub(crate) unsafe fn report_exception(g: *mut c_void, exc: u64) {
     let (header, _) = crate::errors::describe(g, exc);
     let message = format!("Uncaught {header}");
     let (filename, lineno, colno) = if is_cell(exc) {
-        (read_string(g, get(g, exc, "sourceURL")).unwrap_or_default(), number_prop(g, exc, "line"), number_prop(g, exc, "column"))
+        (
+            read_string(g, get(g, exc, "sourceURL")).unwrap_or_default(),
+            number_prop(g, exc, "line"),
+            number_prop(g, exc, "column"),
+        )
     } else {
         (String::new(), 0, 0)
     };
@@ -151,7 +185,13 @@ pub(crate) unsafe fn report_exception(g: *mut c_void, exc: u64) {
     let mut canceled = !events::dispatch(g, global, ev);
     if attribute {
         define(g, global, "onerror", handler, 0);
-        let args = [js_string(g, &message), js_string(g, &filename), enc_f64(lineno as f64), enc_f64(colno as f64), exc];
+        let args = [
+            js_string(g, &message),
+            js_string(g, &filename),
+            enc_f64(lineno as f64),
+            enc_f64(colno as f64),
+            exc,
+        ];
         match call(g, handler, global, &args) {
             Ok(r) => canceled |= r == TRUE,
             Err(e) => crate::errors::report(g, e, crate::errors::ErrKind::Listener),
@@ -165,30 +205,45 @@ pub(crate) unsafe fn report_exception(g: *mut c_void, exc: u64) {
 #[crate::host_fn]
 unsafe fn report_error(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
-        return throw_type_error(g, "Failed to execute 'reportError': 1 argument required, but only 0 present.");
+        return throw_type_error(
+            g,
+            "Failed to execute 'reportError': 1 argument required, but only 0 present.",
+        );
     }
     report_exception(g, cf_arg(cf, 0));
     UNDEF
 }
 
 pub unsafe fn install(g: *mut c_void, event_proto: u64) {
-    let error_event = define_class(g, &ClassSpec {
-        name: "ErrorEvent",
-        arity: 1,
-        construct: Some(ee_construct),
-        parent_proto: event_proto,
-        methods: &[],
-        getters: &[
-            ("message", ee_message),
-            ("filename", ee_filename),
-            ("lineno", ee_lineno),
-            ("colno", ee_colno),
-            ("error", ee_error),
-        ],
-        accessors: &[],
-    });
-    define(g, glue::rjs_global(g), "reportError", make_fn(g, "reportError", 1, report_error), 2);
-    registry().lock().unwrap().insert(g as usize, Box::leak(Box::new(Classes { error_event })));
+    let error_event = define_class(
+        g,
+        &ClassSpec {
+            name: "ErrorEvent",
+            arity: 1,
+            construct: Some(ee_construct),
+            parent_proto: event_proto,
+            methods: &[],
+            getters: &[
+                ("message", ee_message),
+                ("filename", ee_filename),
+                ("lineno", ee_lineno),
+                ("colno", ee_colno),
+                ("error", ee_error),
+            ],
+            accessors: &[],
+        },
+    );
+    define(
+        g,
+        glue::rjs_global(g),
+        "reportError",
+        make_fn(g, "reportError", 1, report_error),
+        2,
+    );
+    registry()
+        .lock()
+        .unwrap()
+        .insert(g as usize, Box::leak(Box::new(Classes { error_event })));
 }
 
 #[cfg(test)]
@@ -198,7 +253,10 @@ mod tests {
     #[test]
     fn error_event_carries_its_init() {
         let c = ctx();
-        ok(&c, "new ErrorEvent('error') instanceof Event && new ErrorEvent('x').error === null");
+        ok(
+            &c,
+            "new ErrorEvent('error') instanceof Event && new ErrorEvent('x').error === null",
+        );
         assert_eq!(
             s(&c, "(() => { const e = new ErrorEvent('error', { message: 'm', filename: 'f.js', lineno: 3, colno: 4.9, error: 7 }); \
                    return [e.type, e.message, e.filename, e.lineno, e.colno, e.error].join('|'); })()"),

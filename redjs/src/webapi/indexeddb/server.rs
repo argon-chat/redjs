@@ -61,7 +61,11 @@ pub struct Fail {
 
 impl Fail {
     pub fn new(name: &'static str, message: impl Into<String>) -> Fail {
-        Fail { name, message: message.into(), quota: None }
+        Fail {
+            name,
+            message: message.into(),
+            quota: None,
+        }
     }
 }
 
@@ -117,13 +121,35 @@ pub enum Op {
     DeleteIndex(StoreId, IndexId),
     RenameIndex(StoreId, IndexId, Vec<u16>),
     /// `key: None` = generate one (and inject it, for an in-line key path).
-    Put { store: StoreId, key: Option<Vec<u8>>, value: Vec<u8>, no_overwrite: bool },
+    Put {
+        store: StoreId,
+        key: Option<Vec<u8>>,
+        value: Vec<u8>,
+        no_overwrite: bool,
+    },
     /// `keys`: the primary key instead of the value (`getKey`).
-    Get { source: Source, range: Range, keys: bool },
-    GetAll { source: Source, range: Range, count: u32, keys: bool },
-    Count { source: Source, range: Range },
-    Delete { store: StoreId, range: Range },
-    Clear { store: StoreId },
+    Get {
+        source: Source,
+        range: Range,
+        keys: bool,
+    },
+    GetAll {
+        source: Source,
+        range: Range,
+        count: u32,
+        keys: bool,
+    },
+    Count {
+        source: Source,
+        range: Range,
+    },
+    Delete {
+        store: StoreId,
+        range: Range,
+    },
+    Clear {
+        store: StoreId,
+    },
     /// Open (`pos: None`) or move a cursor. `pos` = (position, object store
     /// position); `key`/`pkey` = `continue(key)` / `continuePrimaryKey`.
     Cursor {
@@ -157,49 +183,141 @@ pub enum Payload {
 }
 
 pub enum ToServer {
-    Open { ctx: ContextId, req: ReqId, name: Vec<u16>, version: Option<u64> },
-    Delete { ctx: ContextId, req: ReqId, name: Vec<u16> },
-    Databases { ctx: ContextId, req: ReqId },
-    Estimate { ctx: ContextId, req: ReqId },
-    Begin { ctx: ContextId, conn: ConnId, tx: TxId, scope: Vec<StoreId>, mode: Mode, durability: Durability },
-    Op { tx: TxId, req: ReqId, op: Op },
-    Commit { tx: TxId },
-    Abort { tx: TxId },
+    Open {
+        ctx: ContextId,
+        req: ReqId,
+        name: Vec<u16>,
+        version: Option<u64>,
+    },
+    Delete {
+        ctx: ContextId,
+        req: ReqId,
+        name: Vec<u16>,
+    },
+    Databases {
+        ctx: ContextId,
+        req: ReqId,
+    },
+    Estimate {
+        ctx: ContextId,
+        req: ReqId,
+    },
+    Begin {
+        ctx: ContextId,
+        conn: ConnId,
+        tx: TxId,
+        scope: Vec<StoreId>,
+        mode: Mode,
+        durability: Durability,
+    },
+    Op {
+        tx: TxId,
+        req: ReqId,
+        op: Op,
+    },
+    Commit {
+        tx: TxId,
+    },
+    Abort {
+        tx: TxId,
+    },
     /// The `versionchange` event was fired at this connection.
-    VersionChangeDone { conn: ConnId },
+    VersionChangeDone {
+        conn: ConnId,
+    },
     /// The client handled a failed request's `error` event and the transaction
     /// lives on (canceled): a held commit may proceed.
-    ErrorHandled { tx: TxId },
-    Close { conn: ConnId },
-    ContextGone { ctx: ContextId },
-    Inspect { query: super::inspection::Query, reply: Sender<Result<super::inspection::Response, String>> },
-    Shutdown { done: Sender<()> },
+    ErrorHandled {
+        tx: TxId,
+    },
+    Close {
+        conn: ConnId,
+    },
+    ContextGone {
+        ctx: ContextId,
+    },
+    Inspect {
+        query: super::inspection::Query,
+        reply: Sender<Result<super::inspection::Response, String>>,
+    },
+    Shutdown {
+        done: Sender<()>,
+    },
 }
 
 #[derive(Debug)]
 pub enum ToClient {
-    Upgrade { req: ReqId, conn: ConnId, tx: TxId, old: u64, meta: DbMeta },
-    Opened { req: ReqId, conn: ConnId, meta: DbMeta },
-    OpenFailed { req: ReqId, err: Fail },
-    Blocked { req: ReqId, old: u64, new: Option<u64> },
-    VersionChange { conn: ConnId, old: u64, new: Option<u64> },
-    Result { req: ReqId, payload: Payload },
-    RequestFailed { req: ReqId, err: Fail },
-    Completed { tx: TxId },
-    Aborted { tx: TxId, err: Option<Fail> },
-    Deleted { req: ReqId, old: u64 },
-    DatabaseList { req: ReqId, list: Vec<(Vec<u16>, u64)> },
+    Upgrade {
+        req: ReqId,
+        conn: ConnId,
+        tx: TxId,
+        old: u64,
+        meta: DbMeta,
+    },
+    Opened {
+        req: ReqId,
+        conn: ConnId,
+        meta: DbMeta,
+    },
+    OpenFailed {
+        req: ReqId,
+        err: Fail,
+    },
+    Blocked {
+        req: ReqId,
+        old: u64,
+        new: Option<u64>,
+    },
+    VersionChange {
+        conn: ConnId,
+        old: u64,
+        new: Option<u64>,
+    },
+    Result {
+        req: ReqId,
+        payload: Payload,
+    },
+    RequestFailed {
+        req: ReqId,
+        err: Fail,
+    },
+    Completed {
+        tx: TxId,
+    },
+    Aborted {
+        tx: TxId,
+        err: Option<Fail>,
+    },
+    Deleted {
+        req: ReqId,
+        old: u64,
+    },
+    DatabaseList {
+        req: ReqId,
+        list: Vec<(Vec<u16>, u64)>,
+    },
     /// `databases()` could not be answered (another instance holds the folder).
-    DatabasesFailed { req: ReqId, err: Fail },
-    Estimate { req: ReqId, usage: u64, quota: u64 },
+    DatabasesFailed {
+        req: ReqId,
+        err: Fail,
+    },
+    Estimate {
+        req: ReqId,
+        usage: u64,
+        quota: u64,
+    },
     /// The backend lost the database under a live connection (I/O failure,
     /// corruption, the file gone): `close` fires at the IDBDatabase. Never
     /// sent by the memory backend; the SQLite one (P2) needs it.
-    ForcedClose { conn: ConnId },
+    ForcedClose {
+        conn: ConnId,
+    },
     /// Client-internal, pushed by a context into its OWN inbox: the queued
     /// half of "abort a transaction" (the `error` events at its pending
     /// requests, then `abort`), after the synchronous half already ran.
-    AbortEvents { tx: TxId },
+    AbortEvents {
+        tx: TxId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +332,11 @@ pub struct Inbox {
 
 impl Inbox {
     pub fn new(ctx: ContextId) -> Inbox {
-        Inbox { ctx, q: Mutex::new(VecDeque::new()), len: AtomicUsize::new(0) }
+        Inbox {
+            ctx,
+            q: Mutex::new(VecDeque::new()),
+            len: AtomicUsize::new(0),
+        }
     }
 
     pub(super) fn push(&self, m: ToClient) {
@@ -246,7 +368,12 @@ fn inboxes() -> &'static Mutex<HashMap<u64, Arc<Inbox>>> {
 }
 
 pub fn register_inbox(ctx: ContextId) -> Arc<Inbox> {
-    inboxes().lock().unwrap().entry(ctx.0).or_insert_with(|| Arc::new(Inbox::new(ctx))).clone()
+    inboxes()
+        .lock()
+        .unwrap()
+        .entry(ctx.0)
+        .or_insert_with(|| Arc::new(Inbox::new(ctx)))
+        .clone()
 }
 
 /// Drops a context's inbox at once: whatever the server sends it later is
@@ -309,10 +436,17 @@ pub fn send(m: ToServer) {
 }
 
 /// Inspector messages never initialize storage or create a database.
-pub fn send_inspection(query: super::inspection::Query, reply: Sender<Result<super::inspection::Response, String>>) -> Result<bool, String> {
+pub fn send_inspection(
+    query: super::inspection::Query,
+    reply: Sender<Result<super::inspection::Response, String>>,
+) -> Result<bool, String> {
     let sender = sender().lock().unwrap();
-    let Some(sender) = sender.as_ref() else { return Ok(false); };
-    sender.send(ToServer::Inspect { query, reply }).map_err(|_| "IndexedDB server is unavailable".to_string())?;
+    let Some(sender) = sender.as_ref() else {
+        return Ok(false);
+    };
+    sender
+        .send(ToServer::Inspect { query, reply })
+        .map_err(|_| "IndexedDB server is unavailable".to_string())?;
     Ok(true)
 }
 
@@ -336,7 +470,13 @@ fn run(rx: Receiver<ToServer>, make: Option<BackendFactory>) {
     if !backend.persistent() {
         super::advise_memory_only(&backend.describe());
     }
-    let mut s = Server { backend, dbs: HashMap::new(), conns: HashMap::new(), txs: HashMap::new(), dirty: Vec::new() };
+    let mut s = Server {
+        backend,
+        dbs: HashMap::new(),
+        conns: HashMap::new(),
+        txs: HashMap::new(),
+        dirty: Vec::new(),
+    };
     while let Ok(m) = rx.recv() {
         if let ToServer::Shutdown { done } = m {
             s.shutdown();
@@ -353,8 +493,15 @@ fn run(rx: Receiver<ToServer>, make: Option<BackendFactory>) {
 // ---------------------------------------------------------------------------
 
 enum Pending {
-    Open { ctx: ContextId, req: ReqId, version: Option<u64> },
-    Delete { ctx: ContextId, req: ReqId },
+    Open {
+        ctx: ContextId,
+        req: ReqId,
+        version: Option<u64>,
+    },
+    Delete {
+        ctx: ContextId,
+        req: ReqId,
+    },
 }
 
 impl Pending {
@@ -368,7 +515,14 @@ impl Pending {
 enum Active {
     /// versionchange sent to these connections; waiting for them to have
     /// fired it, then for every other connection to close.
-    Waiting { pending: Pending, conn: Option<ConnId>, old: u64, new: Option<u64>, acks: HashSet<ConnId>, blocked_sent: bool },
+    Waiting {
+        pending: Pending,
+        conn: Option<ConnId>,
+        old: u64,
+        new: Option<u64>,
+        acks: HashSet<ConnId>,
+        blocked_sent: bool,
+    },
     /// The upgrade transaction is running.
     Upgrading { conn: ConnId, tx: TxId, old: u64 },
 }
@@ -422,25 +576,62 @@ struct Server {
 }
 
 impl Server {
-    fn inspect(&mut self, query: super::inspection::Query) -> Result<super::inspection::Response, String> {
-        use super::inspection::{Query, Response, DatabaseInfo};
+    fn inspect(
+        &mut self,
+        query: super::inspection::Query,
+    ) -> Result<super::inspection::Response, String> {
+        use super::inspection::{DatabaseInfo, Query, Response};
         if matches!(query, Query::List) {
-            let list = self.backend.inspect_databases().map_err(|error| format!("IndexedDB inspection failed: {error:?}"))?;
+            let list = self
+                .backend
+                .inspect_databases()
+                .map_err(|error| format!("IndexedDB inspection failed: {error:?}"))?;
             let truncated = list.len() > 256;
-            let databases = list.into_iter().take(256).filter_map(|(name, version)| {
-                let version = match self.dbs.get(&name).and_then(|entry| entry.active.as_ref()) { Some(Active::Upgrading { old, .. }) => *old, _ => version };
-                (version != 0).then(|| DatabaseInfo { name: super::inspection::text(&name), version })
-            }).collect();
-            return Ok(Response::List { available: true, backend: self.backend.describe(), databases, truncated });
+            let databases = list
+                .into_iter()
+                .take(256)
+                .filter_map(|(name, version)| {
+                    let version = match self.dbs.get(&name).and_then(|entry| entry.active.as_ref())
+                    {
+                        Some(Active::Upgrading { old, .. }) => *old,
+                        _ => version,
+                    };
+                    (version != 0).then(|| DatabaseInfo {
+                        name: super::inspection::text(&name),
+                        version,
+                    })
+                })
+                .collect();
+            return Ok(Response::List {
+                available: true,
+                backend: self.backend.describe(),
+                databases,
+                truncated,
+            });
         }
         let name = query.database().ok_or("Missing database name")?.to_vec();
-        let busy = self.txs.values().any(|transaction| transaction.db == name && transaction.mode != Mode::ReadOnly)
-            || self.dbs.get(&name).is_some_and(|entry| entry.active.is_some() || !entry.queue.is_empty());
-        if busy { return Err("IndexedDB database is busy with a write or version change; retry after the transaction completes".into()); }
-        if let Some(database) = self.dbs.get_mut(&name).and_then(|entry| entry.handle.as_deref_mut()) {
+        let busy = self
+            .txs
+            .values()
+            .any(|transaction| transaction.db == name && transaction.mode != Mode::ReadOnly)
+            || self
+                .dbs
+                .get(&name)
+                .is_some_and(|entry| entry.active.is_some() || !entry.queue.is_empty());
+        if busy {
+            return Err("IndexedDB database is busy with a write or version change; retry after the transaction completes".into());
+        }
+        if let Some(database) = self
+            .dbs
+            .get_mut(&name)
+            .and_then(|entry| entry.handle.as_deref_mut())
+        {
             return super::inspection::read(database, query);
         }
-        let mut database = self.backend.inspect_existing(&name).map_err(|error| format!("IndexedDB inspection failed: {error:?}"))?;
+        let mut database = self
+            .backend
+            .inspect_existing(&name)
+            .map_err(|error| format!("IndexedDB inspection failed: {error:?}"))?;
         super::inspection::read(&mut *database, query)
     }
 
@@ -456,12 +647,25 @@ impl Server {
                 let result = self.inspect(query);
                 let _ = reply.send(result);
             }
-            ToServer::Open { ctx, req, name, version } => {
-                self.dbs.entry(name.clone()).or_default().queue.push_back(Pending::Open { ctx, req, version });
+            ToServer::Open {
+                ctx,
+                req,
+                name,
+                version,
+            } => {
+                self.dbs
+                    .entry(name.clone())
+                    .or_default()
+                    .queue
+                    .push_back(Pending::Open { ctx, req, version });
                 self.mark(&name);
             }
             ToServer::Delete { ctx, req, name } => {
-                self.dbs.entry(name.clone()).or_default().queue.push_back(Pending::Delete { ctx, req });
+                self.dbs
+                    .entry(name.clone())
+                    .or_default()
+                    .queue
+                    .push_back(Pending::Delete { ctx, req });
                 self.mark(&name);
             }
             ToServer::Databases { ctx, req } => {
@@ -472,10 +676,12 @@ impl Server {
                     Ok(l) => {
                         let list = l
                             .into_iter()
-                            .map(|(n, v)| match self.dbs.get(&n).and_then(|e| e.active.as_ref()) {
-                                Some(Active::Upgrading { old, .. }) => (n, *old),
-                                _ => (n, v),
-                            })
+                            .map(
+                                |(n, v)| match self.dbs.get(&n).and_then(|e| e.active.as_ref()) {
+                                    Some(Active::Upgrading { old, .. }) => (n, *old),
+                                    _ => (n, v),
+                                },
+                            )
                             .filter(|(_, v)| *v > 0)
                             .collect();
                         deliver(ctx, ToClient::DatabaseList { req, list });
@@ -499,14 +705,35 @@ impl Server {
                 let (usage, quota) = (self.backend.usage(), self.backend.quota());
                 deliver(ctx, ToClient::Estimate { req, usage, quota });
             }
-            ToServer::Begin { ctx, conn, tx, scope, mode, durability } => {
+            ToServer::Begin {
+                ctx,
+                conn,
+                tx,
+                scope,
+                mode,
+                durability,
+            } => {
                 let Some(c) = self.conns.get(&conn) else {
                     // The connection is gone (its context went away): nothing
                     // will ever ask about this transaction.
                     return;
                 };
                 let db = c.db.clone();
-                self.txs.insert(tx, Tx { ctx, conn, db: db.clone(), mode, durability, scope, state: TxState::Waiting, ops: VecDeque::new(), commit: false, held: 0 });
+                self.txs.insert(
+                    tx,
+                    Tx {
+                        ctx,
+                        conn,
+                        db: db.clone(),
+                        mode,
+                        durability,
+                        scope,
+                        state: TxState::Waiting,
+                        ops: VecDeque::new(),
+                        commit: false,
+                        held: 0,
+                    },
+                );
                 self.dbs.entry(db.clone()).or_default().txs.push(tx);
                 self.mark(&db);
             }
@@ -540,7 +767,9 @@ impl Server {
             ToServer::VersionChangeDone { conn } => {
                 if let Some(c) = self.conns.get(&conn) {
                     let db = c.db.clone();
-                    if let Some(Active::Waiting { acks, .. }) = &mut self.dbs.get_mut(&db).unwrap().active {
+                    if let Some(Active::Waiting { acks, .. }) =
+                        &mut self.dbs.get_mut(&db).unwrap().active
+                    {
                         acks.remove(&conn);
                     }
                     self.mark(&db);
@@ -578,7 +807,11 @@ impl Server {
         // every handle, which checkpoints the WAL.)
         let txs: Vec<TxId> = self.txs.keys().copied().collect();
         for t in txs {
-            self.abort(t, Some(Fail::new("AbortError", "The runtime is shutting down.")), true);
+            self.abort(
+                t,
+                Some(Fail::new("AbortError", "The runtime is shutting down.")),
+                true,
+            );
         }
         for e in self.dbs.values_mut() {
             e.handle = None;
@@ -607,7 +840,9 @@ impl Server {
 
     fn step_queue(&mut self, name: &[u16]) {
         loop {
-            let Some(e) = self.dbs.get_mut(name) else { return };
+            let Some(e) = self.dbs.get_mut(name) else {
+                return;
+            };
             if let Some(a) = &e.active {
                 if matches!(a, Active::Waiting { .. }) {
                     self.check_waiting(name);
@@ -640,7 +875,14 @@ impl Server {
                         continue;
                     }
                     let conn = super::next_id();
-                    self.conns.insert(conn, Conn { ctx, db: name.to_vec(), close_pending: false });
+                    self.conns.insert(
+                        conn,
+                        Conn {
+                            ctx,
+                            db: name.to_vec(),
+                            close_pending: false,
+                        },
+                    );
                     let e = self.dbs.get_mut(name).unwrap();
                     if v == cur {
                         e.conns.push(conn);
@@ -648,25 +890,72 @@ impl Server {
                         deliver(ctx, ToClient::Opened { req, conn, meta });
                         continue;
                     }
-                    let others: HashSet<ConnId> = e.conns.iter().copied().filter(|c| !self.conns[c].close_pending).collect();
+                    let others: HashSet<ConnId> = e
+                        .conns
+                        .iter()
+                        .copied()
+                        .filter(|c| !self.conns[c].close_pending)
+                        .collect();
                     for o in &others {
                         let oc = self.conns[o].ctx;
-                        deliver(oc, ToClient::VersionChange { conn: *o, old: cur, new: Some(v) });
+                        deliver(
+                            oc,
+                            ToClient::VersionChange {
+                                conn: *o,
+                                old: cur,
+                                new: Some(v),
+                            },
+                        );
                     }
-                    e.active = Some(Active::Waiting { pending: Pending::Open { ctx, req, version: Some(v) }, conn: Some(conn), old: cur, new: Some(v), acks: others, blocked_sent: false });
+                    e.active = Some(Active::Waiting {
+                        pending: Pending::Open {
+                            ctx,
+                            req,
+                            version: Some(v),
+                        },
+                        conn: Some(conn),
+                        old: cur,
+                        new: Some(v),
+                        acks: others,
+                        blocked_sent: false,
+                    });
                 }
                 Pending::Delete { ctx, req } => {
                     let cur = match e.handle.as_ref() {
                         Some(h) => h.meta().version,
-                        None => self.backend.databases().ok().and_then(|l| l.into_iter().find(|(n, _)| n == name).map(|(_, v)| v)).unwrap_or(0),
+                        None => self
+                            .backend
+                            .databases()
+                            .ok()
+                            .and_then(|l| l.into_iter().find(|(n, _)| n == name).map(|(_, v)| v))
+                            .unwrap_or(0),
                     };
                     let e = self.dbs.get_mut(name).unwrap();
-                    let others: HashSet<ConnId> = e.conns.iter().copied().filter(|c| !self.conns[c].close_pending).collect();
+                    let others: HashSet<ConnId> = e
+                        .conns
+                        .iter()
+                        .copied()
+                        .filter(|c| !self.conns[c].close_pending)
+                        .collect();
                     for o in &others {
                         let oc = self.conns[o].ctx;
-                        deliver(oc, ToClient::VersionChange { conn: *o, old: cur, new: None });
+                        deliver(
+                            oc,
+                            ToClient::VersionChange {
+                                conn: *o,
+                                old: cur,
+                                new: None,
+                            },
+                        );
                     }
-                    e.active = Some(Active::Waiting { pending: Pending::Delete { ctx, req }, conn: None, old: cur, new: None, acks: others, blocked_sent: false });
+                    e.active = Some(Active::Waiting {
+                        pending: Pending::Delete { ctx, req },
+                        conn: None,
+                        old: cur,
+                        new: None,
+                        acks: others,
+                        blocked_sent: false,
+                    });
                 }
             }
         }
@@ -675,7 +964,17 @@ impl Server {
     /// The Waiting state: acks first, then `blocked` once, then the closes.
     fn check_waiting(&mut self, name: &[u16]) {
         let e = self.dbs.get_mut(name).unwrap();
-        let Some(Active::Waiting { acks, blocked_sent, old, new, pending, .. }) = &mut e.active else { return };
+        let Some(Active::Waiting {
+            acks,
+            blocked_sent,
+            old,
+            new,
+            pending,
+            ..
+        }) = &mut e.active
+        else {
+            return;
+        };
         // A connection that closed (or whose context went) needs no ack.
         acks.retain(|c| e.conns.contains(c));
         if !acks.is_empty() {
@@ -687,11 +986,27 @@ impl Server {
                 let (ctx, req) = match pending {
                     Pending::Open { ctx, req, .. } | Pending::Delete { ctx, req } => (*ctx, *req),
                 };
-                deliver(ctx, ToClient::Blocked { req, old: *old, new: *new });
+                deliver(
+                    ctx,
+                    ToClient::Blocked {
+                        req,
+                        old: *old,
+                        new: *new,
+                    },
+                );
             }
             return;
         }
-        let Some(Active::Waiting { pending, conn, old, new, .. }) = e.active.take() else { unreachable!() };
+        let Some(Active::Waiting {
+            pending,
+            conn,
+            old,
+            new,
+            ..
+        }) = e.active.take()
+        else {
+            unreachable!()
+        };
         match pending {
             Pending::Open { ctx, req, .. } => {
                 let conn = conn.unwrap();
@@ -699,12 +1014,20 @@ impl Server {
                 let tx = super::next_id();
                 e.conns.push(conn);
                 let h = e.handle.as_mut().unwrap();
-                let begun = h.begin_write(Durability::Default).and_then(|_| h.set_version(v));
+                let begun = h
+                    .begin_write(Durability::Default)
+                    .and_then(|_| h.set_version(v));
                 if let Err(err) = begun {
                     h.rollback_write();
                     e.conns.retain(|c| *c != conn);
                     self.conns.remove(&conn);
-                    deliver(ctx, ToClient::OpenFailed { req, err: from_backend(err) });
+                    deliver(
+                        ctx,
+                        ToClient::OpenFailed {
+                            req,
+                            err: from_backend(err),
+                        },
+                    );
                     self.mark(name);
                     return;
                 }
@@ -727,14 +1050,29 @@ impl Server {
                         held: 0,
                     },
                 );
-                deliver(ctx, ToClient::Upgrade { req, conn, tx, old, meta });
+                deliver(
+                    ctx,
+                    ToClient::Upgrade {
+                        req,
+                        conn,
+                        tx,
+                        old,
+                        meta,
+                    },
+                );
             }
             Pending::Delete { ctx, req } => {
                 e.handle = None;
                 let r = self.backend.delete(name);
                 match r {
                     Ok(old) => deliver(ctx, ToClient::Deleted { req, old }),
-                    Err(err) => deliver(ctx, ToClient::OpenFailed { req, err: from_backend(err) }),
+                    Err(err) => deliver(
+                        ctx,
+                        ToClient::OpenFailed {
+                            req,
+                            err: from_backend(err),
+                        },
+                    ),
                 }
                 self.mark(name);
             }
@@ -742,7 +1080,9 @@ impl Server {
     }
 
     fn maybe_closed(&mut self, conn: ConnId) {
-        let Some(c) = self.conns.get(&conn) else { return };
+        let Some(c) = self.conns.get(&conn) else {
+            return;
+        };
         if !c.close_pending {
             return;
         }
@@ -773,10 +1113,11 @@ impl Server {
                     let o = &self.txs[o];
                     (o.mode != Mode::ReadOnly || rw) && o.scope.iter().any(|s| tx.scope.contains(s))
                 });
-                let writer_running = rw && e.txs.iter().any(|o| {
-                    let o = &self.txs[o];
-                    o.state == TxState::Running && o.mode != Mode::ReadOnly
-                });
+                let writer_running = rw
+                    && e.txs.iter().any(|o| {
+                        let o = &self.txs[o];
+                        o.state == TxState::Running && o.mode != Mode::ReadOnly
+                    });
                 if !blocked && !writer_running {
                     start = Some(t);
                     break;
@@ -808,11 +1149,17 @@ impl Server {
 
     fn run_ops(&mut self, t: TxId) {
         loop {
-            let Some(tx) = self.txs.get_mut(&t) else { return };
-            let Some((req, op)) = tx.ops.pop_front() else { break };
+            let Some(tx) = self.txs.get_mut(&t) else {
+                return;
+            };
+            let Some((req, op)) = tx.ops.pop_front() else {
+                break;
+            };
             let (ctx, db) = (tx.ctx, tx.db.clone());
             let schema = matches!(op, Op::CreateIndex(..));
-            let Some(h) = self.dbs.get_mut(&db).and_then(|e| e.handle.as_mut()) else { return };
+            let Some(h) = self.dbs.get_mut(&db).and_then(|e| e.handle.as_mut()) else {
+                return;
+            };
             // Each request is atomic: a failure half-way (a unique index, the
             // quota) undoes its own writes, the key generator included.
             let sp = h.savepoint();
@@ -860,7 +1207,13 @@ impl Server {
     /// context that is gone).
     fn abort(&mut self, t: TxId, err: Option<Fail>, notify: bool) {
         let Some(tx) = self.txs.get(&t) else { return };
-        let (ctx, conn, db, running, rw) = (tx.ctx, tx.conn, tx.db.clone(), tx.state == TxState::Running, tx.mode != Mode::ReadOnly);
+        let (ctx, conn, db, running, rw) = (
+            tx.ctx,
+            tx.conn,
+            tx.db.clone(),
+            tx.state == TxState::Running,
+            tx.mode != Mode::ReadOnly,
+        );
         if running && rw {
             if let Some(h) = self.dbs.get_mut(&db).and_then(|e| e.handle.as_mut()) {
                 h.rollback_write();
@@ -879,7 +1232,9 @@ impl Server {
     }
 
     fn finish(&mut self, t: TxId) {
-        let Some(tx) = self.txs.remove(&t) else { return };
+        let Some(tx) = self.txs.remove(&t) else {
+            return;
+        };
         if let Some(e) = self.dbs.get_mut(&tx.db) {
             e.txs.retain(|x| *x != t);
             if let Some(Active::Upgrading { tx: ut, conn, .. }) = e.active {
@@ -896,11 +1251,21 @@ impl Server {
     }
 
     fn context_gone(&mut self, ctx: ContextId) {
-        let mine: Vec<TxId> = self.txs.iter().filter(|(_, t)| t.ctx == ctx).map(|(id, _)| *id).collect();
+        let mine: Vec<TxId> = self
+            .txs
+            .iter()
+            .filter(|(_, t)| t.ctx == ctx)
+            .map(|(id, _)| *id)
+            .collect();
         for t in mine {
             self.abort(t, None, false);
         }
-        let conns: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.ctx == ctx).map(|(id, _)| *id).collect();
+        let conns: Vec<ConnId> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| c.ctx == ctx)
+            .map(|(id, _)| *id)
+            .collect();
         for c in conns {
             if let Some(conn) = self.conns.remove(&c) {
                 if let Some(e) = self.dbs.get_mut(&conn.db) {
@@ -1012,14 +1377,21 @@ fn split_entry(e: &[u8]) -> (Vec<u8>, Vec<u8>) {
 }
 
 fn store_meta(h: &dyn Database, id: StoreId) -> Result<StoreMeta, Fail> {
-    h.meta().store(id).cloned().ok_or_else(|| Fail::new("InvalidStateError", "The object store has been deleted."))
+    h.meta()
+        .store(id)
+        .cloned()
+        .ok_or_else(|| Fail::new("InvalidStateError", "The object store has been deleted."))
 }
 
 /// The index keys a value contributes to one index: none (the record is
 /// simply absent from the index), one, or a multiEntry array's members.
 fn index_keys(p: Option<&Parsed>, ix: &IndexMeta) -> Vec<Vec<u8>> {
     let Some(p) = p else { return Vec::new() };
-    let r = if ix.multi_entry { p.extract_multi(&ix.key_path) } else { p.extract(&ix.key_path) };
+    let r = if ix.multi_entry {
+        p.extract_multi(&ix.key_path)
+    } else {
+        p.extract(&ix.key_path)
+    };
     match r {
         Ok(Some(Key::Array(items))) if ix.multi_entry => items.iter().map(|k| k.encode()).collect(),
         Ok(Some(k)) => vec![k.encode()],
@@ -1040,7 +1412,8 @@ fn remove_record(h: &mut dyn Database, store: &StoreMeta, key: &[u8]) -> Result<
             let parsed = Parsed::parse(&old);
             for ix in &store.indexes {
                 for ik in index_keys(parsed.as_ref(), ix) {
-                    h.index_remove(ix.id, &entry(&ik, key)).map_err(from_backend)?;
+                    h.index_remove(ix.id, &entry(&ik, key))
+                        .map_err(from_backend)?;
                 }
             }
         }
@@ -1060,7 +1433,13 @@ fn gen_next(v: f64) -> f64 {
     }
 }
 
-fn put(h: &mut dyn Database, store_id: StoreId, key: Option<Vec<u8>>, value: Vec<u8>, no_overwrite: bool) -> Result<Payload, Fail> {
+fn put(
+    h: &mut dyn Database,
+    store_id: StoreId,
+    key: Option<Vec<u8>>,
+    value: Vec<u8>,
+    no_overwrite: bool,
+) -> Result<Payload, Fail> {
     let store = store_meta(h, store_id)?;
     let mut value = value;
     let key = match key {
@@ -1071,7 +1450,8 @@ fn put(h: &mut dyn Database, store_id: StoreId, key: Option<Vec<u8>>, value: Vec
                     let cur = h.key_generator(store.id).map_err(from_backend)?;
                     let v = n.min(key::KEYGEN_MAX).floor();
                     if v >= cur {
-                        h.set_key_generator(store.id, gen_next(v)).map_err(from_backend)?;
+                        h.set_key_generator(store.id, gen_next(v))
+                            .map_err(from_backend)?;
                     }
                 }
             }
@@ -1080,29 +1460,44 @@ fn put(h: &mut dyn Database, store_id: StoreId, key: Option<Vec<u8>>, value: Vec
         None => {
             let cur = h.key_generator(store.id).map_err(from_backend)?;
             if cur > key::KEYGEN_MAX {
-                return Err(Fail::new("ConstraintError", "The key generator has reached its maximum."));
+                return Err(Fail::new(
+                    "ConstraintError",
+                    "The key generator has reached its maximum.",
+                ));
             }
-            h.set_key_generator(store.id, gen_next(cur)).map_err(from_backend)?;
+            h.set_key_generator(store.id, gen_next(cur))
+                .map_err(from_backend)?;
             if let Some(KeyPath::String(p)) = &store.key_path {
-                value = svalue::inject(&value, p, cur).ok_or_else(|| Fail::new("DataError", "The key could not be injected into the value."))?;
+                value = svalue::inject(&value, p, cur).ok_or_else(|| {
+                    Fail::new("DataError", "The key could not be injected into the value.")
+                })?;
             }
             Key::Number(cur).encode()
         }
     };
     let existing = h.get(store.id, &key).map_err(from_backend)?;
     if no_overwrite && existing.is_some() {
-        return Err(Fail::new("ConstraintError", "A record with the given key already exists in the object store."));
+        return Err(Fail::new(
+            "ConstraintError",
+            "A record with the given key already exists in the object store.",
+        ));
     }
     // Index keys of the new value, checked for uniqueness BEFORE anything is
     // written: the put is atomic (WPT idbobjectstore-put-unique-index-
     // constraint-is-atomic).
-    let parsed = if store.indexes.is_empty() { None } else { Parsed::parse(&value) };
+    let parsed = if store.indexes.is_empty() {
+        None
+    } else {
+        Parsed::parse(&value)
+    };
     let mut new_entries: Vec<(IndexId, Vec<u8>)> = Vec::new();
     for ix in &store.indexes {
         for ik in index_keys(parsed.as_ref(), ix) {
             if ix.unique {
                 let hi = with_after(&ik);
-                let hits = h.index_scan(ix.id, Bound::Included(&ik), Bound::Excluded(&hi), false, 2).map_err(from_backend)?;
+                let hits = h
+                    .index_scan(ix.id, Bound::Included(&ik), Bound::Excluded(&hi), false, 2)
+                    .map_err(from_backend)?;
                 if hits.iter().any(|e| split_entry(e).1 != key) {
                     return Err(Fail::new("ConstraintError", "Unable to add key to index: at least one key does not satisfy the uniqueness requirements."));
                 }
@@ -1113,7 +1508,8 @@ fn put(h: &mut dyn Database, store_id: StoreId, key: Option<Vec<u8>>, value: Vec
     if existing.is_some() {
         remove_record(h, &store, &key)?;
     }
-    h.put(store.id, &key, Arc::new(value)).map_err(from_backend)?;
+    h.put(store.id, &key, Arc::new(value))
+        .map_err(from_backend)?;
     for (ix, e) in new_entries {
         h.index_add(ix, e).map_err(from_backend)?;
     }
@@ -1121,17 +1517,36 @@ fn put(h: &mut dyn Database, store_id: StoreId, key: Option<Vec<u8>>, value: Vec
 }
 
 fn create_index(h: &mut dyn Database, store_id: StoreId, meta: IndexMeta) -> Result<Payload, Fail> {
-    h.create_index(store_id, meta.clone()).map_err(from_backend)?;
+    h.create_index(store_id, meta.clone())
+        .map_err(from_backend)?;
     // Populate from the records already there; a uniqueness violation aborts
     // the upgrade (the caller turns this Err into an abort).
-    let keys = h.keys(store_id, Bound::Unbounded, Bound::Unbounded, false, usize::MAX).map_err(from_backend)?;
+    let keys = h
+        .keys(
+            store_id,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            false,
+            usize::MAX,
+        )
+        .map_err(from_backend)?;
     for k in keys {
-        let Some(v) = h.get(store_id, &k).map_err(from_backend)? else { continue };
+        let Some(v) = h.get(store_id, &k).map_err(from_backend)? else {
+            continue;
+        };
         let parsed = Parsed::parse(&v);
         for ik in index_keys(parsed.as_ref(), &meta) {
             if meta.unique {
                 let hi = with_after(&ik);
-                let hits = h.index_scan(meta.id, Bound::Included(&ik), Bound::Excluded(&hi), false, 1).map_err(from_backend)?;
+                let hits = h
+                    .index_scan(
+                        meta.id,
+                        Bound::Included(&ik),
+                        Bound::Excluded(&hi),
+                        false,
+                        1,
+                    )
+                    .map_err(from_backend)?;
                 if !hits.is_empty() {
                     return Err(Fail::new("ConstraintError", "Unable to create the index: existing records do not satisfy its uniqueness requirement."));
                 }
@@ -1144,12 +1559,21 @@ fn create_index(h: &mut dyn Database, store_id: StoreId, meta: IndexMeta) -> Res
 
 /// Primary keys a source yields over a range, in order (index: by index key
 /// then primary key).
-fn primary_keys(h: &mut dyn Database, source: Source, range: &Range, limit: usize) -> Result<Vec<Vec<u8>>, Fail> {
+fn primary_keys(
+    h: &mut dyn Database,
+    source: Source,
+    range: &Range,
+    limit: usize,
+) -> Result<Vec<Vec<u8>>, Fail> {
     match source {
-        Source::Store(s) => h.keys(s, bound(&range.lower), bound(&range.upper), false, limit).map_err(from_backend),
+        Source::Store(s) => h
+            .keys(s, bound(&range.lower), bound(&range.upper), false, limit)
+            .map_err(from_backend),
         Source::Index(_, ix) => {
             let (lo, hi) = entry_bounds(range);
-            let es = h.index_scan(ix, as_ref(&lo), as_ref(&hi), false, limit).map_err(from_backend)?;
+            let es = h
+                .index_scan(ix, as_ref(&lo), as_ref(&hi), false, limit)
+                .map_err(from_backend)?;
             Ok(es.iter().map(|e| split_entry(e).1).collect())
         }
     }
@@ -1159,7 +1583,10 @@ fn check_source(h: &dyn Database, source: Source) -> Result<(), Fail> {
     let s = store_meta(h, source.store())?;
     if let Source::Index(_, ix) = source {
         if !s.indexes.iter().any(|i| i.id == ix) {
-            return Err(Fail::new("InvalidStateError", "The index has been deleted."));
+            return Err(Fail::new(
+                "InvalidStateError",
+                "The index has been deleted.",
+            ));
         }
     }
     Ok(())
@@ -1188,14 +1615,29 @@ fn execute(h: &mut dyn Database, op: Op) -> Result<Payload, Fail> {
             h.rename_index(store, id, name).map_err(from_backend)?;
             Ok(Payload::Undefined)
         }
-        Op::Put { store, key, value, no_overwrite } => put(h, store, key, value, no_overwrite),
-        Op::Get { source, range, keys } => {
+        Op::Put {
+            store,
+            key,
+            value,
+            no_overwrite,
+        } => put(h, store, key, value, no_overwrite),
+        Op::Get {
+            source,
+            range,
+            keys,
+        } => {
             check_source(h, source)?;
             let pk = match (source, range.single()) {
                 (Source::Store(_), Some(k)) => Some(k.to_vec()),
                 _ => primary_keys(h, source, &range, 1)?.into_iter().next(),
             };
-            let Some(pk) = pk else { return Ok(if keys { Payload::Undefined } else { Payload::Value(None) }) };
+            let Some(pk) = pk else {
+                return Ok(if keys {
+                    Payload::Undefined
+                } else {
+                    Payload::Value(None)
+                });
+            };
             if keys {
                 if let Source::Store(s) = source {
                     if range.single().is_some() && h.get(s, &pk).map_err(from_backend)?.is_none() {
@@ -1204,11 +1646,22 @@ fn execute(h: &mut dyn Database, op: Op) -> Result<Payload, Fail> {
                 }
                 return Ok(Payload::Key(pk));
             }
-            Ok(Payload::Value(h.get(source.store(), &pk).map_err(from_backend)?))
+            Ok(Payload::Value(
+                h.get(source.store(), &pk).map_err(from_backend)?,
+            ))
         }
-        Op::GetAll { source, range, count, keys } => {
+        Op::GetAll {
+            source,
+            range,
+            count,
+            keys,
+        } => {
             check_source(h, source)?;
-            let limit = if count == 0 { usize::MAX } else { count as usize };
+            let limit = if count == 0 {
+                usize::MAX
+            } else {
+                count as usize
+            };
             let pks = primary_keys(h, source, &range, limit)?;
             if keys {
                 return Ok(Payload::Keys(pks));
@@ -1224,10 +1677,13 @@ fn execute(h: &mut dyn Database, op: Op) -> Result<Payload, Fail> {
         Op::Count { source, range } => {
             check_source(h, source)?;
             let n = match source {
-                Source::Store(s) => h.count(s, bound(&range.lower), bound(&range.upper)).map_err(from_backend)?,
+                Source::Store(s) => h
+                    .count(s, bound(&range.lower), bound(&range.upper))
+                    .map_err(from_backend)?,
                 Source::Index(_, ix) => {
                     let (lo, hi) = entry_bounds(&range);
-                    h.index_count(ix, as_ref(&lo), as_ref(&hi)).map_err(from_backend)?
+                    h.index_count(ix, as_ref(&lo), as_ref(&hi))
+                        .map_err(from_backend)?
                 }
             };
             Ok(Payload::Count(n))
@@ -1236,7 +1692,15 @@ fn execute(h: &mut dyn Database, op: Op) -> Result<Payload, Fail> {
             let meta = store_meta(h, store)?;
             let keys = match range.single() {
                 Some(k) => vec![k.to_vec()],
-                None => h.keys(store, bound(&range.lower), bound(&range.upper), false, usize::MAX).map_err(from_backend)?,
+                None => h
+                    .keys(
+                        store,
+                        bound(&range.lower),
+                        bound(&range.upper),
+                        false,
+                        usize::MAX,
+                    )
+                    .map_err(from_backend)?,
             };
             for k in keys {
                 remove_record(h, &meta, &k)?;
@@ -1251,7 +1715,16 @@ fn execute(h: &mut dyn Database, op: Op) -> Result<Payload, Fail> {
             }
             Ok(Payload::Undefined)
         }
-        Op::Cursor { source, range, dir, key_only, pos, key, pkey, count } => {
+        Op::Cursor {
+            source,
+            range,
+            dir,
+            key_only,
+            pos,
+            key,
+            pkey,
+            count,
+        } => {
             check_source(h, source)?;
             let mut pos = pos;
             let mut hit = None;
@@ -1269,9 +1742,19 @@ fn execute(h: &mut dyn Database, op: Op) -> Result<Payload, Fail> {
                     }
                 }
             }
-            let Some((k, pk)) = hit else { return Ok(Payload::Cursor(None)) };
-            let value = if key_only { None } else { h.get(source.store(), &pk).map_err(from_backend)? };
-            Ok(Payload::Cursor(Some(CursorHit { key: k, pkey: pk, value })))
+            let Some((k, pk)) = hit else {
+                return Ok(Payload::Cursor(None));
+            };
+            let value = if key_only {
+                None
+            } else {
+                h.get(source.store(), &pk).map_err(from_backend)?
+            };
+            Ok(Payload::Cursor(Some(CursorHit {
+                key: k,
+                pkey: pk,
+                value,
+            })))
         }
     }
 }
@@ -1314,7 +1797,9 @@ fn step(
                     hi = min_hi(hi, Bound::Excluded(p.clone()));
                 }
             }
-            let ks = h.keys(s, as_ref(&lo), as_ref(&hi), !dir.forward(), 1).map_err(from_backend)?;
+            let ks = h
+                .keys(s, as_ref(&lo), as_ref(&hi), !dir.forward(), 1)
+                .map_err(from_backend)?;
             Ok(ks.into_iter().next().map(|k| (k.clone(), k)))
         }
         Source::Index(_, ix) => {
@@ -1322,10 +1807,13 @@ fn step(
             match dir {
                 Dir::Next => {
                     if let Some(k) = key {
-                        lo = max_lo(lo, Bound::Included(match pkey {
-                            Some(pk) => entry(k, pk),
-                            None => k.to_vec(),
-                        }));
+                        lo = max_lo(
+                            lo,
+                            Bound::Included(match pkey {
+                                Some(pk) => entry(k, pk),
+                                None => k.to_vec(),
+                            }),
+                        );
                     }
                     if let Some((p, op)) = pos {
                         lo = max_lo(lo, Bound::Excluded(entry(p, op)));
@@ -1341,10 +1829,13 @@ fn step(
                 }
                 Dir::Prev => {
                     if let Some(k) = key {
-                        hi = min_hi(hi, match pkey {
-                            Some(pk) => Bound::Included(entry(k, pk)),
-                            None => Bound::Excluded(with_after(k)),
-                        });
+                        hi = min_hi(
+                            hi,
+                            match pkey {
+                                Some(pk) => Bound::Included(entry(k, pk)),
+                                None => Bound::Excluded(with_after(k)),
+                            },
+                        );
                     }
                     if let Some((p, op)) = pos {
                         hi = min_hi(hi, Bound::Excluded(entry(p, op)));
@@ -1359,12 +1850,24 @@ fn step(
                     }
                 }
             }
-            let es = h.index_scan(ix, as_ref(&lo), as_ref(&hi), !dir.forward(), 1).map_err(from_backend)?;
-            let Some(e) = es.into_iter().next() else { return Ok(None) };
+            let es = h
+                .index_scan(ix, as_ref(&lo), as_ref(&hi), !dir.forward(), 1)
+                .map_err(from_backend)?;
+            let Some(e) = es.into_iter().next() else {
+                return Ok(None);
+            };
             let (ik, pk) = split_entry(&e);
             if dir == Dir::PrevUnique {
                 // The LOWEST primary key of that index key.
-                let first = h.index_scan(ix, Bound::Included(&ik), Bound::Excluded(&with_after(&ik)), false, 1).map_err(from_backend)?;
+                let first = h
+                    .index_scan(
+                        ix,
+                        Bound::Included(&ik),
+                        Bound::Excluded(&with_after(&ik)),
+                        false,
+                        1,
+                    )
+                    .map_err(from_backend)?;
                 if let Some(f) = first.into_iter().next() {
                     let (_, fpk) = split_entry(&f);
                     return Ok(Some((ik, fpk)));
@@ -1386,18 +1889,68 @@ mod inspection_tests {
         let mut database = backend.open(&name).unwrap();
         database.begin_write(Durability::Default).unwrap();
         database.set_version(1).unwrap();
-        database.create_store(StoreMeta { id: 1, name: vec![115], key_path: None, auto_increment: false, indexes: vec![] }).unwrap();
+        database
+            .create_store(StoreMeta {
+                id: 1,
+                name: vec![115],
+                key_path: None,
+                auto_increment: false,
+                indexes: vec![],
+            })
+            .unwrap();
         database.commit_write().unwrap();
         database.begin_write(Durability::Default).unwrap();
         database.put(1, b"pending", Arc::new(vec![99])).unwrap();
-        let mut server = Server { backend: Box::new(backend), dbs: HashMap::new(), conns: HashMap::new(), txs: HashMap::new(), dirty: vec![] };
-        server.dbs.insert(name.clone(), DbEntry { handle: Some(database), ..Default::default() });
-        server.txs.insert(1, Tx { ctx: ContextId(42), conn: 1, db: name.clone(), mode: Mode::ReadWrite, durability: Durability::Default, scope: vec![1], state: TxState::Running, ops: VecDeque::new(), commit: false, held: 0 });
-        let error = server.inspect(super::super::inspection::Query::Schema { database: name.clone() }).unwrap_err();
+        let mut server = Server {
+            backend: Box::new(backend),
+            dbs: HashMap::new(),
+            conns: HashMap::new(),
+            txs: HashMap::new(),
+            dirty: vec![],
+        };
+        server.dbs.insert(
+            name.clone(),
+            DbEntry {
+                handle: Some(database),
+                ..Default::default()
+            },
+        );
+        server.txs.insert(
+            1,
+            Tx {
+                ctx: ContextId(42),
+                conn: 1,
+                db: name.clone(),
+                mode: Mode::ReadWrite,
+                durability: Durability::Default,
+                scope: vec![1],
+                state: TxState::Running,
+                ops: VecDeque::new(),
+                commit: false,
+                held: 0,
+            },
+        );
+        let error = server
+            .inspect(super::super::inspection::Query::Schema {
+                database: name.clone(),
+            })
+            .unwrap_err();
         assert!(error.contains("busy"));
-        assert!(server.txs.contains_key(&1), "inspector aborted the application writer");
-        let database = server.dbs.get_mut(&name).unwrap().handle.as_deref_mut().unwrap();
-        assert_eq!(database.get(1, b"pending").unwrap().unwrap().as_slice(), &[99]);
+        assert!(
+            server.txs.contains_key(&1),
+            "inspector aborted the application writer"
+        );
+        let database = server
+            .dbs
+            .get_mut(&name)
+            .unwrap()
+            .handle
+            .as_deref_mut()
+            .unwrap();
+        assert_eq!(
+            database.get(1, b"pending").unwrap().unwrap().as_slice(),
+            &[99]
+        );
         database.rollback_write();
     }
 }

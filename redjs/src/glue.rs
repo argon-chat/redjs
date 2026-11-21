@@ -138,7 +138,9 @@ extern "C" {
     pub fn rjs_icu_linked_data() -> *const c_void;
     /// Engine DLL only (cpp/engine_dll.cpp).
     #[cfg(redjs_engine_dll)]
-    pub fn rjs_set_icu_decompress(hook: unsafe extern "C" fn(*const c_void, *mut i32) -> *const c_void);
+    pub fn rjs_set_icu_decompress(
+        hook: unsafe extern "C" fn(*const c_void, *mut i32) -> *const c_void,
+    );
     pub fn rjs_set_options(options: *const c_char) -> i32;
     pub fn rjs_global(g: *mut c_void) -> u64;
     pub fn rjs_lock(g: *mut c_void);
@@ -148,11 +150,22 @@ extern "C" {
     pub fn rjs_in_js(g: *mut c_void) -> i32;
 
     pub fn rjs_bytecode_cache_version() -> u32;
-    pub fn rjs_bytecode_cache_options(g: *mut c_void, destination: *mut u8, capacity: usize) -> usize;
+    pub fn rjs_bytecode_cache_options(
+        g: *mut c_void,
+        destination: *mut u8,
+        capacity: usize,
+    ) -> usize;
     pub fn rjs_bytecode_generate(
-        g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
-        function_depth: u32, handle: *mut *mut c_void, bytes: *mut *const u8,
-        byte_length: *mut usize, out: *mut u64,
+        g: *mut c_void,
+        src: *const u8,
+        len: usize,
+        url: *const u8,
+        url_len: usize,
+        function_depth: u32,
+        handle: *mut *mut c_void,
+        bytes: *mut *const u8,
+        byte_length: *mut usize,
+        out: *mut u64,
     ) -> i32;
     pub fn rjs_bytecode_free(handle: *mut c_void);
     #[cfg(feature = "native-aot")]
@@ -163,8 +176,15 @@ extern "C" {
     pub fn rjs_aot_is_active() -> i32;
     /// `bytes` must be a trusted JSC-produced payload, never adversarial input.
     pub fn rjs_eval8_cached(
-        g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize,
-        bytes: *const u8, byte_length: usize, used: *mut u32, out: *mut u64,
+        g: *mut c_void,
+        src: *const u8,
+        len: usize,
+        url: *const u8,
+        url_len: usize,
+        bytes: *const u8,
+        byte_length: usize,
+        used: *mut u32,
+        out: *mut u64,
     ) -> i32;
 
     // -- structured serialization support (glue.cpp, same section name) --------
@@ -242,8 +262,22 @@ extern "C" {
     /// rjs_release_memory after deleting all compiled code that is not running.
     pub fn rjs_release_memory_and_code(g: *mut c_void);
 
-    pub fn rjs_eval16(g: *mut c_void, src: *const u16, len: usize, url: *const u16, url_len: usize, out: *mut u64) -> i32;
-    pub fn rjs_eval8(g: *mut c_void, src: *const u8, len: usize, url: *const u8, url_len: usize, out: *mut u64) -> i32;
+    pub fn rjs_eval16(
+        g: *mut c_void,
+        src: *const u16,
+        len: usize,
+        url: *const u16,
+        url_len: usize,
+        out: *mut u64,
+    ) -> i32;
+    pub fn rjs_eval8(
+        g: *mut c_void,
+        src: *const u8,
+        len: usize,
+        url: *const u8,
+        url_len: usize,
+        out: *mut u64,
+    ) -> i32;
 
     pub fn rjs_kind(g: *mut c_void, v: u64) -> u32;
     pub fn rjs_to_number(g: *mut c_void, v: u64, out: *mut f64) -> i32;
@@ -269,9 +303,28 @@ extern "C" {
     pub fn rjs_atom_free(g: *mut c_void, atom: *mut c_void);
 
     pub fn rjs_get(g: *mut c_void, base: u64, atom: *mut c_void, out: *mut u64) -> i32;
-    pub fn rjs_get_path(g: *mut c_void, base: u64, atoms: *const *mut c_void, n: usize, out: *mut u64) -> i32;
-    pub fn rjs_get_many(g: *mut c_void, base: u64, atoms: *const *mut c_void, n: usize, out: *mut u64) -> i32;
-    pub fn rjs_define_many(g: *mut c_void, obj: u64, atoms: *const *mut c_void, vals: *const u64, n: usize, attrs: u32) -> i32;
+    pub fn rjs_get_path(
+        g: *mut c_void,
+        base: u64,
+        atoms: *const *mut c_void,
+        n: usize,
+        out: *mut u64,
+    ) -> i32;
+    pub fn rjs_get_many(
+        g: *mut c_void,
+        base: u64,
+        atoms: *const *mut c_void,
+        n: usize,
+        out: *mut u64,
+    ) -> i32;
+    pub fn rjs_define_many(
+        g: *mut c_void,
+        obj: u64,
+        atoms: *const *mut c_void,
+        vals: *const u64,
+        n: usize,
+        attrs: u32,
+    ) -> i32;
     pub fn rjs_set(g: *mut c_void, obj: u64, atom: *mut c_void, val: u64) -> i32;
     pub fn rjs_define(g: *mut c_void, obj: u64, atom: *mut c_void, val: u64, attrs: u32) -> i32;
     pub fn rjs_get_index(g: *mut c_void, base: u64, index: u32, out: *mut u64) -> i32;
@@ -286,17 +339,58 @@ extern "C" {
     pub fn rjs_own_keys(g: *mut c_void, obj: u64, out: *mut u64) -> i32;
     #[cfg(feature = "audio")]
     pub fn rjs_enumerable_keys(g: *mut c_void, obj: u64, out: *mut u64) -> i32;
-    pub fn rjs_function_create(g: *mut c_void, name: *const u16, name_len: usize, arity: u32, sysv_fn: *const c_void, out: *mut u64) -> i32;
+    pub fn rjs_function_create(
+        g: *mut c_void,
+        name: *const u16,
+        name_len: usize,
+        arity: u32,
+        sysv_fn: *const c_void,
+        out: *mut u64,
+    ) -> i32;
     /// Constructable function: `ctor_fn` runs for `new F()`. Inside it the
     /// CallFrame's THIS slot holds new.target (JSC C++-constructor convention).
-    pub fn rjs_function_create_full(g: *mut c_void, name: *const u16, name_len: usize, arity: u32, call_fn: *const c_void, ctor_fn: *const c_void, out: *mut u64) -> i32;
+    pub fn rjs_function_create_full(
+        g: *mut c_void,
+        name: *const u16,
+        name_len: usize,
+        arity: u32,
+        call_fn: *const c_void,
+        ctor_fn: *const c_void,
+        out: *mut u64,
+    ) -> i32;
     /// Spec accessor property; getter/setter are function values or undefined.
-    pub fn rjs_define_accessor(g: *mut c_void, obj: u64, atom: *mut c_void, getter: u64, setter: u64, attrs: u32) -> i32;
-    pub fn rjs_call(g: *mut c_void, f: u64, this_v: u64, args: *const u64, argc: u32, out: *mut u64) -> i32;
-    pub fn rjs_construct(g: *mut c_void, ctor: u64, args: *const u64, argc: u32, out: *mut u64) -> i32;
+    pub fn rjs_define_accessor(
+        g: *mut c_void,
+        obj: u64,
+        atom: *mut c_void,
+        getter: u64,
+        setter: u64,
+        attrs: u32,
+    ) -> i32;
+    pub fn rjs_call(
+        g: *mut c_void,
+        f: u64,
+        this_v: u64,
+        args: *const u64,
+        argc: u32,
+        out: *mut u64,
+    ) -> i32;
+    pub fn rjs_construct(
+        g: *mut c_void,
+        ctor: u64,
+        args: *const u64,
+        argc: u32,
+        out: *mut u64,
+    ) -> i32;
 
     pub fn rjs_throw(g: *mut c_void, err: u64);
-    pub fn rjs_error_create(g: *mut c_void, kind: u32, msg: *const u16, len: usize, out: *mut u64) -> i32;
+    pub fn rjs_error_create(
+        g: *mut c_void,
+        kind: u32,
+        msg: *const u16,
+        len: usize,
+        out: *mut u64,
+    ) -> i32;
     pub fn rjs_error_info(g: *mut c_void, err: u64, msg_out: *mut u64, stack_out: *mut u64) -> i32;
     pub fn rjs_exception_pending(g: *mut c_void, out: *mut u64) -> i32;
 
@@ -309,5 +403,10 @@ extern "C" {
     pub fn rjs_promise_settle(g: *mut c_void, promise: u64, value: u64, rejected: bool);
     pub fn rjs_promise_mark_handled(g: *mut c_void, promise: u64);
     pub fn rjs_promise_chain(g: *mut c_void, value: u64, fulfilled: u64, rejected: u64) -> u64;
-    pub fn rjs_promise_info(g: *mut c_void, v: u64, status_out: *mut u32, result_out: *mut u64) -> i32;
+    pub fn rjs_promise_info(
+        g: *mut c_void,
+        v: u64,
+        status_out: *mut u32,
+        result_out: *mut u64,
+    ) -> i32;
 }

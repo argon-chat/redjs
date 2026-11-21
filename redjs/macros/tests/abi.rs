@@ -17,5 +17,8 @@ unsafe fn callback(global: *mut c_void, frame: *mut c_void) -> u64 {
 fn target_host_callback_passes_arguments_and_returns_a_value() {
     let function: HostFn = callback;
     let function = std::hint::black_box(function);
-    assert_eq!(unsafe { function(17usize as *mut c_void, 25usize as *mut c_void) }, 42);
+    assert_eq!(
+        unsafe { function(17usize as *mut c_void, 25usize as *mut c_void) },
+        42
+    );
 }

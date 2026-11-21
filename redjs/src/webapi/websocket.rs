@@ -163,7 +163,10 @@ pub struct ProtoError {
 
 impl ProtoError {
     fn new(code: u16, message: impl Into<String>) -> Self {
-        ProtoError { code, message: message.into() }
+        ProtoError {
+            code,
+            message: message.into(),
+        }
     }
 }
 
@@ -180,7 +183,10 @@ pub fn parse_frame(buf: &[u8], max_message: usize) -> Result<Option<(Frame, usiz
     // We negotiate no extensions, so a set RSV bit means the peer is framing
     // something we would decode as garbage.
     if b0 & 0x70 != 0 {
-        return Err(ProtoError::new(1002, "a reserved frame bit is set but no extension was negotiated"));
+        return Err(ProtoError::new(
+            1002,
+            "a reserved frame bit is set but no extension was negotiated",
+        ));
     }
     let opcode = b0 & 0x0f;
     // §5.1: a server MUST NOT mask. Accepting a masked frame would mean
@@ -199,9 +205,14 @@ pub fn parse_frame(buf: &[u8], max_message: usize) -> Result<Option<(Frame, usiz
             if buf.len() < 10 {
                 return Ok(None);
             }
-            let n = u64::from_be_bytes([buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]]);
+            let n = u64::from_be_bytes([
+                buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9],
+            ]);
             if n & 0x8000_0000_0000_0000 != 0 {
-                return Err(ProtoError::new(1002, "frame length has the reserved high bit set"));
+                return Err(ProtoError::new(
+                    1002,
+                    "frame length has the reserved high bit set",
+                ));
             }
             (n, 10usize)
         }
@@ -215,20 +226,39 @@ pub fn parse_frame(buf: &[u8], max_message: usize) -> Result<Option<(Frame, usiz
             return Err(ProtoError::new(1002, "a control frame was fragmented"));
         }
         if len > 125 {
-            return Err(ProtoError::new(1002, format!("a control frame carries {len} bytes (max 125)")));
+            return Err(ProtoError::new(
+                1002,
+                format!("a control frame carries {len} bytes (max 125)"),
+            ));
         }
     }
-    if !matches!(opcode, OP_CONT | OP_TEXT | OP_BINARY | OP_CLOSE | OP_PING | OP_PONG) {
-        return Err(ProtoError::new(1002, format!("unknown opcode 0x{opcode:x}")));
+    if !matches!(
+        opcode,
+        OP_CONT | OP_TEXT | OP_BINARY | OP_CLOSE | OP_PING | OP_PONG
+    ) {
+        return Err(ProtoError::new(
+            1002,
+            format!("unknown opcode 0x{opcode:x}"),
+        ));
     }
     if len > max_message as u64 {
-        return Err(ProtoError::new(1009, format!("a frame of {len} bytes exceeds the {max_message}-byte limit")));
+        return Err(ProtoError::new(
+            1009,
+            format!("a frame of {len} bytes exceeds the {max_message}-byte limit"),
+        ));
     }
     let len = len as usize;
     if buf.len() < header + len {
         return Ok(None);
     }
-    Ok(Some((Frame { fin, opcode, payload: buf[header..header + len].to_vec() }, header + len)))
+    Ok(Some((
+        Frame {
+            fin,
+            opcode,
+            payload: buf[header..header + len].to_vec(),
+        },
+        header + len,
+    )))
 }
 
 /// Encodes a client frame. Client frames are ALWAYS masked (§5.3) — an unmasked
@@ -283,11 +313,17 @@ pub fn parse_close_payload(payload: &[u8]) -> Result<(u16, String), ProtoError> 
         return Ok((1005, String::new()));
     }
     if payload.len() == 1 {
-        return Err(ProtoError::new(1002, "a Close frame carried a one-byte body"));
+        return Err(ProtoError::new(
+            1002,
+            "a Close frame carried a one-byte body",
+        ));
     }
     let code = u16::from_be_bytes([payload[0], payload[1]]);
     if !is_wire_close_code(code) {
-        return Err(ProtoError::new(1002, format!("a Close frame carried the reserved status code {code}")));
+        return Err(ProtoError::new(
+            1002,
+            format!("a Close frame carried the reserved status code {code}"),
+        ));
     }
     let reason = std::str::from_utf8(&payload[2..])
         .map_err(|_| ProtoError::new(1007, "a Close frame reason was not valid UTF-8"))?;
@@ -321,7 +357,10 @@ impl Assembler {
         match f.opcode {
             OP_TEXT | OP_BINARY => {
                 if self.kind.is_some() {
-                    return Err(ProtoError::new(1002, "a new data frame arrived inside a fragmented message"));
+                    return Err(ProtoError::new(
+                        1002,
+                        "a new data frame arrived inside a fragmented message",
+                    ));
                 }
                 self.kind = Some(f.opcode);
                 self.buf.clear();
@@ -329,14 +368,20 @@ impl Assembler {
             }
             OP_CONT => {
                 if self.kind.is_none() {
-                    return Err(ProtoError::new(1002, "a continuation frame arrived with no message in progress"));
+                    return Err(ProtoError::new(
+                        1002,
+                        "a continuation frame arrived with no message in progress",
+                    ));
                 }
                 self.buf.extend_from_slice(&f.payload);
             }
             _ => return Ok(Assembled::None),
         }
         if self.buf.len() > max_message {
-            return Err(ProtoError::new(1009, format!("a message exceeds the {max_message}-byte limit")));
+            return Err(ProtoError::new(
+                1009,
+                format!("a message exceeds the {max_message}-byte limit"),
+            ));
         }
         if !f.fin {
             return Ok(Assembled::None);
@@ -364,12 +409,24 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 pub fn b64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(B64[(n >> 18) as usize & 63] as char);
         out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -392,7 +449,12 @@ pub fn accept_key(key_b64: &str) -> String {
 ///
 /// `cookie` is the jar's `Cookie` value for the URL (`webapi::cookies`): a
 /// browser's WebSocket handshake always carries credentials.
-pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String], cookie: Option<&str>) -> String {
+pub fn handshake_request(
+    u: &url::Url,
+    key_b64: &str,
+    protocols: &[String],
+    cookie: Option<&str>,
+) -> String {
     let mut target = u.path().to_string();
     if target.is_empty() {
         target.push('/');
@@ -414,13 +476,22 @@ pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String], cook
     s.push_str(&format!("Sec-WebSocket-Key: {key_b64}\r\n"));
     s.push_str("Sec-WebSocket-Version: 13\r\n");
     if !protocols.is_empty() {
-        s.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", protocols.join(", ")));
+        s.push_str(&format!(
+            "Sec-WebSocket-Protocol: {}\r\n",
+            protocols.join(", ")
+        ));
     }
     if let Some(c) = cookie.filter(|c| !c.is_empty() && !c.contains(['\r', '\n'])) {
         s.push_str(&format!("Cookie: {c}\r\n"));
     }
-    s.push_str(&format!("User-Agent: {}\r\n", super::navigator::user_agent()));
-    s.push_str(&format!("Accept-Language: {}\r\n", super::navigator::accept_language()));
+    s.push_str(&format!(
+        "User-Agent: {}\r\n",
+        super::navigator::user_agent()
+    ));
+    s.push_str(&format!(
+        "Accept-Language: {}\r\n",
+        super::navigator::accept_language()
+    ));
     s.push_str("\r\n");
     s
 }
@@ -430,7 +501,11 @@ pub fn handshake_request(u: &url::Url, key_b64: &str, protocols: &[String], cook
 /// Every branch here is a connection failure rather than a warning: a peer that
 /// answers a WebSocket upgrade with anything else is not speaking the protocol,
 /// and continuing would mean framing its bytes as if it were.
-pub fn validate_handshake(head: &http::Head, key_b64: &str, offered: &[String]) -> Result<(String, String), String> {
+pub fn validate_handshake(
+    head: &http::Head,
+    key_b64: &str,
+    offered: &[String],
+) -> Result<(String, String), String> {
     if head.status != 101 {
         return Err(format!(
             "the server answered {} {} instead of 101 Switching Protocols",
@@ -440,10 +515,19 @@ pub fn validate_handshake(head: &http::Head, key_b64: &str, offered: &[String]) 
     }
     let h = |n: &str| http::header(&head.headers, n).unwrap_or("");
     if !h("upgrade").eq_ignore_ascii_case("websocket") {
-        return Err(format!("the 101 response has Upgrade: {:?}, expected \"websocket\"", h("upgrade")));
+        return Err(format!(
+            "the 101 response has Upgrade: {:?}, expected \"websocket\"",
+            h("upgrade")
+        ));
     }
-    if !h("connection").split(',').any(|t| t.trim().eq_ignore_ascii_case("upgrade")) {
-        return Err(format!("the 101 response has Connection: {:?}, expected \"Upgrade\"", h("connection")));
+    if !h("connection")
+        .split(',')
+        .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
+    {
+        return Err(format!(
+            "the 101 response has Connection: {:?}, expected \"Upgrade\"",
+            h("connection")
+        ));
     }
     let expected = accept_key(key_b64);
     if h("sec-websocket-accept") != expected {
@@ -453,11 +537,15 @@ pub fn validate_handshake(head: &http::Head, key_b64: &str, offered: &[String]) 
     // offer none, so any non-empty value is a violation.
     let ext = h("sec-websocket-extensions").trim().to_string();
     if !ext.is_empty() {
-        return Err(format!("the server selected the extension {ext:?}, which was never offered"));
+        return Err(format!(
+            "the server selected the extension {ext:?}, which was never offered"
+        ));
     }
     let proto = h("sec-websocket-protocol").trim().to_string();
     if !proto.is_empty() && !offered.iter().any(|p| p == &proto) {
-        return Err(format!("the server selected the subprotocol {proto:?}, which was never offered"));
+        return Err(format!(
+            "the server selected the subprotocol {proto:?}, which was never offered"
+        ));
     }
     Ok((proto, ext))
 }
@@ -489,7 +577,8 @@ pub enum UrlError {
 pub fn parse_ws_url(raw: &str) -> Result<url::Url, UrlError> {
     // No base URL exists in this runtime, so a relative reference cannot be
     // resolved — which the spec also treats as a SyntaxError.
-    let mut u = url::Url::parse(raw).map_err(|e| UrlError::Syntax(format!("invalid URL {raw:?}: {e}")))?;
+    let mut u =
+        url::Url::parse(raw).map_err(|e| UrlError::Syntax(format!("invalid URL {raw:?}: {e}")))?;
     match u.scheme() {
         "ws" | "wss" => {}
         "http" => {
@@ -505,7 +594,9 @@ pub fn parse_ws_url(raw: &str) -> Result<url::Url, UrlError> {
         }
     }
     if u.fragment().is_some() {
-        return Err(UrlError::Syntax(format!("the URL {raw:?} has a fragment, which a WebSocket URL may not")));
+        return Err(UrlError::Syntax(format!(
+            "the URL {raw:?} has a fragment, which a WebSocket URL may not"
+        )));
     }
     if u.host_str().unwrap_or("").is_empty() {
         return Err(UrlError::Syntax(format!("the URL {raw:?} has no host")));
@@ -515,16 +606,22 @@ pub fn parse_ws_url(raw: &str) -> Result<url::Url, UrlError> {
 
 /// RFC 7230 token characters — the grammar a subprotocol name must match.
 fn is_token(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
 pub fn validate_protocols(list: &[String]) -> Result<(), UrlError> {
     for (i, p) in list.iter().enumerate() {
         if !is_token(p) {
-            return Err(UrlError::Syntax(format!("{p:?} is not a valid WebSocket subprotocol name")));
+            return Err(UrlError::Syntax(format!(
+                "{p:?} is not a valid WebSocket subprotocol name"
+            )));
         }
         if list[..i].iter().any(|q| q.eq_ignore_ascii_case(p)) {
-            return Err(UrlError::Syntax(format!("the subprotocol {p:?} is listed twice")));
+            return Err(UrlError::Syntax(format!(
+                "the subprotocol {p:?} is listed twice"
+            )));
         }
     }
     Ok(())
@@ -543,13 +640,21 @@ pub enum Incoming {
     /// The `error` event. `detail` never reaches JS (browsers expose nothing
     /// either); it goes to stderr so a failure is diagnosable.
     Error(String),
-    Closed { code: u16, reason: String, clean: bool },
+    Closed {
+        code: u16,
+        reason: String,
+        clean: bool,
+    },
 }
 
 enum Out {
     /// A data frame from `send()`. `billed` is what `bufferedAmount` was
     /// charged and must be refunded once the bytes are on the socket.
-    Data { opcode: u8, payload: Vec<u8>, billed: u64 },
+    Data {
+        opcode: u8,
+        payload: Vec<u8>,
+        billed: u64,
+    },
     /// A control frame, already complete. Jumps the data queue.
     Control { opcode: u8, payload: Vec<u8> },
     /// The closing handshake. Sent after everything queued before it.
@@ -661,7 +766,12 @@ fn write_all_polling(s: &mut http::Stream, buf: &[u8], sh: &Shared) -> Result<()
                 at += n;
                 stalled = Duration::ZERO;
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
                 stalled += WS_POLL;
                 if stalled >= HANDSHAKE_TIMEOUT {
                     return Err("the connection stalled while sending".into());
@@ -686,7 +796,12 @@ struct LoopEnd {
 fn io_thread(ctx: Ctx, id: u64, sh: Arc<Shared>, ws_url: url::Url, protocols: Vec<String>) {
     let end = match connect_and_run(&sh, ws_url, protocols) {
         Ok(end) => end,
-        Err(msg) => LoopEnd { code: 1006, reason: String::new(), clean: false, failure: Some(msg) },
+        Err(msg) => LoopEnd {
+            code: 1006,
+            reason: String::new(),
+            clean: false,
+            failure: Some(msg),
+        },
     };
     if let Some(ref why) = end.failure {
         // The JS-visible `error` event carries no detail, by specification. The
@@ -695,13 +810,22 @@ fn io_thread(ctx: Ctx, id: u64, sh: Arc<Shared>, ws_url: url::Url, protocols: Ve
         sh.post(Incoming::Error(why.clone()));
     }
     sh.set_state(CLOSED);
-    sh.post(Incoming::Closed { code: end.code, reason: end.reason, clean: end.clean });
+    sh.post(Incoming::Closed {
+        code: end.code,
+        reason: end.reason,
+        clean: end.clean,
+    });
     let _ = (ctx, id);
 }
 
-fn connect_and_run(sh: &Arc<Shared>, ws_url: url::Url, protocols: Vec<String>) -> Result<LoopEnd, String> {
+fn connect_and_run(
+    sh: &Arc<Shared>,
+    ws_url: url::Url,
+    protocols: Vec<String>,
+) -> Result<LoopEnd, String> {
     let http_url = to_http_url(&ws_url)?;
-    let mut stream = http::connect(&http_url, CONNECT_TIMEOUT, &sh.cancel).map_err(|e| e.message)?;
+    let mut stream =
+        http::connect(&http_url, CONNECT_TIMEOUT, &sh.cancel).map_err(|e| e.message)?;
 
     let mut key = [0u8; 16];
     let _ = getrandom::fill(&mut key);
@@ -712,9 +836,15 @@ fn connect_and_run(sh: &Arc<Shared>, ws_url: url::Url, protocols: Vec<String>) -
 
     // The upgrade is an ordinary request: block (in readiness waits, abortable)
     // with the handshake's stall budget.
-    stream.set_wait(http::Wait::Block { budget: HANDSHAKE_TIMEOUT });
-    stream.write_all(req.as_bytes()).map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
-    stream.flush().map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
+    stream.set_wait(http::Wait::Block {
+        budget: HANDSHAKE_TIMEOUT,
+    });
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("could not send the WebSocket upgrade: {e}"))?;
     let (head, rest) = http::read_head(&mut stream, &sh.cancel).map_err(|e| e.message)?;
     // The handshake response's Set-Cookie is stored whatever its status, as a
     // browser stores it.
@@ -749,11 +879,17 @@ fn run_loop(sh: &Arc<Shared>, stream: &mut http::Stream, prefix: Vec<u8>) -> Loo
         ($pe:expr) => {{
             let pe: ProtoError = $pe;
             if !close_sent {
-                let f = encode_client_frame(true, OP_CLOSE, &close_payload(pe.code, ""), random_mask());
+                let f =
+                    encode_client_frame(true, OP_CLOSE, &close_payload(pe.code, ""), random_mask());
                 let _ = write_all_polling(stream, &f, sh);
             }
             let _ = stream.tcp().shutdown(Shutdown::Both);
-            return LoopEnd { code: 1006, reason: String::new(), clean: false, failure: Some(pe.message) };
+            return LoopEnd {
+                code: 1006,
+                reason: String::new(),
+                clean: false,
+                failure: Some(pe.message),
+            };
         }};
     }
 
@@ -774,7 +910,10 @@ fn run_loop(sh: &Arc<Shared>, stream: &mut http::Stream, prefix: Vec<u8>) -> Loo
             match f.opcode {
                 OP_PING => {
                     // §5.5.2: answer with a pong carrying the same payload.
-                    sh.out.lock().unwrap().push_back(Out::Control { opcode: OP_PONG, payload: f.payload });
+                    sh.out.lock().unwrap().push_back(Out::Control {
+                        opcode: OP_PONG,
+                        payload: f.payload,
+                    });
                 }
                 OP_PONG => {}
                 OP_CLOSE => {
@@ -786,12 +925,21 @@ fn run_loop(sh: &Arc<Shared>, stream: &mut http::Stream, prefix: Vec<u8>) -> Loo
                     if !close_sent {
                         // Echo the peer's code (1005 means "no body", which we
                         // must not put on the wire — echo an empty body).
-                        let body = if code == 1005 { Vec::new() } else { close_payload(code, "") };
+                        let body = if code == 1005 {
+                            Vec::new()
+                        } else {
+                            close_payload(code, "")
+                        };
                         let wire = encode_client_frame(true, OP_CLOSE, &body, random_mask());
                         let _ = write_all_polling(stream, &wire, sh);
                     }
                     let _ = stream.tcp().shutdown(Shutdown::Both);
-                    return LoopEnd { code, reason, clean: true, failure: None };
+                    return LoopEnd {
+                        code,
+                        reason,
+                        clean: true,
+                        failure: None,
+                    };
                 }
                 _ => match asm.push(&f, MAX_MESSAGE) {
                     Ok(Assembled::None) => {}
@@ -815,24 +963,43 @@ fn run_loop(sh: &Arc<Shared>, stream: &mut http::Stream, prefix: Vec<u8>) -> Loo
             };
             let Some(item) = next else { break };
             let (wire, billed) = match item {
-                Out::Data { opcode, payload, billed } => {
-                    (encode_client_frame(true, opcode, &payload, random_mask()), billed)
-                }
-                Out::Control { opcode, payload } => {
-                    (encode_client_frame(true, opcode, &payload, random_mask()), 0)
-                }
+                Out::Data {
+                    opcode,
+                    payload,
+                    billed,
+                } => (
+                    encode_client_frame(true, opcode, &payload, random_mask()),
+                    billed,
+                ),
+                Out::Control { opcode, payload } => (
+                    encode_client_frame(true, opcode, &payload, random_mask()),
+                    0,
+                ),
                 Out::Close { code, reason } => {
                     if close_sent {
                         continue;
                     }
                     close_sent = true;
                     closing_deadline = Some(Instant::now() + CLOSE_TIMEOUT);
-                    (encode_client_frame(true, OP_CLOSE, &close_payload(code, &reason), random_mask()), 0)
+                    (
+                        encode_client_frame(
+                            true,
+                            OP_CLOSE,
+                            &close_payload(code, &reason),
+                            random_mask(),
+                        ),
+                        0,
+                    )
                 }
             };
             if let Err(e) = write_all_polling(stream, &wire, sh) {
                 let _ = stream.tcp().shutdown(Shutdown::Both);
-                return LoopEnd { code: 1006, reason: String::new(), clean: false, failure: Some(e) };
+                return LoopEnd {
+                    code: 1006,
+                    reason: String::new(),
+                    clean: false,
+                    failure: Some(e),
+                };
             }
             // Only now are the bytes really gone: `bufferedAmount` drops here,
             // not when send() returned.
@@ -868,7 +1035,12 @@ fn run_loop(sh: &Arc<Shared>, stream: &mut http::Stream, prefix: Vec<u8>) -> Loo
                 };
             }
             Ok(n) => acc.extend_from_slice(&buf[..n]),
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
                 if let Some(d) = closing_deadline {
                     if Instant::now() >= d {
                         let _ = stream.tcp().shutdown(Shutdown::Both);
@@ -950,7 +1122,12 @@ fn classes_reg() -> &'static Mutex<HashMap<usize, &'static WsClasses>> {
 }
 
 fn classes(g: *mut c_void) -> &'static WsClasses {
-    classes_reg().lock().unwrap().get(&(g as usize)).copied().expect("webapi::websocket not installed")
+    classes_reg()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::websocket not installed")
 }
 
 /// `crate::context` fan-out. The protections died with the gone heap; only the
@@ -1047,7 +1224,13 @@ unsafe fn init_message_event(g: *mut c_void, obj: u64, ty: u64, init: u64) {
     };
     define(g, s, "data", from("data", NULL), 0);
     define(g, s, "origin", from("origin", js_string(g, "")), 0);
-    define(g, s, "lastEventId", from("lastEventId", js_string(g, "")), 0);
+    define(
+        g,
+        s,
+        "lastEventId",
+        from("lastEventId", js_string(g, "")),
+        0,
+    );
     define(g, s, "source", from("source", NULL), 0);
 }
 
@@ -1070,12 +1253,50 @@ unsafe fn close_event_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     events::init_event(g, obj, cf_arg(cf, 0), cf_arg(cf, 1), false);
     let init = cf_arg(cf, 1);
     if let Some(s) = slots(g, obj) {
-        let code = if is_cell(init) { get(g, init, "code") } else { UNDEF };
-        let reason = if is_cell(init) { get(g, init, "reason") } else { UNDEF };
-        let clean = if is_cell(init) { get(g, init, "wasClean") } else { UNDEF };
-        define(g, s, "code", if code == UNDEF { enc_i32(0) } else { enc_f64(read_number(g, code)) }, 0);
-        define(g, s, "reason", if reason == UNDEF { js_string(g, "") } else { js_string(g, &read_string(g, reason).unwrap_or_default()) }, 0);
-        define(g, s, "wasClean", enc_bool(clean != UNDEF && glue::rjs_to_boolean(g, clean) != 0), 0);
+        let code = if is_cell(init) {
+            get(g, init, "code")
+        } else {
+            UNDEF
+        };
+        let reason = if is_cell(init) {
+            get(g, init, "reason")
+        } else {
+            UNDEF
+        };
+        let clean = if is_cell(init) {
+            get(g, init, "wasClean")
+        } else {
+            UNDEF
+        };
+        define(
+            g,
+            s,
+            "code",
+            if code == UNDEF {
+                enc_i32(0)
+            } else {
+                enc_f64(read_number(g, code))
+            },
+            0,
+        );
+        define(
+            g,
+            s,
+            "reason",
+            if reason == UNDEF {
+                js_string(g, "")
+            } else {
+                js_string(g, &read_string(g, reason).unwrap_or_default())
+            },
+            0,
+        );
+        define(
+            g,
+            s,
+            "wasClean",
+            enc_bool(clean != UNDEF && glue::rjs_to_boolean(g, clean) != 0),
+            0,
+        );
     }
     obj
 }
@@ -1087,11 +1308,22 @@ unsafe fn new_message_event(g: *mut c_void, data: u64, origin: &str) -> u64 {
 
 /// A trusted `MessageEvent` of any type (`message` / `messageerror`) — also
 /// what BroadcastChannel delivers.
-pub(crate) unsafe fn new_message_event_of(g: *mut c_void, ty: &str, data: u64, origin: &str) -> u64 {
+pub(crate) unsafe fn new_message_event_of(
+    g: *mut c_void,
+    ty: &str,
+    data: u64,
+    origin: &str,
+) -> u64 {
     new_message_event_with_id(g, ty, data, origin, "")
 }
 
-pub(crate) unsafe fn new_message_event_with_id(g: *mut c_void, ty: &str, data: u64, origin: &str, last_event_id: &str) -> u64 {
+pub(crate) unsafe fn new_message_event_with_id(
+    g: *mut c_void,
+    ty: &str,
+    data: u64,
+    origin: &str,
+    last_event_id: &str,
+) -> u64 {
     let c = classes(g);
     let obj = new_object(g, c.message_event.proto);
     events::init_event(g, obj, js_string(g, ty), UNDEF, false);
@@ -1205,7 +1437,9 @@ unsafe fn read_protocols(g: *mut c_void, v: u64) -> Vec<String> {
         let n = array_len(g, v);
         // An object that is not an array has length 0 and yields nothing, which
         // is what `sequence<DOMString>` conversion does with a non-iterable.
-        return (0..n).filter_map(|i| read_string(g, get_i(g, v, i))).collect();
+        return (0..n)
+            .filter_map(|i| read_string(g, get_i(g, v, i)))
+            .collect();
     }
     vec![read_string(g, v).unwrap_or_default()]
 }
@@ -1240,7 +1474,11 @@ unsafe fn ws_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     let proto = {
         let nt = cf_new_target(cf);
-        let mut p = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+        let mut p = if is_cell(nt) {
+            get(g, nt, "prototype")
+        } else {
+            UNDEF
+        };
         if !is_cell(p) {
             p = c.socket.proto;
         }
@@ -1259,22 +1497,29 @@ unsafe fn ws_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     );
 
     let ctx = Ctx(g);
-    let spawned = std::thread::Builder::new()
-        .name("redjs-ws".into())
-        .spawn({
-            let sh = Arc::clone(&sh);
-            move || io_thread(ctx, id, sh, url, protocols)
-        });
+    let spawned = std::thread::Builder::new().name("redjs-ws".into()).spawn({
+        let sh = Arc::clone(&sh);
+        move || io_thread(ctx, id, sh, url, protocols)
+    });
 
     if let Err(e) = spawned {
         conns().lock().unwrap().remove(&id);
-        return throw_named(g, "InvalidStateError", &format!("could not start a WebSocket thread: {e}"));
+        return throw_named(
+            g,
+            "InvalidStateError",
+            &format!("could not start a WebSocket thread: {e}"),
+        );
     }
 
     // Protected until the close event has been delivered: an open socket must
     // stay reachable for its own events even with no references left.
     crate::ffi::redjs_protect(g, obj);
-    live().lock().unwrap().entry(ctx.key()).or_default().push((id, obj));
+    live()
+        .lock()
+        .unwrap()
+        .entry(ctx.key())
+        .or_default()
+        .push((id, obj));
     LIVE_COUNT.fetch_add(1, Ordering::SeqCst);
     obj
 }
@@ -1336,8 +1581,18 @@ unsafe fn ws_url(g: *mut c_void, cf: *mut c_void) -> u64 {
 #[crate::host_fn]
 unsafe fn ws_binary_type_get(g: *mut c_void, cf: *mut c_void) -> u64 {
     match this_ws(g, cf) {
-        Some(d) => js_string(g, if d.binary_type == BinaryType::Blob { "blob" } else { "arraybuffer" }),
-        None => throw_type_error(g, "WebSocket.prototype.binaryType called on a non-WebSocket"),
+        Some(d) => js_string(
+            g,
+            if d.binary_type == BinaryType::Blob {
+                "blob"
+            } else {
+                "arraybuffer"
+            },
+        ),
+        None => throw_type_error(
+            g,
+            "WebSocket.prototype.binaryType called on a non-WebSocket",
+        ),
     }
 }
 
@@ -1345,7 +1600,10 @@ unsafe fn ws_binary_type_get(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn ws_binary_type_set(g: *mut c_void, cf: *mut c_void) -> u64 {
     let want = read_string(g, cf_arg(cf, 0)).unwrap_or_default();
     let Some(d) = this_ws(g, cf) else {
-        return throw_type_error(g, "WebSocket.prototype.binaryType called on a non-WebSocket");
+        return throw_type_error(
+            g,
+            "WebSocket.prototype.binaryType called on a non-WebSocket",
+        );
     };
     match want.as_str() {
         "blob" => d.binary_type = BinaryType::Blob,
@@ -1362,7 +1620,10 @@ unsafe fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     // The payload must be read out of JS memory BEFORE anything can allocate.
     let st = state(g);
     let payload: (u8, Vec<u8>) = if glue::rjs_kind(g, arg) == 5 {
-        (OP_TEXT, read_string(g, arg).unwrap_or_default().into_bytes())
+        (
+            OP_TEXT,
+            read_string(g, arg).unwrap_or_default().into_bytes(),
+        )
     } else if host_data::<blob::BlobData>(g, st.blob_class, arg).is_some() {
         // A browser reads a Blob payload asynchronously and fails the
         // connection if the read fails; this runtime reads it now (A-F2), so
@@ -1378,7 +1639,10 @@ unsafe fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
         (OP_BINARY, b.to_vec())
     } else {
         // Everything else is stringified, as WebIDL's `USVString` union does.
-        (OP_TEXT, read_string(g, arg).unwrap_or_default().into_bytes())
+        (
+            OP_TEXT,
+            read_string(g, arg).unwrap_or_default().into_bytes(),
+        )
     };
 
     let Some(d) = this_ws(g, cf) else {
@@ -1389,19 +1653,28 @@ unsafe fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
     };
     match sh.ready_state() {
         CONNECTING => {
-            return throw_named(g, "InvalidStateError", "WebSocket.send: the socket is still CONNECTING")
+            return throw_named(
+                g,
+                "InvalidStateError",
+                "WebSocket.send: the socket is still CONNECTING",
+            )
         }
         // Spec: while CLOSING or CLOSED the data is not sent, but it IS counted
         // — so an app watching bufferedAmount can see that it was dropped.
         CLOSING | CLOSED => {
-            sh.buffered.fetch_add(payload.1.len() as u64, Ordering::SeqCst);
+            sh.buffered
+                .fetch_add(payload.1.len() as u64, Ordering::SeqCst);
             return UNDEF;
         }
         _ => {}
     }
     let billed = payload.1.len() as u64;
     sh.buffered.fetch_add(billed, Ordering::SeqCst);
-    sh.out.lock().unwrap().push_back(Out::Data { opcode: payload.0, payload: payload.1, billed });
+    sh.out.lock().unwrap().push_back(Out::Data {
+        opcode: payload.0,
+        payload: payload.1,
+        billed,
+    });
     UNDEF
 }
 
@@ -1409,7 +1682,11 @@ unsafe fn ws_send(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn ws_close(g: *mut c_void, cf: *mut c_void) -> u64 {
     let code_arg = cf_arg(cf, 0);
     let reason_arg = cf_arg(cf, 1);
-    let code = if code_arg == UNDEF { 1000u16 } else { clamp_close_code(read_number(g, code_arg)) };
+    let code = if code_arg == UNDEF {
+        1000u16
+    } else {
+        clamp_close_code(read_number(g, code_arg))
+    };
     if code_arg != UNDEF && code != 1000 && !(3000..=4999).contains(&code) {
         return throw_named(
             g,
@@ -1417,19 +1694,28 @@ unsafe fn ws_close(g: *mut c_void, cf: *mut c_void) -> u64 {
             &format!("WebSocket.close: {code} is neither 1000 nor in the 3000-4999 range"),
         );
     }
-    let reason = if reason_arg == UNDEF { String::new() } else { read_string(g, reason_arg).unwrap_or_default() };
+    let reason = if reason_arg == UNDEF {
+        String::new()
+    } else {
+        read_string(g, reason_arg).unwrap_or_default()
+    };
     if reason.len() > 123 {
         return throw_named(
             g,
             "SyntaxError",
-            &format!("WebSocket.close: the reason is {} UTF-8 bytes (max 123)", reason.len()),
+            &format!(
+                "WebSocket.close: the reason is {} UTF-8 bytes (max 123)",
+                reason.len()
+            ),
         );
     }
 
     let Some(d) = this_ws(g, cf) else {
         return throw_type_error(g, "WebSocket.prototype.close called on a non-WebSocket");
     };
-    let Some(sh) = shared_of(d.id) else { return UNDEF };
+    let Some(sh) = shared_of(d.id) else {
+        return UNDEF;
+    };
     match sh.ready_state() {
         CLOSING | CLOSED => {}
         CONNECTING => {
@@ -1440,7 +1726,10 @@ unsafe fn ws_close(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         _ => {
             sh.set_state(CLOSING);
-            sh.out.lock().unwrap().push_back(Out::Close { code, reason });
+            sh.out
+                .lock()
+                .unwrap()
+                .push_back(Out::Close { code, reason });
         }
     }
     UNDEF
@@ -1451,7 +1740,13 @@ unsafe fn ws_close(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Dispatches one queued event. Returns `true` when it was the `close` event.
-unsafe fn deliver(g: *mut c_void, obj: u64, origin: &str, binary: BinaryType, ev: Incoming) -> bool {
+unsafe fn deliver(
+    g: *mut c_void,
+    obj: u64,
+    origin: &str,
+    binary: BinaryType,
+    ev: Incoming,
+) -> bool {
     match ev {
         Incoming::Open => {
             let e = events::new_trusted_event(g, "open");
@@ -1483,7 +1778,11 @@ unsafe fn deliver(g: *mut c_void, obj: u64, origin: &str, binary: BinaryType, ev
             events::dispatch(g, obj, e);
             false
         }
-        Incoming::Closed { code, reason, clean } => {
+        Incoming::Closed {
+            code,
+            reason,
+            clean,
+        } => {
             let e = new_close_event(g, code, &reason, clean);
             events::dispatch(g, obj, e);
             true
@@ -1549,57 +1848,75 @@ pub unsafe fn pump(g: *mut c_void) {
 pub unsafe fn install(g: *mut c_void, event_proto: u64, event_target_proto: u64) {
     let socket_class = make_host_class::<WsData>("WebSocket");
 
-    let message_event = define_class(g, &ClassSpec {
-        name: "MessageEvent",
-        arity: 1,
-        construct: Some(message_event_construct),
-        parent_proto: event_proto,
-        methods: &[],
-        getters: &[
-            ("data", me_data),
-            ("origin", me_origin),
-            ("lastEventId", me_last_event_id),
-            ("source", me_source),
-            ("ports", me_ports),
-        ],
-        accessors: &[],
-    });
+    let message_event = define_class(
+        g,
+        &ClassSpec {
+            name: "MessageEvent",
+            arity: 1,
+            construct: Some(message_event_construct),
+            parent_proto: event_proto,
+            methods: &[],
+            getters: &[
+                ("data", me_data),
+                ("origin", me_origin),
+                ("lastEventId", me_last_event_id),
+                ("source", me_source),
+                ("ports", me_ports),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let close_event = define_class(g, &ClassSpec {
-        name: "CloseEvent",
-        arity: 1,
-        construct: Some(close_event_construct),
-        parent_proto: event_proto,
-        methods: &[],
-        getters: &[("code", ce_code), ("reason", ce_reason), ("wasClean", ce_was_clean)],
-        accessors: &[],
-    });
+    let close_event = define_class(
+        g,
+        &ClassSpec {
+            name: "CloseEvent",
+            arity: 1,
+            construct: Some(close_event_construct),
+            parent_proto: event_proto,
+            methods: &[],
+            getters: &[
+                ("code", ce_code),
+                ("reason", ce_reason),
+                ("wasClean", ce_was_clean),
+            ],
+            accessors: &[],
+        },
+    );
 
-    let socket = define_class(g, &ClassSpec {
-        name: "WebSocket",
-        arity: 1,
-        construct: Some(ws_construct),
-        parent_proto: event_target_proto,
-        methods: &[("send", 1, ws_send), ("close", 0, ws_close)],
-        getters: &[
-            ("url", ws_url),
-            ("readyState", ws_ready_state),
-            ("bufferedAmount", ws_buffered),
-            ("protocol", ws_protocol),
-            ("extensions", ws_extensions),
-        ],
-        accessors: &[
-            ("binaryType", ws_binary_type_get, ws_binary_type_set),
-            ("onopen", get_onopen, set_onopen),
-            ("onmessage", get_onmessage, set_onmessage),
-            ("onerror", get_onerror, set_onerror),
-            ("onclose", get_onclose, set_onclose),
-        ],
-    });
+    let socket = define_class(
+        g,
+        &ClassSpec {
+            name: "WebSocket",
+            arity: 1,
+            construct: Some(ws_construct),
+            parent_proto: event_target_proto,
+            methods: &[("send", 1, ws_send), ("close", 0, ws_close)],
+            getters: &[
+                ("url", ws_url),
+                ("readyState", ws_ready_state),
+                ("bufferedAmount", ws_buffered),
+                ("protocol", ws_protocol),
+                ("extensions", ws_extensions),
+            ],
+            accessors: &[
+                ("binaryType", ws_binary_type_get, ws_binary_type_set),
+                ("onopen", get_onopen, set_onopen),
+                ("onmessage", get_onmessage, set_onmessage),
+                ("onerror", get_onerror, set_onerror),
+                ("onclose", get_onclose, set_onclose),
+            ],
+        },
+    );
 
     // The readyState constants live on BOTH the constructor and the prototype
     // (WebIDL const members), RO/DontEnum/DontDelete.
-    for (name, v) in [("CONNECTING", 0), ("OPEN", 1), ("CLOSING", 2), ("CLOSED", 3)] {
+    for (name, v) in [
+        ("CONNECTING", 0),
+        ("OPEN", 1),
+        ("CLOSING", 2),
+        ("CLOSED", 3),
+    ] {
         define(g, socket.ctor, name, enc_i32(v), 1 | 2 | 4);
         define(g, socket.proto, name, enc_i32(v), 1 | 2 | 4);
     }
@@ -1626,8 +1943,11 @@ pub(super) unsafe fn bind_stream(g: *mut c_void, socket: u64, open: u64, message
 }
 
 pub(super) unsafe fn stream_send_state(g: *mut c_void, socket: u64) -> (bool, u64) {
-    let shared = host_data::<WsData>(g, classes(g).socket_class, socket).and_then(|data| shared_of(data.id));
-    shared.map_or((false, 0), |s| (s.ready_state() == OPEN, s.buffered.load(Ordering::SeqCst)))
+    let shared =
+        host_data::<WsData>(g, classes(g).socket_class, socket).and_then(|data| shared_of(data.id));
+    shared.map_or((false, 0), |s| {
+        (s.ready_state() == OPEN, s.buffered.load(Ordering::SeqCst))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1641,7 +1961,10 @@ mod tests {
     #[test]
     fn the_accept_key_matches_the_rfc_example() {
         // RFC 6455 §1.3, verbatim.
-        assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        assert_eq!(
+            accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
     }
 
     #[test]
@@ -1667,14 +1990,21 @@ mod tests {
         assert_eq!(wire[0], 0x81, "FIN + text opcode");
         assert_eq!(wire[1], 0x80 | 5, "MASK bit + length");
         assert_eq!(&wire[2..6], &mask);
-        let unmasked: Vec<u8> = wire[6..].iter().enumerate().map(|(i, b)| b ^ mask[i & 3]).collect();
+        let unmasked: Vec<u8> = wire[6..]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ mask[i & 3])
+            .collect();
         assert_eq!(unmasked, b"Hello");
     }
 
     #[test]
     fn frame_length_uses_the_three_encodings_at_the_right_boundaries() {
         let m = [0u8; 4];
-        assert_eq!(encode_client_frame(true, OP_BINARY, &vec![0u8; 125], m)[1], 0x80 | 125);
+        assert_eq!(
+            encode_client_frame(true, OP_BINARY, &vec![0u8; 125], m)[1],
+            0x80 | 125
+        );
         let mid = encode_client_frame(true, OP_BINARY, &vec![0u8; 126], m);
         assert_eq!(mid[1], 0x80 | 126);
         assert_eq!(&mid[2..4], &[0, 126]);
@@ -1705,7 +2035,11 @@ mod tests {
     fn a_partial_frame_is_incomplete_rather_than_an_error() {
         let wire = server_frame(true, OP_TEXT, b"hello world");
         for cut in 0..wire.len() {
-            assert_eq!(parse_frame(&wire[..cut], MAX_MESSAGE), Ok(None), "cut at {cut}");
+            assert_eq!(
+                parse_frame(&wire[..cut], MAX_MESSAGE),
+                Ok(None),
+                "cut at {cut}"
+            );
         }
         let (f, used) = parse_frame(&wire, MAX_MESSAGE).unwrap().unwrap();
         assert_eq!(used, wire.len());
@@ -1739,14 +2073,28 @@ mod tests {
         assert_eq!(parse_frame(&rsv, MAX_MESSAGE).unwrap_err().code, 1002);
         for op in [0x3, 0x7, 0xb, 0xf] {
             let f = server_frame(true, op, b"");
-            assert_eq!(parse_frame(&f, MAX_MESSAGE).unwrap_err().code, 1002, "opcode {op:#x}");
+            assert_eq!(
+                parse_frame(&f, MAX_MESSAGE).unwrap_err().code,
+                1002,
+                "opcode {op:#x}"
+            );
         }
     }
 
     #[test]
     fn control_frames_may_be_neither_fragmented_nor_large() {
-        assert_eq!(parse_frame(&server_frame(false, OP_PING, b""), MAX_MESSAGE).unwrap_err().code, 1002);
-        assert_eq!(parse_frame(&server_frame(true, OP_PING, &[0u8; 126]), MAX_MESSAGE).unwrap_err().code, 1002);
+        assert_eq!(
+            parse_frame(&server_frame(false, OP_PING, b""), MAX_MESSAGE)
+                .unwrap_err()
+                .code,
+            1002
+        );
+        assert_eq!(
+            parse_frame(&server_frame(true, OP_PING, &[0u8; 126]), MAX_MESSAGE)
+                .unwrap_err()
+                .code,
+            1002
+        );
     }
 
     #[test]
@@ -1776,7 +2124,11 @@ mod tests {
         ];
         let mut out = None;
         for (fin, op, s) in parts {
-            let f = Frame { fin, opcode: op, payload: s.as_bytes().to_vec() };
+            let f = Frame {
+                fin,
+                opcode: op,
+                payload: s.as_bytes().to_vec(),
+            };
             if let Assembled::Text(t) = a.push(&f, MAX_MESSAGE).unwrap() {
                 out = Some(t);
             }
@@ -1788,14 +2140,26 @@ mod tests {
     fn interleaving_rules_for_fragments_are_enforced() {
         // A continuation with nothing in progress.
         let mut a = Assembler::default();
-        let cont = Frame { fin: true, opcode: OP_CONT, payload: b"x".to_vec() };
+        let cont = Frame {
+            fin: true,
+            opcode: OP_CONT,
+            payload: b"x".to_vec(),
+        };
         assert_eq!(a.push(&cont, MAX_MESSAGE).unwrap_err().code, 1002);
 
         // A fresh data frame inside a fragmented message.
         let mut b = Assembler::default();
-        let start = Frame { fin: false, opcode: OP_TEXT, payload: b"a".to_vec() };
+        let start = Frame {
+            fin: false,
+            opcode: OP_TEXT,
+            payload: b"a".to_vec(),
+        };
         b.push(&start, MAX_MESSAGE).unwrap();
-        let interrupt = Frame { fin: true, opcode: OP_TEXT, payload: b"b".to_vec() };
+        let interrupt = Frame {
+            fin: true,
+            opcode: OP_TEXT,
+            payload: b"b".to_vec(),
+        };
         assert_eq!(b.push(&interrupt, MAX_MESSAGE).unwrap_err().code, 1002);
     }
 
@@ -1803,7 +2167,11 @@ mod tests {
     fn a_text_message_that_is_not_utf8_fails_the_connection() {
         // 1007 exists precisely so this is not delivered as a lossy string.
         let mut a = Assembler::default();
-        let f = Frame { fin: true, opcode: OP_TEXT, payload: vec![0xff, 0xfe] };
+        let f = Frame {
+            fin: true,
+            opcode: OP_TEXT,
+            payload: vec![0xff, 0xfe],
+        };
         assert_eq!(a.push(&f, MAX_MESSAGE).unwrap_err().code, 1007);
     }
 
@@ -1812,54 +2180,103 @@ mod tests {
         // Each half is individually meaningless; only the joined message can be
         // validated, which is why validation happens at FIN.
         let mut a = Assembler::default();
-        a.push(&Frame { fin: false, opcode: OP_TEXT, payload: vec![0xe2, 0x82] }, MAX_MESSAGE).unwrap();
-        let e = a.push(&Frame { fin: true, opcode: OP_CONT, payload: vec![0x28] }, MAX_MESSAGE).unwrap_err();
+        a.push(
+            &Frame {
+                fin: false,
+                opcode: OP_TEXT,
+                payload: vec![0xe2, 0x82],
+            },
+            MAX_MESSAGE,
+        )
+        .unwrap();
+        let e = a
+            .push(
+                &Frame {
+                    fin: true,
+                    opcode: OP_CONT,
+                    payload: vec![0x28],
+                },
+                MAX_MESSAGE,
+            )
+            .unwrap_err();
         assert_eq!(e.code, 1007);
     }
 
     #[test]
     fn a_message_over_the_limit_is_refused_during_reassembly() {
         let mut a = Assembler::default();
-        let f = Frame { fin: false, opcode: OP_BINARY, payload: vec![0u8; 64] };
+        let f = Frame {
+            fin: false,
+            opcode: OP_BINARY,
+            payload: vec![0u8; 64],
+        };
         a.push(&f, 32).unwrap_err();
     }
 
     #[test]
     fn close_payloads_round_trip_and_reject_the_reserved_codes() {
         assert_eq!(parse_close_payload(&[]).unwrap(), (1005, String::new()));
-        assert_eq!(parse_close_payload(&close_payload(1000, "bye")).unwrap(), (1000, "bye".into()));
-        assert_eq!(parse_close_payload(&close_payload(4001, "app")).unwrap(), (4001, "app".into()));
+        assert_eq!(
+            parse_close_payload(&close_payload(1000, "bye")).unwrap(),
+            (1000, "bye".into())
+        );
+        assert_eq!(
+            parse_close_payload(&close_payload(4001, "app")).unwrap(),
+            (4001, "app".into())
+        );
         // A one-byte body cannot carry a code.
         assert_eq!(parse_close_payload(&[3]).unwrap_err().code, 1002);
         // 1005/1006/1015 are local sentinels and must never be on the wire.
         for bad in [1004u16, 1005, 1006, 1015, 999, 5000] {
             assert_eq!(
-                parse_close_payload(&close_payload(bad, "")).unwrap_err().code,
+                parse_close_payload(&close_payload(bad, ""))
+                    .unwrap_err()
+                    .code,
                 1002,
                 "wire code {bad} was accepted"
             );
         }
-        assert_eq!(parse_close_payload(&[0x03, 0xe8, 0xff]).unwrap_err().code, 1007);
+        assert_eq!(
+            parse_close_payload(&[0x03, 0xe8, 0xff]).unwrap_err().code,
+            1007
+        );
     }
 
     #[test]
     fn the_upgrade_request_carries_every_required_header() {
         let u = url::Url::parse("http://example.com:8080/socket?room=1").unwrap();
-        let req = handshake_request(&u, "dGhlIHNhbXBsZSBub25jZQ==", &["ion".into(), "cbor".into()], None);
+        let req = handshake_request(
+            &u,
+            "dGhlIHNhbXBsZSBub25jZQ==",
+            &["ion".into(), "cbor".into()],
+            None,
+        );
         assert!(req.starts_with("GET /socket?room=1 HTTP/1.1\r\n"), "{req}");
         assert!(req.contains("Host: example.com:8080\r\n"), "{req}");
         assert!(req.contains("Upgrade: websocket\r\n"), "{req}");
         assert!(req.contains("Connection: Upgrade\r\n"), "{req}");
         assert!(req.contains("Sec-WebSocket-Version: 13\r\n"), "{req}");
-        assert!(req.contains("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"), "{req}");
-        assert!(req.contains("Sec-WebSocket-Protocol: ion, cbor\r\n"), "{req}");
+        assert!(
+            req.contains("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"),
+            "{req}"
+        );
+        assert!(
+            req.contains("Sec-WebSocket-Protocol: ion, cbor\r\n"),
+            "{req}"
+        );
         assert!(req.ends_with("\r\n\r\n"), "{req}");
         // No extensions are offered, so none may be accepted.
         assert!(!req.contains("Sec-WebSocket-Extensions"), "{req}");
-        assert!(!req.contains("Cookie"), "no jar value, no Cookie header: {req}");
+        assert!(
+            !req.contains("Cookie"),
+            "no jar value, no Cookie header: {req}"
+        );
         let with = handshake_request(&u, "k", &[], Some("sid=1; t=2"));
         assert!(with.contains("Cookie: sid=1; t=2\r\n"), "{with}");
-        assert!(!handshake_request(&u, "k", &[], Some("a=1\r\nX: y")).contains("X: y"), "no injection");
+        assert!(
+            !handshake_request(&u, "k", &[], Some("a=1\r\nX: y")).contains("X: y"),
+            "no injection"
+        );
     }
 
     #[test]
@@ -1872,7 +2289,10 @@ mod tests {
         http::Head {
             status,
             reason: "Switching Protocols".into(),
-            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
@@ -1881,35 +2301,60 @@ mod tests {
 
     #[test]
     fn a_correct_101_is_accepted_and_reports_the_subprotocol() {
-        let h = head(101, &[
-            ("upgrade", "WebSocket"),
-            ("connection", "keep-alive, Upgrade"),
-            ("sec-websocket-accept", ACCEPT),
-            ("sec-websocket-protocol", "ion"),
-        ]);
-        assert_eq!(validate_handshake(&h, KEY, &["ion".into()]).unwrap(), ("ion".into(), String::new()));
+        let h = head(
+            101,
+            &[
+                ("upgrade", "WebSocket"),
+                ("connection", "keep-alive, Upgrade"),
+                ("sec-websocket-accept", ACCEPT),
+                ("sec-websocket-protocol", "ion"),
+            ],
+        );
+        assert_eq!(
+            validate_handshake(&h, KEY, &["ion".into()]).unwrap(),
+            ("ion".into(), String::new())
+        );
     }
 
     #[test]
     fn a_wrong_accept_key_fails_the_handshake() {
         // The accept key is the only proof the peer understood the upgrade and
         // is not a cache or a proxy replaying a 101.
-        let h = head(101, &[("upgrade", "websocket"), ("connection", "Upgrade"), ("sec-websocket-accept", "AAAA")]);
-        assert!(validate_handshake(&h, KEY, &[]).unwrap_err().contains("Sec-WebSocket-Accept"));
+        let h = head(
+            101,
+            &[
+                ("upgrade", "websocket"),
+                ("connection", "Upgrade"),
+                ("sec-websocket-accept", "AAAA"),
+            ],
+        );
+        assert!(validate_handshake(&h, KEY, &[])
+            .unwrap_err()
+            .contains("Sec-WebSocket-Accept"));
     }
 
     #[test]
     fn a_non_101_answer_names_the_status_it_got() {
-        let h = http::Head { status: 404, reason: "Not Found".into(), headers: vec![] };
+        let h = http::Head {
+            status: 404,
+            reason: "Not Found".into(),
+            headers: vec![],
+        };
         let e = validate_handshake(&h, KEY, &[]).unwrap_err();
         assert!(e.contains("404") && e.contains("Not Found"), "{e}");
     }
 
     #[test]
     fn a_missing_or_wrong_upgrade_pair_fails() {
-        let no_upgrade = head(101, &[("connection", "Upgrade"), ("sec-websocket-accept", ACCEPT)]);
+        let no_upgrade = head(
+            101,
+            &[("connection", "Upgrade"), ("sec-websocket-accept", ACCEPT)],
+        );
         assert!(validate_handshake(&no_upgrade, KEY, &[]).is_err());
-        let no_conn = head(101, &[("upgrade", "websocket"), ("sec-websocket-accept", ACCEPT)]);
+        let no_conn = head(
+            101,
+            &[("upgrade", "websocket"), ("sec-websocket-accept", ACCEPT)],
+        );
         assert!(validate_handshake(&no_conn, KEY, &[]).is_err());
     }
 
@@ -1918,30 +2363,58 @@ mod tests {
         // Both are silent-wrong-answer shapes: an unnegotiated extension means
         // every following frame decodes wrong, and an invented subprotocol
         // means the peer is speaking something we never agreed to.
-        let ext = head(101, &[
-            ("upgrade", "websocket"),
-            ("connection", "Upgrade"),
-            ("sec-websocket-accept", ACCEPT),
-            ("sec-websocket-extensions", "permessage-deflate"),
-        ]);
-        assert!(validate_handshake(&ext, KEY, &[]).unwrap_err().contains("permessage-deflate"));
+        let ext = head(
+            101,
+            &[
+                ("upgrade", "websocket"),
+                ("connection", "Upgrade"),
+                ("sec-websocket-accept", ACCEPT),
+                ("sec-websocket-extensions", "permessage-deflate"),
+            ],
+        );
+        assert!(validate_handshake(&ext, KEY, &[])
+            .unwrap_err()
+            .contains("permessage-deflate"));
 
-        let proto = head(101, &[
-            ("upgrade", "websocket"),
-            ("connection", "Upgrade"),
-            ("sec-websocket-accept", ACCEPT),
-            ("sec-websocket-protocol", "surprise"),
-        ]);
-        assert!(validate_handshake(&proto, KEY, &["ion".into()]).unwrap_err().contains("surprise"));
+        let proto = head(
+            101,
+            &[
+                ("upgrade", "websocket"),
+                ("connection", "Upgrade"),
+                ("sec-websocket-accept", ACCEPT),
+                ("sec-websocket-protocol", "surprise"),
+            ],
+        );
+        assert!(validate_handshake(&proto, KEY, &["ion".into()])
+            .unwrap_err()
+            .contains("surprise"));
     }
 
     #[test]
     fn urls_are_normalized_and_refused_the_way_the_html_spec_says() {
-        assert_eq!(parse_ws_url("ws://a.example/x").map(|u| u.to_string()).ok(), Some("ws://a.example/x".into()));
+        assert_eq!(
+            parse_ws_url("ws://a.example/x").map(|u| u.to_string()).ok(),
+            Some("ws://a.example/x".into())
+        );
         // http(s) is mapped, not refused.
-        assert_eq!(parse_ws_url("https://a.example/x").map(|u| u.scheme().to_string()).ok(), Some("wss".into()));
-        assert_eq!(parse_ws_url("http://a.example/x").map(|u| u.scheme().to_string()).ok(), Some("ws".into()));
-        for bad in ["ftp://a.example/", "/relative", "ws://a.example/x#frag", "not a url"] {
+        assert_eq!(
+            parse_ws_url("https://a.example/x")
+                .map(|u| u.scheme().to_string())
+                .ok(),
+            Some("wss".into())
+        );
+        assert_eq!(
+            parse_ws_url("http://a.example/x")
+                .map(|u| u.scheme().to_string())
+                .ok(),
+            Some("ws".into())
+        );
+        for bad in [
+            "ftp://a.example/",
+            "/relative",
+            "ws://a.example/x#frag",
+            "not a url",
+        ] {
             assert!(parse_ws_url(bad).is_err(), "accepted {bad:?}");
         }
     }
@@ -2040,7 +2513,11 @@ mod jsc_tests {
             // WTFCrash in `Heap::collect`, not a test failure.
             unsafe {
                 crate::glue::rjs_lock(c.raw());
-                crate::web::pump(c.raw(), crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS, core::ptr::null_mut());
+                crate::web::pump(
+                    c.raw(),
+                    crate::web::PUMP_TIMERS | crate::web::PUMP_MICROTASKS,
+                    core::ptr::null_mut(),
+                );
                 crate::glue::rjs_unlock(c.raw());
             }
             c.drain_microtasks();
@@ -2097,7 +2574,10 @@ mod jsc_tests {
                 if buf.len() < 10 {
                     return None;
                 }
-                (u64::from_be_bytes(buf[2..10].try_into().unwrap()) as usize, 10usize)
+                (
+                    u64::from_be_bytes(buf[2..10].try_into().unwrap()) as usize,
+                    10usize,
+                )
             }
             n => (n as usize, 2usize),
         };
@@ -2118,7 +2598,14 @@ mod jsc_tests {
                 *b ^= mask[i & 3];
             }
         }
-        Some((super::Frame { fin, opcode, payload }, off + len))
+        Some((
+            super::Frame {
+                fin,
+                opcode,
+                payload,
+            },
+            off + len,
+        ))
     }
 
     /// A one-connection RFC 6455 echo server on loopback. Returns its port.
@@ -2126,7 +2613,9 @@ mod jsc_tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
-            let Ok((mut sock, _)) = listener.accept() else { return };
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
             let _ = sock.set_read_timeout(Some(Duration::from_secs(20)));
             let _ = sock.set_nodelay(true);
 
@@ -2161,8 +2650,11 @@ mod jsc_tests {
                 .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-key:"))
                 .map(|l| l[l.find(':').unwrap() + 1..].trim().to_string())
                 .unwrap_or_default();
-            let accept =
-                if cfg.bad_accept { "AAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string() } else { super::accept_key(&key) };
+            let accept = if cfg.bad_accept {
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string()
+            } else {
+                super::accept_key(&key)
+            };
 
             let mut resp = String::from("HTTP/1.1 101 Switching Protocols\r\n");
             resp.push_str("Upgrade: websocket\r\nConnection: Upgrade\r\n");
@@ -2254,18 +2746,39 @@ mod jsc_tests {
         ok(&c, "WebSocket.length === 1");
         // The four constants exist on the constructor AND the prototype.
         ok(&c, "WebSocket.CONNECTING === 0 && WebSocket.OPEN === 1 && WebSocket.CLOSING === 2 && WebSocket.CLOSED === 3");
-        ok(&c, "WebSocket.prototype.CONNECTING === 0 && WebSocket.prototype.CLOSED === 3");
+        ok(
+            &c,
+            "WebSocket.prototype.CONNECTING === 0 && WebSocket.prototype.CLOSED === 3",
+        );
         // A real EventTarget, not an object with a bag of callbacks.
-        ok(&c, "Object.getPrototypeOf(WebSocket.prototype) === EventTarget.prototype");
-        ok(&c, "typeof WebSocket.prototype.addEventListener === 'function'");
+        ok(
+            &c,
+            "Object.getPrototypeOf(WebSocket.prototype) === EventTarget.prototype",
+        );
+        ok(
+            &c,
+            "typeof WebSocket.prototype.addEventListener === 'function'",
+        );
         // Real Event subclasses.
-        ok(&c, "Object.getPrototypeOf(MessageEvent.prototype) === Event.prototype");
-        ok(&c, "Object.getPrototypeOf(CloseEvent.prototype) === Event.prototype");
+        ok(
+            &c,
+            "Object.getPrototypeOf(MessageEvent.prototype) === Event.prototype",
+        );
+        ok(
+            &c,
+            "Object.getPrototypeOf(CloseEvent.prototype) === Event.prototype",
+        );
         ok(&c, "new MessageEvent('message', { data: 42 }).data === 42");
         ok(&c, "new MessageEvent('message') instanceof Event");
         let e = "new CloseEvent('close', { code: 1000, reason: 'bye', wasClean: true })";
-        ok(&c, &format!("{e}.code === 1000 && {e}.reason === 'bye' && {e}.wasClean === true"));
-        ok(&c, "Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage').set !== undefined");
+        ok(
+            &c,
+            &format!("{e}.code === 1000 && {e}.reason === 'bye' && {e}.wasClean === true"),
+        );
+        ok(
+            &c,
+            "Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage').set !== undefined",
+        );
     }
 
     #[test]
@@ -2282,7 +2795,10 @@ mod jsc_tests {
             assert!(!m.is_empty(), "{src} threw an empty message");
         }
         ok(&c, "(() => { try { new WebSocket('ftp://x/'); } catch (e) { return e.name === 'SyntaxError'; } })()");
-        ok(&c, "(() => { try { new WebSocket(); } catch (e) { return e instanceof TypeError; } })()");
+        ok(
+            &c,
+            "(() => { try { new WebSocket(); } catch (e) { return e instanceof TypeError; } })()",
+        );
     }
 
     // -- the connection ------------------------------------------------------
@@ -2302,7 +2818,10 @@ mod jsc_tests {
                  return [before, ws.readyState, ws.url, ws.protocol, ws.extensions, e.origin].join('|');"
             ),
         );
-        assert_eq!(out, format!("0|1|ws://127.0.0.1:{port}/rpc|||ws://127.0.0.1:{port}"));
+        assert_eq!(
+            out,
+            format!("0|1|ws://127.0.0.1:{port}/rpc|||ws://127.0.0.1:{port}")
+        );
     }
 
     #[test]
@@ -2310,10 +2829,23 @@ mod jsc_tests {
         let _g = crate::webapi::cookies::test_lock();
         crate::webapi::cookies::reset_for_tests();
         let jar_url = url::Url::parse("http://127.0.0.1/").unwrap();
-        crate::webapi::cookies::set_from_header(&jar_url, "sid=ws1; Path=/", crate::webapi::cookies::Api::Http).unwrap();
-        crate::webapi::cookies::set_from_header(&jar_url, "other=1; Path=/elsewhere", crate::webapi::cookies::Api::Http)
-            .unwrap();
-        let port = serve(Cfg { echo_head: true, set_cookie: Some("fromws=2; Path=/".into()), ..Cfg::default() });
+        crate::webapi::cookies::set_from_header(
+            &jar_url,
+            "sid=ws1; Path=/",
+            crate::webapi::cookies::Api::Http,
+        )
+        .unwrap();
+        crate::webapi::cookies::set_from_header(
+            &jar_url,
+            "other=1; Path=/elsewhere",
+            crate::webapi::cookies::Api::Http,
+        )
+        .unwrap();
+        let port = serve(Cfg {
+            echo_head: true,
+            set_cookie: Some("fromws=2; Path=/".into()),
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2326,9 +2858,16 @@ mod jsc_tests {
                  return head.split('\\r\\n').filter(l => /^cookie:/i.test(l)).join('|');"
             ),
         );
-        assert_eq!(out, "Cookie: sid=ws1", "the path-matching cookie, and only it");
+        assert_eq!(
+            out, "Cookie: sid=ws1",
+            "the path-matching cookie, and only it"
+        );
         let now = crate::webapi::cookies::header_for(&jar_url, crate::webapi::cookies::Api::Http);
-        assert_eq!(now.as_deref(), Some("sid=ws1; fromws=2"), "the 101's Set-Cookie was stored");
+        assert_eq!(
+            now.as_deref(),
+            Some("sid=ws1; fromws=2"),
+            "the 101's Set-Cookie was stored"
+        );
         crate::webapi::cookies::reset_for_tests();
     }
 
@@ -2490,13 +3029,20 @@ mod jsc_tests {
         );
         // 70000 clamps to 65535 and is refused; truncating it to 4464 would
         // have put a plausible wrong code on the wire.
-        assert_eq!(out, "InvalidAccessError,InvalidAccessError,InvalidAccessError,SyntaxError|1000");
+        assert_eq!(
+            out,
+            "InvalidAccessError,InvalidAccessError,InvalidAccessError,SyntaxError|1000"
+        );
     }
 
     #[test]
     fn a_server_initiated_close_is_reported_with_its_own_code() {
         let port = serve(Cfg {
-            push: vec![server_frame(true, OP_CLOSE, &[0x03, 0xf3, b'b', b'y', b'e'])],
+            push: vec![server_frame(
+                true,
+                OP_CLOSE,
+                &[0x03, 0xf3, b'b', b'y', b'e'],
+            )],
             ..Cfg::default()
         });
         let c = ws_ctx();
@@ -2516,7 +3062,10 @@ mod jsc_tests {
     fn a_server_ping_is_answered_with_a_pong_carrying_the_same_payload() {
         // RFC 6455 makes this mandatory; a server using pings as a liveness
         // check drops a client that does not answer.
-        let port = serve(Cfg { push: vec![server_frame(true, OP_PING, b"beat")], ..Cfg::default() });
+        let port = serve(Cfg {
+            push: vec![server_frame(true, OP_PING, b"beat")],
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2553,7 +3102,10 @@ mod jsc_tests {
 
     #[test]
     fn a_subprotocol_is_offered_and_reported_back() {
-        let port = serve(Cfg { protocol: Some("ion".into()), ..Cfg::default() });
+        let port = serve(Cfg {
+            protocol: Some("ion".into()),
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2567,7 +3119,10 @@ mod jsc_tests {
 
     #[test]
     fn a_subprotocol_that_was_never_offered_fails_the_connection() {
-        let port = serve(Cfg { protocol: Some("surprise".into()), ..Cfg::default() });
+        let port = serve(Cfg {
+            protocol: Some("surprise".into()),
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2585,7 +3140,10 @@ mod jsc_tests {
     #[test]
     fn an_unoffered_extension_fails_the_connection_instead_of_being_ignored() {
         // Ignoring it would mean decoding every following frame wrong.
-        let port = serve(Cfg { rogue_extension: true, ..Cfg::default() });
+        let port = serve(Cfg {
+            rogue_extension: true,
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2599,7 +3157,10 @@ mod jsc_tests {
 
     #[test]
     fn a_wrong_accept_key_never_reaches_open() {
-        let port = serve(Cfg { bad_accept: true, ..Cfg::default() });
+        let port = serve(Cfg {
+            bad_accept: true,
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2643,7 +3204,10 @@ mod jsc_tests {
     fn a_connection_that_is_never_answered_can_be_closed_from_js() {
         // close() while CONNECTING must fail the connection promptly rather
         // than sitting on the handshake timeout.
-        let port = serve(Cfg { silent: true, ..Cfg::default() });
+        let port = serve(Cfg {
+            silent: true,
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let started = Instant::now();
         let out = run(
@@ -2656,7 +3220,10 @@ mod jsc_tests {
             ),
         );
         assert_eq!(out, "1006|false|3");
-        assert!(started.elapsed() < Duration::from_secs(10), "close() during CONNECTING did not cut the socket");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "close() during CONNECTING did not cut the socket"
+        );
     }
 
     #[test]
@@ -2673,7 +3240,10 @@ mod jsc_tests {
 
     #[test]
     fn send_before_open_throws_invalidstateerror() {
-        let port = serve(Cfg { silent: true, ..Cfg::default() });
+        let port = serve(Cfg {
+            silent: true,
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2735,13 +3305,16 @@ mod jsc_tests {
     #[test]
     fn a_wss_url_completes_a_real_tls_handshake_and_echoes() {
         if std::env::var("REDJS_WS_LIVE").as_deref() != Ok("1") {
-            eprintln!("[skip] set REDJS_WS_LIVE=1 (REDJS_WS_LIVE_URL overrides the endpoint) to run this");
+            eprintln!(
+                "[skip] set REDJS_WS_LIVE=1 (REDJS_WS_LIVE_URL overrides the endpoint) to run this"
+            );
             return;
         }
         // Verified against wss://echo.websocket.org/, wss://ws.ifelse.io/ and
         // wss://ws.postman-echo.com/raw — the loop below tolerates a server
         // that sends a greeting frame before it starts echoing.
-        let url = std::env::var("REDJS_WS_LIVE_URL").unwrap_or_else(|_| "wss://echo.websocket.org/".into());
+        let url = std::env::var("REDJS_WS_LIVE_URL")
+            .unwrap_or_else(|_| "wss://echo.websocket.org/".into());
         let c = ws_ctx();
         let out = run(
             &c,
@@ -2763,7 +3336,10 @@ mod jsc_tests {
 
     #[test]
     fn websocketstream_exists_and_hands_back_a_stream_pair() {
-        let port = serve(Cfg { protocol: Some("ion".into()), ..Cfg::default() });
+        let port = serve(Cfg {
+            protocol: Some("ion".into()),
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         ok(&c, "typeof WebSocketStream === 'function'");
         let out = run(
@@ -2822,8 +3398,10 @@ mod jsc_tests {
     fn websocketstream_drains_large_writes_and_forwards_close_validation() {
         let port = serve(Cfg::default());
         let c = ws_ctx();
-        let out = run(&c, &format!(
-            "const socket = new WebSocketStream('ws://127.0.0.1:{port}/');
+        let out = run(
+            &c,
+            &format!(
+                "const socket = new WebSocketStream('ws://127.0.0.1:{port}/');
              const pair = await socket.opened;
              let invalid;
              try {{ socket.close({{ closeCode: 2999 }}); }}
@@ -2834,7 +3412,8 @@ mod jsc_tests {
              const {{ value }} = await reader.read();
              await writer.close();
              return [invalid, value.byteLength, (await socket.closed).closeCode].join();"
-        ));
+            ),
+        );
         assert_eq!(out, "InvalidAccessError,1048577,1000");
     }
 
@@ -2854,7 +3433,10 @@ mod jsc_tests {
 
     #[test]
     fn an_abort_signal_tears_a_websocketstream_down() {
-        let port = serve(Cfg { silent: true, ..Cfg::default() });
+        let port = serve(Cfg {
+            silent: true,
+            ..Cfg::default()
+        });
         let c = ws_ctx();
         let out = run(
             &c,

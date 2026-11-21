@@ -70,7 +70,9 @@ const SMOKE: &[&str] = &[
 const FLAGS: u32 = 1 | 2 | 4 | 8;
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("wpt")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("wpt")
 }
 
 fn main() {
@@ -84,8 +86,12 @@ fn main() {
         println!("wpt_idb: test");
         return;
     }
-    let gate = args.iter().any(|a| a == "--ignored" || a == "--include-ignored")
-        || std::env::var("REDJS_WPT").map(|v| v == "gate").unwrap_or(false);
+    let gate = args
+        .iter()
+        .any(|a| a == "--ignored" || a == "--include-ignored")
+        || std::env::var("REDJS_WPT")
+            .map(|v| v == "gate")
+            .unwrap_or(false);
     std::process::exit(parent(gate));
 }
 
@@ -158,10 +164,15 @@ fn run_child(file: &str, backend: &str) -> FileOutcome {
     let start = Instant::now();
     let exe = std::env::current_exe().expect("current exe");
     let dir = ChildDir((backend != "memory").then(|| {
-        std::env::temp_dir().join(format!("redjs-wpt-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)))
+        std::env::temp_dir().join(format!(
+            "redjs-wpt-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ))
     }));
     let mut cmd = Command::new(exe);
-    cmd.env("REDJS_WPT_CHILD", file).env("REDJS_IDB_BACKEND", backend);
+    cmd.env("REDJS_WPT_CHILD", file)
+        .env("REDJS_IDB_BACKEND", backend);
     if let Some(d) = &dir.0 {
         let _ = std::fs::remove_dir_all(d);
         cmd.env("REDJS_IDB_DIR", d);
@@ -199,7 +210,12 @@ fn run_child(file: &str, backend: &str) -> FileOutcome {
     };
     out.push_str(&t_out.join().unwrap_or_default());
     err.push_str(&t_err.join().unwrap_or_default());
-    let mut o = FileOutcome { harness: (-1, String::new()), tests: Vec::new(), crashed: None, secs: start.elapsed().as_secs_f64() };
+    let mut o = FileOutcome {
+        harness: (-1, String::new()),
+        tests: Vec::new(),
+        crashed: None,
+        secs: start.elapsed().as_secs_f64(),
+    };
     for line in out.lines() {
         if let Some(rest) = line.strip_prefix("@@HARNESS ") {
             let mut p = rest.splitn(2, '\t');
@@ -216,7 +232,15 @@ fn run_child(file: &str, backend: &str) -> FileOutcome {
     match status {
         None => o.crashed = Some("killed: the child outlived its hard limit".into()),
         Some(st) if !st.success() => {
-            let tail: String = err.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+            let tail: String = err
+                .lines()
+                .rev()
+                .take(8)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join(" | ");
             o.crashed = Some(format!("child exited with {st}: {tail}"));
         }
         _ => {}
@@ -247,7 +271,11 @@ fn parent(gate: bool) -> i32 {
     }
     let exp = expectations();
     let tier = if gate { "gate" } else { "smoke" };
-    let default_backends = if cfg!(feature = "indexeddb-sqlite") { "both" } else { "memory" };
+    let default_backends = if cfg!(feature = "indexeddb-sqlite") {
+        "both"
+    } else {
+        "memory"
+    };
     let want = std::env::var("REDJS_IDB_BACKEND").unwrap_or_else(|_| default_backends.into());
     let backends: Vec<&str> = match want.as_str() {
         "both" => vec!["memory", "sqlite"],
@@ -290,7 +318,14 @@ fn parent(gate: bool) -> i32 {
     }
 }
 
-fn run_tier(files: &[String], exp: &Expect, tier: &str, backend: &str, problems: &mut Vec<String>, report: &mut String) {
+fn run_tier(
+    files: &[String],
+    exp: &Expect,
+    tier: &str,
+    backend: &str,
+    problems: &mut Vec<String>,
+    report: &mut String,
+) {
     let started = Instant::now();
     let (mut total, mut passed, mut files_run) = (0usize, 0usize, 0usize);
     let mut per_status: BTreeMap<&str, usize> = BTreeMap::new();
@@ -306,14 +341,28 @@ fn run_tier(files: &[String], exp: &Expect, tier: &str, backend: &str, problems:
         total += o.tests.len();
         passed += p;
         for t in &o.tests {
-            *per_status.entry(STATUS.get(t.0 as usize).copied().unwrap_or("?")).or_default() += 1;
+            *per_status
+                .entry(STATUS.get(t.0 as usize).copied().unwrap_or("?"))
+                .or_default() += 1;
         }
-        report.push_str(&format!("{f}\t{p}/{}\t{:.1}s{}\n", o.tests.len(), o.secs, if o.harness.0 != 0 { format!("\tharness {} {}", o.harness.0, o.harness.1) } else { String::new() }));
+        report.push_str(&format!(
+            "{f}\t{p}/{}\t{:.1}s{}\n",
+            o.tests.len(),
+            o.secs,
+            if o.harness.0 != 0 {
+                format!("\tharness {} {}", o.harness.0, o.harness.1)
+            } else {
+                String::new()
+            }
+        ));
         if let Some(c) = &o.crashed {
             problems.push(format!("{f}: {c}"));
         }
         if o.harness.0 != 0 && !exp.harness.contains(f) {
-            problems.push(format!("{f}: harness status {} ({})", o.harness.0, o.harness.1));
+            problems.push(format!(
+                "{f}: harness status {} ({})",
+                o.harness.0, o.harness.1
+            ));
         }
         if o.harness.0 == 0 && exp.harness.contains(f) {
             problems.push(format!("{f}: harness now OK — remove its `harness` line"));
@@ -333,7 +382,11 @@ fn run_tier(files: &[String], exp: &Expect, tier: &str, backend: &str, problems:
                 eprintln!("[wpt] note: stale expectation (no such subtest ran): {ef} :: {en}");
             }
         }
-        eprintln!("[wpt] [{backend}] {f}: {p}/{} ({:.1}s)", o.tests.len(), o.secs);
+        eprintln!(
+            "[wpt] [{backend}] {f}: {p}/{} ({:.1}s)",
+            o.tests.len(),
+            o.secs
+        );
     }
     let summary = format!(
         "WPT IndexedDB {tier} on {backend}: {files_run} files, {passed}/{total} subtests pass ({:.1}%), {:.1}s; {per_status:?}",
@@ -388,7 +441,11 @@ fn child(file: &str) {
         {
             use redjs::webapi::indexeddb::{set_backend_factory, sqlite, IdbEncryption};
             let dir = PathBuf::from(std::env::var("REDJS_IDB_DIR").expect("REDJS_IDB_DIR"));
-            set_backend_factory(sqlite::factory(dir, IdbEncryption::Encrypted([0x42; 32]), 1 << 30));
+            set_backend_factory(sqlite::factory(
+                dir,
+                IdbEncryption::Encrypted([0x42; 32]),
+                1 << 30,
+            ));
         }
     }
     let ctx = Context::new();
@@ -416,7 +473,8 @@ fn child(file: &str) {
     if let Err(e) = eval(&ctx, &prelude, "wpt/prelude.js") {
         fatal("prelude", e);
     }
-    let th = std::fs::read_to_string(root().join("resources").join("testharness.js")).expect("testharness.js");
+    let th = std::fs::read_to_string(root().join("resources").join("testharness.js"))
+        .expect("testharness.js");
     if let Err(e) = eval(&ctx, &th, "/resources/testharness.js") {
         fatal("testharness.js", e);
     }
@@ -447,13 +505,22 @@ fn child(file: &str) {
     unsafe { ffi::redjs_lock(g) };
     let out = loop {
         unsafe { ffi::redjs_pump(g, FLAGS, core::ptr::null_mut()) };
-        let r = eval(&ctx, "typeof globalThis.__wpt === 'string' ? globalThis.__wpt : ''", "wpt/poll.js").unwrap_or_default();
+        let r = eval(
+            &ctx,
+            "typeof globalThis.__wpt === 'string' ? globalThis.__wpt : ''",
+            "wpt/poll.js",
+        )
+        .unwrap_or_default();
         if !r.is_empty() {
             break Some(r);
         }
         match forced {
             None if start.elapsed() > limit => {
-                let _ = eval(&ctx, "typeof timeout === 'function' && timeout(); 'ok'", "wpt/timeout.js");
+                let _ = eval(
+                    &ctx,
+                    "typeof timeout === 'function' && timeout(); 'ok'",
+                    "wpt/timeout.js",
+                );
                 forced = Some(Instant::now());
             }
             Some(t) if t.elapsed() > Duration::from_secs(3) => break None,
@@ -468,16 +535,27 @@ fn child(file: &str) {
             let mut text = r;
             if let Err(e) = &top {
                 // Keep the harness verdict but say why the file stopped early.
-                text = text.replacen("@@HARNESS 0\t", &format!("@@HARNESS 1\t{} ", clean(&format!("top-level throw: {e}"))), 1);
+                text = text.replacen(
+                    "@@HARNESS 0\t",
+                    &format!("@@HARNESS 1\t{} ", clean(&format!("top-level throw: {e}"))),
+                    1,
+                );
             }
             let _ = writeln!(stdout, "{text}");
             let _ = stdout.flush();
         }
         None => {
-            println!("@@HARNESS 2\t{}", clean(&format!("no completion after the {}s limit{}", limit.as_secs(), match &top {
-                Err(e) => format!(" (top-level throw: {e})"),
-                Ok(_) => String::new(),
-            })));
+            println!(
+                "@@HARNESS 2\t{}",
+                clean(&format!(
+                    "no completion after the {}s limit{}",
+                    limit.as_secs(),
+                    match &top {
+                        Err(e) => format!(" (top-level throw: {e})"),
+                        Ok(_) => String::new(),
+                    }
+                ))
+            );
         }
     }
     // Do not tear down: this prebuilt cannot release a context, and the

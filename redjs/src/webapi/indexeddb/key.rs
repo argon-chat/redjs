@@ -62,13 +62,21 @@ pub const KEYGEN_MAX: f64 = 9_007_199_254_740_992.0;
 fn sortable(d: f64) -> [u8; 8] {
     let d = if d == 0.0 { 0.0 } else { d }; // -0 → +0
     let bits = d.to_bits();
-    let b = if bits & (1 << 63) != 0 { !bits } else { bits ^ (1 << 63) };
+    let b = if bits & (1 << 63) != 0 {
+        !bits
+    } else {
+        bits ^ (1 << 63)
+    };
     b.to_be_bytes()
 }
 
 fn unsortable(b: [u8; 8]) -> f64 {
     let v = u64::from_be_bytes(b);
-    let bits = if v & (1 << 63) != 0 { v ^ (1 << 63) } else { !v };
+    let bits = if v & (1 << 63) != 0 {
+        v ^ (1 << 63)
+    } else {
+        !v
+    };
     f64::from_bits(bits)
 }
 
@@ -278,11 +286,17 @@ pub struct Range {
 
 impl Range {
     pub fn all() -> Range {
-        Range { lower: Bound::Unbounded, upper: Bound::Unbounded }
+        Range {
+            lower: Bound::Unbounded,
+            upper: Bound::Unbounded,
+        }
     }
 
     pub fn only(k: Vec<u8>) -> Range {
-        Range { lower: Bound::Incl(k.clone()), upper: Bound::Incl(k) }
+        Range {
+            lower: Bound::Incl(k.clone()),
+            upper: Bound::Incl(k),
+        }
     }
 
     /// Is `k` (encoded) inside?
@@ -322,13 +336,21 @@ pub enum Conv {
 
 /// The bytes of a buffer source, or `None` when detached. `v` must be an
 /// ArrayBuffer or a view (per `info`).
-pub(crate) unsafe fn buffer_source_bytes(g: *mut c_void, v: u64, info: &RjsBrandInfo) -> Option<Vec<u8>> {
+pub(crate) unsafe fn buffer_source_bytes(
+    g: *mut c_void,
+    v: u64,
+    info: &RjsBrandInfo,
+) -> Option<Vec<u8>> {
     if info.flags & brand::F_DETACHED != 0 {
         return None;
     }
     if info.brand == brand::ARRAY_BUFFER {
         let n = info.byte_length as usize;
-        return Some(if n == 0 || info.data.is_null() { Vec::new() } else { core::slice::from_raw_parts(info.data as *const u8, n).to_vec() });
+        return Some(if n == 0 || info.data.is_null() {
+            Vec::new()
+        } else {
+            core::slice::from_raw_parts(info.data as *const u8, n).to_vec()
+        });
     }
     // A view: its window of the buffer.
     let mut buf = UNDEF;
@@ -360,7 +382,9 @@ pub(crate) unsafe fn buffer_source_bytes(g: *mut c_void, v: u64, info: &RjsBrand
     if len == 0 || b.data.is_null() {
         return Some(Vec::new());
     }
-    Some(core::slice::from_raw_parts((b.data as *const u8).add(off as usize), len as usize).to_vec())
+    Some(
+        core::slice::from_raw_parts((b.data as *const u8).add(off as usize), len as usize).to_vec(),
+    )
 }
 
 /// "Convert a value to a key". `Err(())` = an exception is pending (a getter
@@ -372,7 +396,11 @@ pub unsafe fn from_js(g: *mut c_void, v: u64) -> Result<Conv, ()> {
 
 unsafe fn convert(g: *mut c_void, v: u64, seen: &mut Vec<u64>, depth: u32) -> Result<Conv, ()> {
     if let Some(d) = dec_f64(v) {
-        return Ok(if d.is_nan() { Conv::Invalid } else { Conv::Key(Key::Number(d)) });
+        return Ok(if d.is_nan() {
+            Conv::Invalid
+        } else {
+            Conv::Key(Key::Number(d))
+        });
     }
     if !is_cell(v) {
         return Ok(Conv::Invalid);
@@ -389,7 +417,11 @@ unsafe fn convert(g: *mut c_void, v: u64, seen: &mut Vec<u64>, depth: u32) -> Re
     }
     let mut info = RjsBrandInfo::default();
     match glue::rjs_brand(g, v, &mut info) {
-        brand::DATE => Ok(if info.number.is_nan() { Conv::Invalid } else { Conv::Key(Key::Date(info.number)) }),
+        brand::DATE => Ok(if info.number.is_nan() {
+            Conv::Invalid
+        } else {
+            Conv::Key(Key::Date(info.number))
+        }),
         brand::ARRAY_BUFFER | brand::VIEW => Ok(match buffer_source_bytes(g, v, &info) {
             Some(b) => Conv::Key(Key::Binary(b)),
             None => Conv::Invalid,
@@ -539,7 +571,13 @@ mod tests {
         let enc: Vec<Vec<u8>> = keys.iter().map(|k| k.encode()).collect();
         for i in 0..enc.len() {
             for j in 0..enc.len() {
-                assert_eq!(enc[i].cmp(&enc[j]), i.cmp(&j), "{:?} vs {:?}", keys[i], keys[j]);
+                assert_eq!(
+                    enc[i].cmp(&enc[j]),
+                    i.cmp(&j),
+                    "{:?} vs {:?}",
+                    keys[i],
+                    keys[j]
+                );
             }
         }
     }
@@ -585,7 +623,10 @@ mod tests {
 
     #[test]
     fn ranges() {
-        let r = Range { lower: Bound::Excl(Key::Number(1.0).encode()), upper: Bound::Incl(Key::Number(3.0).encode()) };
+        let r = Range {
+            lower: Bound::Excl(Key::Number(1.0).encode()),
+            upper: Bound::Incl(Key::Number(3.0).encode()),
+        };
         assert!(!r.contains(&Key::Number(1.0).encode()));
         assert!(r.contains(&Key::Number(2.0).encode()));
         assert!(r.contains(&Key::Number(3.0).encode()));

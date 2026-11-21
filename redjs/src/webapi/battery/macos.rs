@@ -34,19 +34,33 @@ fn aggregate(sources: &[PowerSource], remaining_seconds: f64) -> BatteryState {
     let available = |s: &&PowerSource| s.present && s.power != Power::Offline;
     // An external UPS and an internal pack may report different capacity
     // units. Prefer internal packs; use UPS devices when there is no pack.
-    let kind = if sources.iter().filter(available).any(|s| s.kind == SourceKind::Internal) {
+    let kind = if sources
+        .iter()
+        .filter(available)
+        .any(|s| s.kind == SourceKind::Internal)
+    {
         SourceKind::Internal
     } else {
         SourceKind::Ups
     };
-    let batteries: Vec<_> = sources.iter().filter(available).filter(|s| s.kind == kind).collect();
+    let batteries: Vec<_> = sources
+        .iter()
+        .filter(available)
+        .filter(|s| s.kind == kind)
+        .collect();
     if batteries.is_empty() {
         return BatteryState::default();
     }
-    let full = |s: &PowerSource| s.charged || matches!((s.current, s.maximum), (Some(c), Some(m)) if m > 0 && c >= m);
+    let full = |s: &PowerSource| {
+        s.charged || matches!((s.current, s.maximum), (Some(c), Some(m)) if m > 0 && c >= m)
+    };
     let all_full = batteries.iter().copied().all(full);
-    let all_empty = batteries.iter().all(|s| s.current == Some(0) && s.maximum.is_some_and(|m| m > 0));
-    let charging = batteries.iter().any(|s| s.charging || s.power != Power::Battery);
+    let all_empty = batteries
+        .iter()
+        .all(|s| s.current == Some(0) && s.maximum.is_some_and(|m| m > 0));
+    let charging = batteries
+        .iter()
+        .any(|s| s.charging || s.power != Power::Battery);
     let capacities: Option<Vec<_>> = batteries
         .iter()
         .map(|s| match (s.current, s.maximum) {
@@ -73,7 +87,10 @@ fn aggregate(sources: &[PowerSource], remaining_seconds: f64) -> BatteryState {
                 if full(s) {
                     0.0
                 } else if s.charging {
-                    s.minutes_to_full.filter(|t| *t >= 0).map(|t| t as f64 * 60.0).unwrap_or(f64::INFINITY)
+                    s.minutes_to_full
+                        .filter(|t| *t >= 0)
+                        .map(|t| t as f64 * 60.0)
+                        .unwrap_or(f64::INFINITY)
                 } else {
                     f64::INFINITY
                 }
@@ -91,7 +108,12 @@ fn aggregate(sources: &[PowerSource], remaining_seconds: f64) -> BatteryState {
     } else {
         f64::INFINITY
     };
-    BatteryState { charging, charging_time, discharging_time, level }
+    BatteryState {
+        charging,
+        charging_time,
+        discharging_time,
+        level,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -144,7 +166,11 @@ pub(super) mod native {
         fn CFRunLoopGetCurrent() -> RunLoop;
         fn CFRunLoopAddSource(run_loop: RunLoop, source: Source, mode: Cf);
         fn CFRunLoopRemoveSource(run_loop: RunLoop, source: Source, mode: Cf);
-        fn CFRunLoopSourceCreate(allocator: Cf, order: isize, context: *mut SourceContext) -> Source;
+        fn CFRunLoopSourceCreate(
+            allocator: Cf,
+            order: isize,
+            context: *mut SourceContext,
+        ) -> Source;
         fn CFRunLoopSourceSignal(source: Source);
         fn CFRunLoopSourceInvalidate(source: Source);
         fn CFRunLoopWakeUp(run_loop: RunLoop);
@@ -158,7 +184,10 @@ pub(super) mod native {
         fn IOPSCopyPowerSourcesList(info: Cf) -> Cf;
         fn IOPSGetPowerSourceDescription(info: Cf, source: Cf) -> Cf;
         fn IOPSGetTimeRemainingEstimate() -> f64;
-        fn IOPSNotificationCreateRunLoopSource(callback: unsafe extern "C" fn(*mut c_void), context: *mut c_void) -> Source;
+        fn IOPSNotificationCreateRunLoopSource(
+            callback: unsafe extern "C" fn(*mut c_void),
+            context: *mut c_void,
+        ) -> Source;
     }
 
     struct Owned(Cf);
@@ -172,7 +201,11 @@ pub(super) mod native {
         }
     }
     unsafe fn string(bytes: &CStr) -> Owned {
-        Owned(CFStringCreateWithCString(core::ptr::null(), bytes.as_ptr(), UTF8))
+        Owned(CFStringCreateWithCString(
+            core::ptr::null(),
+            bytes.as_ptr(),
+            UTF8,
+        ))
     }
     unsafe fn value(dict: Cf, key: &CStr) -> Cf {
         let key = string(key);
@@ -289,7 +322,10 @@ pub(super) mod native {
 
     unsafe fn monitor(id: ContextId, shared: &Shared) {
         let run_loop = CFRunLoopGetCurrent();
-        let changes = Owned(IOPSNotificationCreateRunLoopSource(changed, id.0 as usize as *mut c_void));
+        let changes = Owned(IOPSNotificationCreateRunLoopSource(
+            changed,
+            id.0 as usize as *mut c_void,
+        ));
         let mut context = SourceContext {
             version: 0,
             info: run_loop,
@@ -315,7 +351,10 @@ pub(super) mod native {
             if shared.stopped.load(Ordering::Acquire) {
                 true
             } else {
-                *handles = Some(Handles { run_loop: run_loop as usize, stop_source: shutdown.0 as usize });
+                *handles = Some(Handles {
+                    run_loop: run_loop as usize,
+                    stop_source: shutdown.0 as usize,
+                });
                 false
             }
         };
@@ -339,8 +378,9 @@ pub(super) mod native {
     pub(crate) fn subscribe(id: ContextId) -> Subscription {
         let shared = Arc::new(Shared::default());
         let worker = shared.clone();
-        if let Err(error) =
-            std::thread::Builder::new().name("redjs-battery-iokit".into()).spawn(move || unsafe { monitor(id, &worker) })
+        if let Err(error) = std::thread::Builder::new()
+            .name("redjs-battery-iokit".into())
+            .spawn(move || unsafe { monitor(id, &worker) })
         {
             eprintln!("[redjs] battery: could not start IOPowerSources subscription ({error})");
             publish(id, BatteryState::default());
@@ -368,45 +408,138 @@ mod tests {
     fn iokit_capacity_and_time_units() {
         assert_eq!(
             aggregate(&[source()], 3600.0),
-            BatteryState { charging: false, charging_time: f64::INFINITY, discharging_time: 3600.0, level: 0.3 }
+            BatteryState {
+                charging: false,
+                charging_time: f64::INFINITY,
+                discharging_time: 3600.0,
+                level: 0.3
+            }
         );
-        let ac = PowerSource { power: Power::Ac, charging: true, minutes_to_full: Some(25), ..source() };
+        let ac = PowerSource {
+            power: Power::Ac,
+            charging: true,
+            minutes_to_full: Some(25),
+            ..source()
+        };
         assert_eq!(
             aggregate(&[ac], -2.0),
-            BatteryState { charging: true, charging_time: 1500.0, discharging_time: f64::INFINITY, level: 0.3 }
+            BatteryState {
+                charging: true,
+                charging_time: 1500.0,
+                discharging_time: f64::INFINITY,
+                level: 0.3
+            }
         );
-        assert!(aggregate(&[PowerSource { charging: false, ..ac }], -2.0).charging_time.is_infinite());
-        assert_eq!(aggregate(&[PowerSource { charged: true, ..ac }], -2.0), BatteryState::default());
+        assert!(aggregate(
+            &[PowerSource {
+                charging: false,
+                ..ac
+            }],
+            -2.0
+        )
+        .charging_time
+        .is_infinite());
+        assert_eq!(
+            aggregate(
+                &[PowerSource {
+                    charged: true,
+                    ..ac
+                }],
+                -2.0
+            ),
+            BatteryState::default()
+        );
     }
     #[test]
     fn iokit_multiple_packs_and_ups_selection() {
-        let a = PowerSource { current: Some(20), ..source() };
-        let b = PowerSource { current: Some(80), ..source() };
+        let a = PowerSource {
+            current: Some(20),
+            ..source()
+        };
+        let b = PowerSource {
+            current: Some(80),
+            ..source()
+        };
         assert_eq!(aggregate(&[a, b], 7200.0).level, 0.5);
-        let ups = PowerSource { kind: SourceKind::Ups, current: Some(99), ..source() };
+        let ups = PowerSource {
+            kind: SourceKind::Ups,
+            current: Some(99),
+            ..source()
+        };
         assert_eq!(aggregate(&[a, ups], 7200.0).level, 0.2);
         assert_eq!(aggregate(&[ups], 7200.0).level, 0.99);
-        let ac = PowerSource { power: Power::Ac, charging: true, minutes_to_full: Some(10), ..a };
-        let bc = PowerSource { power: Power::Ac, charging: true, minutes_to_full: Some(20), ..b };
+        let ac = PowerSource {
+            power: Power::Ac,
+            charging: true,
+            minutes_to_full: Some(10),
+            ..a
+        };
+        let bc = PowerSource {
+            power: Power::Ac,
+            charging: true,
+            minutes_to_full: Some(20),
+            ..b
+        };
         assert_eq!(aggregate(&[ac, bc], -2.0).charging_time, 1200.0);
     }
     #[test]
     fn iokit_missing_sources_and_unknown_values() {
         assert_eq!(aggregate(&[], -1.0), BatteryState::default());
         for s in [
-            PowerSource { present: false, ..source() },
-            PowerSource { kind: SourceKind::Other, ..source() },
-            PowerSource { power: Power::Offline, ..source() },
+            PowerSource {
+                present: false,
+                ..source()
+            },
+            PowerSource {
+                kind: SourceKind::Other,
+                ..source()
+            },
+            PowerSource {
+                power: Power::Offline,
+                ..source()
+            },
         ] {
             assert_eq!(aggregate(&[s], -1.0), BatteryState::default());
         }
-        let unknown = aggregate(&[PowerSource { current: None, maximum: Some(0), ..source() }], -1.0);
+        let unknown = aggregate(
+            &[PowerSource {
+                current: None,
+                maximum: Some(0),
+                ..source()
+            }],
+            -1.0,
+        );
         assert!(unknown.level == 1.0 && unknown.discharging_time.is_infinite());
-        assert_eq!(aggregate(&[PowerSource { current: Some(0), ..source() }], -1.0).discharging_time, 0.0);
-        assert!(aggregate(&[PowerSource { current: Some(1), maximum: Some(1000), ..source() }], -1.0)
-            .discharging_time
-            .is_infinite());
-        let s = PowerSource { power: Power::Unknown, charging: true, minutes_to_full: Some(-1), ..source() };
-        assert!(aggregate(&[s], f64::NAN).charging && aggregate(&[s], f64::NAN).charging_time.is_infinite());
+        assert_eq!(
+            aggregate(
+                &[PowerSource {
+                    current: Some(0),
+                    ..source()
+                }],
+                -1.0
+            )
+            .discharging_time,
+            0.0
+        );
+        assert!(aggregate(
+            &[PowerSource {
+                current: Some(1),
+                maximum: Some(1000),
+                ..source()
+            }],
+            -1.0
+        )
+        .discharging_time
+        .is_infinite());
+        let s = PowerSource {
+            power: Power::Unknown,
+            charging: true,
+            minutes_to_full: Some(-1),
+            ..source()
+        };
+        assert!(
+            aggregate(&[s], f64::NAN).charging
+                && aggregate(&[s], f64::NAN).charging_time.is_infinite()
+        );
     }
 }

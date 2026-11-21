@@ -173,7 +173,10 @@ fn a_six_channel_output_carries_a_five_one_buffer_and_down_mixes_it_for_stereo()
     s(&c, "__a.destination.channelCount = 6; globalThis.__s = levels(__a, 6); __s.connect(__a.destination); __s.start(); 0");
     let f = last_frame(&render(&c, 6, 8), 6);
     for (k, v) in f.iter().enumerate() {
-        assert!(close(*v, (k + 1) as f32 / 10.0), "channel {k} is {v}: {f:?}");
+        assert!(
+            close(*v, (k + 1) as f32 / 10.0),
+            "channel {k} is {v}: {f:?}"
+        );
     }
 
     s(&c, "__a.destination.channelCount = 2; 0");
@@ -204,7 +207,9 @@ fn a_mono_source_plays_from_the_centre_of_a_five_one_destination() {
     );
     let f = last_frame(&render(&c, 6, 8), 6);
     assert_eq!(
-        f.iter().map(|v| (v * 10.0).round() as i32).collect::<Vec<_>>(),
+        f.iter()
+            .map(|v| (v * 10.0).round() as i32)
+            .collect::<Vec<_>>(),
         [0, 0, 1, 0, 0, 0],
         "{f:?}"
     );
@@ -294,7 +299,10 @@ fn a_splitter_and_merger_carry_six_channels_through_a_gain() {
     );
     let f = last_frame(&render(&c, 6, 8), 6);
     for (k, v) in f.iter().enumerate() {
-        assert!(close(*v, (6 - k) as f32 / 10.0), "channel {k} is {v}: {f:?}");
+        assert!(
+            close(*v, (6 - k) as f32 / 10.0),
+            "channel {k} is {v}: {f:?}"
+        );
     }
     s(&c, "__a.close(); 0");
 }
@@ -315,12 +323,18 @@ fn a_panner_in_the_object_model_reaches_the_backend_and_the_rest_fall_back_to_hr
          __p1.positionX.value = 3; __p1.positionZ.value = -4;
          const s1 = levels(__a, 1); s1.connect(__p1).connect(__a.destination); s1.start(); 0",
     );
-    assert_eq!(s(&c, "__p1.panningModel + ' ' + __p2.panningModel"), "spatial spatial");
+    assert_eq!(
+        s(&c, "__p1.panningModel + ' ' + __p2.panningModel"),
+        "spatial spatial"
+    );
     let asked = ASKED.with(|a| a.borrow().last().cloned()).unwrap();
     assert!(asked.objects, "the reopened output asks for objects");
 
     let bed = render(&c, 2, 8);
-    assert!(bed.iter().all(|&v| v == 0.0), "the object's panner left the bed silent");
+    assert!(
+        bed.iter().all(|&v| v == 0.0),
+        "the object's panner left the bed silent"
+    );
     let objects: Vec<(u32, u32, Vec<f32>, ObjectPlacement)> = RENDERER.with(|r| {
         r.borrow()
             .as_ref()
@@ -396,7 +410,10 @@ fn a_refusing_backend_leaves_the_panner_on_hrtf_and_says_why() {
     assert_eq!(s(&c, "__p.panningModel"), "spatial");
     let status = unsafe { output_status(c.raw(), c.eval("__a").unwrap().0) }.unwrap();
     assert!(status.objects_requested && status.objects.is_none());
-    assert_eq!(status.refused.as_deref(), Some("no spatial format is enabled"));
+    assert_eq!(
+        status.refused.as_deref(),
+        Some("no spatial format is enabled")
+    );
     let gl = glob().lock().unwrap();
     let eh = engine_of_test_locked(&gl, &c);
     let hrtf = gl
@@ -487,7 +504,10 @@ fn an_object_the_backend_gives_up_moves_the_panner_on_and_then_back_to_hrtf() {
     RENDERER.with(|r| r.borrow().as_ref().unwrap().lose_object(1));
     let bed = render(&c, 2, 4);
     assert_eq!(slots(), [0], "no object is left");
-    assert!(bed.iter().any(|&v| v != 0.0), "the panner renders into the bed");
+    assert!(
+        bed.iter().any(|&v| v != 0.0),
+        "the panner renders into the bed"
+    );
     let status = unsafe { output_status(c.raw(), c.eval("__a").unwrap().0) }.unwrap();
     assert_eq!(status.objects.map(|o| o.in_use), Some(0));
     s(&c, "__a.close(); 0");
@@ -510,7 +530,14 @@ fn the_gains_after_an_object_panner_reach_its_object_and_a_dead_end_silences_it(
     );
     let gain = || {
         render(&c, 2, 2);
-        RENDERER.with(|r| r.borrow().as_ref().unwrap().objects().next().map(|o| o.placement.gain))
+        RENDERER.with(|r| {
+            r.borrow()
+                .as_ref()
+                .unwrap()
+                .objects()
+                .next()
+                .map(|o| o.placement.gain)
+        })
     };
     assert_eq!(gain(), Some(0.5), "the louder of the two paths");
     s(&c, "__g.gain.value = 0.1; 0");
@@ -521,7 +548,11 @@ fn the_gains_after_an_object_panner_reach_its_object_and_a_dead_end_silences_it(
         &c,
         "__a.resume(); __p.disconnect(); __p.connect(__a.createAnalyser()); 0",
     );
-    assert_eq!(gain(), Some(0.0), "a panner that reaches no destination is silent");
+    assert_eq!(
+        gain(),
+        Some(0.0),
+        "a panner that reaches no destination is silent"
+    );
     s(&c, "__a.close(); 0");
 }
 
@@ -552,7 +583,10 @@ fn a_context_moves_from_cpal_to_the_backend_when_a_panner_asks() {
                 .render(&mut out, 2, 333)
         });
     }
-    assert!(out.iter().any(|&v| v != 0.0), "the graph plays on the backend's stream");
+    assert!(
+        out.iter().any(|&v| v != 0.0),
+        "the graph plays on the backend's stream"
+    );
     s(&c, "__a.close(); 0");
 }
 

@@ -123,7 +123,11 @@ pub trait ClipboardHost: Send + Sync {
     /// reads the text.
     fn read_items(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
         let text = self.read_text()?;
-        Ok(if text.is_empty() { Vec::new() } else { vec![("text/plain".to_string(), text.into_bytes())] })
+        Ok(if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![("text/plain".to_string(), text.into_bytes())]
+        })
     }
 }
 
@@ -270,11 +274,15 @@ unsafe fn slot_get(g: *mut c_void, obj: u64, slot: Slot) -> u64 {
     if !is_cell(obj) {
         return UNDEF;
     }
-    get_a(g, obj, match slot {
-        Slot::Items => s.items,
-        Slot::Types => s.types,
-        Slot::Style => s.style,
-    })
+    get_a(
+        g,
+        obj,
+        match slot {
+            Slot::Items => s.items,
+            Slot::Types => s.types,
+            Slot::Style => s.style,
+        },
+    )
 }
 
 unsafe fn slot_set(g: *mut c_void, obj: u64, slot: Slot, v: u64) {
@@ -329,7 +337,9 @@ unsafe fn make_item(g: *mut c_void, proto: u64, record: u64, types: u64, style: 
 
 /// The types of an item, as Rust strings, in order.
 unsafe fn item_type_list(g: *mut c_void, types: u64) -> Vec<String> {
-    (0..array_len(g, types)).filter_map(|i| read_string(g, get_i(g, types, i))).collect()
+    (0..array_len(g, types))
+        .filter_map(|i| read_string(g, get_i(g, types, i)))
+        .collect()
 }
 
 /// `new ClipboardItem(items, options)` — WebIDL's record conversion: the keys
@@ -359,7 +369,9 @@ unsafe fn item_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let types = new_array(g);
     for i in 0..n {
         let key = get_i(g, keys, i);
-        let Some(name) = read_string(g, key) else { continue };
+        let Some(name) = read_string(g, key) else {
+            continue;
+        };
         let a = atom(g, &name);
         let mut v = UNDEF;
         let rc = glue::rjs_get(g, items, a, &mut v);
@@ -489,7 +501,11 @@ unsafe fn clipboard_read(g: *mut c_void, _cf: *mut c_void) -> u64 {
     const WHO: &str = "Failed to execute 'read' on 'Clipboard'";
     let Some(h) = host() else {
         advise_no_host();
-        return rejected_named(g, "NotAllowedError", &format!("{WHO}: no clipboard backend is installed in this runtime."));
+        return rejected_named(
+            g,
+            "NotAllowedError",
+            &format!("{WHO}: no clipboard backend is installed in this runtime."),
+        );
     };
     let items = match h.read_items() {
         Ok(items) => items,
@@ -508,7 +524,12 @@ unsafe fn clipboard_read(g: *mut c_void, _cf: *mut c_void) -> u64 {
     let _ = call_static(g, "Object", "freeze", &[types]);
     let proto = slots(g).map_or(UNDEF, |s| s.proto);
     let list = new_array(g);
-    set_i(g, list, 0, make_item(g, proto, record, types, "unspecified"));
+    set_i(
+        g,
+        list,
+        0,
+        make_item(g, proto, record, types, "unspecified"),
+    );
     resolved_promise(g, list)
 }
 
@@ -525,7 +546,11 @@ unsafe fn write_settled(g: *mut c_void, cf: *mut c_void) -> u64 {
         let bytes = match super::blob::bytes_of(g, v, "navigator.clipboard.write()") {
             Some(Ok(bytes)) => bytes,
             Some(Err(_)) => {
-                return super::domexception::throw(g, "DataError", &format!("Failed to read or decode Blob for clipboard item type {ty}."))
+                return super::domexception::throw(
+                    g,
+                    "DataError",
+                    &format!("Failed to read or decode Blob for clipboard item type {ty}."),
+                )
             }
             None => match dom_string(g, v) {
                 Ok(s) => s.into_bytes(),
@@ -536,12 +561,20 @@ unsafe fn write_settled(g: *mut c_void, cf: *mut c_void) -> u64 {
             },
         };
         if ty == "image/png" && !bytes.starts_with(PNG_SIGNATURE) {
-            return super::domexception::throw(g, "DataError", "Failed to read or decode Blob for clipboard item type image/png.");
+            return super::domexception::throw(
+                g,
+                "DataError",
+                "Failed to read or decode Blob for clipboard item type image/png.",
+            );
         }
         items.push((ty, bytes));
     }
     let Some(h) = host() else {
-        return super::domexception::throw(g, "NotAllowedError", &format!("{WHO}: no clipboard backend is installed in this runtime."));
+        return super::domexception::throw(
+            g,
+            "NotAllowedError",
+            &format!("{WHO}: no clipboard backend is installed in this runtime."),
+        );
     };
     match h.write_items(&items) {
         Ok(()) => UNDEF,
@@ -563,21 +596,37 @@ unsafe fn clipboard_write(g: *mut c_void, cf: *mut c_void) -> u64 {
         return resolved_promise(g, UNDEF);
     }
     if n > 1 {
-        return rejected_named(g, "NotAllowedError", "Support for multiple ClipboardItems is not implemented.");
+        return rejected_named(
+            g,
+            "NotAllowedError",
+            "Support for multiple ClipboardItems is not implemented.",
+        );
     }
     let item = get_i(g, list, 0);
     let record = slot_get(g, item, Slot::Items);
     let types = slot_get(g, item, Slot::Types);
     if !is_cell(record) || !is_cell(types) {
-        return rejected_promise(g, 1, &format!("{WHO}: The provided value is not of type 'ClipboardItem'."));
+        return rejected_promise(
+            g,
+            1,
+            &format!("{WHO}: The provided value is not of type 'ClipboardItem'."),
+        );
     }
     let Some(h) = host() else {
         advise_no_host();
-        return rejected_named(g, "NotAllowedError", &format!("{WHO}: no clipboard backend is installed in this runtime."));
+        return rejected_named(
+            g,
+            "NotAllowedError",
+            &format!("{WHO}: no clipboard backend is installed in this runtime."),
+        );
     };
     let names = item_type_list(g, types);
     if let Some(ty) = names.iter().find(|t| !h.item_types().contains(&t.as_str())) {
-        return rejected_named(g, "NotAllowedError", &format!("{WHO}: Type {ty} not supported on write."));
+        return rejected_named(
+            g,
+            "NotAllowedError",
+            &format!("{WHO}: Type {ty} not supported on write."),
+        );
     }
     let values = new_array(g);
     for (i, ty) in names.iter().enumerate() {
@@ -597,7 +646,9 @@ unsafe fn clipboard_write(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn exec_command(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let cmd = read_string(g, cf_arg(cf, 0)).unwrap_or_default().to_ascii_lowercase();
+    let cmd = read_string(g, cf_arg(cf, 0))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
         eprintln!(
@@ -624,37 +675,49 @@ unsafe fn query_command_false(_g: *mut c_void, _cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
-    let clipboard_class = define_class(g, &ClassSpec {
-        name: "Clipboard",
-        arity: 0,
-        construct: None,
-        // A browser's `Clipboard` extends `EventTarget`; it is where the
-        // (unimplemented, and unimplementable here) `clipboardchange` event
-        // would land, and `instanceof EventTarget` is observable.
-        parent_proto: event_target_proto,
-        methods: &[
-            ("readText", 0, clipboard_read_text),
-            ("writeText", 1, clipboard_write_text),
-            ("read", 0, clipboard_read),
-            ("write", 1, clipboard_write),
-        ],
-        getters: &[],
-        accessors: &[],
-    });
+    let clipboard_class = define_class(
+        g,
+        &ClassSpec {
+            name: "Clipboard",
+            arity: 0,
+            construct: None,
+            // A browser's `Clipboard` extends `EventTarget`; it is where the
+            // (unimplemented, and unimplementable here) `clipboardchange` event
+            // would land, and `instanceof EventTarget` is observable.
+            parent_proto: event_target_proto,
+            methods: &[
+                ("readText", 0, clipboard_read_text),
+                ("writeText", 1, clipboard_write_text),
+                ("read", 0, clipboard_read),
+                ("write", 1, clipboard_write),
+            ],
+            getters: &[],
+            accessors: &[],
+        },
+    );
 
     let clipboard = new_object(g, clipboard_class.proto);
     crate::ffi::redjs_protect(g, clipboard);
 
-    let item_class = define_class(g, &ClassSpec {
-        name: "ClipboardItem",
-        arity: 1,
-        construct: Some(item_construct),
-        parent_proto: 0,
-        methods: &[("getType", 1, item_get_type)],
-        getters: &[("types", item_types), ("presentationStyle", item_style)],
-        accessors: &[],
-    });
-    define(g, item_class.ctor, "supports", make_fn(g, "supports", 1, item_supports), 2);
+    let item_class = define_class(
+        g,
+        &ClassSpec {
+            name: "ClipboardItem",
+            arity: 1,
+            construct: Some(item_construct),
+            parent_proto: 0,
+            methods: &[("getType", 1, item_get_type)],
+            getters: &[("types", item_types), ("presentationStyle", item_style)],
+            accessors: &[],
+        },
+    );
+    define(
+        g,
+        item_class.ctor,
+        "supports",
+        make_fn(g, "supports", 1, item_supports),
+        2,
+    );
     registry().lock().unwrap().insert(
         g as usize,
         Slots {
@@ -682,7 +745,13 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     // a context where it somehow does not, skip rather than invent one.
     let document = state(g).document;
     if is_cell(document) {
-        define(g, document, "execCommand", make_fn(g, "execCommand", 3, exec_command), 2);
+        define(
+            g,
+            document,
+            "execCommand",
+            make_fn(g, "execCommand", 3, exec_command),
+            2,
+        );
         define(
             g,
             document,
@@ -734,7 +803,11 @@ mod jsc_tests {
             Ok(())
         }
         fn item_types(&self) -> &'static [&'static str] {
-            if TEXT_ONLY.load(std::sync::atomic::Ordering::Relaxed) { &[] } else { ITEM_TYPES }
+            if TEXT_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+                &[]
+            } else {
+                ITEM_TYPES
+            }
         }
         fn write_items(&self, items: &[(String, Vec<u8>)]) -> Result<(), String> {
             if FAIL.load(std::sync::atomic::Ordering::Relaxed) {
@@ -750,7 +823,11 @@ mod jsc_tests {
                 return Ok(items);
             }
             let text = self.read_text()?;
-            Ok(if text.is_empty() { Vec::new() } else { vec![("text/plain".into(), text.into_bytes())] })
+            Ok(if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![("text/plain".into(), text.into_bytes())]
+            })
         }
     }
 
@@ -827,9 +904,15 @@ mod jsc_tests {
             ),
             "42"
         );
-        assert_eq!(run(&c, "return await navigator.clipboard.writeText('');"), "undefined");
+        assert_eq!(
+            run(&c, "return await navigator.clipboard.writeText('');"),
+            "undefined"
+        );
         // A conversion that throws rejects with the TypeError itself.
-        let got = run(&c, "return await navigator.clipboard.writeText(Symbol('s'));");
+        let got = run(
+            &c,
+            "return await navigator.clipboard.writeText(Symbol('s'));",
+        );
         assert!(got.starts_with("ERROR: plain TypeError"), "{got}");
     }
 
@@ -857,19 +940,35 @@ mod jsc_tests {
         ok(&c, "typeof ClipboardItem === 'function'");
         ok(&c, "Object.prototype.toString.call(new ClipboardItem({'text/plain': 'x'})) === '[object ClipboardItem]'");
         ok(&c, "JSON.stringify(new ClipboardItem({'text/plain': 'x', 'image/png': new Blob([])}).types) === '[\"text/plain\",\"image/png\"]'");
-        ok(&c, "Object.isFrozen(new ClipboardItem({'text/plain': 'x'}).types)");
-        ok(&c, "new ClipboardItem({'text/plain': 'x'}).presentationStyle === 'unspecified'");
+        ok(
+            &c,
+            "Object.isFrozen(new ClipboardItem({'text/plain': 'x'}).types)",
+        );
+        ok(
+            &c,
+            "new ClipboardItem({'text/plain': 'x'}).presentationStyle === 'unspecified'",
+        );
         ok(&c, "new ClipboardItem({'text/plain': 'x'}, {presentationStyle: 'attachment'}).presentationStyle === 'attachment'");
         assert!(throws(&c, "new ClipboardItem({})").contains("Empty dictionary argument"));
         assert!(throws(&c, "new ClipboardItem('text/plain')").contains("record"));
         assert!(throws(&c, "ClipboardItem({'text/plain': 'x'})").contains("requires 'new'"));
-        assert!(throws(&c, "new ClipboardItem({'text/plain': 'x'}, {presentationStyle: 'nope'})").contains("PresentationStyle"));
-        ok(&c, "ClipboardItem.supports('image/png') && ClipboardItem.supports('text/html')");
+        assert!(throws(
+            &c,
+            "new ClipboardItem({'text/plain': 'x'}, {presentationStyle: 'nope'})"
+        )
+        .contains("PresentationStyle"));
+        ok(
+            &c,
+            "ClipboardItem.supports('image/png') && ClipboardItem.supports('text/html')",
+        );
         ok(&c, "!ClipboardItem.supports('image/svg+xml') && !ClipboardItem.supports('web text/x-mine')");
         // getType: a Blob of the type, from a string, a Blob or a promise.
         assert_eq!(
-            run(&c, "const b = await new ClipboardItem({'text/plain': 'hi'}).getType('text/plain');
-                     return (b instanceof Blob) + ':' + b.type + ':' + await b.text();"),
+            run(
+                &c,
+                "const b = await new ClipboardItem({'text/plain': 'hi'}).getType('text/plain');
+                     return (b instanceof Blob) + ':' + b.type + ':' + await b.text();"
+            ),
             "true:text/plain:hi"
         );
         assert_eq!(
@@ -877,7 +976,10 @@ mod jsc_tests {
                      return b.type + ':' + await b.text();"),
             "text/html:<b>x</b>"
         );
-        let got = run(&c, "return await new ClipboardItem({'text/plain': 'hi'}).getType('image/png');");
+        let got = run(
+            &c,
+            "return await new ClipboardItem({'text/plain': 'hi'}).getType('image/png');",
+        );
         assert!(got.starts_with("ERROR: NotFoundError"), "{got}");
     }
 
@@ -949,7 +1051,10 @@ mod jsc_tests {
         TEXT_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
         let c = ctx();
         ok(&c, "!ClipboardItem.supports('text/plain')");
-        let got = run(&c, "return await navigator.clipboard.write([new ClipboardItem({'text/plain': 'x'})]);");
+        let got = run(
+            &c,
+            "return await navigator.clipboard.write([new ClipboardItem({'text/plain': 'x'})]);",
+        );
         assert!(got.starts_with("ERROR: NotAllowedError"), "{got}");
         *TEXT.lock().unwrap() = "from the OS".into();
         assert_eq!(

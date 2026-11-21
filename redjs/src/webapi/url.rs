@@ -56,7 +56,10 @@ unsafe fn url_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         match ::url::Url::parse(&base_s) {
             Ok(b) => b.join(&input),
             Err(e) => {
-                return throw_type_error(g, &format!("URL constructor: invalid base URL \"{base_s}\": {e}"));
+                return throw_type_error(
+                    g,
+                    &format!("URL constructor: invalid base URL \"{base_s}\": {e}"),
+                );
             }
         }
     } else {
@@ -66,13 +69,20 @@ unsafe fn url_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     match parsed {
         Ok(u) => {
             let nt = cf_new_target(cf);
-            let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+            let mut proto = if is_cell(nt) {
+                get(g, nt, "prototype")
+            } else {
+                UNDEF
+            };
             if !is_cell(proto) {
                 proto = st.url.proto;
             }
             host_create(g, st.url_class, proto, UrlData { url: u, usp: 0 })
         }
-        Err(e) => throw_type_error(g, &format!("URL constructor: \"{input}\" is not a valid URL: {e}")),
+        Err(e) => throw_type_error(
+            g,
+            &format!("URL constructor: \"{input}\" is not a valid URL: {e}"),
+        ),
     }
 }
 
@@ -95,7 +105,10 @@ macro_rules! url_getter {
 url_getter!(get_href, |u| u.as_str().to_string());
 url_getter!(get_protocol, |u| format!("{}:", u.scheme()));
 url_getter!(get_hostname, |u| u.host_str().unwrap_or("").to_string());
-url_getter!(get_port, |u| u.port().map(|p| p.to_string()).unwrap_or_default());
+url_getter!(get_port, |u| u
+    .port()
+    .map(|p| p.to_string())
+    .unwrap_or_default());
 url_getter!(get_pathname, |u| u.path().to_string());
 url_getter!(get_username, |u| u.username().to_string());
 url_getter!(get_password, |u| u.password().unwrap_or("").to_string());
@@ -124,7 +137,11 @@ unsafe fn arg_str(g: *mut c_void, cf: *mut c_void) -> String {
 unsafe fn resync_usp(g: *mut c_void, d: &mut UrlData) {
     if d.usp != 0 {
         if let Some(usp) = host_data::<UspData>(g, state(g).usp_class, d.usp) {
-            usp.list = d.url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+            usp.list = d
+                .url
+                .query_pairs()
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
         }
     }
 }
@@ -164,14 +181,26 @@ macro_rules! url_setter {
 }
 
 url_setter!(set_protocol, |u, s| u.set_scheme(s.trim_end_matches(':')));
-url_setter!(set_hostname, |u, s| u.set_host(if s.is_empty() { None } else { Some(&s) }));
-url_setter!(set_port, |u, s| u.set_port(if s.is_empty() { None } else { s.parse().ok() }));
+url_setter!(set_hostname, |u, s| u.set_host(if s.is_empty() {
+    None
+} else {
+    Some(&s)
+}));
+url_setter!(set_port, |u, s| u.set_port(if s.is_empty() {
+    None
+} else {
+    s.parse().ok()
+}));
 url_setter!(set_pathname, |u, s| {
     u.set_path(&s);
     Ok::<(), ()>(())
 });
 url_setter!(set_username, |u, s| u.set_username(&s));
-url_setter!(set_password, |u, s| u.set_password(if s.is_empty() { None } else { Some(&s) }));
+url_setter!(set_password, |u, s| u.set_password(if s.is_empty() {
+    None
+} else {
+    Some(&s)
+}));
 url_setter!(set_search, |u, s| {
     let q = s.strip_prefix('?').unwrap_or(&s);
     u.set_query(if q.is_empty() { None } else { Some(q) });
@@ -215,7 +244,11 @@ unsafe fn get_search_params(g: *mut c_void, cf: *mut c_void) -> u64 {
         return throw_type_error(g, "URL.searchParams called on a non-URL");
     };
     if d.usp == 0 {
-        let list = d.url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        let list = d
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
         let parent = cf_this(cf);
         let usp = host_create(g, st.usp_class, st.usp.proto, UspData { list, parent });
         crate::ffi::redjs_protect(g, usp);
@@ -231,7 +264,9 @@ unsafe fn can_parse(g: *mut c_void, cf: *mut c_void) -> u64 {
     let base_v = cf_arg(cf, 1);
     let ok = if base_v != UNDEF && base_v != NULL {
         let base_s = read_string(g, base_v).unwrap_or_default();
-        ::url::Url::parse(&base_s).map(|b| b.join(&input).is_ok()).unwrap_or(false)
+        ::url::Url::parse(&base_s)
+            .map(|b| b.join(&input).is_ok())
+            .unwrap_or(false)
     } else {
         ::url::Url::parse(&input).is_ok()
     };
@@ -280,12 +315,22 @@ fn uuid_v4() -> String {
         // are unique per call, if not unpredictable.
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         b[..8].copy_from_slice(&crate::web::now_ms().to_bits().to_le_bytes());
-        b[8..].copy_from_slice(&N.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_le_bytes());
+        b[8..].copy_from_slice(
+            &N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .to_le_bytes(),
+        );
     }
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 /// The key a lookup uses: the parsed URL without its fragment (Chromium and
@@ -306,13 +351,31 @@ fn store_key(url: &str) -> Option<String> {
 /// (`"null"`), the spec lets the value be implementation-defined, and it is
 /// `sk`.
 unsafe fn origin_part(g: *mut c_void) -> String {
-    if let Some(o) = blob_urls().lock().unwrap().get(&(g as usize)).and_then(|s| s.origin.clone()) {
+    if let Some(o) = blob_urls()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .and_then(|s| s.origin.clone())
+    {
         return o;
     }
     let loc = get(g, glue::rjs_global(g), "location");
-    let o = if is_cell(loc) { read_string(g, get(g, loc, "origin")).unwrap_or_default() } else { String::new() };
-    let o = if o.is_empty() || o == "null" { "sk".to_string() } else { o };
-    blob_urls().lock().unwrap().entry(g as usize).or_default().origin = Some(o.clone());
+    let o = if is_cell(loc) {
+        read_string(g, get(g, loc, "origin")).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let o = if o.is_empty() || o == "null" {
+        "sk".to_string()
+    } else {
+        o
+    };
+    blob_urls()
+        .lock()
+        .unwrap()
+        .entry(g as usize)
+        .or_default()
+        .origin = Some(o.clone());
     o
 }
 
@@ -324,12 +387,24 @@ unsafe fn create_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     let origin = origin_part(g);
     // `(Blob or MediaSource)`: there is no MediaSource here.
     let Some(b) = super::blob::data_of(g, cf_arg(cf, 0)) else {
-        return throw_type_error(g, "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
+        return throw_type_error(
+            g,
+            "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.",
+        );
     };
-    let entry = BlobEntry { range: b.range(), mime: b.mime.clone() };
+    let entry = BlobEntry {
+        range: b.range(),
+        mime: b.mime.clone(),
+    };
     let url = format!("blob:{origin}/{}", uuid_v4());
     let key = store_key(&url).unwrap_or_else(|| url.clone());
-    blob_urls().lock().unwrap().entry(g as usize).or_default().urls.insert(key, entry);
+    blob_urls()
+        .lock()
+        .unwrap()
+        .entry(g as usize)
+        .or_default()
+        .urls
+        .insert(key, entry);
     js_string(g, &url)
 }
 
@@ -340,7 +415,9 @@ unsafe fn revoke_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
     if cf_argc(cf) < 1 {
         return throw_type_error(g, "Failed to execute 'revokeObjectURL' on 'URL': 1 argument required, but only 0 present.");
     }
-    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(s) = to_js_string(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let url = read_string(g, s).unwrap_or_default();
     if let Some(key) = store_key(&url) {
         if let Some(st) = blob_urls().lock().unwrap().get_mut(&(g as usize)) {
@@ -353,7 +430,13 @@ unsafe fn revoke_object_url(g: *mut c_void, cf: *mut c_void) -> u64 {
 /// This context's entry for `url` (fetch's blob scheme).
 pub(crate) fn lookup(g: *mut c_void, url: &str) -> Option<BlobEntry> {
     let key = store_key(url)?;
-    blob_urls().lock().unwrap().get(&(g as usize))?.urls.get(&key).cloned()
+    blob_urls()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))?
+        .urls
+        .get(&key)
+        .cloned()
 }
 
 /// A blob URL, resolved for a HOST consumer (sk-tree's `<img>` / `<video>`).
@@ -363,9 +446,20 @@ pub enum BlobTarget {
     /// is `Some((offset, len))` for a slice and `None` for the whole file.
     /// `size` / `mtime` are the snapshot its reads are checked against; see
     /// [`BlobTarget::snapshot_holds`].
-    Path { path: std::path::PathBuf, range: Option<(u64, u64)>, size: u64, mtime: Option<std::time::SystemTime>, mime: String },
+    Path {
+        path: std::path::PathBuf,
+        range: Option<(u64, u64)>,
+        size: u64,
+        mtime: Option<std::time::SystemTime>,
+        mime: String,
+    },
     /// Bytes in memory: the shared `Arc` and the window onto it.
-    Bytes { bytes: std::sync::Arc<Vec<u8>>, offset: usize, len: usize, mime: String },
+    Bytes {
+        bytes: std::sync::Arc<Vec<u8>>,
+        offset: usize,
+        len: usize,
+        mime: String,
+    },
 }
 
 impl BlobTarget {
@@ -380,9 +474,10 @@ impl BlobTarget {
     /// the same rule `text()` applies. Always true for bytes.
     pub fn snapshot_holds(&self) -> bool {
         match self {
-            BlobTarget::Path { path, size, mtime, .. } => {
-                std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == *size && m.modified().ok() == *mtime)
-            }
+            BlobTarget::Path {
+                path, size, mtime, ..
+            } => std::fs::metadata(path)
+                .is_ok_and(|m| m.is_file() && m.len() == *size && m.modified().ok() == *mtime),
             BlobTarget::Bytes { .. } => true,
         }
     }
@@ -406,9 +501,12 @@ pub fn resolve_blob_url(g: *mut c_void, url: &str) -> Option<BlobTarget> {
                 mime: e.mime,
             })
         }
-        Source::Memory(bytes) => {
-            Some(BlobTarget::Bytes { bytes, offset: e.range.offset as usize, len: e.range.len as usize, mime: e.mime })
-        }
+        Source::Memory(bytes) => Some(BlobTarget::Bytes {
+            bytes,
+            offset: e.range.offset as usize,
+            len: e.range.len as usize,
+            mime: e.mime,
+        }),
         Source::Unreadable(_) => None,
     }
 }
@@ -418,7 +516,9 @@ pub fn resolve_blob_url(g: *mut c_void, url: &str) -> Option<BlobTarget> {
 // ---------------------------------------------------------------------------
 
 fn parse_query(q: &str) -> Vec<(String, String)> {
-    ::url::form_urlencoded::parse(q.as_bytes()).map(|(k, v)| (k.into_owned(), v.into_owned())).collect()
+    ::url::form_urlencoded::parse(q.as_bytes())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
 }
 
 fn serialize_query(list: &[(String, String)]) -> String {
@@ -444,7 +544,10 @@ unsafe fn iterator_method(g: *mut c_void, v: u64) -> Result<Option<u64>, ()> {
         return Ok(None);
     }
     if glue::rjs_kind(g, method) != 9 {
-        throw_type_error(g, "Failed to construct 'URLSearchParams': @@iterator is not a function.");
+        throw_type_error(
+            g,
+            "Failed to construct 'URLSearchParams': @@iterator is not a function.",
+        );
         return Err(());
     }
     Ok(Some(method))
@@ -452,7 +555,12 @@ unsafe fn iterator_method(g: *mut c_void, v: u64) -> Result<Option<u64>, ()> {
 
 /// WebIDL `sequence<T>` through the iteration protocol, each element handed
 /// to `each` as it comes (so nothing is held where the collector cannot see).
-unsafe fn for_each_of(g: *mut c_void, v: u64, method: u64, mut each: impl FnMut(u64) -> Result<(), ()>) -> Result<(), ()> {
+unsafe fn for_each_of(
+    g: *mut c_void,
+    v: u64,
+    method: u64,
+    mut each: impl FnMut(u64) -> Result<(), ()>,
+) -> Result<(), ()> {
     let iter = call(g, method, v, &[]).map_err(|e| {
         glue::rjs_throw(g, e);
     })?;
@@ -538,7 +646,10 @@ unsafe fn usp_init(g: *mut c_void, init: u64) -> Result<Vec<(String, String)>, (
         if keys != UNDEF {
             glue::rjs_throw(g, keys);
         } else {
-            throw_type_error(g, "Failed to construct 'URLSearchParams': the record could not be enumerated.");
+            throw_type_error(
+                g,
+                "Failed to construct 'URLSearchParams': the record could not be enumerated.",
+            );
         }
         return Err(());
     }
@@ -554,9 +665,15 @@ unsafe fn usp_init(g: *mut c_void, init: u64) -> Result<Vec<(String, String)>, (
 #[crate::host_fn]
 unsafe fn usp_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let st = state(g);
-    let Ok(list) = usp_init(g, cf_arg(cf, 0)) else { return UNDEF };
+    let Ok(list) = usp_init(g, cf_arg(cf, 0)) else {
+        return UNDEF;
+    };
     let nt = cf_new_target(cf);
-    let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    let mut proto = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
     if !is_cell(proto) {
         proto = st.usp.proto;
     }
@@ -598,7 +715,12 @@ unsafe fn usp_get_all(g: *mut c_void, cf: *mut c_void) -> u64 {
     let k = usp_arg(g, cf, 0);
     let arr = new_array(g);
     if let Some(d) = this_usp(g, cf) {
-        let values: Vec<String> = d.list.iter().filter(|(key, _)| *key == k).map(|(_, v)| v.clone()).collect();
+        let values: Vec<String> = d
+            .list
+            .iter()
+            .filter(|(key, _)| *key == k)
+            .map(|(_, v)| v.clone())
+            .collect();
         for (i, v) in values.iter().enumerate() {
             let sv = js_string(g, v);
             set_i(g, arr, i as u32, sv);
@@ -725,7 +847,12 @@ unsafe fn make_iter(g: *mut c_void, cf: *mut c_void, kind: u8) -> u64 {
     if host_data::<UspData>(g, st.usp_class, this_v).is_none() {
         return throw_type_error(g, "URLSearchParams iterator called on wrong this");
     }
-    let it = host_create(g, st.usp_iter_class, st.usp_iter_proto, UspIterData { idx: 0, kind });
+    let it = host_create(
+        g,
+        st.usp_iter_class,
+        st.usp_iter_proto,
+        UspIterData { idx: 0, kind },
+    );
     glue::rjs_define(g, it, st.s_iter_target, this_v, 0);
     it
 }
@@ -794,63 +921,88 @@ unsafe fn iter_self(_g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(
     g: *mut c_void,
-) -> (crate::capi::JSClassRef, Class, crate::capi::JSClassRef, Class, crate::capi::JSClassRef, u64) {
+) -> (
+    crate::capi::JSClassRef,
+    Class,
+    crate::capi::JSClassRef,
+    Class,
+    crate::capi::JSClassRef,
+    u64,
+) {
     let usp_cls = make_host_class::<UspData>("URLSearchParams");
-    let usp = define_class(g, &ClassSpec {
-        name: "URLSearchParams",
-        arity: 0,
-        construct: Some(usp_construct),
-        parent_proto: 0,
-        methods: &[
-            ("get", 1, usp_get),
-            ("getAll", 1, usp_get_all),
-            ("has", 1, usp_has),
-            ("set", 2, usp_set),
-            ("append", 2, usp_append),
-            ("delete", 1, usp_delete),
-            ("sort", 0, usp_sort),
-            ("forEach", 1, usp_for_each),
-            ("entries", 0, usp_entries),
-            ("keys", 0, usp_keys),
-            ("values", 0, usp_values),
-            ("toString", 0, usp_to_string),
-        ],
-        getters: &[("size", usp_get_size)],
-        accessors: &[],
-    });
+    let usp = define_class(
+        g,
+        &ClassSpec {
+            name: "URLSearchParams",
+            arity: 0,
+            construct: Some(usp_construct),
+            parent_proto: 0,
+            methods: &[
+                ("get", 1, usp_get),
+                ("getAll", 1, usp_get_all),
+                ("has", 1, usp_has),
+                ("set", 2, usp_set),
+                ("append", 2, usp_append),
+                ("delete", 1, usp_delete),
+                ("sort", 0, usp_sort),
+                ("forEach", 1, usp_for_each),
+                ("entries", 0, usp_entries),
+                ("keys", 0, usp_keys),
+                ("values", 0, usp_values),
+                ("toString", 0, usp_to_string),
+            ],
+            getters: &[("size", usp_get_size)],
+            accessors: &[],
+        },
+    );
 
     // %URLSearchParamsIteratorPrototype%: next() + self-returning
     // [Symbol.iterator]; USP's own [Symbol.iterator] is `entries` (spec).
     let usp_iter_cls = make_host_class::<UspIterData>("URLSearchParams Iterator");
     let usp_iter_proto = new_object(g, UNDEF);
     crate::ffi::redjs_protect(g, usp_iter_proto);
-    define(g, usp_iter_proto, "next", make_fn(g, "next", 0, usp_iter_next), 2);
+    define(
+        g,
+        usp_iter_proto,
+        "next",
+        make_fn(g, "next", 0, usp_iter_next),
+        2,
+    );
     let it_atom = glue::rjs_atom_iterator(g);
-    glue::rjs_define(g, usp_iter_proto, it_atom, make_fn(g, "[Symbol.iterator]", 0, iter_self), 2);
+    glue::rjs_define(
+        g,
+        usp_iter_proto,
+        it_atom,
+        make_fn(g, "[Symbol.iterator]", 0, iter_self),
+        2,
+    );
     glue::rjs_define(g, usp.proto, it_atom, get(g, usp.proto, "entries"), 2);
     glue::rjs_atom_free(g, it_atom);
 
     let url_cls = make_host_class::<UrlData>("URL");
-    let url = define_class(g, &ClassSpec {
-        name: "URL",
-        arity: 1,
-        construct: Some(url_construct),
-        parent_proto: 0,
-        methods: &[("toString", 0, url_to_string), ("toJSON", 0, url_to_string)],
-        getters: &[("origin", get_origin), ("searchParams", get_search_params)],
-        accessors: &[
-            ("href", get_href, set_href),
-            ("protocol", get_protocol, set_protocol),
-            ("host", get_host, set_host),
-            ("hostname", get_hostname, set_hostname),
-            ("port", get_port, set_port),
-            ("pathname", get_pathname, set_pathname),
-            ("search", get_search, set_search),
-            ("hash", get_hash, set_hash),
-            ("username", get_username, set_username),
-            ("password", get_password, set_password),
-        ],
-    });
+    let url = define_class(
+        g,
+        &ClassSpec {
+            name: "URL",
+            arity: 1,
+            construct: Some(url_construct),
+            parent_proto: 0,
+            methods: &[("toString", 0, url_to_string), ("toJSON", 0, url_to_string)],
+            getters: &[("origin", get_origin), ("searchParams", get_search_params)],
+            accessors: &[
+                ("href", get_href, set_href),
+                ("protocol", get_protocol, set_protocol),
+                ("host", get_host, set_host),
+                ("hostname", get_hostname, set_hostname),
+                ("port", get_port, set_port),
+                ("pathname", get_pathname, set_pathname),
+                ("search", get_search, set_search),
+                ("hash", get_hash, set_hash),
+                ("username", get_username, set_username),
+                ("password", get_password, set_password),
+            ],
+        },
+    );
 
     // Statics on the URL constructor.
     let n16 = |s: &str| -> u64 {
@@ -889,7 +1041,10 @@ mod jsc_tests {
         ok(&c, "(() => { const u = URL.createObjectURL(new Blob(['x'])); \
                  return /^blob:app:\\/\\/redjs\\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u) \
                    && u !== URL.createObjectURL(new Blob(['x'])); })()");
-        assert_eq!(throws(&c, "URL.createObjectURL({})"), "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
+        assert_eq!(
+            throws(&c, "URL.createObjectURL({})"),
+            "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed."
+        );
         assert_eq!(throws(&c, "URL.createObjectURL()"), "Failed to execute 'createObjectURL' on 'URL': 1 argument required, but only 0 present.");
         assert_eq!(throws(&c, "URL.revokeObjectURL()"), "Failed to execute 'revokeObjectURL' on 'URL': 1 argument required, but only 0 present.");
         ok(&c, "URL.revokeObjectURL('https://example.com/') === undefined && URL.revokeObjectURL('not a url') === undefined");
@@ -903,13 +1058,20 @@ mod jsc_tests {
         );
         // An empty type is still a header (Fetch: `Content-Type` is always set).
         assert_eq!(run(&c, "const r = await fetch(URL.createObjectURL(new Blob([]))); return JSON.stringify(r.headers.get('content-type'));"), "\"\"");
-        assert!(run(&c, "await fetch(URL.createObjectURL(new Blob(['x'])), { method: 'POST', body: 'y' });").contains("only be fetched with GET"));
+        assert!(run(
+            &c,
+            "await fetch(URL.createObjectURL(new Blob(['x'])), { method: 'POST', body: 'y' });"
+        )
+        .contains("only be fetched with GET"));
     }
 
     #[test]
     fn a_range_request_gets_206_and_bad_ranges_are_network_errors() {
         let c = file_ctx();
-        s(&c, "globalThis.u = URL.createObjectURL(new Blob(['0123456789'], { type: 'a/b' })); 0");
+        s(
+            &c,
+            "globalThis.u = URL.createObjectURL(new Blob(['0123456789'], { type: 'a/b' })); 0",
+        );
         let r = |range: &str| {
             run(&c, &format!(
                 "const r = await fetch(u, {{ headers: {{ Range: '{range}' }} }}); \
@@ -929,8 +1091,14 @@ mod jsc_tests {
         assert_eq!(r("bytes=1-2 "), "206,bytes 1-2/10,2,12");
         // An end too large for any integer is clamped like any end past the Blob;
         // a start that large starts past it.
-        assert_eq!(r("bytes=3-99999999999999999999999"), "206,bytes 3-9/10,7,3456789");
-        assert_eq!(r("bytes=-99999999999999999999999"), "206,bytes 0-9/10,10,0123456789");
+        assert_eq!(
+            r("bytes=3-99999999999999999999999"),
+            "206,bytes 3-9/10,7,3456789"
+        );
+        assert_eq!(
+            r("bytes=-99999999999999999999999"),
+            "206,bytes 0-9/10,10,0123456789"
+        );
         for bad in [
             "bytes=10-",
             "bytes=5-2",
@@ -955,30 +1123,56 @@ mod jsc_tests {
         let t = TempFile::new("pic.png", b"\x89PNG not really");
         t.expose(&c, "picked");
         let whole = s(&c, "globalThis.whole = URL.createObjectURL(picked)");
-        let part = s(&c, "globalThis.part = URL.createObjectURL(picked.slice(1, 4))");
-        let mem = s(&c, "URL.createObjectURL(new Blob(['mem'], { type: 'text/plain' }))");
+        let part = s(
+            &c,
+            "globalThis.part = URL.createObjectURL(picked.slice(1, 4))",
+        );
+        let mem = s(
+            &c,
+            "URL.createObjectURL(new Blob(['mem'], { type: 'text/plain' }))",
+        );
         let g = c.raw();
         match resolve_blob_url(g, &whole) {
-            Some(BlobTarget::Path { path, range: None, size: 15, mime, .. }) => {
+            Some(BlobTarget::Path {
+                path,
+                range: None,
+                size: 15,
+                mime,
+                ..
+            }) => {
                 assert_eq!(path, t.0);
                 assert_eq!(mime, "image/png");
             }
             other => panic!("{other:?}"),
         }
-        assert!(matches!(resolve_blob_url(g, &part), Some(BlobTarget::Path { range: Some((1, 3)), .. })));
+        assert!(matches!(
+            resolve_blob_url(g, &part),
+            Some(BlobTarget::Path {
+                range: Some((1, 3)),
+                ..
+            })
+        ));
         match resolve_blob_url(g, &(mem.clone() + "#x")) {
-            Some(BlobTarget::Bytes { bytes, offset: 0, len: 3, mime }) => {
+            Some(BlobTarget::Bytes {
+                bytes,
+                offset: 0,
+                len: 3,
+                mime,
+            }) => {
                 assert_eq!(&bytes[..], b"mem");
                 assert_eq!(mime, "text/plain");
             }
             other => panic!("{other:?}"),
         }
-        assert!(resolve_blob_url(g, "blob:app://redjs/00000000-0000-4000-8000-000000000000").is_none());
+        assert!(
+            resolve_blob_url(g, "blob:app://redjs/00000000-0000-4000-8000-000000000000").is_none()
+        );
         assert!(resolve_blob_url(g, &whole).unwrap().snapshot_holds());
         assert_eq!(run(&c, "return await (await fetch(part)).text();"), "PNG");
         std::fs::write(&t.0, b"changed").unwrap();
         assert!(!resolve_blob_url(g, &whole).unwrap().snapshot_holds());
-        assert!(run(&c, "await fetch(whole);").starts_with("ERROR: TypeError: Failed to fetch: NotReadableError"));
+        assert!(run(&c, "await fetch(whole);")
+            .starts_with("ERROR: TypeError: Failed to fetch: NotReadableError"));
         // An abort that lands while the read runs still wins.
         assert_eq!(
             run(&c, "const ac = new AbortController(); const p = fetch(URL.createObjectURL(new File([picked], 'x')), { signal: ac.signal }); \
@@ -999,7 +1193,10 @@ mod jsc_tests {
         let q = |init: &str| s(&c, &format!("new URLSearchParams({init}).toString()"));
         // The record: own enumerable string keys in property order, values
         // stringified.
-        assert_eq!(q("{ b: 1, a: 'x y', c: null, d: undefined }"), "b=1&a=x+y&c=null&d=undefined");
+        assert_eq!(
+            q("{ b: 1, a: 'x y', c: null, d: undefined }"),
+            "b=1&a=x+y&c=null&d=undefined"
+        );
         assert_eq!(
             q("Object.defineProperty({ shown: 1 }, 'hidden', { value: 2, enumerable: false })"),
             "shown=1"
@@ -1011,7 +1208,10 @@ mod jsc_tests {
         assert_eq!(q("new Map([['k', 'v'], ['x', 'y']])"), "k=v&x=y");
         ok(&c, "(() => { const a = new URLSearchParams('p=1&q=2'); const b = new URLSearchParams(a); \
                  b.append('r', '3'); return a.toString() === 'p=1&q=2' && b.toString() === 'p=1&q=2&r=3'; })()");
-        assert_eq!(q("(function* () { yield ['g', '1']; yield new Set(['h', '2']); })()"), "g=1&h=2");
+        assert_eq!(
+            q("(function* () { yield ['g', '1']; yield new Set(['h', '2']); })()"),
+            "g=1&h=2"
+        );
         // Strings: a leading `?` is dropped (once), and anything that is not an
         // object is stringified, `null` included (WebIDL picks USVString).
         assert_eq!(q("'?a=1&b=2'"), "a=1&b=2");
@@ -1029,17 +1229,32 @@ mod jsc_tests {
             "Failed to construct 'URLSearchParams': @@iterator is not a function."
         );
         // A throwing getter or iterator is the constructor's exception.
-        assert_eq!(throws(&c, "new URLSearchParams({ get a() { throw new RangeError('getter'); } })"), "getter");
+        assert_eq!(
+            throws(
+                &c,
+                "new URLSearchParams({ get a() { throw new RangeError('getter'); } })"
+            ),
+            "getter"
+        );
         assert_eq!(
             throws(&c, "new URLSearchParams(new Proxy({}, { ownKeys() { throw new RangeError('trap'); } }))"),
             "trap"
         );
         assert_eq!(
-            throws(&c, "new URLSearchParams({ *[Symbol.iterator]() { throw new RangeError('iter'); } })"),
+            throws(
+                &c,
+                "new URLSearchParams({ *[Symbol.iterator]() { throw new RangeError('iter'); } })"
+            ),
             "iter"
         );
-        ok(&c, "new URLSearchParams({ a: 1 }) instanceof URLSearchParams");
+        ok(
+            &c,
+            "new URLSearchParams({ a: 1 }) instanceof URLSearchParams",
+        );
         // The URL a URLSearchParams body makes (fetch / XHR send) is unchanged.
-        ok(&c, "new URLSearchParams([['x', '1 2']]).toString() === 'x=1+2'");
+        ok(
+            &c,
+            "new URLSearchParams([['x', '1 2']]).toString() === 'x=1+2'",
+        );
     }
 }

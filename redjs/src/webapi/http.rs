@@ -143,8 +143,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod sock;
-pub(crate) use sock::Wait;
 use sock::Polled;
+pub(crate) use sock::Wait;
 
 #[cfg(feature = "net-h2")]
 pub mod pool;
@@ -182,7 +182,6 @@ mod stress_tests;
 pub const PROTO_H1: &str = "http/1.1";
 pub const PROTO_H2: &str = "h2";
 
-
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -207,7 +206,10 @@ pub struct HttpError {
 
 impl HttpError {
     fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        HttpError { kind, message: message.into() }
+        HttpError {
+            kind,
+            message: message.into(),
+        }
     }
     fn refused(m: impl Into<String>) -> Self {
         Self::new(ErrorKind::Refused, m)
@@ -275,7 +277,10 @@ impl Cancel {
 
     fn check(&self) -> Result<(), HttpError> {
         if self.is_aborted() {
-            return Err(HttpError::new(ErrorKind::Aborted, "the request was aborted"));
+            return Err(HttpError::new(
+                ErrorKind::Aborted,
+                "the request was aborted",
+            ));
         }
         Ok(())
     }
@@ -444,7 +449,10 @@ pub(crate) fn next_connection_id() -> u64 {
 }
 
 pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -481,30 +489,50 @@ pub fn parse_head(buf: &[u8]) -> Result<Head, HttpError> {
                 last.1.push_str(line.trim());
                 continue;
             }
-            return Err(HttpError::protocol("malformed response: header continuation with no header"));
+            return Err(HttpError::protocol(
+                "malformed response: header continuation with no header",
+            ));
         }
         let Some(colon) = line.find(':') else {
-            return Err(HttpError::protocol(format!("malformed response header line: {line:?}")));
+            return Err(HttpError::protocol(format!(
+                "malformed response header line: {line:?}"
+            )));
         };
         let name = line[..colon].trim_end();
         if name.is_empty() || !name.bytes().all(is_token_byte) {
-            return Err(HttpError::protocol(format!("malformed response header name: {name:?}")));
+            return Err(HttpError::protocol(format!(
+                "malformed response header name: {name:?}"
+            )));
         }
-        headers.push((name.to_ascii_lowercase(), line[colon + 1..].trim().to_string()));
+        headers.push((
+            name.to_ascii_lowercase(),
+            line[colon + 1..].trim().to_string(),
+        ));
     }
-    Ok(Head { status, reason, headers })
+    Ok(Head {
+        status,
+        reason,
+        headers,
+    })
 }
 
 fn parse_status_line(line: &str) -> Result<(u16, String), HttpError> {
     let rest = line
         .strip_prefix("HTTP/1.1 ")
         .or_else(|| line.strip_prefix("HTTP/1.0 "))
-        .ok_or_else(|| HttpError::protocol(format!("not an HTTP/1.x response: {:?}", trunc(line, 80))))?;
+        .ok_or_else(|| {
+            HttpError::protocol(format!("not an HTTP/1.x response: {:?}", trunc(line, 80)))
+        })?;
     let code = rest.split(' ').next().unwrap_or("");
     if code.len() != 3 || !code.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(HttpError::protocol(format!("malformed status line: {:?}", trunc(line, 80))));
+        return Err(HttpError::protocol(format!(
+            "malformed status line: {:?}",
+            trunc(line, 80)
+        )));
     }
-    let status: u16 = code.parse().map_err(|_| HttpError::protocol("malformed status code"))?;
+    let status: u16 = code
+        .parse()
+        .map_err(|_| HttpError::protocol("malformed status code"))?;
     let reason = rest[code.len()..].trim().to_string();
     Ok((status, reason))
 }
@@ -527,7 +555,9 @@ fn validate_header(name: &str, value: &str) -> Result<(), HttpError> {
         return Err(HttpError::refused(format!("invalid header name: {name:?}")));
     }
     if value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
-        return Err(HttpError::refused(format!("invalid header value for {name:?}: contains CR, LF or NUL")));
+        return Err(HttpError::refused(format!(
+            "invalid header value for {name:?}: contains CR, LF or NUL"
+        )));
     }
     Ok(())
 }
@@ -545,15 +575,28 @@ pub enum Framing {
 }
 
 /// RFC 9112 §6.3, in the order the spec applies it.
-pub fn framing_of(method: &str, status: u16, headers: &[(String, String)]) -> Result<Framing, HttpError> {
-    if method.eq_ignore_ascii_case("HEAD") || status == 204 || status == 304 || (100..200).contains(&status) {
+pub fn framing_of(
+    method: &str,
+    status: u16,
+    headers: &[(String, String)],
+) -> Result<Framing, HttpError> {
+    if method.eq_ignore_ascii_case("HEAD")
+        || status == 204
+        || status == 304
+        || (100..200).contains(&status)
+    {
         return Ok(Framing::None);
     }
     if let Some(te) = header(headers, "transfer-encoding") {
-        if te.split(',').any(|t| t.trim().eq_ignore_ascii_case("chunked")) {
+        if te
+            .split(',')
+            .any(|t| t.trim().eq_ignore_ascii_case("chunked"))
+        {
             return Ok(Framing::Chunked);
         }
-        return Err(HttpError::protocol(format!("unsupported Transfer-Encoding: {te:?}")));
+        return Err(HttpError::protocol(format!(
+            "unsupported Transfer-Encoding: {te:?}"
+        )));
     }
     if let Some(cl) = header(headers, "content-length") {
         // A split Content-Length is the classic smuggling vector; refuse unless
@@ -565,13 +608,17 @@ pub fn framing_of(method: &str, status: u16, headers: &[(String, String)]) -> Re
                 .parse()
                 .map_err(|_| HttpError::protocol(format!("malformed Content-Length: {cl:?}")))?;
             if seen.is_some_and(|s| s != n) {
-                return Err(HttpError::protocol(format!("conflicting Content-Length values: {cl:?}")));
+                return Err(HttpError::protocol(format!(
+                    "conflicting Content-Length values: {cl:?}"
+                )));
             }
             seen = Some(n);
         }
         let n = seen.ok_or_else(|| HttpError::protocol("empty Content-Length"))?;
         if n > MAX_BODY {
-            return Err(HttpError::refused(format!("response body of {n} bytes exceeds the {MAX_BODY}-byte limit")));
+            return Err(HttpError::refused(format!(
+                "response body of {n} bytes exceeds the {MAX_BODY}-byte limit"
+            )));
         }
         return Ok(Framing::Length(n));
     }
@@ -587,7 +634,9 @@ pub fn read_exact_body<R: Read>(r: &mut R, n: usize, prefix: &[u8]) -> Result<Ve
     let mut buf = [0u8; 16 * 1024];
     while out.len() < n {
         let want = (n - out.len()).min(buf.len());
-        let got = r.read(&mut buf[..want]).map_err(|e| HttpError::network(format!("body read failed: {e}")))?;
+        let got = r
+            .read(&mut buf[..want])
+            .map_err(|e| HttpError::network(format!("body read failed: {e}")))?;
         if got == 0 {
             return Err(HttpError::protocol(format!(
                 "connection closed after {} of {} declared body bytes",
@@ -605,12 +654,16 @@ pub fn read_until_close<R: Read>(r: &mut R, prefix: &[u8]) -> Result<Vec<u8>, Ht
     let mut out = prefix.to_vec();
     let mut buf = [0u8; 16 * 1024];
     loop {
-        let got = r.read(&mut buf).map_err(|e| HttpError::network(format!("body read failed: {e}")))?;
+        let got = r
+            .read(&mut buf)
+            .map_err(|e| HttpError::network(format!("body read failed: {e}")))?;
         if got == 0 {
             return Ok(out);
         }
         if out.len() + got > MAX_BODY {
-            return Err(HttpError::refused(format!("response body exceeds the {MAX_BODY}-byte limit")));
+            return Err(HttpError::refused(format!(
+                "response body exceeds the {MAX_BODY}-byte limit"
+            )));
         }
         out.extend_from_slice(&buf[..got]);
     }
@@ -626,12 +679,16 @@ pub fn read_chunked<R: Read>(r: &mut R, prefix: &[u8]) -> Result<Vec<u8>, HttpEr
         // chunk-size [ ";" chunk-ext ]
         let size_text = line.split(';').next().unwrap_or("").trim();
         if size_text.is_empty() {
-            return Err(HttpError::protocol("malformed chunked body: empty chunk size"));
+            return Err(HttpError::protocol(
+                "malformed chunked body: empty chunk size",
+            ));
         }
         let size = u64::from_str_radix(size_text, 16)
             .map_err(|_| HttpError::protocol(format!("malformed chunk size: {size_text:?}")))?;
         if size > MAX_CHUNK {
-            return Err(HttpError::refused(format!("chunk of {size} bytes exceeds the {MAX_CHUNK}-byte limit")));
+            return Err(HttpError::refused(format!(
+                "chunk of {size} bytes exceeds the {MAX_CHUNK}-byte limit"
+            )));
         }
         if size == 0 {
             // Trailer section, terminated by a blank line.
@@ -644,22 +701,34 @@ pub fn read_chunked<R: Read>(r: &mut R, prefix: &[u8]) -> Result<Vec<u8>, HttpEr
             return Ok(out);
         }
         if out.len() as u64 + size > MAX_BODY as u64 {
-            return Err(HttpError::refused(format!("response body exceeds the {MAX_BODY}-byte limit")));
+            return Err(HttpError::refused(format!(
+                "response body exceeds the {MAX_BODY}-byte limit"
+            )));
         }
         let start = out.len();
         out.resize(start + size as usize, 0);
         src.read_exact_into(&mut out[start..])?;
         let crlf = src.read_line()?;
         if !crlf.is_empty() {
-            return Err(HttpError::protocol("malformed chunked body: missing CRLF after chunk data"));
+            return Err(HttpError::protocol(
+                "malformed chunked body: missing CRLF after chunk data",
+            ));
         }
     }
 }
 
 #[cfg_attr(feature = "net-h2", allow(dead_code))]
-fn stream_body<R: Read>(r: &mut R, framing: Framing, prefix: &[u8], sink: &mut dyn FnMut(&[u8])) -> Result<(), HttpError> {
+fn stream_body<R: Read>(
+    r: &mut R,
+    framing: Framing,
+    prefix: &[u8],
+    sink: &mut dyn FnMut(&[u8]),
+) -> Result<(), HttpError> {
     let mut buf = [0u8; 16 * 1024];
-    let read = |r: &mut R, buf: &mut [u8]| r.read(buf).map_err(|e| HttpError::network(format!("body read failed: {e}")));
+    let read = |r: &mut R, buf: &mut [u8]| {
+        r.read(buf)
+            .map_err(|e| HttpError::network(format!("body read failed: {e}")))
+    };
     match framing {
         Framing::None => Ok(()),
         Framing::Length(n) => {
@@ -672,7 +741,10 @@ fn stream_body<R: Read>(r: &mut R, framing: Framing, prefix: &[u8], sink: &mut d
                 let want = left.min(buf.len());
                 let got = read(r, &mut buf[..want])?;
                 if got == 0 {
-                    return Err(HttpError::protocol(format!("connection closed after {} of {n} declared body bytes", n - left)));
+                    return Err(HttpError::protocol(format!(
+                        "connection closed after {} of {n} declared body bytes",
+                        n - left
+                    )));
                 }
                 sink(&buf[..got]);
                 left -= got;
@@ -696,8 +768,9 @@ fn stream_body<R: Read>(r: &mut R, framing: Framing, prefix: &[u8], sink: &mut d
             loop {
                 let line = src.read_line()?;
                 let size_text = line.split(';').next().unwrap_or("").trim();
-                let mut size = u64::from_str_radix(size_text, 16)
-                    .map_err(|_| HttpError::protocol(format!("malformed chunk size: {size_text:?}")))?;
+                let mut size = u64::from_str_radix(size_text, 16).map_err(|_| {
+                    HttpError::protocol(format!("malformed chunk size: {size_text:?}"))
+                })?;
                 if size == 0 {
                     while !src.read_line()?.is_empty() {}
                     return Ok(());
@@ -709,7 +782,9 @@ fn stream_body<R: Read>(r: &mut R, framing: Framing, prefix: &[u8], sink: &mut d
                     size -= take as u64;
                 }
                 if !src.read_line()?.is_empty() {
-                    return Err(HttpError::protocol("malformed chunked body: missing CRLF after chunk data"));
+                    return Err(HttpError::protocol(
+                        "malformed chunked body: missing CRLF after chunk data",
+                    ));
                 }
             }
         }
@@ -726,12 +801,19 @@ struct Prefixed<'a, R: Read> {
 
 impl<'a, R: Read> Prefixed<'a, R> {
     fn new(inner: &'a mut R, prefix: &[u8]) -> Self {
-        Prefixed { inner, buf: prefix.to_vec(), pos: 0 }
+        Prefixed {
+            inner,
+            buf: prefix.to_vec(),
+            pos: 0,
+        }
     }
 
     fn fill(&mut self) -> Result<bool, HttpError> {
         let mut tmp = [0u8; 16 * 1024];
-        let got = self.inner.read(&mut tmp).map_err(|e| HttpError::network(format!("body read failed: {e}")))?;
+        let got = self
+            .inner
+            .read(&mut tmp)
+            .map_err(|e| HttpError::network(format!("body read failed: {e}")))?;
         if got == 0 {
             return Ok(false);
         }
@@ -752,10 +834,14 @@ impl<'a, R: Read> Prefixed<'a, R> {
                 return Ok(line);
             }
             if self.buf.len() - self.pos > MAX_HEAD {
-                return Err(HttpError::protocol("malformed chunked body: oversized line"));
+                return Err(HttpError::protocol(
+                    "malformed chunked body: oversized line",
+                ));
             }
             if !self.fill()? {
-                return Err(HttpError::protocol("connection closed inside a chunked body"));
+                return Err(HttpError::protocol(
+                    "connection closed inside a chunked body",
+                ));
             }
         }
     }
@@ -766,7 +852,9 @@ impl<'a, R: Read> Prefixed<'a, R> {
             let avail = self.buf.len() - self.pos;
             if avail == 0 {
                 if !self.fill()? {
-                    return Err(HttpError::protocol("connection closed inside a chunked body"));
+                    return Err(HttpError::protocol(
+                        "connection closed inside a chunked body",
+                    ));
                 }
                 continue;
             }
@@ -795,7 +883,9 @@ pub fn decode_content_encoding(enc: Option<&str>, bytes: Vec<u8>) -> Result<Vec<
     }
     // Multiple codings are legal but vanishingly rare; refuse rather than guess.
     if enc.contains(',') {
-        return Err(HttpError::refused(format!("stacked Content-Encoding is not supported: {enc:?}")));
+        return Err(HttpError::refused(format!(
+            "stacked Content-Encoding is not supported: {enc:?}"
+        )));
     }
     if bytes.is_empty() {
         return Ok(bytes);
@@ -813,7 +903,9 @@ pub fn decode_content_encoding(enc: Option<&str>, bytes: Vec<u8>) -> Result<Vec<
             }
         }
     } else {
-        return Err(HttpError::refused(format!("unsupported Content-Encoding: {enc:?}")));
+        return Err(HttpError::refused(format!(
+            "unsupported Content-Encoding: {enc:?}"
+        )));
     };
     r.map_err(|e| HttpError::protocol(format!("Content-Encoding {enc} failed to decode: {e}")))?;
     Ok(out)
@@ -840,7 +932,8 @@ pub fn redirect_method(status: u16, method: &str) -> (String, bool) {
 
 /// Resolves `Location` against the URL it came from.
 pub fn resolve_location(base: &str, location: &str) -> Result<String, HttpError> {
-    let base = url::Url::parse(base).map_err(|e| HttpError::protocol(format!("bad base URL: {e}")))?;
+    let base =
+        url::Url::parse(base).map_err(|e| HttpError::protocol(format!("bad base URL: {e}")))?;
     base.join(location.trim())
         .map(|u| u.to_string())
         .map_err(|e| HttpError::protocol(format!("bad Location header {location:?}: {e}")))
@@ -848,14 +941,21 @@ pub fn resolve_location(base: &str, location: &str) -> Result<String, HttpError>
 
 /// Same origin = same scheme, host and effective port.
 pub fn same_origin(a: &str, b: &str) -> bool {
-    let (Ok(a), Ok(b)) = (url::Url::parse(a), url::Url::parse(b)) else { return false };
-    a.scheme() == b.scheme() && a.host_str() == b.host_str() && a.port_or_known_default() == b.port_or_known_default()
+    let (Ok(a), Ok(b)) = (url::Url::parse(a), url::Url::parse(b)) else {
+        return false;
+    };
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
 }
 
 /// Headers that must not survive a cross-origin redirect.
 fn strip_sensitive(headers: &mut Vec<(String, String)>) {
     headers.retain(|(k, _)| {
-        !matches!(k.to_ascii_lowercase().as_str(), "authorization" | "cookie" | "proxy-authorization" | "www-authenticate")
+        !matches!(
+            k.to_ascii_lowercase().as_str(),
+            "authorization" | "cookie" | "proxy-authorization" | "www-authenticate"
+        )
     });
 }
 
@@ -918,26 +1018,44 @@ impl<'a> Hops<'a> {
 
     pub(crate) fn next(&mut self) -> Result<Hop, HttpError> {
         if self.left == 0 {
-            return Err(HttpError::network(format!("too many redirects (more than {MAX_REDIRECTS})")));
+            return Err(HttpError::network(format!(
+                "too many redirects (more than {MAX_REDIRECTS})"
+            )));
         }
         self.left -= 1;
         let u = url::Url::parse(&self.current)
             .map_err(|e| HttpError::refused(format!("invalid URL {:?}: {e}", self.current)))?;
         if u.scheme() != "http" && u.scheme() != "https" {
-            return Err(HttpError::refused(format!("scheme {:?} is not supported by fetch", u.scheme())));
+            return Err(HttpError::refused(format!(
+                "scheme {:?} is not supported by fetch",
+                u.scheme()
+            )));
         }
         // The jar, per hop: this hop's cookies on the way out, this hop's
         // Set-Cookie on the way back — before the redirect is followed, so the
         // next hop already sees what this one set.
         let cookies = self.req.credentials.applies(&u);
-        let headers = if cookies { super::cookies::with_cookies(&u, &self.headers) } else { None }
-            .unwrap_or_else(|| self.headers.clone());
-        Ok(Hop { url: u, headers, cookies })
+        let headers = if cookies {
+            super::cookies::with_cookies(&u, &self.headers)
+        } else {
+            None
+        }
+        .unwrap_or_else(|| self.headers.clone());
+        Ok(Hop {
+            url: u,
+            headers,
+            cookies,
+        })
     }
 
     /// After a hop's head: stores its cookies, then either sets up the next
     /// hop (`Ok(true)`) or says this response is the answer (`Ok(false)`).
-    pub(crate) fn after(&mut self, hop: &Hop, status: u16, headers: &[(String, String)]) -> Result<bool, HttpError> {
+    pub(crate) fn after(
+        &mut self,
+        hop: &Hop,
+        status: u16,
+        headers: &[(String, String)],
+    ) -> Result<bool, HttpError> {
         self.store_cookies(hop, headers);
         self.follow(status, headers)
     }
@@ -953,11 +1071,17 @@ impl<'a> Hops<'a> {
     /// The redirect half of [`Hops::after`]. On its own for an answer the HTTP
     /// cache served or refreshed: its `Location` is followed, and the cookies
     /// came (if at all) with the 304 that refreshed it.
-    pub(crate) fn follow(&mut self, status: u16, headers: &[(String, String)]) -> Result<bool, HttpError> {
+    pub(crate) fn follow(
+        &mut self,
+        status: u16,
+        headers: &[(String, String)],
+    ) -> Result<bool, HttpError> {
         if !is_redirect(status) {
             return Ok(false);
         }
-        let Some(loc) = header(headers, "location") else { return Ok(false) };
+        let Some(loc) = header(headers, "location") else {
+            return Ok(false);
+        };
         if self.req.redirect == Redirect::Error {
             return Err(HttpError::network(format!(
                 "redirect to {loc:?} refused: the request set redirect: \"error\""
@@ -970,7 +1094,8 @@ impl<'a> Hops<'a> {
         }
         if !keep_body {
             self.body = None;
-            self.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
+            self.headers
+                .retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
         }
         self.method = next_method;
         self.current = next;
@@ -1096,8 +1221,12 @@ pub(crate) fn dial_host(u: &url::Url) -> Result<String, HttpError> {
 /// family that fails (this machine's IPv6 does, fast) costs one attempt, not
 /// every address of that family.
 pub(crate) fn interleave(addrs: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
-    let Some(first) = addrs.first().copied() else { return addrs };
-    let (mut a, mut b): (Vec<_>, Vec<_>) = addrs.into_iter().partition(|x| x.is_ipv6() == first.is_ipv6());
+    let Some(first) = addrs.first().copied() else {
+        return addrs;
+    };
+    let (mut a, mut b): (Vec<_>, Vec<_>) = addrs
+        .into_iter()
+        .partition(|x| x.is_ipv6() == first.is_ipv6());
     a.reverse();
     b.reverse();
     let mut out = Vec::with_capacity(a.len() + b.len());
@@ -1118,14 +1247,20 @@ pub(crate) fn tls_builder() -> native_tls::TlsConnectorBuilder {
     #[allow(unused_mut)]
     let mut b = native_tls::TlsConnector::builder();
     #[cfg(test)]
-    b.add_root_certificate(native_tls::Certificate::from_pem(TEST_ROOT_PEM).expect("test certificate"));
+    b.add_root_certificate(
+        native_tls::Certificate::from_pem(TEST_ROOT_PEM).expect("test certificate"),
+    );
     b
 }
 
 /// Connect + (for `https`) TLS handshake, every wait a readiness wait. The
 /// returned stream waits in [`Wait::Block`] mode with the connect budget;
 /// callers set their own budget for what follows.
-pub(crate) fn connect(u: &url::Url, connect_timeout: Duration, cancel: &Cancel) -> Result<Stream, HttpError> {
+pub(crate) fn connect(
+    u: &url::Url,
+    connect_timeout: Duration,
+    cancel: &Cancel,
+) -> Result<Stream, HttpError> {
     let host = dial_host(u)?;
     let port = u
         .port_or_known_default()
@@ -1164,27 +1299,42 @@ pub(crate) fn connect(u: &url::Url, connect_timeout: Duration, cancel: &Cancel) 
 
     // Armed BEFORE the TLS handshake so an abort during it lands too.
     cancel.arm(&tcp)?;
-    let polled = Polled::new(tcp, cancel.clone(), Wait::Block { budget: connect_timeout })
-        .map_err(|e| HttpError::network(format!("could not configure the socket: {e}")))?;
+    let polled = Polled::new(
+        tcp,
+        cancel.clone(),
+        Wait::Block {
+            budget: connect_timeout,
+        },
+    )
+    .map_err(|e| HttpError::network(format!("could not configure the socket: {e}")))?;
 
     if !secure {
         return Ok(Stream::Plain(polled));
     }
-    let connector = tls_builder().build().map_err(|e| HttpError::network(format!("TLS setup failed: {e}")))?;
+    let connector = tls_builder()
+        .build()
+        .map_err(|e| HttpError::network(format!("TLS setup failed: {e}")))?;
     // The socket blocks (in readiness waits) underneath, so the handshake runs
     // in one call: schannel never sees `WouldBlock` or a timed-out read.
     let started = Instant::now();
     match connector.connect(&host, polled) {
         Ok(s) => Ok(Stream::Tls(Box::new(s))),
-        Err(_) if cancel.is_aborted() => Err(HttpError::new(ErrorKind::Aborted, "the request was aborted")),
-        Err(native_tls::HandshakeError::WouldBlock(_)) => {
-            Err(HttpError::network(format!("TLS handshake with {host} stalled")))
-        }
+        Err(_) if cancel.is_aborted() => Err(HttpError::new(
+            ErrorKind::Aborted,
+            "the request was aborted",
+        )),
+        Err(native_tls::HandshakeError::WouldBlock(_)) => Err(HttpError::network(format!(
+            "TLS handshake with {host} stalled"
+        ))),
         Err(native_tls::HandshakeError::Failure(e)) => {
             if started.elapsed() >= connect_timeout {
-                Err(HttpError::network(format!("TLS handshake with {host} timed out")))
+                Err(HttpError::network(format!(
+                    "TLS handshake with {host} timed out"
+                )))
             } else {
-                Err(HttpError::network(format!("TLS handshake with {host} failed: {e}")))
+                Err(HttpError::network(format!(
+                    "TLS handshake with {host} failed: {e}"
+                )))
             }
         }
     }
@@ -1231,7 +1381,9 @@ pub fn serialize_request(
 
     out.extend_from_slice(format!("Host: {host_header}\r\n").as_bytes());
     if !has("user-agent") {
-        out.extend_from_slice(format!("User-Agent: {}\r\n", super::navigator::user_agent()).as_bytes());
+        out.extend_from_slice(
+            format!("User-Agent: {}\r\n", super::navigator::user_agent()).as_bytes(),
+        );
     }
     if !has("accept") {
         out.extend_from_slice(b"Accept: */*\r\n");
@@ -1240,7 +1392,13 @@ pub fn serialize_request(
         out.extend_from_slice(b"Accept-Encoding: gzip, deflate\r\n");
     }
     if !has("accept-language") {
-        out.extend_from_slice(format!("Accept-Language: {}\r\n", super::navigator::accept_language()).as_bytes());
+        out.extend_from_slice(
+            format!(
+                "Accept-Language: {}\r\n",
+                super::navigator::accept_language()
+            )
+            .as_bytes(),
+        );
     }
     // No pooling on this transport, but no `Connection: close` either: asking
     // the SERVER to close is what stalled (measured, research/reports/m26/
@@ -1249,7 +1407,9 @@ pub fn serialize_request(
     // response is framed, so the client reads it whole and closes the socket
     // itself.
     if needs_length(method, body) {
-        out.extend_from_slice(format!("Content-Length: {}\r\n", body.map_or(0, |b| b.len())).as_bytes());
+        out.extend_from_slice(
+            format!("Content-Length: {}\r\n", body.map_or(0, |b| b.len())).as_bytes(),
+        );
     }
     out.extend_from_slice(b"\r\n");
     if let Some(b) = body {
@@ -1283,12 +1443,18 @@ pub(crate) fn read_head<R: Read>(r: &mut R, cancel: &Cancel) -> Result<(Head, Ve
     loop {
         // Scan only the tail that could contain a newly completed terminator.
         let scan_from = acc.len().saturating_sub(3);
-        let got = r.read(&mut buf).map_err(|e| map_io(cancel, e, "response read"))?;
+        let got = r
+            .read(&mut buf)
+            .map_err(|e| map_io(cancel, e, "response read"))?;
         if got == 0 {
             if acc.is_empty() {
-                return Err(HttpError::network("the server closed the connection without a response"));
+                return Err(HttpError::network(
+                    "the server closed the connection without a response",
+                ));
             }
-            return Err(HttpError::protocol("the server closed the connection inside the response head"));
+            return Err(HttpError::protocol(
+                "the server closed the connection inside the response head",
+            ));
         }
         acc.extend_from_slice(&buf[..got]);
         if let Some(i) = acc[scan_from..].windows(4).position(|w| w == b"\r\n\r\n") {
@@ -1298,7 +1464,9 @@ pub(crate) fn read_head<R: Read>(r: &mut R, cancel: &Cancel) -> Result<(Head, Ve
             return Ok((head, rest));
         }
         if acc.len() > MAX_HEAD {
-            return Err(HttpError::protocol(format!("response head exceeds {MAX_HEAD} bytes")));
+            return Err(HttpError::protocol(format!(
+                "response head exceeds {MAX_HEAD} bytes"
+            )));
         }
     }
 }
@@ -1318,22 +1486,30 @@ fn round_trip(
     redirected: bool,
 ) -> Result<(Head, Vec<u8>, Option<std::net::SocketAddr>), HttpError> {
     let mut stream = connect(u, req.connect_timeout, cancel)?;
-    stream.set_wait(Wait::Block { budget: req.io_timeout });
+    stream.set_wait(Wait::Block {
+        budget: req.io_timeout,
+    });
     let remote = stream.tcp().peer_addr().ok();
 
     let wire = serialize_request(u, method, headers, body)?;
     let body_len = body.map_or(0, |b| b.len());
     let (head_part, body_part) = wire.split_at(wire.len() - body_len);
-    stream.write_all(head_part).map_err(|e| map_io(cancel, e, "request write"))?;
+    stream
+        .write_all(head_part)
+        .map_err(|e| map_io(cancel, e, "request write"))?;
     let mut sent = 0usize;
     for piece in body_part.chunks(64 * 1024) {
-        stream.write_all(piece).map_err(|e| map_io(cancel, e, "request write"))?;
+        stream
+            .write_all(piece)
+            .map_err(|e| map_io(cancel, e, "request write"))?;
         sent += piece.len();
         if let Some(o) = &req.observer {
             o.0.upload(sent as u64, body_len as u64);
         }
     }
-    stream.flush().map_err(|e| map_io(cancel, e, "request write"))?;
+    stream
+        .flush()
+        .map_err(|e| map_io(cancel, e, "request write"))?;
 
     let (head, rest) = read_head(&mut stream, cancel)?;
 
@@ -1344,7 +1520,10 @@ fn round_trip(
         (head, rest)
     };
 
-    let observed = req.observer.as_ref().filter(|_| is_final(head.status, &head.headers));
+    let observed = req
+        .observer
+        .as_ref()
+        .filter(|_| is_final(head.status, &head.headers));
     if let Some(o) = observed {
         o.0.head(&ProgressHead {
             status: head.status,
@@ -1368,9 +1547,13 @@ fn round_trip(
     }
     let raw = match framing {
         Framing::None => Vec::new(),
-        Framing::Length(n) => read_exact_body(&mut stream, n, &rest).map_err(|e| reclassify(e, cancel))?,
+        Framing::Length(n) => {
+            read_exact_body(&mut stream, n, &rest).map_err(|e| reclassify(e, cancel))?
+        }
         Framing::Chunked => read_chunked(&mut stream, &rest).map_err(|e| reclassify(e, cancel))?,
-        Framing::UntilClose => read_until_close(&mut stream, &rest).map_err(|e| reclassify(e, cancel))?,
+        Framing::UntilClose => {
+            read_until_close(&mut stream, &rest).map_err(|e| reclassify(e, cancel))?
+        }
     };
     if let Some(o) = observed {
         if !raw.is_empty() {
@@ -1404,13 +1587,19 @@ fn read_head_after_informational<R: Read>(
             }
             return Ok((head, tail));
         }
-        let got = r.read(&mut buf).map_err(|e| map_io(cancel, e, "response read"))?;
+        let got = r
+            .read(&mut buf)
+            .map_err(|e| map_io(cancel, e, "response read"))?;
         if got == 0 {
-            return Err(HttpError::protocol("the server closed the connection after an informational response"));
+            return Err(HttpError::protocol(
+                "the server closed the connection after an informational response",
+            ));
         }
         acc.extend_from_slice(&buf[..got]);
         if acc.len() > MAX_HEAD {
-            return Err(HttpError::protocol(format!("response head exceeds {MAX_HEAD} bytes")));
+            return Err(HttpError::protocol(format!(
+                "response head exceeds {MAX_HEAD} bytes"
+            )));
         }
     }
 }
@@ -1433,7 +1622,8 @@ pub(crate) fn send_blocking(req: &Request, cancel: &Cancel) -> Result<Response, 
     loop {
         cancel.check()?;
         let hop = hops.next()?;
-        let (action, ctx) = cache::plan(&hops.method, hop.url.as_str(), &hop.headers, req.cache).into_parts();
+        let (action, ctx) =
+            cache::plan(&hops.method, hop.url.as_str(), &hop.headers, req.cache).into_parts();
         let (validating, conditional) = match action {
             Action::Fail(e) => return Err(e),
             Action::Serve { entry, revalidate } => {
@@ -1452,7 +1642,10 @@ pub(crate) fn send_blocking(req: &Request, cancel: &Cancel) -> Result<Response, 
         let asked = validating.is_some();
         let quiet;
         let (sent, headers) = if asked {
-            quiet = Request { observer: None, ..req.clone() };
+            quiet = Request {
+                observer: None,
+                ..req.clone()
+            };
             let mut h = hop.headers.clone();
             h.extend(conditional);
             (&quiet, std::borrow::Cow::Owned(h))
@@ -1472,13 +1665,27 @@ pub(crate) fn send_blocking(req: &Request, cancel: &Cancel) -> Result<Response, 
         cancel.disarm();
         let (head, bytes, remote) = result?;
         let id = next_connection_id();
-        match cache::settle(ctx, validating, head.status, &head.reason, &head.headers, &bytes, false) {
+        match cache::settle(
+            ctx,
+            validating,
+            head.status,
+            &head.reason,
+            &head.headers,
+            &bytes,
+            false,
+        ) {
             Settled::Refreshed(entry) => {
                 hops.store_cookies(&hop, &head.headers);
                 if hops.follow(entry.status, &entry.headers)? {
                     continue;
                 }
-                return blocking_from_cache(req, &hops, entry, Outcome::Revalidated, (PROTO_H1, id, remote));
+                return blocking_from_cache(
+                    req,
+                    &hops,
+                    entry,
+                    Outcome::Revalidated,
+                    (PROTO_H1, id, remote),
+                );
             }
             Settled::Network(outcome) => {
                 if hops.after(&hop, head.status, &head.headers)? {
@@ -1486,7 +1693,16 @@ pub(crate) fn send_blocking(req: &Request, cancel: &Cancel) -> Result<Response, 
                 }
                 if asked {
                     let (url, r) = (&hops.current, hops.redirected);
-                    cache::observe(req, url, r, PROTO_H1, head.status, &head.reason, &head.headers, &bytes);
+                    cache::observe(
+                        req,
+                        url,
+                        r,
+                        PROTO_H1,
+                        head.status,
+                        &head.reason,
+                        &head.headers,
+                        &bytes,
+                    );
                 }
                 return Ok(Response {
                     status: head.status,
@@ -1517,7 +1733,16 @@ fn blocking_from_cache(
     net: (&'static str, u64, Option<std::net::SocketAddr>),
 ) -> Result<Response, HttpError> {
     let (url, redirected) = (hops.current.clone(), hops.redirected);
-    cache::observe(req, &url, redirected, net.0, entry.status, &entry.reason, &entry.headers, &entry.body);
+    cache::observe(
+        req,
+        &url,
+        redirected,
+        net.0,
+        entry.status,
+        &entry.reason,
+        &entry.headers,
+        &entry.body,
+    );
     let body = if entry.coded {
         decode_content_encoding(header(&entry.headers, "content-encoding"), entry.body)?
     } else {
@@ -1548,10 +1773,15 @@ mod tests {
 
     #[test]
     fn a_normal_head_parses() {
-        let head = parse_head(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2").unwrap();
+        let head =
+            parse_head(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2")
+                .unwrap();
         assert_eq!(head.status, 200);
         assert_eq!(head.reason, "OK");
-        assert_eq!(header(&head.headers, "CONTENT-TYPE"), Some("application/json"));
+        assert_eq!(
+            header(&head.headers, "CONTENT-TYPE"),
+            Some("application/json")
+        );
     }
 
     #[test]
@@ -1573,7 +1803,10 @@ mod tests {
             &b"HTTP/1.1 2O0 OK\r\n"[..],      // letter O
             &b"HTTP/9.9 200 OK\r\n"[..],
         ] {
-            assert!(parse_head(junk).is_err(), "accepted junk as a response head: {junk:?}");
+            assert!(
+                parse_head(junk).is_err(),
+                "accepted junk as a response head: {junk:?}"
+            );
         }
     }
 
@@ -1591,7 +1824,10 @@ mod tests {
 
     #[test]
     fn framing_follows_the_spec_order() {
-        let chunked = vec![("transfer-encoding".into(), "chunked".into()), ("content-length".into(), "5".into())];
+        let chunked = vec![
+            ("transfer-encoding".into(), "chunked".into()),
+            ("content-length".into(), "5".into()),
+        ];
         // Transfer-Encoding wins over Content-Length (RFC 9112 §6.3).
         assert_eq!(framing_of("GET", 200, &chunked).unwrap(), Framing::Chunked);
 
@@ -1625,7 +1861,10 @@ mod tests {
         // gets this wrong.
         let wire = b"4\r\nWiki\r\n5\r\npedia\r\ne\r\n in\r\n\r\nchunks.\r\n0\r\n\r\n";
         let mut r = &wire[..];
-        assert_eq!(read_chunked(&mut r, &[]).unwrap(), b"Wikipedia in\r\n\r\nchunks.");
+        assert_eq!(
+            read_chunked(&mut r, &[]).unwrap(),
+            b"Wikipedia in\r\n\r\nchunks."
+        );
     }
 
     #[test]
@@ -1678,7 +1917,10 @@ mod tests {
         let mut e = GzEncoder::new(Vec::new(), flate2::Compression::default());
         e.write_all(b"hello over the wire").unwrap();
         let gz = e.finish().unwrap();
-        assert_eq!(decode_content_encoding(Some("gzip"), gz).unwrap(), b"hello over the wire");
+        assert_eq!(
+            decode_content_encoding(Some("gzip"), gz).unwrap(),
+            b"hello over the wire"
+        );
     }
 
     #[test]
@@ -1690,8 +1932,14 @@ mod tests {
 
     #[test]
     fn identity_and_absent_encodings_pass_through() {
-        assert_eq!(decode_content_encoding(None, vec![1, 2]).unwrap(), vec![1, 2]);
-        assert_eq!(decode_content_encoding(Some("identity"), vec![1, 2]).unwrap(), vec![1, 2]);
+        assert_eq!(
+            decode_content_encoding(None, vec![1, 2]).unwrap(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            decode_content_encoding(Some("identity"), vec![1, 2]).unwrap(),
+            vec![1, 2]
+        );
     }
 
     #[test]
@@ -1708,15 +1956,30 @@ mod tests {
     #[test]
     fn location_resolves_relative_absolute_and_scheme_relative() {
         let base = "https://api.example.com/v1/thing?x=1";
-        assert_eq!(resolve_location(base, "/v2/other").unwrap(), "https://api.example.com/v2/other");
-        assert_eq!(resolve_location(base, "other").unwrap(), "https://api.example.com/v1/other");
-        assert_eq!(resolve_location(base, "https://cdn.example.net/a").unwrap(), "https://cdn.example.net/a");
-        assert_eq!(resolve_location(base, "//cdn.example.net/a").unwrap(), "https://cdn.example.net/a");
+        assert_eq!(
+            resolve_location(base, "/v2/other").unwrap(),
+            "https://api.example.com/v2/other"
+        );
+        assert_eq!(
+            resolve_location(base, "other").unwrap(),
+            "https://api.example.com/v1/other"
+        );
+        assert_eq!(
+            resolve_location(base, "https://cdn.example.net/a").unwrap(),
+            "https://cdn.example.net/a"
+        );
+        assert_eq!(
+            resolve_location(base, "//cdn.example.net/a").unwrap(),
+            "https://cdn.example.net/a"
+        );
     }
 
     #[test]
     fn origin_comparison_accounts_for_default_ports() {
-        assert!(same_origin("https://a.example/x", "https://a.example:443/y"));
+        assert!(same_origin(
+            "https://a.example/x",
+            "https://a.example:443/y"
+        ));
         assert!(!same_origin("https://a.example/x", "http://a.example/x"));
         assert!(!same_origin("https://a.example/x", "https://b.example/x"));
     }
@@ -1778,7 +2041,8 @@ mod tests {
             ("Transfer-Encoding".to_string(), "chunked".to_string()),
             ("Host".to_string(), "evil.example".to_string()),
         ];
-        let text = String::from_utf8(serialize_request(&u, "POST", &h, Some(b"ab")).unwrap()).unwrap();
+        let text =
+            String::from_utf8(serialize_request(&u, "POST", &h, Some(b"ab")).unwrap()).unwrap();
         assert_eq!(text.matches("Content-Length").count(), 1, "{text}");
         assert!(text.contains("Content-Length: 2\r\n"), "{text}");
         assert!(!text.contains("chunked"), "{text}");
@@ -1804,9 +2068,11 @@ mod tests {
     // -- cookies, per hop (webapi::cookies holds the rules; this is the wiring) --
 
     fn cookie_line(request: &[u8]) -> Option<String> {
-        String::from_utf8_lossy(request)
-            .lines()
-            .find_map(|l| l.strip_prefix("cookie: ").or_else(|| l.strip_prefix("Cookie: ")).map(str::to_string))
+        String::from_utf8_lossy(request).lines().find_map(|l| {
+            l.strip_prefix("cookie: ")
+                .or_else(|| l.strip_prefix("Cookie: "))
+                .map(str::to_string)
+        })
     }
 
     #[test]
@@ -1822,9 +2088,20 @@ mod tests {
         r.credentials = cookies::Credentials::Include;
         let resp = send(&r, &Cancel::default()).unwrap();
         assert_eq!(resp.status, 200);
-        assert_eq!(cookie_line(&seen.recv().unwrap()), None, "nothing in the jar for the first hop");
-        assert_eq!(cookie_line(&seen.recv().unwrap()).as_deref(), Some("hop=1"), "the 302's cookie rode the next hop");
-        let jar = cookies::header_for(&url::Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), cookies::Api::Http);
+        assert_eq!(
+            cookie_line(&seen.recv().unwrap()),
+            None,
+            "nothing in the jar for the first hop"
+        );
+        assert_eq!(
+            cookie_line(&seen.recv().unwrap()).as_deref(),
+            Some("hop=1"),
+            "the 302's cookie rode the next hop"
+        );
+        let jar = cookies::header_for(
+            &url::Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+            cookies::Api::Http,
+        );
         assert_eq!(jar.as_deref(), Some("hop=1; done=2"));
         cookies::reset_for_tests();
     }
@@ -1834,20 +2111,38 @@ mod tests {
         use crate::webapi::cookies;
         let _g = cookies::test_lock();
         cookies::reset_for_tests();
-        let (b, seen_b) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec()]);
+        let (b, seen_b) = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec()
+        ]);
         let (a, seen_a) = serve(vec![format!(
             "HTTP/1.1 302 Found\r\nLocation: http://localhost:{b}/there\r\nContent-Length: 0\r\n\r\n"
         )
         .into_bytes()]);
-        cookies::set_from_header(&url::Url::parse("http://127.0.0.1/").unwrap(), "only-ip=1", cookies::Api::Http).unwrap();
-        cookies::set_from_header(&url::Url::parse("http://localhost/").unwrap(), "only-lh=1", cookies::Api::Http).unwrap();
+        cookies::set_from_header(
+            &url::Url::parse("http://127.0.0.1/").unwrap(),
+            "only-ip=1",
+            cookies::Api::Http,
+        )
+        .unwrap();
+        cookies::set_from_header(
+            &url::Url::parse("http://localhost/").unwrap(),
+            "only-lh=1",
+            cookies::Api::Http,
+        )
+        .unwrap();
         let mut r = req(&format!("http://127.0.0.1:{a}/start"));
         r.credentials = cookies::Credentials::Include;
         r.headers.push(("cookie".into(), "script=1".into()));
         send(&r, &Cancel::default()).unwrap();
-        assert_eq!(cookie_line(&seen_a.recv().unwrap()).as_deref(), Some("script=1; only-ip=1"));
+        assert_eq!(
+            cookie_line(&seen_a.recv().unwrap()).as_deref(),
+            Some("script=1; only-ip=1")
+        );
         // Cross-origin: the script's header is stripped, the jar re-decides.
-        assert_eq!(cookie_line(&seen_b.recv().unwrap()).as_deref(), Some("only-lh=1"));
+        assert_eq!(
+            cookie_line(&seen_b.recv().unwrap()).as_deref(),
+            Some("only-lh=1")
+        );
         cookies::reset_for_tests();
     }
 
@@ -1856,16 +2151,34 @@ mod tests {
         use crate::webapi::cookies;
         let _g = cookies::test_lock();
         cookies::reset_for_tests();
-        cookies::set_from_header(&url::Url::parse("http://127.0.0.1/").unwrap(), "pre=1", cookies::Api::Http).unwrap();
+        cookies::set_from_header(
+            &url::Url::parse("http://127.0.0.1/").unwrap(),
+            "pre=1",
+            cookies::Api::Http,
+        )
+        .unwrap();
         for mode in [cookies::Credentials::Omit, cookies::Credentials::SameOrigin] {
-            let (port, seen) = serve(vec![b"HTTP/1.1 200 OK\r\nSet-Cookie: nope=1\r\nContent-Length: 0\r\n\r\n".to_vec()]);
+            let (port, seen) = serve(vec![
+                b"HTTP/1.1 200 OK\r\nSet-Cookie: nope=1\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            ]);
             let mut r = req(&format!("http://127.0.0.1:{port}/"));
             r.credentials = mode;
             send(&r, &Cancel::default()).unwrap();
-            assert_eq!(cookie_line(&seen.recv().unwrap()), None, "{mode:?} sent the jar");
+            assert_eq!(
+                cookie_line(&seen.recv().unwrap()),
+                None,
+                "{mode:?} sent the jar"
+            );
         }
-        let jar = cookies::header_for(&url::Url::parse("http://127.0.0.1/").unwrap(), cookies::Api::Http);
-        assert_eq!(jar.as_deref(), Some("pre=1"), "neither mode stored the response's cookie");
+        let jar = cookies::header_for(
+            &url::Url::parse("http://127.0.0.1/").unwrap(),
+            cookies::Api::Http,
+        );
+        assert_eq!(
+            jar.as_deref(),
+            Some("pre=1"),
+            "neither mode stored the response's cookie"
+        );
         cookies::reset_for_tests();
     }
 
@@ -1887,7 +2200,10 @@ mod tests {
         let started = std::time::Instant::now();
         let e = send(&r, &cancel).unwrap_err();
         assert_eq!(e.kind, ErrorKind::Aborted, "{}", e.message);
-        assert!(started.elapsed() < Duration::from_secs(2), "an aborted request still dialed out");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "an aborted request still dialed out"
+        );
     }
 
     #[test]
@@ -1912,7 +2228,9 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for reply in replies {
-                let Ok((mut sock, _)) = listener.accept() else { return };
+                let Ok((mut sock, _)) = listener.accept() else {
+                    return;
+                };
                 let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
                 // Read the request head (the client always sends Content-Length,
                 // so the body length is knowable, but the tests only assert on
@@ -1955,7 +2273,11 @@ mod tests {
         let (port, seen) = serve(vec![
             b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"instance\":\"ok\"}".to_vec(),
         ]);
-        let r = send(&req(&format!("http://127.0.0.1:{port}/resolve")), &Cancel::default()).unwrap();
+        let r = send(
+            &req(&format!("http://127.0.0.1:{port}/resolve")),
+            &Cancel::default(),
+        )
+        .unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(r.status_text, "OK");
         assert_eq!(header(&r.headers, "content-type"), Some("application/json"));
@@ -1963,8 +2285,14 @@ mod tests {
         assert!(!r.redirected);
 
         let request = String::from_utf8(seen.recv().unwrap()).unwrap();
-        assert!(request.starts_with("GET /resolve HTTP/1.1\r\n"), "{request}");
-        assert!(request.contains(&format!("Host: 127.0.0.1:{port}\r\n")), "{request}");
+        assert!(
+            request.starts_with("GET /resolve HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains(&format!("Host: 127.0.0.1:{port}\r\n")),
+            "{request}"
+        );
     }
 
     #[test]
@@ -1975,7 +2303,10 @@ mod tests {
         let mut r = req(&format!("http://127.0.0.1:{port}/api/2/envelope/"));
         r.method = "POST".into();
         r.headers = vec![
-            ("Content-Type".into(), "application/x-sentry-envelope".into()),
+            (
+                "Content-Type".into(),
+                "application/x-sentry-envelope".into(),
+            ),
             ("Authorization".into(), "Bearer s3cret".into()),
         ];
         r.body = Some(b"{\"event_id\":\"abc\"}".to_vec());
@@ -1985,9 +2316,18 @@ mod tests {
         assert!(resp.body.is_empty(), "204 must have no body");
 
         let request = String::from_utf8(seen.recv().unwrap()).unwrap();
-        assert!(request.starts_with("POST /api/2/envelope/ HTTP/1.1\r\n"), "{request}");
-        assert!(request.contains("Authorization: Bearer s3cret\r\n"), "{request}");
-        assert!(request.contains("Content-Type: application/x-sentry-envelope\r\n"), "{request}");
+        assert!(
+            request.starts_with("POST /api/2/envelope/ HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains("Authorization: Bearer s3cret\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains("Content-Type: application/x-sentry-envelope\r\n"),
+            "{request}"
+        );
         assert!(request.contains("Content-Length: 18\r\n"), "{request}");
         assert!(request.ends_with("{\"event_id\":\"abc\"}"), "{request}");
     }
@@ -2003,7 +2343,10 @@ mod tests {
             self.0.lock().unwrap().push(format!("head {}", h.status));
         }
         fn body(&self, chunk: &[u8], received: u64, _total: Option<u64>) {
-            self.0.lock().unwrap().push(format!("body {} {received}", chunk.len()));
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("body {} {received}", chunk.len()));
         }
     }
 
@@ -2011,7 +2354,9 @@ mod tests {
     fn an_observer_hears_upload_head_and_body_in_order() {
         // Both transports: the blocking one reports the body as one piece,
         // the pooled one per frame; the order and the totals are the contract.
-        let (port, _seen) = serve(vec![b"HTTP/1.1 201 Created\r\nContent-Length: 7\r\n\r\ncreated".to_vec()]);
+        let (port, _seen) = serve(vec![
+            b"HTTP/1.1 201 Created\r\nContent-Length: 7\r\n\r\ncreated".to_vec(),
+        ]);
         let seen = Arc::new(Seen::default());
         let mut r = req(&format!("http://127.0.0.1:{port}/up"));
         r.method = "PUT".into();
@@ -2020,10 +2365,16 @@ mod tests {
         let resp = send(&r, &Cancel::default()).unwrap();
         assert_eq!(resp.status, 201);
         let ev = seen.0.lock().unwrap().clone();
-        let head = ev.iter().position(|e| e == "head 201").expect("no head event");
+        let head = ev
+            .iter()
+            .position(|e| e == "head 201")
+            .expect("no head event");
         assert_eq!(ev[head - 1], "up 70000/70000", "{ev:?}");
         assert!(ev[..head].iter().all(|e| e.starts_with("up ")), "{ev:?}");
-        assert!(ev[head + 1..].iter().all(|e| e.starts_with("body ")), "{ev:?}");
+        assert!(
+            ev[head + 1..].iter().all(|e| e.starts_with("body ")),
+            "{ev:?}"
+        );
         assert!(ev.last().unwrap().ends_with(" 7"), "{ev:?}");
     }
 
@@ -2032,7 +2383,11 @@ mod tests {
         let (port, _seen) = serve(vec![
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n".to_vec(),
         ]);
-        let r = send(&req(&format!("http://127.0.0.1:{port}/stream")), &Cancel::default()).unwrap();
+        let r = send(
+            &req(&format!("http://127.0.0.1:{port}/stream")),
+            &Cancel::default(),
+        )
+        .unwrap();
         assert_eq!(String::from_utf8(r.body).unwrap(), "hello world");
     }
 
@@ -2043,7 +2398,11 @@ mod tests {
         let (port, _seen) = serve(vec![
             b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot here!".to_vec(),
         ]);
-        let r = send(&req(&format!("http://127.0.0.1:{port}/missing")), &Cancel::default()).unwrap();
+        let r = send(
+            &req(&format!("http://127.0.0.1:{port}/missing")),
+            &Cancel::default(),
+        )
+        .unwrap();
         assert_eq!(r.status, 404);
         assert_eq!(String::from_utf8(r.body).unwrap(), "not here!");
     }
@@ -2054,10 +2413,18 @@ mod tests {
             b"HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n".to_vec(),
             b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nthere".to_vec(),
         ]);
-        let r = send(&req(&format!("http://127.0.0.1:{port}/start")), &Cancel::default()).unwrap();
+        let r = send(
+            &req(&format!("http://127.0.0.1:{port}/start")),
+            &Cancel::default(),
+        )
+        .unwrap();
         assert_eq!(r.status, 200);
         assert!(r.redirected);
-        assert!(r.url.ends_with("/final"), "final URL not reported: {}", r.url);
+        assert!(
+            r.url.ends_with("/final"),
+            "final URL not reported: {}",
+            r.url
+        );
         assert_eq!(String::from_utf8(r.body).unwrap(), "there");
     }
 
@@ -2077,15 +2444,25 @@ mod tests {
         // Declares 100 bytes, sends 4, closes. The old status-0 behaviour is the
         // shape being guarded against: a caller must not receive "helo" as a
         // complete 200 response.
-        let (port, _seen) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhelo".to_vec()]);
-        let e = send(&req(&format!("http://127.0.0.1:{port}/short")), &Cancel::default()).unwrap_err();
+        let (port, _seen) = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhelo".to_vec()
+        ]);
+        let e = send(
+            &req(&format!("http://127.0.0.1:{port}/short")),
+            &Cancel::default(),
+        )
+        .unwrap_err();
         assert_eq!(e.kind, ErrorKind::Protocol, "{}", e.message);
     }
 
     #[test]
     fn a_peer_that_is_not_speaking_http_fails_loudly() {
         let (port, _seen) = serve(vec![b"I am not an HTTP server\r\n\r\n".to_vec()]);
-        let e = send(&req(&format!("http://127.0.0.1:{port}/junk")), &Cancel::default()).unwrap_err();
+        let e = send(
+            &req(&format!("http://127.0.0.1:{port}/junk")),
+            &Cancel::default(),
+        )
+        .unwrap_err();
         assert_eq!(e.kind, ErrorKind::Protocol, "{}", e.message);
     }
 
@@ -2103,7 +2480,11 @@ mod tests {
         let r = send(&req("https://example.com/"), &Cancel::default()).unwrap();
         assert_eq!(r.status, 200, "{}", r.status_text);
         let text = String::from_utf8_lossy(&r.body).to_ascii_lowercase();
-        assert!(text.contains("example domain"), "unexpected body: {}", &text[..text.len().min(200)]);
+        assert!(
+            text.contains("example domain"),
+            "unexpected body: {}",
+            &text[..text.len().min(200)]
+        );
     }
 
     #[test]
@@ -2114,7 +2495,11 @@ mod tests {
         let r = send(&req("https://api.github.com/meta"), &Cancel::default()).unwrap();
         assert_eq!(r.status, 200, "{}", r.status_text);
         let text = String::from_utf8(r.body).expect("gzip left non-UTF-8 bytes behind");
-        assert!(text.starts_with('{'), "body was not decoded JSON: {}", &text[..text.len().min(120)]);
+        assert!(
+            text.starts_with('{'),
+            "body was not decoded JSON: {}",
+            &text[..text.len().min(120)]
+        );
     }
 
     #[test]
@@ -2123,7 +2508,11 @@ mod tests {
         let r = send(&req("http://github.com/"), &Cancel::default()).unwrap();
         assert_eq!(r.status, 200);
         assert!(r.redirected);
-        assert!(r.url.starts_with("https://"), "did not upgrade to https: {}", r.url);
+        assert!(
+            r.url.starts_with("https://"),
+            "did not upgrade to https: {}",
+            r.url
+        );
     }
 
     #[test]
@@ -2132,10 +2521,17 @@ mod tests {
         // The single most important property of the TLS choice. A client that
         // accepts these is worse than no client: it turns every request into a
         // silent wrong answer that an attacker chooses.
-        for host in ["expired.badssl.com", "self-signed.badssl.com", "wrong.host.badssl.com", "untrusted-root.badssl.com"] {
+        for host in [
+            "expired.badssl.com",
+            "self-signed.badssl.com",
+            "wrong.host.badssl.com",
+            "untrusted-root.badssl.com",
+        ] {
             let e = send(&req(&format!("https://{host}/")), &Cancel::default())
                 .err()
-                .unwrap_or_else(|| panic!("{host} was ACCEPTED — certificate verification is not happening"));
+                .unwrap_or_else(|| {
+                    panic!("{host} was ACCEPTED — certificate verification is not happening")
+                });
             assert_eq!(e.kind, ErrorKind::Network, "{host}: {}", e.message);
             // Not just "it failed": the failure has to be about the
             // CERTIFICATE. An unreachable host would otherwise let this test
@@ -2155,7 +2551,6 @@ mod tests {
         let r = send(&req("https://sha256.badssl.com/"), &Cancel::default()).unwrap();
         assert_eq!(r.status, 200);
     }
-
 
     #[test]
     fn abort_mid_flight_shuts_the_socket_down_now() {

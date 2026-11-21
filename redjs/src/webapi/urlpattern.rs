@@ -27,14 +27,21 @@ fn registry() -> &'static Mutex<HashMap<usize, &'static Classes>> {
 }
 
 fn classes(g: *mut c_void) -> &'static Classes {
-    registry().lock().unwrap().get(&(g as usize)).copied().expect("webapi::urlpattern not installed")
+    registry()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .copied()
+        .expect("webapi::urlpattern not installed")
 }
 
 pub(crate) fn forget(gone: crate::context::Gone) {
     registry().lock().unwrap().remove(&gone.key);
 }
 
-const FIELDS: [&str; 8] = ["protocol", "username", "password", "hostname", "port", "pathname", "search", "hash"];
+const FIELDS: [&str; 8] = [
+    "protocol", "username", "password", "hostname", "port", "pathname", "search", "hash",
+];
 
 unsafe fn is_object(g: *mut c_void, v: u64) -> bool {
     super::blob::is_object(g, v)
@@ -45,12 +52,18 @@ unsafe fn string_member(g: *mut c_void, obj: u64, key: &str) -> Result<Option<St
     if v == UNDEF {
         return Ok(None);
     }
-    Ok(Some(read_string(g, to_js_string(g, v)?).unwrap_or_default()))
+    Ok(Some(
+        read_string(g, to_js_string(g, v)?).unwrap_or_default(),
+    ))
 }
 
 unsafe fn read_input(g: *mut c_void, v: u64) -> Result<StringOrInit<'static>, ()> {
     if !is_object(g, v) {
-        let s = if v == UNDEF { String::new() } else { read_string(g, to_js_string(g, v)?).unwrap_or_default() };
+        let s = if v == UNDEF {
+            String::new()
+        } else {
+            read_string(g, to_js_string(g, v)?).unwrap_or_default()
+        };
         if v == UNDEF {
             return Ok(StringOrInit::Init(UrlPatternInit::default()));
         }
@@ -82,9 +95,13 @@ unsafe fn type_error(g: *mut c_void, what: &str, e: impl std::fmt::Display) -> u
 unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     let c = classes(g);
     let (a0, a1, a2) = (cf_arg(cf, 0), cf_arg(cf, 1), cf_arg(cf, 2));
-    let Ok(input) = read_input(g, a0) else { return UNDEF };
+    let Ok(input) = read_input(g, a0) else {
+        return UNDEF;
+    };
     let (base, options) = if a1 != UNDEF && !is_object(g, a1) {
-        let Ok(s) = to_js_string(g, a1) else { return UNDEF };
+        let Ok(s) = to_js_string(g, a1) else {
+            return UNDEF;
+        };
         (read_string(g, s), a2)
     } else {
         (None, a1)
@@ -106,7 +123,11 @@ unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         Err(e) => return type_error(g, "construct", e),
     };
     let nt = cf_new_target(cf);
-    let mut proto = if is_cell(nt) { get(g, nt, "prototype") } else { UNDEF };
+    let mut proto = if is_cell(nt) {
+        get(g, nt, "prototype")
+    } else {
+        UNDEF
+    };
     if !is_cell(proto) {
         proto = c.pattern.proto;
     }
@@ -157,7 +178,9 @@ unsafe fn run(g: *mut c_void, cf: *mut c_void, what: &str) -> Outcome {
         throw_type_error(g, "Illegal invocation");
         return Outcome::Thrown;
     };
-    let Ok(input) = read_input(g, cf_arg(cf, 0)) else { return Outcome::Thrown };
+    let Ok(input) = read_input(g, cf_arg(cf, 0)) else {
+        return Outcome::Thrown;
+    };
     let base = match cf_arg(cf, 1) {
         UNDEF => None,
         v => match to_js_string(g, v) {
@@ -197,7 +220,11 @@ unsafe fn component(g: *mut c_void, r: &urlpattern::UrlPatternComponentResult) -
     define(g, obj, "input", js_string(g, &r.input), 0);
     let groups = new_object(g, UNDEF);
     let mut names: Vec<_> = r.groups.keys().collect();
-    names.sort_by_key(|n| n.parse::<u64>().ok().map_or((1, 0, (*n).clone()), |i| (0, i, String::new())));
+    names.sort_by_key(|n| {
+        n.parse::<u64>()
+            .ok()
+            .map_or((1, 0, (*n).clone()), |i| (0, i, String::new()))
+    });
     for name in names {
         let v = match &r.groups[name] {
             Some(s) => js_string(g, s),
@@ -223,7 +250,16 @@ unsafe fn exec(g: *mut c_void, cf: *mut c_void) -> u64 {
         set_i(g, inputs, 1, cf_arg(cf, 1));
     }
     define(g, out, "inputs", inputs, 0);
-    let parts = [&r.protocol, &r.username, &r.password, &r.hostname, &r.port, &r.pathname, &r.search, &r.hash];
+    let parts = [
+        &r.protocol,
+        &r.username,
+        &r.password,
+        &r.hostname,
+        &r.port,
+        &r.pathname,
+        &r.search,
+        &r.hash,
+    ];
     for (key, part) in FIELDS.into_iter().zip(parts) {
         define(g, out, key, component(g, part), 0);
     }
@@ -232,26 +268,32 @@ unsafe fn exec(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 pub unsafe fn install(g: *mut c_void) {
     let host = make_host_class::<UrlPattern>("URLPattern");
-    let pattern = define_class(g, &ClassSpec {
-        name: "URLPattern",
-        arity: 0,
-        construct: Some(construct),
-        parent_proto: 0,
-        methods: &[("test", 0, test), ("exec", 0, exec)],
-        getters: &[
-            ("protocol", get_protocol),
-            ("username", get_username),
-            ("password", get_password),
-            ("hostname", get_hostname),
-            ("port", get_port),
-            ("pathname", get_pathname),
-            ("search", get_search),
-            ("hash", get_hash),
-            ("hasRegExpGroups", get_has_regexp_groups),
-        ],
-        accessors: &[],
-    });
-    registry().lock().unwrap().insert(g as usize, Box::leak(Box::new(Classes { host, pattern })));
+    let pattern = define_class(
+        g,
+        &ClassSpec {
+            name: "URLPattern",
+            arity: 0,
+            construct: Some(construct),
+            parent_proto: 0,
+            methods: &[("test", 0, test), ("exec", 0, exec)],
+            getters: &[
+                ("protocol", get_protocol),
+                ("username", get_username),
+                ("password", get_password),
+                ("hostname", get_hostname),
+                ("port", get_port),
+                ("pathname", get_pathname),
+                ("search", get_search),
+                ("hash", get_hash),
+                ("hasRegExpGroups", get_has_regexp_groups),
+            ],
+            accessors: &[],
+        },
+    );
+    registry()
+        .lock()
+        .unwrap()
+        .insert(g as usize, Box::leak(Box::new(Classes { host, pattern })));
 }
 
 #[cfg(test)]
@@ -261,16 +303,34 @@ mod tests {
     #[test]
     fn patterns_match_and_capture() {
         let c = ctx();
-        ok(&c, "new URLPattern({ pathname: '/books/:id' }).test('https://example.com/books/123')");
-        ok(&c, "!new URLPattern({ pathname: '/books/:id' }).test('https://example.com/authors/1')");
+        ok(
+            &c,
+            "new URLPattern({ pathname: '/books/:id' }).test('https://example.com/books/123')",
+        );
+        ok(
+            &c,
+            "!new URLPattern({ pathname: '/books/:id' }).test('https://example.com/authors/1')",
+        );
         assert_eq!(
             s(&c, "new URLPattern('https://*.example.com/books/:id(\\\\d+)').exec('https://api.example.com/books/42').pathname.groups.id"),
             "42"
         );
-        assert_eq!(s(&c, "new URLPattern('/users/:name', 'https://x.test').hostname"), "x.test");
+        assert_eq!(
+            s(
+                &c,
+                "new URLPattern('/users/:name', 'https://x.test').hostname"
+            ),
+            "x.test"
+        );
         ok(&c, "new URLPattern({ pathname: '/a/:x(\\\\d+)' }).hasRegExpGroups && !new URLPattern({ pathname: '/a/:x' }).hasRegExpGroups");
-        ok(&c, "new URLPattern({ pathname: '/A' }, { ignoreCase: true }).test({ pathname: '/a' })");
-        ok(&c, "new URLPattern({ pathname: '/x' }).exec({ pathname: '/y' }) === null");
+        ok(
+            &c,
+            "new URLPattern({ pathname: '/A' }, { ignoreCase: true }).test({ pathname: '/a' })",
+        );
+        ok(
+            &c,
+            "new URLPattern({ pathname: '/x' }).exec({ pathname: '/y' }) === null",
+        );
         ok(&c, "Object.getPrototypeOf(new URLPattern({ pathname: '/x' }).exec({ pathname: '/x' }).pathname) === Object.prototype");
         assert_eq!(
             s(&c, "JSON.stringify(new URLPattern({ pathname: '/:a/:b?' }).exec({ pathname: '/one' }).pathname.groups)"),

@@ -70,9 +70,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Notify;
 
 use super::{
-    decode_content_encoding, dial_host, header, interleave, is_final, is_transport_header, needs_length,
-    next_connection_id, tls_builder, validate_header, Cancel, Done, ErrorKind, Hops, HttpError, Observer, ProgressHead,
-    Request, Response, MAX_BODY, PROTO_H1, PROTO_H2,
+    decode_content_encoding, dial_host, header, interleave, is_final, is_transport_header,
+    needs_length, next_connection_id, tls_builder, validate_header, Cancel, Done, ErrorKind, Hops,
+    HttpError, Observer, ProgressHead, Request, Response, MAX_BODY, PROTO_H1, PROTO_H2,
 };
 
 /// HTTP/1.1 connections per origin — Chromium's and Firefox's default.
@@ -196,7 +196,8 @@ pub(super) fn send(req: &Request, cancel: &Cancel) -> Result<Response, HttpError
             let _ = tx.send(r);
         }),
     )?;
-    rx.recv().unwrap_or_else(|_| Err(network("the network thread went away")))
+    rx.recv()
+        .unwrap_or_else(|_| Err(network("the network thread went away")))
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +217,11 @@ impl Key {
         let port = u
             .port_or_known_default()
             .ok_or_else(|| HttpError::refused(format!("URL has no port and no default: {u}")))?;
-        Ok(Key { https: u.scheme() == "https", host, port })
+        Ok(Key {
+            https: u.scheme() == "https",
+            host,
+            port,
+        })
     }
 
     /// Cleartext HTTP/2 with prior knowledge: tests only (a browser never
@@ -288,13 +293,22 @@ struct Origin {
 
 impl Default for Origin {
     fn default() -> Self {
-        Origin { h2: None, idle: Vec::new(), h1_open: 0, probing: false, learned: None, notify: Arc::new(Notify::new()) }
+        Origin {
+            h2: None,
+            idle: Vec::new(),
+            h1_open: 0,
+            probing: false,
+            learned: None,
+            notify: Arc::new(Notify::new()),
+        }
     }
 }
 
 fn lock() -> MutexGuard<'static, HashMap<Key, Origin>> {
     static POOL: OnceLock<Mutex<HashMap<Key, Origin>>> = OnceLock::new();
-    POOL.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|p| p.into_inner())
+    POOL.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 fn wake(key: &Key) {
@@ -410,7 +424,12 @@ enum Step {
 /// A connection for `key`: the h2 one, an idle HTTP/1.1 one, or a new one.
 /// `avoid` (a retry) skips the connection that just failed and every idle
 /// HTTP/1.1 connection — they may share its fate (a restarted server).
-async fn checkout(key: &Key, cancel: &Cancel, connect_timeout: Duration, avoid: Option<u64>) -> Result<(Lease, bool), HttpError> {
+async fn checkout(
+    key: &Key,
+    cancel: &Cancel,
+    connect_timeout: Duration,
+    avoid: Option<u64>,
+) -> Result<(Lease, bool), HttpError> {
     loop {
         let step = {
             let mut p = lock();
@@ -424,7 +443,13 @@ async fn checkout(key: &Key, cancel: &Cancel, connect_timeout: Duration, avoid: 
                     let reused = h.started > 0;
                     h.started += 1;
                     h.active.fetch_add(1, Ordering::SeqCst);
-                    let lease = H2Lease { key: key.clone(), id: h.id, addr: h.addr, tx: h.tx.clone(), active: Arc::clone(&h.active) };
+                    let lease = H2Lease {
+                        key: key.clone(),
+                        id: h.id,
+                        addr: h.addr,
+                        tx: h.tx.clone(),
+                        active: Arc::clone(&h.active),
+                    };
                     step = Some(Step::Got(Lease::H2(lease), reused));
                 }
             }
@@ -435,7 +460,14 @@ async fn checkout(key: &Key, cancel: &Cancel, connect_timeout: Duration, avoid: 
                         o.h1_open = o.h1_open.saturating_sub(1);
                         continue;
                     }
-                    let lease = H1Lease { key: key.clone(), id: c.id, addr: c.addr, tx: Some(c.tx), task: c.task, armed: true };
+                    let lease = H1Lease {
+                        key: key.clone(),
+                        id: c.id,
+                        addr: c.addr,
+                        tx: Some(c.tx),
+                        task: c.task,
+                        armed: true,
+                    };
                     step = Some(Step::Got(Lease::H1(lease), true));
                     break;
                 }
@@ -449,7 +481,11 @@ async fn checkout(key: &Key, cancel: &Cancel, connect_timeout: Duration, avoid: 
                         if probe {
                             o.probing = true;
                         }
-                        Step::Dial(Reservation { key: key.clone(), probe, armed: true })
+                        Step::Dial(Reservation {
+                            key: key.clone(),
+                            probe,
+                            armed: true,
+                        })
                     } else {
                         // Registered while the lock is held: a release that
                         // happens right after it is not missed.
@@ -462,7 +498,9 @@ async fn checkout(key: &Key, cancel: &Cancel, connect_timeout: Duration, avoid: 
         };
         match step {
             Step::Got(lease, reused) => return Ok((lease, reused)),
-            Step::Dial(reservation) => return dial_into_pool(key, reservation, cancel, connect_timeout).await,
+            Step::Dial(reservation) => {
+                return dial_into_pool(key, reservation, cancel, connect_timeout).await
+            }
             Step::Wait(n) => {
                 tokio::select! {
                     _ = n => {}
@@ -475,7 +513,12 @@ async fn checkout(key: &Key, cancel: &Cancel, connect_timeout: Duration, avoid: 
     }
 }
 
-async fn dial_into_pool(key: &Key, mut slot: Reservation, cancel: &Cancel, connect_timeout: Duration) -> Result<(Lease, bool), HttpError> {
+async fn dial_into_pool(
+    key: &Key,
+    mut slot: Reservation,
+    cancel: &Cancel,
+    connect_timeout: Duration,
+) -> Result<(Lease, bool), HttpError> {
     let dialed = dial(key, cancel, connect_timeout).await?;
     slot.armed = false;
     let mut p = lock();
@@ -491,12 +534,32 @@ async fn dial_into_pool(key: &Key, mut slot: Reservation, cancel: &Cancel, conne
             let active = Arc::new(AtomicUsize::new(1));
             // Replaces a connection that is going away, if any; its in-flight
             // streams keep their own handles.
-            o.h2 = Some(H2Entry { id, addr, tx: tx.clone(), active: Arc::clone(&active), started: 1, last_used: Instant::now() });
-            Lease::H2(H2Lease { key: key.clone(), id, addr, tx, active })
+            o.h2 = Some(H2Entry {
+                id,
+                addr,
+                tx: tx.clone(),
+                active: Arc::clone(&active),
+                started: 1,
+                last_used: Instant::now(),
+            });
+            Lease::H2(H2Lease {
+                key: key.clone(),
+                id,
+                addr,
+                tx,
+                active,
+            })
         }
         Dialed::H1 { id, tx, task, addr } => {
             o.learned = Some(Proto::H1);
-            Lease::H1(H1Lease { key: key.clone(), id, addr, tx: Some(tx), task, armed: true })
+            Lease::H1(H1Lease {
+                key: key.clone(),
+                id,
+                addr,
+                tx: Some(tx),
+                task,
+                armed: true,
+            })
         }
     };
     drop(p);
@@ -510,16 +573,30 @@ async fn dial_into_pool(key: &Key, mut slot: Reservation, cancel: &Cancel, conne
 /// needs one turn after the body's last frame; the wait is that turn).
 async fn release_h1(mut lease: H1Lease) {
     let ready = match lease.tx.as_mut() {
-        Some(tx) => matches!(tokio::time::timeout(Duration::from_millis(250), tx.ready()).await, Ok(Ok(()))),
+        Some(tx) => matches!(
+            tokio::time::timeout(Duration::from_millis(250), tx.ready()).await,
+            Ok(Ok(()))
+        ),
         None => false,
     };
     if !ready {
-        net_log!("h1 #{} {}:{} not reusable, closed", lease.id, lease.key.host, lease.key.port);
+        net_log!(
+            "h1 #{} {}:{} not reusable, closed",
+            lease.id,
+            lease.key.host,
+            lease.key.port
+        );
         return; // `lease` drops: closed, slot freed
     }
     let tx = lease.tx.take().expect("checked above");
     lease.armed = false;
-    let idle = IdleH1 { id: lease.id, addr: lease.addr, tx, task: lease.task.clone(), since: Instant::now() };
+    let idle = IdleH1 {
+        id: lease.id,
+        addr: lease.addr,
+        tx,
+        task: lease.task.clone(),
+        since: Instant::now(),
+    };
     match lock().get_mut(&lease.key) {
         Some(o) => o.idle.push(idle),
         None => idle.task.abort(),
@@ -555,7 +632,9 @@ async fn reaper() {
                 let closed = before - o.idle.len();
                 o.h1_open = o.h1_open.saturating_sub(closed);
                 let h2_idle = o.h2.as_ref().is_some_and(|h| {
-                    h.tx.is_closed() || (h.active.load(Ordering::SeqCst) == 0 && h.last_used.elapsed() >= H2_IDLE)
+                    h.tx.is_closed()
+                        || (h.active.load(Ordering::SeqCst) == 0
+                            && h.last_used.elapsed() >= H2_IDLE)
                 });
                 if h2_idle {
                     // Dropping our handle lets hyper close it (GOAWAY).
@@ -582,8 +661,17 @@ trait Io: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> Io for T {}
 
 enum Dialed {
-    H1 { id: u64, tx: http1::SendRequest<ReqBody>, task: tokio::task::AbortHandle, addr: SocketAddr },
-    H2 { id: u64, tx: http2::SendRequest<ReqBody>, addr: SocketAddr },
+    H1 {
+        id: u64,
+        tx: http1::SendRequest<ReqBody>,
+        task: tokio::task::AbortHandle,
+        addr: SocketAddr,
+    },
+    H2 {
+        id: u64,
+        tx: http2::SendRequest<ReqBody>,
+        addr: SocketAddr,
+    },
 }
 
 /// Resolve, connect (Happy Eyeballs), TLS with ALPN, protocol handshake — one
@@ -621,13 +709,19 @@ async fn dial_steps(key: &Key, stage: &AtomicU8) -> Result<Dialed, HttpError> {
         stage.store(2, Ordering::SeqCst);
         let mut b = tls_builder();
         b.request_alpns(&["h2", "http/1.1"]);
-        let connector = b.build().map_err(|e| network(format!("TLS setup failed: {e}")))?;
+        let connector = b
+            .build()
+            .map_err(|e| network(format!("TLS setup failed: {e}")))?;
         let tls = tokio_native_tls::TlsConnector::from(connector)
             .connect(&key.host, tcp)
             .await
             .map_err(|e| network(format!("TLS handshake with {} failed: {e}", key.host)))?;
         let alpn = tls.get_ref().negotiated_alpn().ok().flatten();
-        let proto = if alpn.as_deref() == Some(b"h2") { Proto::H2 } else { Proto::H1 };
+        let proto = if alpn.as_deref() == Some(b"h2") {
+            Proto::H2
+        } else {
+            Proto::H1
+        };
         (Box::new(tls), proto)
     } else {
         (Box::new(tcp), if key.h2c() { Proto::H2 } else { Proto::H1 })
@@ -667,7 +761,9 @@ async fn dial_steps(key: &Key, stage: &AtomicU8) -> Result<Dialed, HttpError> {
                 .max_headers(1000)
                 .handshake::<_, ReqBody>(TokioIo::new(io))
                 .await
-                .map_err(|e| network(format!("HTTP/1.1 handshake with {} failed: {e}", key.host)))?;
+                .map_err(|e| {
+                    network(format!("HTTP/1.1 handshake with {} failed: {e}", key.host))
+                })?;
             let task = tokio::spawn(async move {
                 let _ = conn.await;
             })
@@ -690,7 +786,11 @@ async fn dial_steps(key: &Key, stage: &AtomicU8) -> Result<Dialed, HttpError> {
 /// RFC 8305 connection racing: attempts start [`ATTEMPT_DELAY`] apart (or as
 /// soon as the previous one fails); the first to connect wins and the rest are
 /// dropped.
-async fn race_connect(host: &str, port: u16, addrs: Vec<SocketAddr>) -> Result<(tokio::net::TcpStream, SocketAddr), HttpError> {
+async fn race_connect(
+    host: &str,
+    port: u16,
+    addrs: Vec<SocketAddr>,
+) -> Result<(tokio::net::TcpStream, SocketAddr), HttpError> {
     type Attempt = (SocketAddr, std::io::Result<tokio::net::TcpStream>);
     let mut set: tokio::task::JoinSet<Attempt> = tokio::task::JoinSet::new();
     let mut next = addrs.into_iter();
@@ -739,10 +839,14 @@ struct Progress {
 
 impl Progress {
     fn new() -> Arc<Progress> {
-        Arc::new(Progress { base: Instant::now(), last_ms: AtomicU64::new(0) })
+        Arc::new(Progress {
+            base: Instant::now(),
+            last_ms: AtomicU64::new(0),
+        })
     }
     fn touch(&self) {
-        self.last_ms.store(self.base.elapsed().as_millis() as u64, Ordering::SeqCst);
+        self.last_ms
+            .store(self.base.elapsed().as_millis() as u64, Ordering::SeqCst);
     }
     fn last(&self) -> Instant {
         self.base + Duration::from_millis(self.last_ms.load(Ordering::SeqCst))
@@ -776,7 +880,10 @@ impl Body for ReqBody {
     type Data = Bytes;
     type Error = Infallible;
 
-    fn poll_frame(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
         if self.data.is_empty() {
             return Poll::Ready(None);
         }
@@ -830,10 +937,16 @@ fn to_uri(s: &str) -> Result<http::Uri, HttpError> {
             out.push_str(&format!("%{b:02X}"));
         }
     }
-    out.parse::<http::Uri>().map_err(|e| HttpError::refused(format!("invalid request URL {s:?}: {e}")))
+    out.parse::<http::Uri>()
+        .map_err(|e| HttpError::refused(format!("invalid request URL {s:?}: {e}")))
 }
 
-fn prepare(u: &url::Url, method: &str, headers: &[(String, String)], body: Option<&[u8]>) -> Result<Prepared, HttpError> {
+fn prepare(
+    u: &url::Url,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> Result<Prepared, HttpError> {
     let m = http::Method::from_bytes(method.as_bytes())
         .map_err(|_| HttpError::refused(format!("invalid method {method:?}")))?;
     let mut target = u.path().to_string();
@@ -851,7 +964,8 @@ fn prepare(u: &url::Url, method: &str, headers: &[(String, String)], body: Optio
     };
     let origin_form = to_uri(&target)?;
     let absolute = to_uri(&format!("{}://{authority}{target}", u.scheme()))?;
-    let host = http::HeaderValue::from_str(&authority).map_err(|_| HttpError::refused(format!("invalid host {authority:?}")))?;
+    let host = http::HeaderValue::from_str(&authority)
+        .map_err(|_| HttpError::refused(format!("invalid host {authority:?}")))?;
 
     let mut out = Vec::with_capacity(headers.len() + 4);
     let mut seen: Vec<String> = Vec::new();
@@ -878,7 +992,10 @@ fn prepare(u: &url::Url, method: &str, headers: &[(String, String)], body: Optio
         out.push((http::header::ACCEPT, http::HeaderValue::from_static("*/*")));
     }
     if !has("accept-encoding") {
-        out.push((http::header::ACCEPT_ENCODING, http::HeaderValue::from_static("gzip, deflate")));
+        out.push((
+            http::header::ACCEPT_ENCODING,
+            http::HeaderValue::from_static("gzip, deflate"),
+        ));
     }
     if !has("accept-language") {
         if let Ok(v) = http::HeaderValue::from_str(&super::super::navigator::accept_language()) {
@@ -897,7 +1014,12 @@ fn prepare(u: &url::Url, method: &str, headers: &[(String, String)], body: Optio
 }
 
 impl Prepared {
-    fn request(&self, proto: Proto, progress: &Arc<Progress>, observer: Option<&Observer>) -> hyper::Request<ReqBody> {
+    fn request(
+        &self,
+        proto: Proto,
+        progress: &Arc<Progress>,
+        observer: Option<&Observer>,
+    ) -> hyper::Request<ReqBody> {
         let data = self.body.clone().unwrap_or_default();
         let total = data.len() as u64;
         let mut r = hyper::Request::new(ReqBody {
@@ -916,7 +1038,10 @@ impl Prepared {
                 h.insert(http::header::HOST, self.host.clone());
                 // HTTP/1.1 is persistent by default; saying so explicitly is
                 // what Chromium does, and what an HTTP/1.0 hop needs.
-                h.insert(http::header::CONNECTION, http::HeaderValue::from_static("keep-alive"));
+                h.insert(
+                    http::header::CONNECTION,
+                    http::HeaderValue::from_static("keep-alive"),
+                );
             }
             Proto::H2 => {
                 *r.uri_mut() = self.absolute.clone();
@@ -944,8 +1069,14 @@ async fn run(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
         cancel.check()?;
         let hop = hops.next()?;
         // A lookup reads a file: on the blocking pool, never on this thread.
-        let planned = if cache::reads_disk(&hops.method, hop.url.as_str(), &hop.headers, req.cache) {
-            let (m, u, h, mode) = (hops.method.clone(), hop.url.to_string(), hop.headers.clone(), req.cache);
+        let planned = if cache::reads_disk(&hops.method, hop.url.as_str(), &hop.headers, req.cache)
+        {
+            let (m, u, h, mode) = (
+                hops.method.clone(),
+                hop.url.to_string(),
+                hop.headers.clone(),
+                req.cache,
+            );
             tokio::task::spawn_blocking(move || cache::plan(&m, &u, &h, mode))
                 .await
                 .map_err(|e| network(format!("the HTTP cache lookup failed: {e}")))?
@@ -971,7 +1102,10 @@ async fn run(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
         let asked = validating.is_some();
         let quiet;
         let (sent, headers) = if asked {
-            quiet = Request { observer: None, ..req.clone() };
+            quiet = Request {
+                observer: None,
+                ..req.clone()
+            };
             let mut h = hop.headers.clone();
             h.extend(conditional);
             (&quiet, std::borrow::Cow::Owned(h))
@@ -980,9 +1114,14 @@ async fn run(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
         };
         let key = Key::of(&hop.url)?;
         let prepared = prepare(&hop.url, &hops.method, &headers, hops.body.as_deref())?;
-        let seen = Seen { url: &hops.current, redirected: hops.redirected };
+        let seen = Seen {
+            url: &hops.current,
+            redirected: hops.redirected,
+        };
         let a = exchange(&key, &hop.url, &hops.method, &prepared, sent, cancel, seen).await?;
-        match cache::settle(ctx, validating, a.status, &a.reason, &a.headers, &a.body, true) {
+        match cache::settle(
+            ctx, validating, a.status, &a.reason, &a.headers, &a.body, true,
+        ) {
             Settled::Refreshed(entry) => {
                 hops.store_cookies(&hop, &a.headers);
                 if hops.follow(entry.status, &entry.headers)? {
@@ -997,9 +1136,19 @@ async fn run(req: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
                 }
                 if asked {
                     let (url, r) = (&hops.current, hops.redirected);
-                    cache::observe(req, url, r, a.proto.name(), a.status, &a.reason, &a.headers, &a.body);
+                    cache::observe(
+                        req,
+                        url,
+                        r,
+                        a.proto.name(),
+                        a.status,
+                        &a.reason,
+                        &a.headers,
+                        &a.body,
+                    );
                 }
-                let body = decode_off_thread(header(&a.headers, "content-encoding"), a.body).await?;
+                let body =
+                    decode_off_thread(header(&a.headers, "content-encoding"), a.body).await?;
                 return Ok(Response {
                     status: a.status,
                     status_text: a.reason,
@@ -1029,7 +1178,16 @@ async fn from_cache(
 ) -> Result<Response, HttpError> {
     let (url, redirected) = (hops.current.clone(), hops.redirected);
     let protocol = net.map_or("", |n| n.0);
-    super::cache::observe(req, &url, redirected, protocol, entry.status, &entry.reason, &entry.headers, &entry.body);
+    super::cache::observe(
+        req,
+        &url,
+        redirected,
+        protocol,
+        entry.status,
+        &entry.reason,
+        &entry.headers,
+        &entry.body,
+    );
     let body = if entry.coded {
         decode_off_thread(header(&entry.headers, "content-encoding"), entry.body).await?
     } else {
@@ -1083,12 +1241,19 @@ struct Failure {
 
 impl Failure {
     fn of(error: HttpError) -> Failure {
-        Failure { error, unsent: false, answered: false }
+        Failure {
+            error,
+            unsent: false,
+            answered: false,
+        }
     }
 }
 
 fn idempotent(method: &str) -> bool {
-    matches!(method, "GET" | "HEAD" | "OPTIONS" | "TRACE" | "PUT" | "DELETE")
+    matches!(
+        method,
+        "GET" | "HEAD" | "OPTIONS" | "TRACE" | "PUT" | "DELETE"
+    )
 }
 
 /// One hop, with the pool's retry rules.
@@ -1123,10 +1288,20 @@ async fn exchange(
         let proto = lease.proto();
         match attempt(lease, prepared, method, req, cancel, seen).await {
             Ok((status, reason, headers, body)) => {
-                return Ok(Answer { status, reason, headers, body, proto, reused, id, addr });
+                return Ok(Answer {
+                    status,
+                    reason,
+                    headers,
+                    body,
+                    proto,
+                    reused,
+                    id,
+                    addr,
+                });
             }
             Err(f) => {
-                let reuse_rule = !f.unsent && !f.answered && reused && idempotent(method) && !reuse_retry_spent;
+                let reuse_rule =
+                    !f.unsent && !f.answered && reused && idempotent(method) && !reuse_retry_spent;
                 if (f.unsent || reuse_rule) && retries < MAX_RETRIES && !cancel.is_aborted() {
                     if reuse_rule {
                         reuse_retry_spent = true;
@@ -1136,7 +1311,11 @@ async fn exchange(
                     net_log!(
                         "retry {method} {u} after {} #{id}{}: {}",
                         proto.name(),
-                        if f.unsent { " (never sent)" } else { " (reused connection died)" },
+                        if f.unsent {
+                            " (never sent)"
+                        } else {
+                            " (reused connection died)"
+                        },
                         f.error.message
                     );
                     avoid = Some(id);
@@ -1164,7 +1343,8 @@ fn h2_error(e: &hyper::Error) -> Option<&h2::Error> {
 fn h2_never_started(e: &hyper::Error) -> bool {
     match h2_error(e) {
         Some(h) => {
-            (h.is_go_away() && h.is_remote()) || (h.is_reset() && h.is_remote() && h.reason() == Some(h2::Reason::REFUSED_STREAM))
+            (h.is_go_away() && h.is_remote())
+                || (h.is_reset() && h.is_remote() && h.reason() == Some(h2::Reason::REFUSED_STREAM))
         }
         None => false,
     }
@@ -1175,10 +1355,16 @@ fn h2_never_started(e: &hyper::Error) -> bool {
 fn head_error(e: &hyper::Error, proto: Proto) -> HttpError {
     if let Some(h) = h2_error(e) {
         if h.is_go_away() && h.is_remote() {
-            return network(format!("the server closed the HTTP/2 connection (GOAWAY {:?})", h.reason()));
+            return network(format!(
+                "the server closed the HTTP/2 connection (GOAWAY {:?})",
+                h.reason()
+            ));
         }
         if h.is_reset() {
-            return network(format!("the server reset the HTTP/2 stream ({:?})", h.reason()));
+            return network(format!(
+                "the server reset the HTTP/2 stream ({:?})",
+                h.reason()
+            ));
         }
         if h.is_io() {
             return network(format!("response read failed: {h}"));
@@ -1187,7 +1373,9 @@ fn head_error(e: &hyper::Error, proto: Proto) -> HttpError {
     }
     if e.is_timeout() {
         // hyper's own timer: the h2 keepalive PING went unanswered.
-        return network("response read timed out: the connection stopped answering (keepalive PING)");
+        return network(
+            "response read timed out: the connection stopped answering (keepalive PING)",
+        );
     }
     if e.is_incomplete_message() {
         return network("the server closed the connection without a response");
@@ -1226,7 +1414,9 @@ fn body_error(e: &hyper::Error, got: usize, declared: Option<u64>) -> HttpError 
         || h2_error(e).is_some_and(|h| h.is_io());
     if ended_early {
         return match declared {
-            Some(n) => HttpError::protocol(format!("connection closed after {got} of {n} declared body bytes")),
+            Some(n) => HttpError::protocol(format!(
+                "connection closed after {got} of {n} declared body bytes"
+            )),
             None => HttpError::protocol("connection closed inside the response body"),
         };
     }
@@ -1235,7 +1425,10 @@ fn body_error(e: &hyper::Error, got: usize, declared: Option<u64>) -> HttpError 
     }
     if let Some(h) = h2_error(e) {
         if h.is_reset() {
-            return network(format!("the server reset the HTTP/2 stream mid-body ({:?})", h.reason()));
+            return network(format!(
+                "the server reset the HTTP/2 stream mid-body ({:?})",
+                h.reason()
+            ));
         }
     }
     network(format!("body read failed: {e}"))
@@ -1271,12 +1464,20 @@ async fn attempt(
                 Ok(resp) => (resp, Lease::H2(l)),
                 Err(mut e) => {
                     let unsent = e.take_message().is_some() || h2_never_started(e.error());
-                    return Err(Failure { error: head_error(e.error(), proto), unsent, answered: false });
+                    return Err(Failure {
+                        error: head_error(e.error(), proto),
+                        unsent,
+                        answered: false,
+                    });
                 }
             }
         }
         Lease::H1(mut l) => {
-            let Some(tx) = l.tx.as_mut() else { return Err(Failure::of(network("internal: a leased connection had no sender"))) };
+            let Some(tx) = l.tx.as_mut() else {
+                return Err(Failure::of(network(
+                    "internal: a leased connection had no sender",
+                )));
+            };
             let sent = tx.try_send_request(request);
             let r = tokio::select! {
                 r = sent => r,
@@ -1287,7 +1488,11 @@ async fn attempt(
                 Ok(resp) => (resp, Lease::H1(l)),
                 Err(mut e) => {
                     let unsent = e.take_message().is_some();
-                    return Err(Failure { error: head_error(e.error(), proto), unsent, answered: false });
+                    return Err(Failure {
+                        error: head_error(e.error(), proto),
+                        unsent,
+                        answered: false,
+                    });
                 }
             }
         }
@@ -1306,7 +1511,12 @@ async fn attempt(
     let headers: Vec<(String, String)> = resp
         .headers()
         .iter()
-        .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+        .map(|(k, v)| {
+            (
+                k.as_str().to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
         .collect();
     let declared: Option<u64> = if method.eq_ignore_ascii_case("HEAD") {
         None
@@ -1316,7 +1526,9 @@ async fn attempt(
     if let Some(n) = declared {
         if n > MAX_BODY as u64 {
             return Err(Failure {
-                error: HttpError::refused(format!("response body of {n} bytes exceeds the {MAX_BODY}-byte limit")),
+                error: HttpError::refused(format!(
+                    "response body of {n} bytes exceeds the {MAX_BODY}-byte limit"
+                )),
                 unsent: false,
                 answered: true,
             });
@@ -1339,7 +1551,11 @@ async fn attempt(
     let streams = observer.is_some_and(|o| o.0.streams());
     let mut incoming = resp.into_body();
     let mut received = 0u64;
-    let mut body: Vec<u8> = Vec::with_capacity(if streams { 0 } else { declared.unwrap_or(0).min(1 << 20) as usize });
+    let mut body: Vec<u8> = Vec::with_capacity(if streams {
+        0
+    } else {
+        declared.unwrap_or(0).min(1 << 20) as usize
+    });
     loop {
         let frame = tokio::select! {
             f = incoming.frame() => f,
@@ -1362,7 +1578,9 @@ async fn attempt(
                     }
                     if body.len() + d.len() > MAX_BODY {
                         return Err(Failure {
-                            error: HttpError::refused(format!("response body exceeds the {MAX_BODY}-byte limit")),
+                            error: HttpError::refused(format!(
+                                "response body exceeds the {MAX_BODY}-byte limit"
+                            )),
                             unsent: false,
                             answered: true,
                         });
@@ -1374,7 +1592,11 @@ async fn attempt(
                 }
             }
             Some(Err(e)) => {
-                return Err(Failure { error: body_error(&e, received as usize, declared), unsent: false, answered: true });
+                return Err(Failure {
+                    error: body_error(&e, received as usize, declared),
+                    unsent: false,
+                    answered: true,
+                });
             }
         }
     }

@@ -26,7 +26,11 @@ pub fn enc_i32(i: i32) -> u64 {
 
 #[inline]
 pub fn enc_bool(b: bool) -> u64 {
-    if b { TRUE } else { FALSE }
+    if b {
+        TRUE
+    } else {
+        FALSE
+    }
 }
 
 #[inline]
@@ -202,7 +206,10 @@ pub unsafe fn read_string16(g: *mut c_void, v: u64) -> Option<Vec<u16>> {
         return Some(Vec::new());
     }
     Some(if info.is8bit != 0 {
-        core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize).iter().map(|&b| b as u16).collect()
+        core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize)
+            .iter()
+            .map(|&b| b as u16)
+            .collect()
     } else {
         core::slice::from_raw_parts(info.ptr as *const u16, info.len as usize).to_vec()
     })
@@ -226,7 +233,10 @@ pub unsafe fn enforce_range_u64(g: *mut c_void, v: u64, what: &str) -> Result<u6
     }
     let t = d.trunc();
     if !(0.0..=9_007_199_254_740_991.0).contains(&t) {
-        throw_type_error(g, &format!("{what}: Value is outside the 'unsigned long long' value range."));
+        throw_type_error(
+            g,
+            &format!("{what}: Value is outside the 'unsigned long long' value range."),
+        );
         return Err(());
     }
     Ok(t as u64)
@@ -264,14 +274,20 @@ pub unsafe fn bufferish<'a>(g: *mut c_void, v: u64) -> Option<&'a [u8]> {
         if ta.detached != 0 || ta.data.is_null() {
             return Some(&[]);
         }
-        return Some(core::slice::from_raw_parts(ta.data as *const u8, ta.byte_length as usize));
+        return Some(core::slice::from_raw_parts(
+            ta.data as *const u8,
+            ta.byte_length as usize,
+        ));
     }
     let mut ab = crate::ffi::RjsAbInfo::default();
     if glue::rjs_arraybuffer_info(g, v, &mut ab) == 0 {
         if ab.detached != 0 || ab.data.is_null() {
             return Some(&[]);
         }
-        return Some(core::slice::from_raw_parts(ab.data as *const u8, ab.byte_length as usize));
+        return Some(core::slice::from_raw_parts(
+            ab.data as *const u8,
+            ab.byte_length as usize,
+        ));
     }
     None
 }
@@ -440,7 +456,13 @@ pub unsafe fn get_many(g: *mut c_void, obj: u64, names: &'static [&'static str],
     debug_assert_eq!(names.len(), out.len());
     out.fill(UNDEF);
     if is_cell(obj) {
-        glue::rjs_get_many(g, obj, keys(g, names).as_ptr(), names.len(), out.as_mut_ptr());
+        glue::rjs_get_many(
+            g,
+            obj,
+            keys(g, names).as_ptr(),
+            names.len(),
+            out.as_mut_ptr(),
+        );
     }
 }
 
@@ -468,9 +490,22 @@ pub unsafe fn get_in(g: *mut c_void, obj: u64, slot: *mut c_void, name: &str) ->
 }
 
 /// Own data properties `obj[names[i]] = vals[i]`, under one engine lock.
-pub unsafe fn define_many(g: *mut c_void, obj: u64, names: &'static [&'static str], vals: &[u64], attrs: u32) {
+pub unsafe fn define_many(
+    g: *mut c_void,
+    obj: u64,
+    names: &'static [&'static str],
+    vals: &[u64],
+    attrs: u32,
+) {
     debug_assert_eq!(names.len(), vals.len());
-    glue::rjs_define_many(g, obj, keys(g, names).as_ptr(), vals.as_ptr(), names.len(), attrs);
+    glue::rjs_define_many(
+        g,
+        obj,
+        keys(g, names).as_ptr(),
+        vals.as_ptr(),
+        names.len(),
+        attrs,
+    );
 }
 
 pub unsafe fn define(g: *mut c_void, obj: u64, name: &str, v: u64, attrs: u32) {
@@ -552,7 +587,11 @@ pub unsafe fn set_i(g: *mut c_void, arr: u64, i: u32, v: u64) {
 pub unsafe fn call(g: *mut c_void, f: u64, this: u64, args: &[u64]) -> Result<u64, u64> {
     let mut out = UNDEF;
     let rc = glue::rjs_call(g, f, this, args.as_ptr(), args.len() as u32, &mut out);
-    if rc == 0 { Ok(out) } else { Err(out) }
+    if rc == 0 {
+        Ok(out)
+    } else {
+        Err(out)
+    }
 }
 
 /// Throws a TypeError into the VM; returns undefined (host-fn return value).
@@ -633,7 +672,14 @@ pub struct Class {
 pub unsafe fn make_fn(g: *mut c_void, name: &str, arity: u32, f: HostFn) -> u64 {
     let n16: Vec<u16> = name.encode_utf16().collect();
     let mut out = UNDEF;
-    glue::rjs_function_create(g, n16.as_ptr(), n16.len(), arity, f as *const c_void, &mut out);
+    glue::rjs_function_create(
+        g,
+        n16.as_ptr(),
+        n16.len(),
+        arity,
+        f as *const c_void,
+        &mut out,
+    );
     out
 }
 
@@ -660,11 +706,24 @@ pub unsafe fn to_string_tag(g: *mut c_void, proto: u64, tag: &str) {
 /// its native getters then refused the Proxy as a foreign `this`
 /// (research/reports/m26/client-sweep-1.md, finding 6).
 pub unsafe fn define_class(g: *mut c_void, spec: &ClassSpec) -> Class {
-    let proto = new_object(g, if spec.parent_proto != 0 { spec.parent_proto } else { UNDEF });
+    let proto = new_object(
+        g,
+        if spec.parent_proto != 0 {
+            spec.parent_proto
+        } else {
+            UNDEF
+        },
+    );
     to_string_tag(g, proto, spec.name);
 
     for (name, arity, f) in spec.methods {
-        define(g, proto, name, make_fn(g, name, *arity, *f), 2 /* DontEnum */);
+        define(
+            g,
+            proto,
+            name,
+            make_fn(g, name, *arity, *f),
+            2, /* DontEnum */
+        );
     }
     for (name, f) in spec.getters {
         let getter = make_fn(g, &format!("get {name}"), 0, *f);
@@ -708,7 +767,11 @@ pub unsafe fn define_class(g: *mut c_void, spec: &ClassSpec) -> Class {
 /// Spec OrdinaryCreateFromConstructor: instance prototype comes from
 /// new.target.prototype (subclassing works), with a class default fallback.
 pub unsafe fn ordinary_create(g: *mut c_void, new_target: u64, fallback_proto: u64) -> u64 {
-    let mut proto = if is_cell(new_target) { get(g, new_target, "prototype") } else { UNDEF };
+    let mut proto = if is_cell(new_target) {
+        get(g, new_target, "prototype")
+    } else {
+        UNDEF
+    };
     if !is_cell(proto) {
         proto = fallback_proto;
     }
@@ -740,7 +803,13 @@ pub unsafe fn make_host_class<T>(name: &str) -> capi::JSClassRef {
 /// throw. Symbols never reach the hooks.
 pub trait NamedProps: 'static {
     unsafe fn get(&mut self, g: *mut c_void, this: u64, name: &str) -> Result<Option<u64>, u64>;
-    unsafe fn set(&mut self, _g: *mut c_void, _this: u64, _name: &str, _value: u64) -> Result<bool, u64> {
+    unsafe fn set(
+        &mut self,
+        _g: *mut c_void,
+        _this: u64,
+        _name: &str,
+        _value: u64,
+    ) -> Result<bool, u64> {
         Ok(false)
     }
     unsafe fn delete(&mut self, _g: *mut c_void, _this: u64, _name: &str) -> Result<bool, u64> {
@@ -799,7 +868,9 @@ unsafe extern "C" fn named_get<T: NamedProps>(
     if IN_SLOT.get() {
         return std::ptr::null();
     }
-    let Some(data) = named_data::<T>(obj) else { return std::ptr::null() };
+    let Some(data) = named_data::<T>(obj) else {
+        return std::ptr::null();
+    };
     match data.get(ctx, obj as usize as u64, &prop_name(name)) {
         Ok(Some(v)) => v as usize as capi::JSValueRef,
         Ok(None) => std::ptr::null(),
@@ -822,8 +893,15 @@ unsafe extern "C" fn named_set<T: NamedProps>(
     if IN_SLOT.get() {
         return false;
     }
-    let Some(data) = named_data::<T>(obj) else { return false };
-    match data.set(ctx, obj as usize as u64, &prop_name(name), value as usize as u64) {
+    let Some(data) = named_data::<T>(obj) else {
+        return false;
+    };
+    match data.set(
+        ctx,
+        obj as usize as u64,
+        &prop_name(name),
+        value as usize as u64,
+    ) {
         Ok(handled) => handled,
         Err(e) => {
             if !exception.is_null() {
@@ -840,7 +918,9 @@ unsafe extern "C" fn named_delete<T: NamedProps>(
     name: capi::JSStringRef,
     exception: *mut capi::JSValueRef,
 ) -> bool {
-    let Some(data) = named_data::<T>(obj) else { return false };
+    let Some(data) = named_data::<T>(obj) else {
+        return false;
+    };
     match data.delete(ctx, obj as usize as u64, &prop_name(name)) {
         Ok(handled) => handled,
         Err(e) => {
@@ -857,7 +937,9 @@ unsafe extern "C" fn named_names<T: NamedProps>(
     obj: capi::JSObjectRef,
     acc: capi::JSPropertyNameAccumulatorRef,
 ) {
-    let Some(data) = named_data::<T>(obj) else { return };
+    let Some(data) = named_data::<T>(obj) else {
+        return;
+    };
     for n in data.names(ctx, obj as usize as u64) {
         let units: Vec<u16> = n.encode_utf16().collect();
         let s = capi::JSStringCreateWithCharacters(units.as_ptr(), units.len());
@@ -928,11 +1010,11 @@ pub struct WebState {
     pub s_subtle_crypto: *mut c_void,
     pub s_listeners: *mut c_void, // EventTarget [[listeners]] → JS Array
     pub s_handler_entries: *mut c_void,
-    pub s_event: *mut c_void,     // Event [[state]] → plain JS object
-    pub s_image: *mut c_void,     // HTMLImageElement [[bitmap]] → ImageBitmap host obj
+    pub s_event: *mut c_void,         // Event [[state]] → plain JS object
+    pub s_image: *mut c_void,         // HTMLImageElement [[bitmap]] → ImageBitmap host obj
     pub s_image_request: *mut c_void, // current load generation; fences canceled/replaced loads
-    pub s_usp: *mut c_void,       // URL [[searchParams]] cache
-    pub s_iter_target: *mut c_void, // iterator [[target]] → iterated host obj
+    pub s_usp: *mut c_void,           // URL [[searchParams]] cache
+    pub s_iter_target: *mut c_void,   // iterator [[target]] → iterated host obj
 
     // Common public atoms (hot in dispatch).
     pub a_type: *mut c_void,
@@ -974,7 +1056,10 @@ fn states() -> &'static Mutex<HashMap<usize, SendPtr>> {
 
 pub fn put_state(g: *mut c_void, st: WebState) -> &'static WebState {
     let leaked: &'static WebState = Box::leak(Box::new(st));
-    states().lock().unwrap().insert(g as usize, SendPtr(leaked as *const WebState as *mut WebState));
+    states().lock().unwrap().insert(
+        g as usize,
+        SendPtr(leaked as *const WebState as *mut WebState),
+    );
     bump_generation();
     leaked
 }
@@ -985,7 +1070,12 @@ pub fn state(g: *mut c_void) -> &'static WebState {
     if let Some(st) = local(|l| l.state.and_then(|(k, st)| (k == g as usize).then_some(st))) {
         return st;
     }
-    let p = states().lock().unwrap().get(&(g as usize)).map(|s| s.0).expect("redjs webapi not installed");
+    let p = states()
+        .lock()
+        .unwrap()
+        .get(&(g as usize))
+        .map(|s| s.0)
+        .expect("redjs webapi not installed");
     let st: &'static WebState = unsafe { &*p };
     local(|l| l.state = Some((g as usize, st)));
     st
@@ -1056,21 +1146,37 @@ mod named_tests {
     struct Bag(BTreeMap<String, String>);
 
     impl NamedProps for Bag {
-        unsafe fn get(&mut self, g: *mut c_void, _this: u64, name: &str) -> Result<Option<u64>, u64> {
+        unsafe fn get(
+            &mut self,
+            g: *mut c_void,
+            _this: u64,
+            name: &str,
+        ) -> Result<Option<u64>, u64> {
             Ok(match name {
                 "0" => Some(js_string(g, "zero")),
-                n if n.starts_with('x') => Some(js_string(g, self.0.get(n).map_or("", String::as_str))),
+                n if n.starts_with('x') => {
+                    Some(js_string(g, self.0.get(n).map_or("", String::as_str)))
+                }
                 _ => None,
             })
         }
-        unsafe fn set(&mut self, g: *mut c_void, _this: u64, name: &str, value: u64) -> Result<bool, u64> {
+        unsafe fn set(
+            &mut self,
+            g: *mut c_void,
+            _this: u64,
+            name: &str,
+            value: u64,
+        ) -> Result<bool, u64> {
             if name == "xbad" {
                 return Err(error_value(g, 1, "xbad is read-only"));
             }
             if !name.starts_with('x') {
                 return Ok(false);
             }
-            let v = to_js_string(g, value).ok().and_then(|v| read_string(g, v)).unwrap_or_default();
+            let v = to_js_string(g, value)
+                .ok()
+                .and_then(|v| read_string(g, v))
+                .unwrap_or_default();
             self.0.insert(name.to_string(), v);
             Ok(true)
         }
@@ -1093,14 +1199,29 @@ mod named_tests {
             define(g, glue::rjs_global(g), "bag", bag, 0);
             let slot = atom_priv(g, "x-slot");
             named_slot_define(g, bag, slot, js_string(g, "kept"));
-            assert_eq!(read_string(g, named_slot_get(g, bag, slot)).as_deref(), Some("kept"));
+            assert_eq!(
+                read_string(g, named_slot_get(g, bag, slot)).as_deref(),
+                Some("kept")
+            );
         }
-        ok(&c, "bag.xa === '' && bag[0] === 'zero' && bag.toString === Object.prototype.toString");
-        ok(&c, "(bag.xa = 7, bag.xa === '7') && 'xa' in bag && 'xz' in bag && !('nope' in bag)");
+        ok(
+            &c,
+            "bag.xa === '' && bag[0] === 'zero' && bag.toString === Object.prototype.toString",
+        );
+        ok(
+            &c,
+            "(bag.xa = 7, bag.xa === '7') && 'xa' in bag && 'xz' in bag && !('nope' in bag)",
+        );
         ok(&c, "(bag.other = 5, bag.other === 5 && Object.getOwnPropertyDescriptor(bag, 'other').value === 5)");
         assert_eq!(s(&c, "Object.keys(bag).join()"), "xa,other");
-        ok(&c, "delete bag.xa && bag.xa === '' && Object.keys(bag).join() === 'other'");
+        ok(
+            &c,
+            "delete bag.xa && bag.xa === '' && Object.keys(bag).join() === 'other'",
+        );
         assert_eq!(throws(&c, "bag.xbad = 1"), "xbad is read-only");
-        ok(&c, "(() => { try { bag.xbad = 1 } catch (e) { return e instanceof TypeError } })()");
+        ok(
+            &c,
+            "(() => { try { bag.xbad = 1 } catch (e) { return e instanceof TypeError } })()",
+        );
     }
 }

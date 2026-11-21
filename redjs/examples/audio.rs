@@ -54,10 +54,14 @@ fn stage1() {
     let mut fw = FirewheelContext::new(firewheel::FirewheelConfig::default());
     let master = fw.add_node(VolumeNode::default(), None);
     let out = fw.graph_out_node_id();
-    fw.connect(master, out, &[(0, 0), (1, 1)], true).expect("master->out");
+    fw.connect(master, out, &[(0, 0), (1, 1)], true)
+        .expect("master->out");
 
     match fw.start_stream(firewheel::cpal::CpalConfig::default()) {
-        Ok(()) => println!("[stage1] stream started, rate={:?}", fw.stream_info().map(|i| i.sample_rate.get())),
+        Ok(()) => println!(
+            "[stage1] stream started, rate={:?}",
+            fw.stream_info().map(|i| i.sample_rate.get())
+        ),
         Err(e) => {
             println!("[stage1] STREAM FAILED: {e:?}");
             return;
@@ -65,14 +69,18 @@ fn stage1() {
     }
 
     let rate = fw.stream_info().unwrap().sample_rate.get();
-    let sine: Vec<f32> =
-        (0..rate as usize).map(|i| (i as f32 * 440.0 * core::f32::consts::TAU / rate as f32).sin() * 0.3).collect();
+    let sine: Vec<f32> = (0..rate as usize)
+        .map(|i| (i as f32 * 440.0 * core::f32::consts::TAU / rate as f32).sin() * 0.3)
+        .collect();
 
     let mut sampler = SamplerNode::default();
-    sampler.set_sample(ArcGc::new_unsized(|| Arc::new(Sine { data: sine, rate }) as Arc<dyn SampleResource>));
+    sampler.set_sample(ArcGc::new_unsized(|| {
+        Arc::new(Sine { data: sine, rate }) as Arc<dyn SampleResource>
+    }));
     sampler.start_or_restart();
     let node = fw.add_node(sampler.clone(), None);
-    fw.connect(node, master, &[(0, 0), (1, 1)], true).expect("sampler->master");
+    fw.connect(node, master, &[(0, 0), (1, 1)], true)
+        .expect("sampler->master");
 
     for i in 0..30 {
         fw.update().expect("update");
@@ -102,13 +110,17 @@ fn stage1b() {
     let master = fw.add_node(VolumeNode::default(), None);
     let out = fw.graph_out_node_id();
     fw.connect(master, out, &[(0, 0), (1, 1)], true).unwrap();
-    if fw.start_stream(firewheel::cpal::CpalConfig::default()).is_err() {
+    if fw
+        .start_stream(firewheel::cpal::CpalConfig::default())
+        .is_err()
+    {
         println!("[stage1b] no stream");
         return;
     }
     let rate = fw.stream_info().unwrap().sample_rate.get();
-    let sine: Vec<f32> =
-        (0..rate as usize).map(|i| (i as f32 * 550.0 * core::f32::consts::TAU / rate as f32).sin() * 0.3).collect();
+    let sine: Vec<f32> = (0..rate as usize)
+        .map(|i| (i as f32 * 550.0 * core::f32::consts::TAU / rate as f32).sin() * 0.3)
+        .collect();
 
     let mut sampler = SamplerNode::default();
     let node = fw.add_node(sampler.clone(), None);
@@ -116,7 +128,9 @@ fn stage1b() {
     fw.update().unwrap();
 
     // Now start it the webapi way: mutate the local copy + queue sync events.
-    sampler.set_sample(ArcGc::new_unsized(|| Arc::new(Sine { data: sine, rate }) as Arc<dyn SampleResource>));
+    sampler.set_sample(ArcGc::new_unsized(|| {
+        Arc::new(Sine { data: sine, rate }) as Arc<dyn SampleResource>
+    }));
     sampler.start_from(firewheel::nodes::sampler::PlayFrom::Seconds(0.0));
     for ev in [
         sampler.sync_sample_event(),
@@ -133,7 +147,11 @@ fn stage1b() {
         fw.update().expect("update");
         if i % 5 == 0 {
             let st = fw.node_state::<firewheel::nodes::sampler::SamplerState>(node);
-            println!("[stage1b] t={:.2}s playing={:?}", i as f64 * 0.05, st.map(|s| s.playing()));
+            println!(
+                "[stage1b] t={:.2}s playing={:?}",
+                i as f64 * 0.05,
+                st.map(|s| s.playing())
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -148,8 +166,20 @@ fn stage2() {
         let g = redjs::ffi::redjs_context_create();
         assert!(!g.is_null());
         assert_eq!(redjs::ffi::redjs_web_install(g), 0);
-        let root: Vec<u16> = std::env::temp_dir().to_string_lossy().encode_utf16().collect();
-        assert_eq!(redjs::ffi::redjs_webshim_install(g, root.as_ptr(), root.len(), root.as_ptr(), root.len()), 0);
+        let root: Vec<u16> = std::env::temp_dir()
+            .to_string_lossy()
+            .encode_utf16()
+            .collect();
+        assert_eq!(
+            redjs::ffi::redjs_webshim_install(
+                g,
+                root.as_ptr(),
+                root.len(),
+                root.as_ptr(),
+                root.len()
+            ),
+            0
+        );
 
         let src = r#"
             globalThis.log = [];
@@ -172,16 +202,29 @@ fn stage2() {
         let s16: Vec<u16> = src.encode_utf16().collect();
         let url: Vec<u16> = "probe.js".encode_utf16().collect();
         let mut out = 0u64;
-        let rc = redjs::glue::rjs_eval16(g, s16.as_ptr(), s16.len(), url.as_ptr(), url.len(), &mut out);
+        let rc = redjs::glue::rjs_eval16(
+            g,
+            s16.as_ptr(),
+            s16.len(),
+            url.as_ptr(),
+            url.len(),
+            &mut out,
+        );
         if rc != 0 {
             let (mut m, mut st) = (0u64, 0u64);
             redjs::glue::rjs_error_info(g, out, &mut m, &mut st);
             let mut info = redjs::ffi::RjsStr::default();
             redjs::glue::rjs_string_info(g, m, &mut info);
             let msg: String = if info.is8bit != 0 {
-                core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize).iter().map(|&b| b as char).collect()
+                core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize)
+                    .iter()
+                    .map(|&b| b as char)
+                    .collect()
             } else {
-                String::from_utf16_lossy(core::slice::from_raw_parts(info.ptr as *const u16, info.len as usize))
+                String::from_utf16_lossy(core::slice::from_raw_parts(
+                    info.ptr as *const u16,
+                    info.len as usize,
+                ))
             };
             panic!("[stage2] eval threw: {msg}");
         }
@@ -201,14 +244,21 @@ fn stage2() {
         let probe = "log.join('|') + '|t=' + ac.currentTime.toFixed(2)";
         let p16: Vec<u16> = probe.encode_utf16().collect();
         let mut out = 0u64;
-        let rc = redjs::glue::rjs_eval16(g, p16.as_ptr(), p16.len(), core::ptr::null(), 0, &mut out);
+        let rc =
+            redjs::glue::rjs_eval16(g, p16.as_ptr(), p16.len(), core::ptr::null(), 0, &mut out);
         if rc == 0 {
             let mut info = redjs::ffi::RjsStr::default();
             if redjs::glue::rjs_string_info(g, out, &mut info) == 0 {
                 let msg: String = if info.is8bit != 0 {
-                    core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize).iter().map(|&b| b as char).collect()
+                    core::slice::from_raw_parts(info.ptr as *const u8, info.len as usize)
+                        .iter()
+                        .map(|&b| b as char)
+                        .collect()
                 } else {
-                    String::from_utf16_lossy(core::slice::from_raw_parts(info.ptr as *const u16, info.len as usize))
+                    String::from_utf16_lossy(core::slice::from_raw_parts(
+                        info.ptr as *const u16,
+                        info.len as usize,
+                    ))
                 };
                 println!("[stage2] js log: {msg}");
             }

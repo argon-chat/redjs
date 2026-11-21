@@ -99,15 +99,23 @@ struct ClosureState {
 }
 struct ClosureCall<'a>(&'a AtomicBool);
 impl Drop for ClosureCall<'_> {
-    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 unsafe extern "C" fn closure_adapter(g: *mut c_void, cf: *mut c_void, data: *mut c_void) -> u64 {
     let state = &*(data as *const ClosureState);
     // JS getters/callbacks can recursively call this same native function.
     // Reject before creating any mutable reference to the FnMut callback.
-    if state.active.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        let message: Vec<u16> = "a mutable native callback cannot be called recursively".encode_utf16().collect();
+    if state
+        .active
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        let message: Vec<u16> = "a mutable native callback cannot be called recursively"
+            .encode_utf16()
+            .collect();
         let mut error = ENC_UNDEFINED;
         if crate::glue::rjs_error_create(g, 1, message.as_ptr(), message.len(), &mut error) == 0 {
             crate::glue::rjs_throw(g, error);
@@ -127,6 +135,8 @@ pub fn acquire_closure(f: HostClosure) -> Option<*const c_void> {
         callback: UnsafeCell::new(f),
     }));
     let entry = acquire(KIND_DATA, closure_adapter as *const c_void, data.cast());
-    if entry.is_none() { drop(unsafe { Box::from_raw(data) }); }
+    if entry.is_none() {
+        drop(unsafe { Box::from_raw(data) });
+    }
     entry
 }

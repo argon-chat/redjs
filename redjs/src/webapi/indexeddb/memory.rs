@@ -16,17 +16,47 @@ struct MemStore {
 }
 
 enum Undo {
-    Put { store: StoreId, key: Vec<u8>, old: Option<Value> },
-    IndexAdd { index: IndexId, entry: Vec<u8> },
-    IndexRemove { index: IndexId, entry: Vec<u8> },
-    KeyGen { store: StoreId, old: f64 },
+    Put {
+        store: StoreId,
+        key: Vec<u8>,
+        old: Option<Value>,
+    },
+    IndexAdd {
+        index: IndexId,
+        entry: Vec<u8>,
+    },
+    IndexRemove {
+        index: IndexId,
+        entry: Vec<u8>,
+    },
+    KeyGen {
+        store: StoreId,
+        old: f64,
+    },
     Meta(DbMeta),
-    StoreCreated { id: StoreId },
-    StoreDeleted { id: StoreId, data: MemStore, indexes: Vec<(IndexId, BTreeSet<Vec<u8>>)> },
-    IndexCreated { id: IndexId },
-    IndexDeleted { id: IndexId, data: BTreeSet<Vec<u8>> },
-    Cleared { store: StoreId, records: BTreeMap<Vec<u8>, Value> },
-    IndexCleared { index: IndexId, data: BTreeSet<Vec<u8>> },
+    StoreCreated {
+        id: StoreId,
+    },
+    StoreDeleted {
+        id: StoreId,
+        data: MemStore,
+        indexes: Vec<(IndexId, BTreeSet<Vec<u8>>)>,
+    },
+    IndexCreated {
+        id: IndexId,
+    },
+    IndexDeleted {
+        id: IndexId,
+        data: BTreeSet<Vec<u8>>,
+    },
+    Cleared {
+        store: StoreId,
+        records: BTreeMap<Vec<u8>, Value>,
+    },
+    IndexCleared {
+        index: IndexId,
+        data: BTreeSet<Vec<u8>>,
+    },
 }
 
 struct MemDb {
@@ -55,11 +85,15 @@ impl MemDb {
     }
 
     fn store_mut(&mut self, id: StoreId) -> R<&mut MemStore> {
-        self.stores.get_mut(&id).ok_or_else(|| BackendError::Io(format!("no object store #{id}")))
+        self.stores
+            .get_mut(&id)
+            .ok_or_else(|| BackendError::Io(format!("no object store #{id}")))
     }
 
     fn index_mut(&mut self, id: IndexId) -> R<&mut BTreeSet<Vec<u8>>> {
-        self.indexes.get_mut(&id).ok_or_else(|| BackendError::Io(format!("no index #{id}")))
+        self.indexes
+            .get_mut(&id)
+            .ok_or_else(|| BackendError::Io(format!("no index #{id}")))
     }
 
     fn undo_one(&mut self, u: Undo) {
@@ -98,11 +132,18 @@ impl MemDb {
             Undo::Meta(m) => self.meta = m,
             Undo::StoreCreated { id } => {
                 if let Some(s) = self.stores.remove(&id) {
-                    self.add_usage(-(s.records.iter().map(|(k, v)| rec_size(k, v)).sum::<u64>() as i64));
+                    self.add_usage(
+                        -(s.records.iter().map(|(k, v)| rec_size(k, v)).sum::<u64>() as i64),
+                    );
                 }
             }
             Undo::StoreDeleted { id, data, indexes } => {
-                self.add_usage(data.records.iter().map(|(k, v)| rec_size(k, v)).sum::<u64>() as i64);
+                self.add_usage(
+                    data.records
+                        .iter()
+                        .map(|(k, v)| rec_size(k, v))
+                        .sum::<u64>() as i64,
+                );
                 self.stores.insert(id, data);
                 for (iid, set) in indexes {
                     self.add_usage(set.iter().map(|e| e.len() as u64).sum::<u64>() as i64);
@@ -150,7 +191,9 @@ fn to_owned_bound(b: Bound<&[u8]>) -> Bound<Vec<u8>> {
 fn sane(lo: &Bound<Vec<u8>>, hi: &Bound<Vec<u8>>) -> bool {
     match (lo, hi) {
         (Bound::Included(a), Bound::Included(b)) => a <= b,
-        (Bound::Included(a), Bound::Excluded(b)) | (Bound::Excluded(a), Bound::Included(b)) => a < b,
+        (Bound::Included(a), Bound::Excluded(b)) | (Bound::Excluded(a), Bound::Included(b)) => {
+            a < b
+        }
         (Bound::Excluded(a), Bound::Excluded(b)) => a < b,
         _ => true,
     }
@@ -241,7 +284,13 @@ impl Database for Handle {
             let m = d.meta.clone();
             d.log(Undo::Meta(m));
             d.log(Undo::StoreCreated { id: meta.id });
-            d.stores.insert(meta.id, MemStore { records: BTreeMap::new(), key_gen: 1.0 });
+            d.stores.insert(
+                meta.id,
+                MemStore {
+                    records: BTreeMap::new(),
+                    key_gen: 1.0,
+                },
+            );
             for ix in &meta.indexes {
                 d.indexes.insert(ix.id, BTreeSet::new());
             }
@@ -253,10 +302,19 @@ impl Database for Handle {
     fn delete_store(&mut self, id: StoreId) -> R<()> {
         self.schema(|d| {
             let m = d.meta.clone();
-            let index_ids: Vec<IndexId> = m.store(id).map(|s| s.indexes.iter().map(|i| i.id).collect()).unwrap_or_default();
+            let index_ids: Vec<IndexId> = m
+                .store(id)
+                .map(|s| s.indexes.iter().map(|i| i.id).collect())
+                .unwrap_or_default();
             d.log(Undo::Meta(m));
             let data = d.stores.remove(&id).unwrap_or_default();
-            d.add_usage(-(data.records.iter().map(|(k, v)| rec_size(k, v)).sum::<u64>() as i64));
+            d.add_usage(
+                -(data
+                    .records
+                    .iter()
+                    .map(|(k, v)| rec_size(k, v))
+                    .sum::<u64>() as i64),
+            );
             let mut indexes = Vec::new();
             for iid in index_ids {
                 if let Some(set) = d.indexes.remove(&iid) {
@@ -336,7 +394,11 @@ impl Database for Handle {
     }
 
     fn get(&mut self, store: StoreId, key: &[u8]) -> R<Option<Value>> {
-        self.read(|d| Ok(d.stores.get(&store).and_then(|s| s.records.get(key).cloned())))
+        self.read(|d| {
+            Ok(d.stores
+                .get(&store)
+                .and_then(|s| s.records.get(key).cloned()))
+        })
     }
 
     fn put(&mut self, store: StoreId, key: &[u8], value: Value) -> R<()> {
@@ -347,11 +409,18 @@ impl Database for Handle {
             let new = rec_size(key, &value);
             let old_size = s.records.get(key).map(|v| rec_size(key, v)).unwrap_or(0);
             if used.saturating_sub(old_size).saturating_add(new) > quota {
-                return Err(BackendError::Quota { quota, requested: new });
+                return Err(BackendError::Quota {
+                    quota,
+                    requested: new,
+                });
             }
             let old = s.records.insert(key.to_vec(), value);
             d.add_usage(new as i64 - old_size as i64);
-            d.log(Undo::Put { store, key: key.to_vec(), old });
+            d.log(Undo::Put {
+                store,
+                key: key.to_vec(),
+                old,
+            });
             Ok(())
         })
     }
@@ -361,27 +430,46 @@ impl Database for Handle {
             let s = d.store_mut(store)?;
             if let Some(old) = s.records.remove(key) {
                 d.add_usage(-(rec_size(key, &old) as i64));
-                d.log(Undo::Put { store, key: key.to_vec(), old: Some(old) });
+                d.log(Undo::Put {
+                    store,
+                    key: key.to_vec(),
+                    old: Some(old),
+                });
             }
             Ok(())
         })
     }
 
-    fn keys(&mut self, store: StoreId, lo: Bound<&[u8]>, hi: Bound<&[u8]>, reverse: bool, limit: usize) -> R<Vec<Vec<u8>>> {
+    fn keys(
+        &mut self,
+        store: StoreId,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        reverse: bool,
+        limit: usize,
+    ) -> R<Vec<Vec<u8>>> {
         self.read(|d| {
-            let Some(s) = d.stores.get(&store) else { return Ok(Vec::new()) };
+            let Some(s) = d.stores.get(&store) else {
+                return Ok(Vec::new());
+            };
             let (lo, hi) = (to_owned_bound(lo), to_owned_bound(hi));
             if !sane(&lo, &hi) {
                 return Ok(Vec::new());
             }
             let r = s.records.range((lo, hi));
-            Ok(if reverse { r.rev().take(limit).map(|(k, _)| k.clone()).collect() } else { r.take(limit).map(|(k, _)| k.clone()).collect() })
+            Ok(if reverse {
+                r.rev().take(limit).map(|(k, _)| k.clone()).collect()
+            } else {
+                r.take(limit).map(|(k, _)| k.clone()).collect()
+            })
         })
     }
 
     fn count(&mut self, store: StoreId, lo: Bound<&[u8]>, hi: Bound<&[u8]>) -> R<u64> {
         self.read(|d| {
-            let Some(s) = d.stores.get(&store) else { return Ok(0) };
+            let Some(s) = d.stores.get(&store) else {
+                return Ok(0);
+            };
             let (lo, hi) = (to_owned_bound(lo), to_owned_bound(hi));
             if !sane(&lo, &hi) {
                 return Ok(0);
@@ -420,27 +508,45 @@ impl Database for Handle {
             let set = d.index_mut(index)?;
             if set.remove(entry) {
                 d.add_usage(-(entry.len() as i64));
-                d.log(Undo::IndexRemove { index, entry: entry.to_vec() });
+                d.log(Undo::IndexRemove {
+                    index,
+                    entry: entry.to_vec(),
+                });
             }
             Ok(())
         })
     }
 
-    fn index_scan(&mut self, index: IndexId, lo: Bound<&[u8]>, hi: Bound<&[u8]>, reverse: bool, limit: usize) -> R<Vec<Vec<u8>>> {
+    fn index_scan(
+        &mut self,
+        index: IndexId,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        reverse: bool,
+        limit: usize,
+    ) -> R<Vec<Vec<u8>>> {
         self.read(|d| {
-            let Some(set) = d.indexes.get(&index) else { return Ok(Vec::new()) };
+            let Some(set) = d.indexes.get(&index) else {
+                return Ok(Vec::new());
+            };
             let (lo, hi) = (to_owned_bound(lo), to_owned_bound(hi));
             if !sane(&lo, &hi) {
                 return Ok(Vec::new());
             }
             let r = set.range((lo, hi));
-            Ok(if reverse { r.rev().take(limit).cloned().collect() } else { r.take(limit).cloned().collect() })
+            Ok(if reverse {
+                r.rev().take(limit).cloned().collect()
+            } else {
+                r.take(limit).cloned().collect()
+            })
         })
     }
 
     fn index_count(&mut self, index: IndexId, lo: Bound<&[u8]>, hi: Bound<&[u8]>) -> R<u64> {
         self.read(|d| {
-            let Some(set) = d.indexes.get(&index) else { return Ok(0) };
+            let Some(set) = d.indexes.get(&index) else {
+                return Ok(0);
+            };
             let (lo, hi) = (to_owned_bound(lo), to_owned_bound(hi));
             if !sane(&lo, &hi) {
                 return Ok(0);
@@ -469,7 +575,11 @@ pub struct MemoryBackend {
 
 impl MemoryBackend {
     pub fn new(quota: u64) -> MemoryBackend {
-        MemoryBackend { dbs: HashMap::new(), usage: Arc::new(Mutex::new(0)), quota }
+        MemoryBackend {
+            dbs: HashMap::new(),
+            usage: Arc::new(Mutex::new(0)),
+            quota,
+        }
     }
 }
 
@@ -496,7 +606,11 @@ impl Backend for MemoryBackend {
     }
 
     fn databases(&mut self) -> R<Vec<(Vec<u16>, u64)>> {
-        let mut v: Vec<(Vec<u16>, u64)> = self.dbs.iter().map(|(n, d)| (n.clone(), d.lock().unwrap().meta.version)).collect();
+        let mut v: Vec<(Vec<u16>, u64)> = self
+            .dbs
+            .iter()
+            .map(|(n, d)| (n.clone(), d.lock().unwrap().meta.version))
+            .collect();
         v.sort();
         Ok(v)
     }
@@ -512,7 +626,11 @@ impl Backend for MemoryBackend {
             .entry(name.to_vec())
             .or_insert_with(|| {
                 Arc::new(Mutex::new(MemDb {
-                    meta: DbMeta { name: name.to_vec(), version: 0, stores: Vec::new() },
+                    meta: DbMeta {
+                        name: name.to_vec(),
+                        version: 0,
+                        stores: Vec::new(),
+                    },
                     stores: HashMap::new(),
                     indexes: HashMap::new(),
                     undo: None,
@@ -522,21 +640,38 @@ impl Backend for MemoryBackend {
             })
             .clone();
         let meta = db.lock().unwrap().meta.clone();
-        Ok(Box::new(Handle { db: MemHandle(db), meta }))
+        Ok(Box::new(Handle {
+            db: MemHandle(db),
+            meta,
+        }))
     }
 
     fn inspect_existing(&mut self, name: &[u16]) -> R<Box<dyn Database>> {
-        let db = self.dbs.get(name).cloned().ok_or_else(|| BackendError::Io("Database does not exist".into()))?;
+        let db = self
+            .dbs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| BackendError::Io("Database does not exist".into()))?;
         let meta = db.lock().unwrap().meta.clone();
-        Ok(Box::new(Handle { db: MemHandle(db), meta }))
+        Ok(Box::new(Handle {
+            db: MemHandle(db),
+            meta,
+        }))
     }
 
     fn delete(&mut self, name: &[u16]) -> R<u64> {
         match self.dbs.remove(name) {
             Some(db) => {
                 let d = db.lock().unwrap();
-                let bytes: u64 = d.stores.values().flat_map(|s| s.records.iter().map(|(k, v)| rec_size(k, v))).sum::<u64>()
-                    + d.indexes.values().flat_map(|s| s.iter().map(|e| e.len() as u64)).sum::<u64>();
+                let bytes: u64 = d
+                    .stores
+                    .values()
+                    .flat_map(|s| s.records.iter().map(|(k, v)| rec_size(k, v)))
+                    .sum::<u64>()
+                    + d.indexes
+                        .values()
+                        .flat_map(|s| s.iter().map(|e| e.len() as u64))
+                        .sum::<u64>();
                 d.add_usage(-(bytes as i64));
                 Ok(d.meta.version)
             }
@@ -558,7 +693,13 @@ mod tests {
     use super::*;
 
     fn st(id: u64) -> StoreMeta {
-        StoreMeta { id, name: vec![b's' as u16], key_path: None, auto_increment: false, indexes: vec![] }
+        StoreMeta {
+            id,
+            name: vec![b's' as u16],
+            key_path: None,
+            auto_increment: false,
+            indexes: vec![],
+        }
     }
 
     #[test]
@@ -578,7 +719,17 @@ mod tests {
         db.put(1, b"k2", Arc::new(vec![9])).unwrap();
         db.set_key_generator(1, 7.0).unwrap();
         db.clear(1).unwrap();
-        db.create_index(1, IndexMeta { id: 2, name: vec![], key_path: super::super::keypath::KeyPath::String(vec![]), unique: false, multi_entry: false }).unwrap();
+        db.create_index(
+            1,
+            IndexMeta {
+                id: 2,
+                name: vec![],
+                key_path: super::super::keypath::KeyPath::String(vec![]),
+                unique: false,
+                multi_entry: false,
+            },
+        )
+        .unwrap();
         db.index_add(2, b"ab".to_vec()).unwrap();
         db.set_version(2).unwrap();
         db.rollback_write();
@@ -600,10 +751,27 @@ mod tests {
         for k in [b"a", b"b", b"c", b"d"] {
             db.put(1, k, Arc::new(vec![0])).unwrap();
         }
-        assert_eq!(db.keys(1, Bound::Excluded(b"a"), Bound::Included(b"c"), false, 10).unwrap(), vec![b"b".to_vec(), b"c".to_vec()]);
-        assert_eq!(db.keys(1, Bound::Unbounded, Bound::Unbounded, true, 1).unwrap(), vec![b"d".to_vec()]);
-        assert_eq!(db.count(1, Bound::Included(b"b"), Bound::Unbounded).unwrap(), 3);
-        assert!(db.keys(1, Bound::Included(b"z"), Bound::Included(b"a"), false, 10).unwrap().is_empty(), "inverted is empty, not a panic");
+        assert_eq!(
+            db.keys(1, Bound::Excluded(b"a"), Bound::Included(b"c"), false, 10)
+                .unwrap(),
+            vec![b"b".to_vec(), b"c".to_vec()]
+        );
+        assert_eq!(
+            db.keys(1, Bound::Unbounded, Bound::Unbounded, true, 1)
+                .unwrap(),
+            vec![b"d".to_vec()]
+        );
+        assert_eq!(
+            db.count(1, Bound::Included(b"b"), Bound::Unbounded)
+                .unwrap(),
+            3
+        );
+        assert!(
+            db.keys(1, Bound::Included(b"z"), Bound::Included(b"a"), false, 10)
+                .unwrap()
+                .is_empty(),
+            "inverted is empty, not a panic"
+        );
         match db.put(1, b"big", Arc::new(vec![0; 64])) {
             Err(BackendError::Quota { quota: 20, .. }) => {}
             other => panic!("{other:?}"),
