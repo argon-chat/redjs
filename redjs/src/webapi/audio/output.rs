@@ -5,7 +5,7 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use firewheel::backend::{AudioBackend, BackendProcessInfo};
@@ -459,6 +459,24 @@ pub(crate) struct RedConfig {
     pub objects: bool,
     /// The context's `suspend()` flag.
     pub suspended: Arc<AtomicBool>,
+    /// An `OfflineAudioContext`: no device, the context pulls the blocks itself.
+    pub offline: Option<OfflineOut>,
+}
+
+#[derive(Clone)]
+pub(crate) struct OfflineOut {
+    pub channels: u32,
+    pub sample_rate: u32,
+    /// Where the stream leaves its renderer for the context.
+    pub renderer: Arc<Mutex<Option<Renderer>>>,
+}
+
+struct NoStream;
+
+impl OutputStream for NoStream {
+    fn poll(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 pub(crate) struct CpalOut {
@@ -494,6 +512,9 @@ impl AudioBackend for RedBackend {
     fn enumerator() -> Self::Enumerator {}
 
     fn start_stream(config: RedConfig) -> Result<(Self, StreamInfo), OutputError> {
+        if let Some(offline) = &config.offline {
+            return open_offline(offline, &config);
+        }
         let mut refused = None;
         if let Some(b) = backend() {
             match open_embedder(&*b, &config) {
@@ -530,6 +551,38 @@ impl AudioBackend for RedBackend {
     fn delay_from_last_process(&self, process_timestamp: Instant) -> Option<Duration> {
         Some(process_timestamp.elapsed())
     }
+}
+
+fn open_offline(
+    o: &OfflineOut,
+    config: &RedConfig,
+) -> Result<(RedBackend, StreamInfo), OutputError> {
+    let rate = core::num::NonZeroU32::new(o.sample_rate)
+        .ok_or_else(|| OutputError("an offline context needs a sample rate".into()))?;
+    let (tx, rx) = mpsc::sync_channel(1);
+    *o.renderer.lock().unwrap() = Some(Renderer {
+        rx,
+        processor: None,
+        bus: Arc::new(OnceLock::new()),
+        started: Instant::now(),
+        gate: Gate::new(Arc::clone(&config.suspended)),
+    });
+    let info = StreamInfo {
+        sample_rate: rate,
+        prev_sample_rate: rate,
+        max_block_frames: GRAPH_BLOCK_FRAMES,
+        num_stream_out_channels: o.channels,
+        ..Default::default()
+    };
+    let out = EmbedderOut {
+        stream: Box::new(NoStream),
+        to_renderer: tx,
+        channels: o.channels,
+        channel_mask: 0,
+        label: String::new(),
+        bus: None,
+    };
+    Ok((RedBackend::Embedder(out), info))
 }
 
 fn open_embedder(

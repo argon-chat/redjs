@@ -108,6 +108,7 @@ mod graph;
 mod mixing;
 mod more_nodes;
 mod native_worklet;
+mod offline;
 pub mod output;
 
 pub use mixing::speaker;
@@ -1299,10 +1300,15 @@ struct Engine {
     /// The context's wrapper, unrooted: read only while a call has the context in hand (creating
     /// one of its nodes), to give the node its `context`.
     wrapper: u64,
+    /// An `OfflineAudioContext`'s rendering.
+    offline: Option<offline::Offline>,
 }
 
 impl Engine {
     fn now(&self) -> f64 {
+        if let Some(offline) = &self.offline {
+            return offline.rendered as f64 / self.sample_rate.max(1) as f64;
+        }
         self.held
             .unwrap_or_else(|| self.fw.audio_clock().seconds.0 - self.clock_offset)
     }
@@ -1385,6 +1391,7 @@ fn open_output(
         fallback,
         objects: eng.wants_objects,
         suspended: Arc::clone(&eng.suspended),
+        offline: eng.offline.as_ref().map(|o| o.out()),
     };
     match eng.fw.start_stream(cfg) {
         Ok(()) => {
@@ -1419,6 +1426,7 @@ fn follow_default_output(eng: &mut Engine, generation: u64) -> bool {
     }
     eng.default_seen = generation;
     if eng.state == ST_CLOSED
+        || eng.offline.is_some()
         || !(eng.sink_id.is_empty() || eng.sink_id == mediadevices::DEFAULT_SINK)
     {
         return false;
@@ -1586,6 +1594,7 @@ pub struct AudioClasses {
     buffer: Class,
     fx: effect_nodes::Classes,
     more: more_nodes::Classes,
+    offline: Class,
 }
 
 unsafe impl Send for AudioClasses {}
@@ -1677,6 +1686,13 @@ pub fn busy(g: *mut c_void) -> bool {
         return true;
     }
     let gl = glob().lock().unwrap();
+    if gl
+        .engines
+        .values()
+        .any(|e| e.g == g as usize && e.offline.as_ref().is_some_and(|o| o.rendering))
+    {
+        return true;
+    }
     let running: Vec<u64> = gl
         .engines
         .iter()
@@ -3819,6 +3835,16 @@ slot_getter!(get_slot_stream_channels, "channelCount");
 
 #[crate::host_fn]
 unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
+    construct_context(g, cf, classes(g).ctx.proto, None)
+}
+
+/// A context and its wrapper: one that plays, or an `OfflineAudioContext` that renders.
+unsafe fn construct_context(
+    g: *mut c_void,
+    cf: *mut c_void,
+    fallback_proto: u64,
+    offline: Option<offline::Offline>,
+) -> u64 {
     let c = classes(g);
 
     // As wide as any output can be, fixed: `set_graph_channel_config` resizes the graph's input
@@ -3830,21 +3856,28 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     });
     let master = fw.add_node(VolumeNode::default(), None);
     // What the speakers play, for the microphone's echo canceller.
-    let ref_tap = RENDER_REFERENCE.get().map(|&sink| {
-        let key = NEXT_REFERENCE_KEY.fetch_add(1, Ordering::Relaxed);
-        fw.add_node(RefTapNode { key, sink }, None)
-    });
+    let ref_tap = RENDER_REFERENCE
+        .get()
+        .filter(|_| offline.is_none())
+        .map(|&sink| {
+            let key = NEXT_REFERENCE_KEY.fetch_add(1, Ordering::Relaxed);
+            fw.add_node(RefTapNode { key, sink }, None)
+        });
     let mut eng = Engine {
         g: g as usize,
         fw,
         running: false,
-        state: ST_RUNNING,
+        state: if offline.is_some() {
+            ST_SUSPENDED
+        } else {
+            ST_RUNNING
+        },
         master,
         master_params: VolumeNode::default(),
         listener: [0.0; 3],
         listener_fwd: [0.0, 0.0, -1.0],
         listener_up: [0.0, 1.0, 0.0],
-        sample_rate: 0,
+        sample_rate: offline.as_ref().map_or(0, |o| o.sample_rate),
         sink_id: String::new(),
         default_seen: mediadevices::default_generation(mediadevices::Flow::Output),
         device_channels: 2,
@@ -3860,6 +3893,7 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         held: None,
         clock_offset: 0.0,
         wrapper: UNDEF,
+        offline,
     };
     if let Err(e) = open_output(&mut eng, None, true) {
         eprintln!("[audio] AudioContext: output stream failed ({e}) — graph runs silent");
@@ -3892,7 +3926,7 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
         UNDEF
     };
     if !is_cell(proto) {
-        proto = c.ctx.proto;
+        proto = fallback_proto;
     }
     let obj = host_create(g, c.ctx_cls, proto, CtxHandle(engine_handle));
     if let Some(eng) = glob().lock().unwrap().engines.get_mut(&engine_handle) {
@@ -3906,7 +3940,9 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
     define(g, slots, "destination", dest, 0);
     define(g, slots, "onstatechange", NULL, 0);
     // A context starts running here, where a browser's goes from suspended to running.
-    state_changed(g, obj);
+    if fallback_proto == c.ctx.proto {
+        state_changed(g, obj);
+    }
 
     // The listener: a host object owned by this context, its params write
     // through to the engine's listener position.
@@ -5298,6 +5334,7 @@ pub unsafe fn pump(g: *mut c_void) {
     }
 
     let mut ended: Vec<u64> = Vec::new();
+    let mut rendered: Vec<u64> = Vec::new();
     let mut worklet_messages: Vec<(u64, NativeMessage)> = Vec::new();
     {
         let mut gl = glob().lock().unwrap();
@@ -5364,160 +5401,172 @@ pub unsafe fn pump(g: *mut c_void) {
             .collect();
 
         let default_output = mediadevices::default_generation(mediadevices::Flow::Output);
+        let deadline = std::time::Instant::now() + offline::SLICE;
         for eh in handles {
-            // The graph update that ships this frame's work comes LAST (below),
-            // after the timelines and the scheduled starts and stops. Values
-            // set here then reach the audio thread in this frame, together
-            // with any node created since the last one, rather than a frame
-            // after it. A node that is created, automated and started in one
-            // task must never play a block at its parameters' defaults.
-            let (now, moved) = {
-                let eng = engines.get_mut(&eh).unwrap();
-                let moved = follow_default_output(eng, default_output) || retry_output(eng);
-                (eng.now(), moved)
-            };
-            if moved {
-                graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
-                graph::resync(engines, nodes, eh);
-            } else if engines[&eh]
-                .objects
-                .as_ref()
-                .is_some_and(|o| o.lost_changed())
-            {
-                graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
-            }
+            // Once for a context that plays; block after block for one that is rendering.
+            loop {
+                // The graph update that ships this frame's work comes LAST (below),
+                // after the timelines and the scheduled starts and stops. Values
+                // set here then reach the audio thread in this frame, together
+                // with any node created since the last one, rather than a frame
+                // after it. A node that is created, automated and started in one
+                // task must never play a block at its parameters' defaults.
+                let (now, moved) = {
+                    let eng = engines.get_mut(&eh).unwrap();
+                    let moved = follow_default_output(eng, default_output) || retry_output(eng);
+                    (eng.now(), moved)
+                };
+                if moved {
+                    graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
+                    graph::resync(engines, nodes, eh);
+                } else if engines[&eh]
+                    .objects
+                    .as_ref()
+                    .is_some_and(|o| o.lost_changed())
+                {
+                    graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
+                }
 
-            // Param timelines (per frame; node smoothers interpolate between ticks).
-            let due: Vec<((u64, u8), f64, bool)> = timelines
-                .iter()
-                .filter_map(|(&(node, kind), tl)| {
-                    // listener params key by engine handle
-                    let belongs = if kind >= P_L_POS_X {
-                        node == eh
-                    } else {
-                        nodes.get(&node).map(|r| r.engine == eh).unwrap_or(false)
-                    };
-                    if !belongs {
-                        return None;
-                    }
-                    let (v, done) = tl.eval(now);
-                    Some(((node, kind), v, done))
-                })
-                .collect();
-            for (key, v, done) in due {
-                set_param(engines, nodes, key.0, key.1, v);
-                if done {
-                    timelines.remove(&key);
-                }
-            }
-
-            // Scheduled starts/stops + ended detection.
-            let eng = engines.get_mut(&eh).unwrap();
-            for rec in nodes.values_mut().filter(|r| r.engine == eh) {
-                if let Params::Native { shared, .. } = &rec.params {
-                    if rec.worklet_obj != 0 {
-                        if let Some(message) = shared.take_message() {
-                            crate::ffi::redjs_protect(g, rec.worklet_obj);
-                            worklet_messages.push((rec.worklet_obj, message));
-                        }
-                    }
-                }
-                if let Some((when, offset, duration)) = rec.pending_start {
-                    if when <= now {
-                        rec.pending_start = None;
-                        do_start(eng, rec, offset, duration);
-                    }
-                }
-                if let Some(when) = rec.pending_stop {
-                    if when <= now {
-                        rec.pending_stop = None;
-                        do_stop(eng, rec);
-                    }
-                }
-                if rec.started && !rec.ended && rec.src.done.load(Ordering::Relaxed) {
-                    // The walk is over (`SourceSample`): past the end of the
-                    // buffer without `loop`, or `duration` played. The sampler
-                    // itself only ends at its view's length, so it is stopped
-                    // here — and the node ends whether or not a tick ever saw
-                    // it playing (a sprite shorter than a frame).
-                    do_stop(eng, rec);
-                    rec.ended = true;
-                    alog!("source walk done node={:?}", rec.id);
-                    if rec.js_obj != 0 {
-                        ended.push(rec.js_obj);
-                        rec.js_obj = 0;
-                    }
-                }
-                if rec.started && !rec.ended && matches!(rec.params, Params::Sampler(_)) {
-                    // Playback state lives on the node's SamplerState handle
-                    // (shared with the audio thread), not on the param struct.
-                    if let Some(st) = eng
-                        .fw
-                        .node_state::<firewheel::nodes::sampler::SamplerState>(rec.id)
-                    {
-                        if st.playing() {
-                            rec.saw_playing = true;
-                        }
-                        if rec.saw_playing && st.stopped() {
-                            rec.ended = true;
-                            alog!("source ended node={:?}", rec.id);
-                            if rec.js_obj != 0 {
-                                ended.push(rec.js_obj);
-                                rec.js_obj = 0;
-                            }
-                        }
-                    }
-                }
-                if rec.started && !rec.ended {
-                    if let Params::Osc(sh) = &rec.params {
-                        // With a live stream the processor raises `finished`
-                        // when its fade-out completes. WITHOUT one the
-                        // processor never runs at all, so `stop()` having been
-                        // called IS the end — otherwise `onended` would simply
-                        // never fire on a machine with no output device, and
-                        // code that awaits it would hang rather than degrade.
-                        // `saw_playing` is what keeps a not-yet-due scheduled
-                        // start from reading as an end.
-                        if sh.is_playing() {
-                            rec.saw_playing = true;
-                        }
-                        let done = if eng.running {
-                            sh.is_finished()
+                // Param timelines (per frame; node smoothers interpolate between ticks).
+                let due: Vec<((u64, u8), f64, bool)> = timelines
+                    .iter()
+                    .filter_map(|(&(node, kind), tl)| {
+                        // listener params key by engine handle
+                        let belongs = if kind >= P_L_POS_X {
+                            node == eh
                         } else {
-                            rec.saw_playing && !sh.is_playing()
+                            nodes.get(&node).map(|r| r.engine == eh).unwrap_or(false)
                         };
-                        if done {
-                            rec.ended = true;
-                            alog!("oscillator ended node={:?}", rec.id);
-                            if rec.js_obj != 0 {
-                                ended.push(rec.js_obj);
-                                rec.js_obj = 0;
+                        if !belongs {
+                            return None;
+                        }
+                        let (v, done) = tl.eval(now);
+                        Some(((node, kind), v, done))
+                    })
+                    .collect();
+                for (key, v, done) in due {
+                    set_param(engines, nodes, key.0, key.1, v);
+                    if done {
+                        timelines.remove(&key);
+                    }
+                }
+
+                // Scheduled starts/stops + ended detection.
+                let eng = engines.get_mut(&eh).unwrap();
+                for rec in nodes.values_mut().filter(|r| r.engine == eh) {
+                    if let Params::Native { shared, .. } = &rec.params {
+                        if rec.worklet_obj != 0 {
+                            if let Some(message) = shared.take_message() {
+                                crate::ffi::redjs_protect(g, rec.worklet_obj);
+                                worklet_messages.push((rec.worklet_obj, message));
+                            }
+                        }
+                    }
+                    if let Some((when, offset, duration)) = rec.pending_start {
+                        if when <= now {
+                            rec.pending_start = None;
+                            do_start(eng, rec, offset, duration);
+                        }
+                    }
+                    if let Some(when) = rec.pending_stop {
+                        if when <= now {
+                            rec.pending_stop = None;
+                            do_stop(eng, rec);
+                        }
+                    }
+                    if rec.started && !rec.ended && rec.src.done.load(Ordering::Relaxed) {
+                        // The walk is over (`SourceSample`): past the end of the
+                        // buffer without `loop`, or `duration` played. The sampler
+                        // itself only ends at its view's length, so it is stopped
+                        // here — and the node ends whether or not a tick ever saw
+                        // it playing (a sprite shorter than a frame).
+                        do_stop(eng, rec);
+                        rec.ended = true;
+                        alog!("source walk done node={:?}", rec.id);
+                        if rec.js_obj != 0 {
+                            ended.push(rec.js_obj);
+                            rec.js_obj = 0;
+                        }
+                    }
+                    if rec.started && !rec.ended && matches!(rec.params, Params::Sampler(_)) {
+                        // Playback state lives on the node's SamplerState handle
+                        // (shared with the audio thread), not on the param struct.
+                        if let Some(st) = eng
+                            .fw
+                            .node_state::<firewheel::nodes::sampler::SamplerState>(rec.id)
+                        {
+                            if st.playing() {
+                                rec.saw_playing = true;
+                            }
+                            if rec.saw_playing && st.stopped() {
+                                rec.ended = true;
+                                alog!("source ended node={:?}", rec.id);
+                                if rec.js_obj != 0 {
+                                    ended.push(rec.js_obj);
+                                    rec.js_obj = 0;
+                                }
+                            }
+                        }
+                    }
+                    if rec.started && !rec.ended {
+                        if let Params::Osc(sh) = &rec.params {
+                            // With a live stream the processor raises `finished`
+                            // when its fade-out completes. WITHOUT one the
+                            // processor never runs at all, so `stop()` having been
+                            // called IS the end — otherwise `onended` would simply
+                            // never fire on a machine with no output device, and
+                            // code that awaits it would hang rather than degrade.
+                            // `saw_playing` is what keeps a not-yet-due scheduled
+                            // start from reading as an end.
+                            if sh.is_playing() {
+                                rec.saw_playing = true;
+                            }
+                            let done = if eng.running {
+                                sh.is_finished()
+                            } else {
+                                rec.saw_playing && !sh.is_playing()
+                            };
+                            if done {
+                                rec.ended = true;
+                                alog!("oscillator ended node={:?}", rec.id);
+                                if rec.js_obj != 0 {
+                                    ended.push(rec.js_obj);
+                                    rec.js_obj = 0;
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Nothing renders while suspended, so nothing would take the
-            // messages either: they ship with the first update after resume().
-            if eng.state == ST_SUSPENDED {
-                continue;
-            }
-            // Ship: graph changes since the last frame, and every value set
-            // above, in one go (see the top of this loop).
-            match eng.fw.update() {
-                Ok(()) => {}
-                Err(firewheel::error::UpdateError::StreamStoppedUnexpectedly(e)) => {
-                    eprintln!(
-                        "[audio] the output stopped ({}); reopening it",
-                        e.map(|e| e.0)
-                            .unwrap_or_else(|| "the audio thread ended".into())
-                    );
-                    eng.running = false;
-                    eng.retry_at = Some(std::time::Instant::now());
+                // Nothing renders while suspended, so nothing would take the
+                // messages either: they ship with the first update after resume().
+                if eng.state == ST_SUSPENDED {
+                    break;
                 }
-                // Always loud: a swallowed update error is silent audio.
-                Err(e) => eprintln!("[audio] firewheel update error (engine {eh}): {e:?}"),
+                // Ship: graph changes since the last frame, and every value set
+                // above, in one go (see the top of this loop).
+                match eng.fw.update() {
+                    Ok(()) => {}
+                    Err(firewheel::error::UpdateError::StreamStoppedUnexpectedly(e)) => {
+                        eprintln!(
+                            "[audio] the output stopped ({}); reopening it",
+                            e.map(|e| e.0)
+                                .unwrap_or_else(|| "the audio thread ended".into())
+                        );
+                        eng.running = false;
+                        eng.retry_at = Some(std::time::Instant::now());
+                    }
+                    // Always loud: a swallowed update error is silent audio.
+                    Err(e) => eprintln!("[audio] firewheel update error (engine {eh}): {e:?}"),
+                }
+                match offline::render_block(eng) {
+                    offline::Step::More if std::time::Instant::now() < deadline => {}
+                    offline::Step::Finished => {
+                        rendered.push(eh);
+                        break;
+                    }
+                    _ => break,
+                }
             }
         }
     }
@@ -5530,6 +5579,9 @@ pub unsafe fn pump(g: *mut c_void) {
     for obj in ended {
         super::events::dispatch(g, obj, super::events::new_trusted_event(g, "ended"));
         crate::ffi::redjs_unprotect(g, obj);
+    }
+    for engine in rendered {
+        offline::complete(g, engine);
     }
     let changed: Vec<u64> = {
         let mut all = state_changes().lock().unwrap();
@@ -5960,6 +6012,8 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         },
     );
 
+    let offline = offline::install(g, ctx.proto);
+
     // webkitAudioContext alias (older engine feature-detection paths).
     let ctor = ctx.ctor;
     define(g, glue::rjs_global(g), "webkitAudioContext", ctor, 2);
@@ -5992,6 +6046,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         buffer,
         fx,
         more,
+        offline,
     }));
     class_registry().lock().unwrap().insert(g as usize, boxed);
 }
@@ -7184,6 +7239,46 @@ mod jsc_tests {
         c.eval("__a.close(); 0").unwrap();
         unsafe { super::pump(c.raw()) };
         assert_eq!(s(&c, "__seen.join(' ')"), "listener:suspended on:suspended:true listener:running on:running:true listener:closed on:closed:true");
+    }
+
+    #[test]
+    fn an_offline_context_renders_its_graph() {
+        let c = ctx();
+        c.eval(
+            "globalThis.__o = new OfflineAudioContext(2, 4800, 48000);
+             globalThis.__log = [];
+             __o.onstatechange = () => __log.push(__o.state);
+             __o.oncomplete = (e) => __log.push('complete:' + e.renderedBuffer.length);
+             const k = new ConstantSourceNode(__o, { offset: 0.5 });
+             const g = new GainNode(__o, { gain: 0.5 });
+             k.connect(g).connect(__o.destination);
+             k.start(0.05);
+             globalThis.__before = [__o.state, __o.length, __o.currentTime, __o instanceof AudioContext];
+             __o.startRendering().then((b) => { globalThis.__buffer = b; }); 0",
+        )
+        .unwrap();
+        for _ in 0..400 {
+            unsafe { super::pump(c.raw()) };
+            c.drain_microtasks();
+            if s(&c, "typeof __buffer") != "undefined" {
+                break;
+            }
+        }
+        assert_eq!(
+            s(
+                &c,
+                "{ const d = __buffer.getChannelData(1);
+                   const at = (t) => Math.round(d[Math.round(t * 48000)] * 1000) / 1000;
+                   JSON.stringify([__before, __buffer.numberOfChannels, __buffer.length, __buffer.sampleRate,
+                     at(0.02), at(0.045), at(0.08), at(0.099), __o.state, __o.currentTime, __log]) }"
+            ),
+            r#"[["suspended",4800,0,true],2,4800,48000,0,0,0.25,0.25,"closed",0.1,["complete:4800","closed"]]"#
+        );
+        ok(
+            &c,
+            "{ let n = 0; for (const bad of [() => new OfflineAudioContext(0, 10, 48000), () => new OfflineAudioContext(1, 0, 48000),
+                 () => new OfflineAudioContext(1, 10, 10)]) { try { bad() } catch { n++ } } n === 3 }",
+        );
     }
 
     #[test]
