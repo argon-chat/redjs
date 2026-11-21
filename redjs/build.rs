@@ -232,6 +232,13 @@ fn main() {
         if native_aot {
             println!("cargo:rustc-env=REDJS_AOT_TARGET_ARCH={target_arch}");
             println!("cargo:rustc-env=REDJS_AOT_TARGET_OS={target_os}");
+            let wide_references = target_os == "macos" && target_arch == "aarch64";
+            let reference_width = if wide_references { "wide" } else { "narrow" };
+            println!("cargo:rustc-env=REDJS_AOT_REFERENCE_WIDTH={reference_width}");
+            glue.define(
+                "REDJS_AOT_WIDE_REFERENCES",
+                if wide_references { "1" } else { "0" },
+            );
             println!(
                 "cargo:rustc-env=REDJS_AOT_ENGINE_VERSION={}",
                 pin(&pins, "webkit.version")

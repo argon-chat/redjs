@@ -16,7 +16,9 @@ pub const BUILD_TABLE_ID: &str = env!("REDJS_AOT_TABLE_ID");
 #[cfg(windows)]
 pub const COMPILE_OPTIONS: &str = concat!(
     env!("REDJS_AOT_TARGET_ARCH"),
-    ";references=narrow;image=pic;threads=1;default-options@",
+    ";references=",
+    env!("REDJS_AOT_REFERENCE_WIDTH"),
+    ";image=pic;threads=1;default-options@",
     env!("REDJS_AOT_ENGINE_VERSION")
 );
 #[cfg(unix)]
@@ -24,7 +26,9 @@ pub const COMPILE_OPTIONS: &str = concat!(
     env!("REDJS_AOT_TARGET_ARCH"),
     ";os=",
     env!("REDJS_AOT_TARGET_OS"),
-    ";references=narrow;image=pic;threads=1;default-options@",
+    ";references=",
+    env!("REDJS_AOT_REFERENCE_WIDTH"),
+    ";image=pic;threads=1;default-options@",
     env!("REDJS_AOT_ENGINE_VERSION")
 );
 pub fn digest_hex(bytes: &[u8]) -> String {
@@ -515,7 +519,11 @@ mod tests {
         assert_eq!(MemoryProfile::default(), MemoryProfile::Default);
         assert_eq!(MemoryProfile::Default as u32, 0);
         assert_eq!(MemoryProfile::Compact as u32, 1);
-        assert!(COMPILE_OPTIONS.contains("references=narrow"));
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert!(COMPILE_OPTIONS.contains(";references=wide;"));
+        } else {
+            assert!(COMPILE_OPTIONS.contains(";references=narrow;"));
+        }
         assert!(!COMPILE_OPTIONS.contains("Compact"));
     }
     #[test]

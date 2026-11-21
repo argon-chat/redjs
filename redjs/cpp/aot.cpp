@@ -134,7 +134,11 @@ extern "C" void* rjs_aot_compile(const uint8_t* program, size_t length, const ui
     }
     auto compilation = std::make_unique<RjsAotCompilation>();
     auto options = AOT::makeDefaultCompileOptions();
+#if REDJS_AOT_WIDE_REFERENCES
+    options.target.referenceWidth = AOT::Wire::ReferenceWidth::Wide;
+#else
     options.target.referenceWidth = AOT::Wire::ReferenceWidth::Narrow;
+#endif
     options.target.imageForm = AOT::Wire::ImageForm::PositionIndependent;
     options.threadCount = 1;
     std::memcpy(options.executableIdentity.data(), identity, 16);
