@@ -46,9 +46,16 @@ static consteval RemovableFeatureState removableFeatureState()
     return state;
 }
 
-extern "C" const RemovableFeatureState Bun__removableFeatureState = removableFeatureState();
+#if defined(__APPLE__) && REDJS_AOT_COMPILER && !REDJS_NO_JIT && !REDJS_NO_WASM && !REDJS_NO_INTERPRETER
+// Bun's frontend links its own untrimmed feature state and name table into sk-aot.
+#define REDJS_UNTRIMMED_FEATURE_FALLBACK __attribute__((weak))
+#else
+#define REDJS_UNTRIMMED_FEATURE_FALLBACK
+#endif
 
-extern "C" const char* Bun__removableFeatureName(uint16_t feature)
+extern "C" REDJS_UNTRIMMED_FEATURE_FALLBACK const RemovableFeatureState Bun__removableFeatureState = removableFeatureState();
+
+extern "C" REDJS_UNTRIMMED_FEATURE_FALLBACK const char* Bun__removableFeatureName(uint16_t feature)
 {
     switch (feature) {
 #define REDJS_FEATURE_NAME(name, index) case index: return #name;
@@ -58,6 +65,7 @@ extern "C" const char* Bun__removableFeatureName(uint16_t feature)
         return nullptr;
     }
 }
+#undef REDJS_UNTRIMMED_FEATURE_FALLBACK
 
 extern "C" [[noreturn]] void Bun__abortForRemovedFeature(uint16_t feature)
 {
