@@ -41,7 +41,7 @@ The engine's internal headers are version-sensitive, so upgrades need testing.
 
 On Windows, you'll need Rust 1.97.1 with the MSVC target, LLVM's `clang-cl` on `PATH`,
 Visual Studio C++ Build Tools (MSVC 14.44 or newer, plus the Windows SDK),
-and PowerShell.
+and PowerShell 7 (`pwsh`); the scripts do not run in Windows PowerShell 5.1.
 
 From this repository's root:
 

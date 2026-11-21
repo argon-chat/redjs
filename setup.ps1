@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 # Fetches and unpacks the native inputs redjs builds against, at the versions
 # pinned in pins.txt:
 #
@@ -19,8 +21,6 @@
 # include/cmakeconfig.h); that, not the directory name, is what is compared.
 #
 # Proxy: pass -Proxy or set REDJS_PROXY (an HTTP proxy, not SOCKS).
-#
-# Works on Windows PowerShell 5.1 and PowerShell 7.
 param(
     [string] $Proxy = '',
     # Use an already-downloaded WebKit tarball instead of fetching it. It is
@@ -32,6 +32,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+# Windows' own tar: GNU tar from Git reads the colon of a drive letter as a remote host.
+$systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
 
 # --- pins.txt ----------------------------------------------------------------
 
@@ -132,7 +134,7 @@ if (-not $Force -and $have -eq $want -and (Get-WebKitAot $dest) -eq $pins['webki
 }
 else {
     if ($have -and $have -ne $want) {
-        Write-Host "[redjs] prebuilt on disk is $have, pins.txt says $want — replacing it"
+        Write-Host "[redjs] prebuilt on disk is $have, pins.txt says $want; replacing it"
     }
     $tar = $Tarball
     $downloaded = $false
@@ -155,7 +157,7 @@ else {
     Write-Host "[redjs] extracting $tar"
     # bin/ (jsc.exe, the LLInt extractors and ~0.7 GB of their PDBs) is not
     # used by anything that builds or links redjs; skip it.
-    tar -xzf $tar -C $staging --exclude 'bun-webkit/bin'
+    & $systemTar -xzf $tar -C $staging --exclude 'bun-webkit/bin'
     if ($LASTEXITCODE -ne 0) { throw "tar failed ($LASTEXITCODE) on $tar" }
     $fresh = Join-Path $staging 'bun-webkit'
     $got = Get-WebKitVersion $fresh
@@ -190,7 +192,7 @@ if (-not $Force -and $miHave -eq $commit -and (Test-Path -LiteralPath (Join-Path
 }
 else {
     if ($miHave -and $miHave -ne $commit) {
-        Write-Host "[redjs] mimalloc on disk is $miHave, pins.txt says $commit — replacing it"
+        Write-Host "[redjs] mimalloc on disk is $miHave, pins.txt says $commit; replacing it"
     }
     $miTar = Join-Path $env:TEMP "redjs-mimalloc-$commit.tar.gz"
     Get-Url "https://github.com/oven-sh/mimalloc/archive/$commit.tar.gz" $miTar
@@ -198,7 +200,7 @@ else {
     Remove-Tree $miStaging
     New-Item -ItemType Directory -Force $miStaging | Out-Null
     $top = "mimalloc-$commit"
-    tar -xzf $miTar -C $miStaging --strip-components=1 "$top/src" "$top/include" "$top/LICENSE"
+    & $systemTar -xzf $miTar -C $miStaging --strip-components=1 "$top/src" "$top/include" "$top/LICENSE"
     if ($LASTEXITCODE -ne 0) { throw "tar failed ($LASTEXITCODE) on $miTar" }
     $tree = Get-TreeSha256 $miStaging
     if ($tree -ne $pins['mimalloc.tree-sha256']) {
@@ -225,7 +227,7 @@ if (-not $Force -and $mcHave -eq $mcWant -and (Test-Path -LiteralPath (Join-Path
 }
 else {
     if ($mcHave -and $mcHave -ne $mcWant) {
-        Write-Host "[redjs] sqlite3mc on disk is '$mcHave', pins.txt says '$mcWant' — replacing it"
+        Write-Host "[redjs] sqlite3mc on disk is '$mcHave', pins.txt says '$mcWant'; replacing it"
     }
     $ver = $pins['sqlite3mc.version']
     $mcZip = Join-Path $env:TEMP ("redjs-" + $pins['sqlite3mc.asset'])

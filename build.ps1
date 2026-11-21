@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 # Builds redjs (release) and lays out the consumable artifacts:
 #   runtimes/win-x64/native/redjs.dll  — self-contained (JSC linked in), for
 #                                        JIT/debug runs via DllImport
@@ -13,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
 if (-not (Test-Path (Join-Path $root 'prebuilt/bun-webkit/lib/JavaScriptCore.lib'))) {
-    throw "prebuilt missing — run ./setup.ps1 first"
+    throw "prebuilt missing: run ./setup.ps1 first"
 }
 
 Push-Location (Join-Path $root 'redjs')
