@@ -67,6 +67,8 @@ pub enum Wave {
     Triangle = 3,
     /// The table of `setPeriodicWave()`.
     Custom = 4,
+    /// `ConstantSourceNode`: no wave, the `frequency` cell holds its `offset`.
+    Constant = 5,
 }
 
 impl Wave {
@@ -89,6 +91,7 @@ impl Wave {
             Wave::Sawtooth => "sawtooth",
             Wave::Triangle => "triangle",
             Wave::Custom => "custom",
+            Wave::Constant => "constant",
         }
     }
 
@@ -98,6 +101,7 @@ impl Wave {
             2 => Wave::Sawtooth,
             3 => Wave::Triangle,
             4 => Wave::Custom,
+            5 => Wave::Constant,
             _ => Wave::Sine,
         }
     }
@@ -359,7 +363,11 @@ impl OscDsp {
     pub fn render(&mut self, out: &mut [f32], wave: Wave, target_freq: f32, gate: bool) -> bool {
         // Nyquist: above it a "tone" is only alias, so clamp rather than fold.
         let nyquist = self.sample_rate * 0.5;
-        let target = target_freq.clamp(-nyquist, nyquist);
+        let target = if wave == Wave::Constant {
+            target_freq
+        } else {
+            target_freq.clamp(-nyquist, nyquist)
+        };
         let was_audible = self.env > 0.0;
 
         for s in out.iter_mut() {
@@ -374,6 +382,8 @@ impl OscDsp {
             let dt = (self.freq / self.sample_rate).abs();
             let v = if self.env <= 0.0 {
                 0.0
+            } else if wave == Wave::Constant {
+                self.freq
             } else if wave == Wave::Custom {
                 self.table
                     .as_ref()
@@ -413,7 +423,7 @@ fn sample(wave: Wave, t: f32, dt: f32) -> f32 {
             let x = t + 0.25;
             1.0 - 4.0 * ((x - x.floor()) - 0.5).abs()
         }
-        Wave::Custom => 0.0,
+        Wave::Custom | Wave::Constant => 0.0,
     }
 }
 

@@ -1034,6 +1034,144 @@ impl AudioNodeProcessor for ConvProcessor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// IIRFilterNode
+// ---------------------------------------------------------------------------
+
+/// The longest coefficient list an `IIRFilterNode` takes.
+pub(super) const IIR_MAX: usize = 20;
+const IIR_HISTORY: usize = 32;
+
+/// The coefficients, divided through by the first feedback one. They never change.
+pub(super) struct IirShared {
+    pub feedforward: Vec<f64>,
+    pub feedback: Vec<f64>,
+}
+
+impl IirShared {
+    pub fn new(feedforward: &[f64], feedback: &[f64]) -> Self {
+        let a0 = feedback[0];
+        Self {
+            feedforward: feedforward.iter().map(|b| b / a0).collect(),
+            feedback: feedback.iter().map(|a| a / a0).collect(),
+        }
+    }
+
+    /// The magnitude and phase of the response at `omega` radians a sample.
+    pub fn response(&self, omega: f64) -> (f32, f32) {
+        let sum = |coefficients: &[f64]| {
+            coefficients
+                .iter()
+                .enumerate()
+                .fold((0.0, 0.0), |(re, im), (k, c)| {
+                    let angle = -omega * k as f64;
+                    (re + c * angle.cos(), im + c * angle.sin())
+                })
+        };
+        let (nr, ni) = sum(&self.feedforward);
+        let (dr, di) = sum(&self.feedback);
+        let d = dr * dr + di * di;
+        let (re, im) = ((nr * dr + ni * di) / d, (ni * dr - nr * di) / d);
+        (re.hypot(im) as f32, im.atan2(re) as f32)
+    }
+}
+
+/// One channel's past input and output, newest at `at`.
+#[derive(Clone, Copy)]
+pub(super) struct IirState {
+    x: [f64; IIR_HISTORY],
+    y: [f64; IIR_HISTORY],
+    at: usize,
+}
+
+impl Default for IirState {
+    fn default() -> Self {
+        Self {
+            x: [0.0; IIR_HISTORY],
+            y: [0.0; IIR_HISTORY],
+            at: 0,
+        }
+    }
+}
+
+impl IirState {
+    pub fn process(&mut self, sh: &IirShared, input: &[f32], out: &mut [f32]) {
+        const MASK: usize = IIR_HISTORY - 1;
+        for (o, &i) in out.iter_mut().zip(input) {
+            self.at = (self.at + 1) & MASK;
+            self.x[self.at] = i as f64;
+            let mut y = 0.0;
+            for (k, b) in sh.feedforward.iter().enumerate() {
+                y += b * self.x[(self.at + IIR_HISTORY - k) & MASK];
+            }
+            for (k, a) in sh.feedback.iter().enumerate().skip(1) {
+                y -= a * self.y[(self.at + IIR_HISTORY - k) & MASK];
+            }
+            // A filter the page made unstable must not carry infinities into the mix.
+            if !y.is_finite() {
+                y = 0.0;
+            }
+            self.y[self.at] = y;
+            *o = y as f32;
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct IirNode {
+    pub shared: ArcGc<IirShared>,
+}
+
+impl AudioNode for IirNode {
+    type Configuration = EmptyConfig;
+
+    fn info(&self, _config: &Self::Configuration) -> AudioNodeInfo {
+        AudioNodeInfo::new()
+            .debug_name("webaudio_iir")
+            .channel_config(ChannelConfig {
+                num_inputs: ChannelCount::STEREO,
+                num_outputs: ChannelCount::STEREO,
+            })
+    }
+
+    fn construct_processor(
+        &self,
+        _config: &Self::Configuration,
+        _cx: ConstructProcessorContext,
+    ) -> impl AudioNodeProcessor {
+        IirProcessor {
+            shared: ArcGc::clone(&self.shared),
+            state: [IirState::default(); 2],
+        }
+    }
+}
+
+struct IirProcessor {
+    shared: ArcGc<IirShared>,
+    state: [IirState; 2],
+}
+
+impl AudioNodeProcessor for IirProcessor {
+    fn process(
+        &mut self,
+        info: &ProcInfo,
+        buffers: ProcBuffers,
+        _events: &mut ProcEvents,
+        _extra: &mut ProcExtra,
+    ) -> ProcessStatus {
+        let n = info.frames;
+        for ((out, input), state) in buffers
+            .outputs
+            .iter_mut()
+            .zip(buffers.inputs)
+            .zip(&mut self.state)
+        {
+            state.process(&self.shared, &input[..n], &mut out[..n]);
+        }
+        ProcessStatus::OutputsModified
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,5 +1389,15 @@ mod tests {
             );
         }
         assert!(mag_at(&render(4), 3000.0, 48_000) < 0.1 * alias);
+    }
+
+    #[test]
+    fn an_iir_filter_runs_its_difference_equation() {
+        // y[n] = x[n] + 0.5 y[n-1], fed an impulse.
+        let shared = IirShared::new(&[2.0], &[2.0, -1.0]);
+        let mut state = IirState::default();
+        let mut out = [0.0f32; 4];
+        state.process(&shared, &[1.0, 0.0, 0.0, 0.0], &mut out);
+        assert_eq!(out, [1.0, 0.5, 0.25, 0.125]);
     }
 }

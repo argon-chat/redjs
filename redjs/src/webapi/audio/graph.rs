@@ -133,7 +133,8 @@ fn cap(rec: &NodeRec) -> u32 {
         | Params::Native { .. }
         | Params::MediaDest(_)
         | Params::Compressor(_)
-        | Params::Convolver(_) => 2,
+        | Params::Convolver(_)
+        | Params::Iir(_) => 2,
         Params::Splitter(n) => n,
         Params::Merger { .. } => 1,
         _ => mixing::MAX_CHANNELS,
@@ -186,7 +187,8 @@ fn out_width(
         | Params::Analyser { .. }
         | Params::Delay { .. }
         | Params::Shaper(_)
-        | Params::Compressor(_) => in_width(h, nodes, incoming, memo, stack),
+        | Params::Compressor(_)
+        | Params::Iir(_) => in_width(h, nodes, incoming, memo, stack),
         // Mono only for a mono input through a mono response (or none).
         Params::Convolver(_) => {
             let response = rec.buffer.as_ref().map_or(1, |b| b.data.len());

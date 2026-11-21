@@ -106,6 +106,7 @@ mod effects;
 pub(super) mod fft;
 mod graph;
 mod mixing;
+mod more_nodes;
 mod native_worklet;
 pub mod output;
 
@@ -1062,6 +1063,7 @@ enum Params {
     Shaper(ArcGc<effects::ShaperShared>),
     Compressor(ArcGc<effects::CompShared>),
     Convolver(ArcGc<effects::ConvShared>),
+    Iir(ArcGc<effects::IirShared>),
 }
 
 /// One Web Audio connection, kept so `disconnect(…)` can find it again.
@@ -1503,6 +1505,21 @@ fn dead() -> &'static Mutex<Vec<u64>> {
     D.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Contexts whose `state` changed and have not been told yet: the VM and the context's
+/// wrapper, protected until [`pump`] fires its `statechange`.
+fn state_changes() -> &'static Mutex<Vec<(usize, u64)>> {
+    static S: OnceLock<Mutex<Vec<(usize, u64)>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+unsafe fn state_changed(g: *mut c_void, context: u64) {
+    let mut pending = state_changes().lock().unwrap();
+    if !pending.contains(&(g as usize, context)) {
+        crate::ffi::redjs_protect(g, context);
+        pending.push((g as usize, context));
+    }
+}
+
 /// Node host data: finalizer queues graph cleanup (GC frees JS wrappers of
 /// disconnected nodes; the Firewheel node must go with them).
 struct NodeHandle(u64);
@@ -1568,6 +1585,7 @@ pub struct AudioClasses {
     param: Class,
     buffer: Class,
     fx: effect_nodes::Classes,
+    more: more_nodes::Classes,
 }
 
 unsafe impl Send for AudioClasses {}
@@ -1650,6 +1668,14 @@ pub unsafe fn output_status(g: *mut c_void, context: u64) -> Option<OutputStatus
 /// requested time, so an embedder that slows its pump while idle keeps the
 /// display rate while this holds.
 pub fn busy(g: *mut c_void) -> bool {
+    if state_changes()
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(vm, _)| *vm == g as usize)
+    {
+        return true;
+    }
     let gl = glob().lock().unwrap();
     let running: Vec<u64> = gl
         .engines
@@ -2282,6 +2308,12 @@ fn alloc_node(gl: &mut Glob, engine: u64, mut params: Params) -> Option<u64> {
         ),
         Params::Convolver(sh) => eng.fw.add_node(
             effects::ConvNode {
+                shared: ArcGc::clone(sh),
+            },
+            None,
+        ),
+        Params::Iir(sh) => eng.fw.add_node(
+            effects::IirNode {
                 shared: ArcGc::clone(sh),
             },
             None,
@@ -3767,6 +3799,15 @@ slot_getter!(get_slot_up_y, "upY");
 slot_getter!(get_slot_up_z, "upZ");
 slot_getter!(get_slot_destination, "destination");
 slot_getter!(get_slot_context, "context");
+slot_getter!(get_slot_onstatechange, "onstatechange");
+
+#[crate::host_fn]
+unsafe fn set_slot_onstatechange(g: *mut c_void, cf: *mut c_void) -> u64 {
+    let handler = cf_arg(cf, 0);
+    let handler = if is_cell(handler) { handler } else { NULL };
+    define(g, slots_of(g, cf_this(cf)), "onstatechange", handler, 0);
+    UNDEF
+}
 slot_getter!(get_slot_listener, "listener");
 slot_getter!(get_slot_stream_id, "streamId");
 slot_getter!(get_slot_stream_rate, "sampleRate");
@@ -3863,6 +3904,9 @@ unsafe fn ctx_construct(g: *mut c_void, cf: *mut c_void) -> u64 {
 
     let dest = wrap_node(g, c.dest.proto, dest_handle, &[]);
     define(g, slots, "destination", dest, 0);
+    define(g, slots, "onstatechange", NULL, 0);
+    // A context starts running here, where a browser's goes from suspended to running.
+    state_changed(g, obj);
 
     // The listener: a host object owned by this context, its params write
     // through to the engine's listener position.
@@ -4054,6 +4098,7 @@ unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) ->
     let Some(h) = this_engine_handle(g, cf) else {
         return rejected_promise(g, 1, "AudioContext method on wrong this");
     };
+    let mut changed = false;
     let mut guard = glob().lock().unwrap();
     let gl = &mut *guard;
     if let Some(eng) = gl.engines.get_mut(&h) {
@@ -4061,10 +4106,15 @@ unsafe fn ctx_set_suspended(g: *mut c_void, cf: *mut c_void, suspended: bool) ->
             // Spec: "reject promise with an InvalidStateError".
             return super::domexception::rejected(g, "InvalidStateError", "AudioContext is closed");
         }
+        let before = eng.state;
         eng.set_suspended(suspended);
+        changed = eng.state != before;
         graph::object_sends(eng, &mut gl.nodes, h);
     }
     drop(guard);
+    if changed {
+        state_changed(g, cf_this(cf));
+    }
     resolved_promise(g, UNDEF)
 }
 
@@ -4084,12 +4134,17 @@ unsafe fn ctx_close(g: *mut c_void, cf: *mut c_void) -> u64 {
         return rejected_promise(g, 1, "AudioContext.close on wrong this");
     };
     let mut gl = glob().lock().unwrap();
+    let mut changed = false;
     if let Some(eng) = gl.engines.get_mut(&h) {
+        changed = eng.state != ST_CLOSED;
         eng.state = ST_CLOSED;
         eng.fw.stop_stream();
         eng.running = false;
     }
     drop(gl);
+    if changed {
+        state_changed(g, cf_this(cf));
+    }
     resolved_promise(g, UNDEF)
 }
 
@@ -4762,7 +4817,8 @@ fn host_channel_limit(rec: &NodeRec) -> u32 {
         | Params::MediaDest(_)
         | Params::Native { .. }
         | Params::Compressor(_)
-        | Params::Convolver(_) => 2,
+        | Params::Convolver(_)
+        | Params::Iir(_) => 2,
         _ => mixing::MAX_CHANNELS,
     }
 }
@@ -5237,13 +5293,8 @@ unsafe fn ctx_decode_audio_data(g: *mut c_void, cf: *mut c_void) -> u64 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn pump(g: *mut c_void) {
-    let c_s_audio;
-    {
-        let reg = class_registry().lock().unwrap();
-        match reg.get(&(g as usize)) {
-            Some(c) => c_s_audio = c.s_audio,
-            None => return, // audio never installed for this context
-        }
+    if !class_registry().lock().unwrap().contains_key(&(g as usize)) {
+        return; // audio never installed for this context
     }
 
     let mut ended: Vec<u64> = Vec::new();
@@ -5477,14 +5528,21 @@ pub unsafe fn pump(g: *mut c_void) {
         crate::ffi::redjs_unprotect(g, obj);
     }
     for obj in ended {
-        let slots = get_a(g, obj, c_s_audio);
-        let cb = get(g, slots, "onended");
-        if is_cell(cb) {
-            let ev = new_object(g, UNDEF);
-            define(g, ev, "type", js_string(g, "ended"), 0);
-            define(g, ev, "target", obj, 0);
-            let _ = call(g, cb, obj, &[ev]);
-        }
+        super::events::dispatch(g, obj, super::events::new_trusted_event(g, "ended"));
+        crate::ffi::redjs_unprotect(g, obj);
+    }
+    let changed: Vec<u64> = {
+        let mut all = state_changes().lock().unwrap();
+        let mine = all
+            .iter()
+            .filter(|(vm, _)| *vm == g as usize)
+            .map(|&(_, obj)| obj)
+            .collect();
+        all.retain(|(vm, _)| *vm != g as usize);
+        mine
+    };
+    for obj in changed {
+        super::events::dispatch(g, obj, super::events::new_trusted_event(g, "statechange"));
         crate::ffi::redjs_unprotect(g, obj);
     }
 }
@@ -5493,7 +5551,7 @@ pub unsafe fn pump(g: *mut c_void) {
 // Install
 // ---------------------------------------------------------------------------
 
-pub unsafe fn install(g: *mut c_void) {
+pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     let s_audio = atom_priv(g, "redjs#audio");
 
     let node_cls = make_host_class::<NodeHandle>("AudioNode");
@@ -5508,7 +5566,7 @@ pub unsafe fn install(g: *mut c_void) {
             name: "AudioNode",
             arity: 0,
             construct: None,
-            parent_proto: 0,
+            parent_proto: event_target_proto,
             methods: &[
                 ("connect", 1, node_connect),
                 ("disconnect", 0, node_disconnect),
@@ -5837,6 +5895,7 @@ pub unsafe fn install(g: *mut c_void) {
 
     let (worklet, worklet_port, worklet_port_cls) = native_worklet::install(g, node_base.proto);
     let fx = effect_nodes::install(g, node_base.proto);
+    let more = more_nodes::install(g, node_base.proto);
 
     let ctx = define_class(
         g,
@@ -5844,7 +5903,7 @@ pub unsafe fn install(g: *mut c_void) {
             name: "AudioContext",
             arity: 0,
             construct: Some(ctx_construct),
-            parent_proto: 0,
+            parent_proto: event_target_proto,
             methods: &[
                 ("loadNativeAudioWorklet", 1, native_worklet::load),
                 ("createGain", 0, ctx_create_gain),
@@ -5858,6 +5917,12 @@ pub unsafe fn install(g: *mut c_void) {
                 ("createChannelMerger", 0, ctx_create_channel_merger),
                 ("createDelay", 0, effect_nodes::create_delay),
                 ("createWaveShaper", 0, effect_nodes::create_wave_shaper),
+                (
+                    "createConstantSource",
+                    0,
+                    more_nodes::create_constant_source,
+                ),
+                ("createIIRFilter", 2, more_nodes::create_iir_filter),
                 (
                     "createDynamicsCompressor",
                     0,
@@ -5887,7 +5952,11 @@ pub unsafe fn install(g: *mut c_void) {
                 ("destination", get_slot_destination),
                 ("listener", get_slot_listener),
             ],
-            accessors: &[],
+            accessors: &[(
+                "onstatechange",
+                get_slot_onstatechange,
+                set_slot_onstatechange,
+            )],
         },
     );
 
@@ -5922,6 +5991,7 @@ pub unsafe fn install(g: *mut c_void) {
         param,
         buffer,
         fx,
+        more,
     }));
     class_registry().lock().unwrap().insert(g as usize, boxed);
 }
@@ -7051,6 +7121,69 @@ mod jsc_tests {
                 ),
             );
         }
+    }
+
+    #[test]
+    fn constant_source_and_iir_filter() {
+        let c = ctx();
+        assert_eq!(
+            s(
+                &c,
+                "{ const a = new AudioContext();
+                   const k = a.createConstantSource(), k2 = new ConstantSourceNode(a, { offset: 0.5 });
+                   const f = a.createIIRFilter([0.5, 0.5], [1]);
+                   const hz = new Float32Array([0, a.sampleRate / 4, a.sampleRate / 2, a.sampleRate]);
+                   const mag = new Float32Array(4), phase = new Float32Array(4);
+                   f.getFrequencyResponse(hz, mag, phase);
+                   k.offset.value = 0.25;
+                   const r = JSON.stringify([
+                     k instanceof ConstantSourceNode, k.numberOfInputs, k.offset.value, k2.offset.value,
+                     typeof k.start, k.onended,
+                     f instanceof IIRFilterNode, new IIRFilterNode(a, { feedforward: [1], feedback: [1, -0.5] }).numberOfOutputs,
+                     Math.round(mag[0] * 1000), Math.round(mag[1] * 1000), Math.round(mag[2] * 1000), Number.isNaN(mag[3]),
+                     Math.round(phase[1] * 1000)]);
+                   a.close(); r }"
+            ),
+            "[true,0,0.25,0.5,\"function\",null,true,1,1000,707,0,true,-785]"
+        );
+        for refused in [
+            "__a.createIIRFilter([], [1])",
+            "__a.createIIRFilter([0, 0], [1])",
+            "__a.createIIRFilter([1], [0, 1])",
+            "__a.createIIRFilter(new Array(21).fill(1), [1])",
+            "new IIRFilterNode(__a)",
+            "__a.createIIRFilter([1], [1]).getFrequencyResponse(new Float32Array(2), new Float32Array(1), new Float32Array(2))",
+        ] {
+            ok(
+                &c,
+                &format!(
+                    "{{ globalThis.__a = new AudioContext(); let threw = false;
+                        try {{ {refused} }} catch {{ threw = true }} __a.close(); threw }}"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn a_context_tells_of_its_state() {
+        let c = ctx();
+        c.eval(
+            "globalThis.__seen = []; globalThis.__a = new AudioContext();
+             __a.onstatechange = (e) => __seen.push('on:' + __a.state + ':' + (e.target === __a));
+             __a.addEventListener('statechange', () => __seen.push('listener:' + __a.state));
+             __a.suspend(); 0",
+        )
+        .unwrap();
+        unsafe { super::pump(c.raw()) };
+        c.eval("__a.suspend(); __a.resume(); 0").unwrap();
+        unsafe { super::pump(c.raw()) };
+        ok(
+            &c,
+            "__a instanceof EventTarget && __a.createGain() instanceof EventTarget",
+        );
+        c.eval("__a.close(); 0").unwrap();
+        unsafe { super::pump(c.raw()) };
+        assert_eq!(s(&c, "__seen.join(' ')"), "listener:suspended on:suspended:true listener:running on:running:true listener:closed on:closed:true");
     }
 
     #[test]

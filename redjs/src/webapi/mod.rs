@@ -455,7 +455,7 @@ pub unsafe fn install(g: *mut c_void, scripts_root: &str, assets_root: &str) -> 
     }
     #[cfg(feature = "audio")]
     {
-        audio::install(g);
+        audio::install(g, et_proto);
         // After audio: `navigator.mediaDevices` only ever hands out ids that
         // `AudioContext.setSinkId` can select, so the two belong together.
         mediadevices::install(g, et_proto);
