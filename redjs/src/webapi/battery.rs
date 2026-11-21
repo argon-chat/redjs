@@ -246,6 +246,29 @@ pub(super) unsafe fn get_battery(g: *mut c_void, cf: *mut c_void) -> u64 {
         // Identity also rejects proxies and objects inheriting from navigator.
         return rejected_promise(g, 1, "Illegal invocation");
     }
+    get_or_start(g, id)
+}
+
+/// Reuse the installed Battery Status provider for native consumers in this context.
+///
+/// # Safety
+/// `g` must be the current thread's live context with Battery Status installed.
+pub unsafe fn monitor(g: *mut c_void) {
+    if let Some(id) = crate::context::id_of(g) {
+        get_or_start(g, id);
+    }
+}
+
+/// The newest resolved or queued Battery Status snapshot, mapped to on-battery power.
+///
+/// # Safety
+/// `g` must be the current thread's live context.
+pub unsafe fn on_battery(g: *mut c_void) -> bool {
+    let Some(id) = crate::context::id_of(g) else { return false };
+    registry().lock().unwrap().get(&id.0).is_some_and(|c| !c.pending.unwrap_or(c.current).charging)
+}
+
+unsafe fn get_or_start(g: *mut c_void, id: ContextId) -> u64 {
     let (proto, brand, handler_slot) = {
         let reg = registry().lock().unwrap();
         let c = reg.get(&id.0).expect("battery installed after navigator");
