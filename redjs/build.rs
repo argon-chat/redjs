@@ -544,7 +544,14 @@ const NO_JIT_LIB: &str = "JavaScriptCoreNoJIT";
 /// references now point at, which aot_support.cpp defines.
 fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
     println!("cargo:rerun-if-env-changed=REDJS_NO_JIT_DIR");
-    assert!(platform == "windows-amd64", "the no-jit feature is Windows x64 only");
+    assert!(
+        matches!(platform, "windows-amd64" | "macos-arm64"),
+        "the no-jit feature requires Windows x64 or macOS arm64"
+    );
+    assert!(
+        platform == "windows-amd64" || env::var_os("CARGO_FEATURE_NO_INTERPRETER").is_none(),
+        "the no-interpreter feature requires Windows x64"
+    );
     let mut removed = vec!["JIT"];
     let mut stubs = vec![("entry.JIT", "redjs_removed_jit_entry")];
     if env::var_os("CARGO_FEATURE_NO_WASM").is_some() {
@@ -580,13 +587,23 @@ fn no_jit_archive(platform: &str, pins: &[(String, String)]) -> PathBuf {
         dir.display()
     );
     assert!(
+        field("platform").unwrap_or("windows-amd64") == platform,
+        "\n\n{} contains a no-JIT archive for another platform.\n{fix}\n",
+        dir.display()
+    );
+    assert!(
         field("removed") == Some(removed.as_str()) && stubs.iter().all(|(key, symbol)| field(key) == Some(symbol)),
         "\n\n{} leaves out {}, and this build leaves out {removed}.\n{fix}\n",
         dir.display(),
         field("removed").unwrap_or("nothing it names")
     );
-    let archive = dir.join(format!("{NO_JIT_LIB}.lib"));
+    let archive = dir.join(if platform == "windows-amd64" {
+        format!("{NO_JIT_LIB}.lib")
+    } else {
+        format!("lib{NO_JIT_LIB}.a")
+    });
     assert!(archive.is_file(), "\n\n{} is missing.\n{fix}\n", archive.display());
+    println!("cargo:rerun-if-changed={}", archive.display());
     archive
 }
 

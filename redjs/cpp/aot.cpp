@@ -43,6 +43,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <climits>
+#if defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/loader.h>
+#include <mach/vm_prot.h>
+#include <pthread.h>
+#include <signal.h>
+#endif
 #endif
 
 using namespace JSC;
@@ -315,6 +322,74 @@ bool isExecuteRead(std::span<const uint8_t> code)
     return VirtualQuery(code.data(), &region, sizeof(region)) && region.Protect == PAGE_EXECUTE_READ
         && static_cast<const uint8_t*>(region.BaseAddress) + region.RegionSize >= code.data() + code.size();
 }
+#elif defined(__APPLE__)
+std::span<const uint8_t> mappedMachOImage(const void* address)
+{
+    Dl_info info;
+    if (!dladdr(address, &info))
+        return { };
+    const auto* module = static_cast<const mach_header_64*>(info.dli_fbase);
+    size_t page = WTF::pageSize();
+    if (!module || module->magic != MH_MAGIC_64 || module->filetype != MH_DYLIB || module->sizeofcmds > page - sizeof(*module))
+        return { };
+    const segment_command_64* text = nullptr;
+    const segment_command_64* metadata = nullptr;
+    const segment_command_64* code = nullptr;
+    const segment_command_64* data = nullptr;
+    auto commands = std::span { reinterpret_cast<const uint8_t*>(module + 1), module->sizeofcmds };
+    for (uint32_t index = 0; index < module->ncmds; ++index) {
+        if (commands.size() < sizeof(load_command))
+            return { };
+        const auto* command = reinterpret_cast<const load_command*>(commands.data());
+        if (command->cmdsize < sizeof(load_command) || command->cmdsize > commands.size() || command->cmdsize % 8)
+            return { };
+        if (command->cmd == LC_SEGMENT_64) {
+            if (command->cmdsize < sizeof(segment_command_64))
+                return { };
+            const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+            auto setSegment = [&](const char* name, const segment_command_64*& target) {
+                if (std::strncmp(name, segment->segname, sizeof(segment->segname)))
+                    return true;
+                if (target)
+                    return false;
+                target = segment;
+                return true;
+            };
+            if (!setSegment("__TEXT", text) || !setSegment("__SKHDR", metadata)
+                || !setSegment("__SKCODE", code) || !setSegment("__SKDATA", data))
+                return { };
+        }
+        commands = commands.subspan(command->cmdsize);
+    }
+    auto valid = [&](const segment_command_64* segment, vm_prot_t protection) {
+        return segment && segment->initprot == protection && segment->maxprot == protection
+            && segment->vmsize && segment->vmsize == segment->filesize
+            && !(segment->fileoff % page) && !(segment->vmaddr % page) && !(segment->filesize % page);
+    };
+    if (!commands.empty() || !text || text->fileoff || !valid(metadata, VM_PROT_READ)
+        || !valid(code, VM_PROT_READ | VM_PROT_EXECUTE) || (data && !valid(data, VM_PROT_READ)))
+        return { };
+    auto directlyAfter = [](const segment_command_64& first, const segment_command_64& next) {
+        return next.vmaddr >= first.vmaddr && next.vmaddr - first.vmaddr == first.vmsize
+            && next.fileoff >= first.fileoff && next.fileoff - first.fileoff == first.filesize;
+    };
+    if (!directlyAfter(*text, *metadata) || !directlyAfter(*metadata, *code) || (data && !directlyAfter(*code, *data)))
+        return { };
+    const auto& last = data ? *data : *code;
+    uintptr_t base = reinterpret_cast<uintptr_t>(module);
+    uint64_t lastOffset = last.vmaddr - text->vmaddr;
+    if (lastOffset > UINTPTR_MAX - base || last.vmsize > UINTPTR_MAX - base - lastOffset)
+        return { };
+    const auto* bytes = reinterpret_cast<const uint8_t*>(base + (metadata->vmaddr - text->vmaddr));
+    const auto& header = *reinterpret_cast<const AOT::ImageHeader*>(bytes);
+    size_t length = lastOffset - (metadata->vmaddr - text->vmaddr) + last.vmsize;
+    if (header.size != length || header.codeOffset != metadata->vmsize || header.executableSize != code->vmsize)
+        return { };
+    return { bytes, length };
+}
+#endif
+
+#if defined(_WIN32) || defined(__APPLE__)
 AOT::Wire::ImageVerdict useImageInModule(std::span<const uint8_t> bytes, const std::array<uint8_t, 16>& identity)
 {
     using AOT::Wire::ImageVerdict;
@@ -330,25 +405,41 @@ AOT::Wire::ImageVerdict useImageInModule(std::span<const uint8_t> bytes, const s
     size_t page = WTF::pageSize();
     if (reinterpret_cast<uintptr_t>(bytes.data()) % page || header.codeOffset % page || header.size % page)
         return ImageVerdict::Misaligned;
+    std::span<const uint8_t> executed = bytes.subspan(header.codeOffset, header.executableSize);
+#if defined(_WIN32)
     const uint8_t* base = moduleBaseOf(bytes.data());
     size_t endOfExecutedPart = header.codeOffset + header.executableSize;
-    std::span<const uint8_t> executed = bytes.subspan(header.codeOffset, header.executableSize);
     if (!base || base == reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr))
         || moduleBaseOf(bytes.data() + header.size - 1) != base
         || !liesInOneSectionOf(base, bytes.first(header.codeOffset), false)
         || !liesInOneSectionOf(base, executed, true)
         || !liesInOneSectionOf(base, bytes.subspan(endOfExecutedPart, header.size - endOfExecutedPart), false))
         return ImageVerdict::OutsideItsSegments;
+#else
+    static_assert(ENABLE(AOT_POSITION_INDEPENDENT_IMAGE));
+    auto mapped = mappedMachOImage(bytes.data());
+    if (mapped.data() != bytes.data() || mapped.size() != bytes.size())
+        return ImageVerdict::OutsideItsSegments;
+#endif
     if (header.sections[static_cast<size_t>(AOT::ImageSection::FaultSites)].size && lowestAccessibleAddress() < AOT::FaultSite::reach)
         return ImageVerdict::LowPagesAccessible;
+#if defined(_WIN32)
     if (!isExecuteRead(executed))
         return ImageVerdict::CannotMapCode;
+#endif
     AOT::Image::publish(AOT::Image::create(bytes, executed.data()));
     const AOT::Image& image = *AOT::Image::current();
 #if ENABLE(WEBASSEMBLY_OMGJIT)
     Wasm::CodeInImage::addImage(image.section<uint8_t>(AOT::ImageSection::WebAssemblyDirectory), image.webAssemblyCode());
 #else
     UNUSED_PARAM(image);
+#endif
+#if defined(__APPLE__)
+    sigset_t accessFaults;
+    sigemptyset(&accessFaults);
+    sigaddset(&accessFaults, SIGSEGV);
+    sigaddset(&accessFaults, SIGBUS);
+    pthread_sigmask(SIG_UNBLOCK, &accessFaults, nullptr);
 #endif
     activateSignalHandlersFor(Signal::AccessFault);
     return ImageVerdict::Accepted;
@@ -371,7 +462,7 @@ AOT::Wire::ImageVerdict useImageAt(std::span<const uint8_t> imageBytes, std::opt
     const auto& header = *reinterpret_cast<const AOT::ImageHeader*>(imageBytes.data());
     if (!header.options.useWideReferences() && !MarkedBlockCage::require())
         return ImageVerdict::NeedsCellCage;
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
     auto verdict = inModule ? useImageInModule(imageBytes, expected) : AOT::useImage(imageBytes, file, expected);
 #else
     if (inModule)
@@ -469,6 +560,15 @@ extern "C" uint32_t rjs_aot_load_mapped_with_profile(const uint8_t* bytes, size_
         initialImageView = bytes;
     return static_cast<uint32_t>(verdict);
 }
+
+#if defined(__APPLE__)
+extern "C" size_t rjs_aot_macho_image_at(const void* anchor, const uint8_t** bytes)
+{
+    auto image = mappedMachOImage(anchor);
+    *bytes = image.data();
+    return image.size();
+}
+#endif
 
 // An image the OS loader mapped as sections of a module the host loaded, such as a container DLL.
 extern "C" uint32_t rjs_aot_load_module_with_profile(const uint8_t* bytes, size_t length, const uint8_t* identity, uint32_t rawProfile)

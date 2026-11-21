@@ -6,6 +6,9 @@ use core::ffi::c_void;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+#[cfg(target_os = "macos")]
+mod macho;
+
 /// Exact experimental frontend/wire-table provenance.
 pub const FRONTEND_REVISION: &str = "237bba51e98a8b3d5b62d2d6c33853c2e83820a7";
 pub const ENGINE_VERSION: &str = env!("REDJS_AOT_ENGINE_VERSION");
@@ -112,6 +115,8 @@ unsafe extern "C" {
     fn rjs_aot_admits_host_files() -> i32;
     fn rjs_aot_has_closed_library() -> i32;
     fn rjs_aot_forget_context(context: *mut c_void);
+    #[cfg(target_os = "macos")]
+    fn rjs_aot_macho_image_at(anchor: *const c_void, bytes: *mut *const u8) -> usize;
 }
 
 #[derive(Debug)]
@@ -301,7 +306,7 @@ pub unsafe fn load_mapped_image_with_profile(
 }
 
 /// Uses an image the OS loader mapped as read-only and executable sections of a module the host
-/// loaded (Windows: a DLL from `LoadLibraryExW`), in place. The module must stay loaded.
+/// loaded, in place. The module must stay loaded.
 ///
 /// # Safety
 /// As for [`load_mapped_image_with_profile`].
@@ -320,6 +325,59 @@ pub unsafe fn load_module_image_with_profile(
         )
     };
     verdict_result(verdict, profile)
+}
+
+/// Maps a trusted Mach-O AOT dylib and returns its native image for validation.
+///
+/// # Safety
+/// `path` must name a trusted build artifact in a trusted directory. The system loader can
+/// execute library initializers. The successful dylib mapping stays alive for the process.
+#[cfg(target_os = "macos")]
+pub unsafe fn map_macho_image(path: &Path) -> std::io::Result<&'static [u8]> {
+    use std::ffi::{CStr, CString};
+    use std::io::{Error, ErrorKind};
+    use std::os::unix::ffi::OsStrExt;
+
+    let absolute = path.canonicalize()?;
+    macho::preflight(&absolute)?;
+    let path = CString::new(absolute.as_os_str().as_bytes())
+        .map_err(|error| Error::new(ErrorKind::InvalidInput, error))?;
+    // SAFETY: The caller trusts the library and the path is absolute and null-terminated.
+    let handle = unsafe {
+        libc::dlopen(
+            path.as_ptr(),
+            libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_FIRST,
+        )
+    };
+    if handle.is_null() {
+        // SAFETY: dlerror returns a thread-local, null-terminated diagnostic until another call.
+        let error = unsafe { libc::dlerror() };
+        let detail = if error.is_null() {
+            "macOS could not load the image dylib".into()
+        } else {
+            unsafe { CStr::from_ptr(error) }.to_string_lossy()
+        };
+        return Err(Error::new(ErrorKind::InvalidData, detail.into_owned()));
+    }
+    // SAFETY: The handle has a live reference and RTLD_FIRST confines lookup to the container.
+    let anchor = unsafe { libc::dlsym(handle, c"skathi_image_anchor".as_ptr()) };
+    let mut bytes = std::ptr::null();
+    let length = if anchor.is_null() {
+        0
+    } else {
+        // SAFETY: dyld mapped the trusted module that owns this address.
+        unsafe { rjs_aot_macho_image_at(anchor, &mut bytes) }
+    };
+    if bytes.is_null() || length == 0 || length > isize::MAX as usize {
+        // SAFETY: No image slice was retained and this reference belongs to this call.
+        unsafe { libc::dlclose(handle) };
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "it holds no native image",
+        ));
+    }
+    // SAFETY: The native loader checked the mapped ranges and this reference is never closed.
+    Ok(unsafe { std::slice::from_raw_parts(bytes, length) })
 }
 
 /// Read-only diagnostics for the image on this VM thread; no initialization.
@@ -392,6 +450,20 @@ impl Context {
 mod tests {
     use super::*;
     use std::io::{self, Read};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires the signed dylib fixture from scripts/aot/verify-macho.ts"]
+    fn signed_macho_image_is_mapped_in_place() {
+        let path =
+            std::env::var_os("SK_MACHO_TEST_CONTAINER").expect("missing signed Mach-O fixture");
+        // SAFETY: the test harness created and signed this initializer-free library.
+        let image = unsafe { map_macho_image(Path::new(&path)) }.unwrap();
+        assert_eq!(&image[..8], b"BUNAOT01");
+        assert_eq!(image.len(), 3 * 16384);
+        assert_eq!(image.as_ptr().align_offset(16384), 0);
+        assert_eq!(&image[16384..16388], &0xa9bf7bfdu32.to_le_bytes());
+    }
     struct Chunked {
         bytes: Vec<u8>,
         offset: usize,
