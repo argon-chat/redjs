@@ -495,6 +495,8 @@ pub(crate) struct EmbedderOut {
     pub channel_mask: u32,
     pub label: String,
     pub bus: Option<Arc<BusCell>>,
+    /// Why the embedder's backend did not take the stream, on the silent output.
+    pub silent: Option<Option<String>>,
 }
 
 pub(crate) enum RedBackend {
@@ -522,8 +524,21 @@ impl AudioBackend for RedBackend {
                 Err(e) => refused = config.objects.then_some(e),
             }
         }
-        let (mut out, info) =
-            open_cpal(&config).inspect_err(|_| START_REFUSAL.set(refused.clone()))?;
+        let (mut out, info) = match open_cpal(&config) {
+            Ok(open) => open,
+            // A chosen device that is gone is the page's to hear about; the default one is not.
+            Err(e) if config.device.is_none() || config.fallback => {
+                static TOLD: AtomicBool = AtomicBool::new(false);
+                if !TOLD.swap(true, Ordering::AcqRel) {
+                    eprintln!("[audio] no output could be opened ({e}): contexts run silent");
+                }
+                return open_silent(&config, refused);
+            }
+            Err(e) => {
+                START_REFUSAL.set(refused);
+                return Err(e);
+            }
+        };
         out.refused = refused;
         Ok((RedBackend::Cpal(out), info))
     }
@@ -581,6 +596,93 @@ fn open_offline(
         channel_mask: 0,
         label: String::new(),
         bus: None,
+        silent: None,
+    };
+    Ok((RedBackend::Embedder(out), info))
+}
+
+/// The output of a machine with none: a thread renders the graph at the pace of a clock and
+/// drops the audio, so the context's time moves and its sources end, as a browser's do.
+struct SilentStream {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl OutputStream for SilentStream {
+    fn poll(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+impl Drop for SilentStream {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+const SILENT_CHANNELS: usize = 2;
+const SILENT_BLOCK_FRAMES: usize = 256;
+const SILENT_TICK: Duration = Duration::from_millis(4);
+
+fn open_silent(
+    config: &RedConfig,
+    refused: Option<String>,
+) -> Result<(RedBackend, StreamInfo), OutputError> {
+    let rate = config
+        .sample_rate
+        .and_then(core::num::NonZeroU32::new)
+        .unwrap_or(core::num::NonZeroU32::new(48_000).unwrap());
+    let (tx, rx) = mpsc::sync_channel(1);
+    let mut renderer = Renderer {
+        rx,
+        processor: None,
+        bus: Arc::new(OnceLock::new()),
+        started: Instant::now(),
+        gate: Gate::new(Arc::clone(&config.suspended)),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
+    let per_second = rate.get() as f64;
+    let thread = std::thread::Builder::new()
+        .name("audio-silent".into())
+        .spawn(move || {
+            let mut out = vec![0.0f32; SILENT_BLOCK_FRAMES * SILENT_CHANNELS];
+            let mut last = Instant::now();
+            let mut owed = 0.0f64;
+            while !stopped.load(Ordering::Acquire) {
+                std::thread::sleep(SILENT_TICK);
+                let now = Instant::now();
+                // A thread that was held up does not render the whole gap in one burst.
+                owed = (owed + (now - last).as_secs_f64() * per_second).min(per_second / 4.0);
+                last = now;
+                while owed >= SILENT_BLOCK_FRAMES as f64 {
+                    renderer.render(&mut out, SILENT_CHANNELS, SILENT_BLOCK_FRAMES);
+                    owed -= SILENT_BLOCK_FRAMES as f64;
+                }
+            }
+        })
+        .map_err(|e| OutputError(e.to_string()))?;
+    let info = StreamInfo {
+        sample_rate: rate,
+        prev_sample_rate: rate,
+        max_block_frames: GRAPH_BLOCK_FRAMES,
+        num_stream_out_channels: SILENT_CHANNELS as u32,
+        ..Default::default()
+    };
+    let out = EmbedderOut {
+        stream: Box::new(SilentStream {
+            stop,
+            thread: Some(thread),
+        }),
+        to_renderer: tx,
+        channels: SILENT_CHANNELS as u32,
+        channel_mask: 0,
+        label: String::new(),
+        bus: None,
+        silent: Some(refused),
     };
     Ok((RedBackend::Embedder(out), info))
 }
@@ -635,6 +737,7 @@ fn open_embedder(
         channel_mask: open.channel_mask,
         label: open.label,
         bus: (open.max_objects > 0).then_some(bus),
+        silent: None,
     };
     Ok((RedBackend::Embedder(out), info))
 }

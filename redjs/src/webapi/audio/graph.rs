@@ -586,6 +586,9 @@ pub(super) fn unwire(eng: &mut Engine, rec: &mut NodeRec) {
 pub(super) fn adopt_output(eng: &mut Engine) {
     let (channels, mask, objects, refused) = match eng.fw.active_backend() {
         Some(RedBackend::Cpal(c)) => (c.channels, 0, None, c.refused.clone()),
+        Some(RedBackend::Embedder(e)) if e.silent.is_some() => {
+            (e.channels, 0, None, e.silent.clone().flatten())
+        }
         Some(RedBackend::Embedder(e)) => {
             let slots = e.bus.as_ref().and_then(|b| b.get()).map_or(0, |b| b.len());
             let objects = Objects {
