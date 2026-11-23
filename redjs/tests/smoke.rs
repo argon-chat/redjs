@@ -515,6 +515,30 @@ fn webapi_encoding_url_blob(ctx: &Context) {
         "Привет|AЖ|windows-1252|type|range|3|6"
     );
 
+    // decode(…, { stream: true }) keeps a split character and the BOM state until a flushing call.
+    let v = ctx
+        .eval(
+            "(() => { \
+             const d = new TextDecoder(); \
+             const split = d.decode(new Uint8Array([0xEF, 0xBB, 0xBF, 0xE2, 0x82]), { stream: true }) \
+               + d.decode(new Uint8Array([0xAC]), { stream: true }) + d.decode(); \
+             const tail = d.decode(new Uint8Array([0xE2]), { stream: true }) + d.decode(); \
+             const strict = new TextDecoder('utf-16le', { fatal: true }); \
+             strict.decode(new Uint8Array([0x3D]), { stream: true }); \
+             let flush = 'no'; \
+             try { strict.decode(); } catch (e) { flush = e instanceof TypeError ? 'type' : 'other'; } \
+             let brand = 'no'; \
+             try { TextDecoder.prototype.decode.call({}, new Uint8Array(1)); } catch (e) { brand = e.name; } \
+             class Sub extends TextDecoder {} \
+             const sub = new Sub('shift_jis'); \
+             return [split, tail.codePointAt(0), flush, brand, sub instanceof Sub, sub.encoding].join('|'); })()",
+        )
+        .unwrap();
+    assert_eq!(
+        ctx.to_rust_string(v).unwrap(),
+        "€|65533|type|TypeError|true|shift_jis"
+    );
+
     // crypto.subtle.digest against known SHA test vectors.
     let probe = ctx
         .eval("(() => { try { crypto.subtle.digest('SHA-256', new Uint8Array([1])); return 'sync-ok'; } catch (e) { return 'sync-throw: ' + e; } })()")
