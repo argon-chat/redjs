@@ -1,6 +1,6 @@
 [package]
 name = "redjs"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 build = "build.rs"
@@ -36,7 +36,7 @@ members = ["webgpu"]
 crate-type = ["rlib"]
 
 [dependencies]
-redjs-macros = { path = "macros", version = "0.6.0" }
+redjs-macros = { path = "macros", version = "0.7.0" }
 # Image decoding for the web shim (HTMLImageElement / createImageBitmap).
 # Pure-Rust decoders only; matches the formats apps actually ship.
 url = "2"
