@@ -263,8 +263,11 @@ unsafe fn construct_element(g: *mut c_void, cf: *mut c_void) -> u64 {
 
 #[crate::host_fn]
 unsafe fn is_canvas(g: *mut c_void, cf: *mut c_void) -> u64 {
-    let brand = get(g, cf_arg(cf, 0), "__brand");
-    enc_bool(glue::rjs_strict_equals(g, brand, js_string(g, "HTMLCanvasElement")) == 1)
+    let value = cf_arg(cf, 0);
+    let is = |key: &str, want: &str| {
+        glue::rjs_strict_equals(g, get(g, value, key), js_string(g, want)) == 1
+    };
+    enc_bool(is("__brand", "HTMLCanvasElement") || is("tagName", "CANVAS"))
 }
 
 unsafe fn element(g: *mut c_void, canvas: bool) -> JsResult {
@@ -387,6 +390,8 @@ mod tests {
         ok(
             &c,
             "({ __brand: 'HTMLCanvasElement' }) instanceof HTMLCanvasElement \
+                && ({ tagName: 'CANVAS' }) instanceof HTMLCanvasElement \
+                && !({ tagName: 'DIV' } instanceof HTMLCanvasElement) \
                 && !(new HTMLCanvasElement() instanceof HTMLCanvasElement) \
                 && !({ get __brand() { throw Error('ignored'); } } instanceof HTMLCanvasElement) \
                 && Object.prototype.toString.call(new HTMLCanvasElement()) === '[object HTMLCanvasElement]'",
