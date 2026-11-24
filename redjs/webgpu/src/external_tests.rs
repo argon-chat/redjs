@@ -18,6 +18,95 @@ fn external(c: &Context, body: &str) -> String {
 }
 
 #[test]
+fn video_frame_format_follows_its_source_and_clone() {
+    use crate::video::{Frame, PixelFormat, SourceError};
+    unsafe fn resolve(g: *mut c_void, object: u64) -> Option<Result<Frame, SourceError>> {
+        let global = redjs::glue::rjs_global(g);
+        let format = if object == redjs::webapi::util::get(g, global, "rgbaElement") {
+            PixelFormat::Rgba
+        } else if object == redjs::webapi::util::get(g, global, "bgraElement") {
+            PixelFormat::Bgra
+        } else {
+            return None;
+        };
+        Some(Ok(
+            Frame::packed(1, 1, 0, vec![1, 2, 3, 255], format).unwrap()
+        ))
+    }
+    let c = ctx();
+    crate::video::set_element_source(c.raw(), resolve);
+    ok(
+        &c,
+        r#"
+        globalThis.rgbaElement = {}; globalThis.bgraElement = {};
+        const rgba = new VideoFrame(rgbaElement), bgra = new VideoFrame(bgraElement);
+        const clone = bgra.clone(); bgra.close();
+        const rgbx = new VideoFrame(new Uint8Array(4), {format:'RGBX', codedWidth:1, codedHeight:1, timestamp:0});
+        rgba.format === 'RGBA' && clone.format === 'BGRA' && bgra.format === null && new VideoFrame(rgbx).format === 'RGBX'
+    "#,
+    );
+}
+
+#[test]
+fn webgpu_video_frame_copy_and_external_shader_read_back_the_same_snapshot() {
+    let _host = HostGuard::new();
+    let c = ctx();
+    let result = external(
+        &c,
+        r#"
+        const input = new Uint8Array([0,0,255,255, 0,255,0,255, 17,17,17,17, 255,0,0,128, 255,255,255,255]);
+        const original = new VideoFrame(input, {format:'BGRA', codedWidth:2, codedHeight:2,
+            timestamp:-2, duration:3, layout:[{offset:0,stride:12}]});
+        input.fill(0);
+        const frame = original.clone(); original.close();
+        if (original.codedWidth || frame.timestamp !== -2 || frame.duration !== 3) return 'frame metadata';
+        const t = makeTexture();
+        d.pushErrorScope('validation');
+        d.queue.copyExternalImageToTexture({source:frame,flipY:true},{texture:t,premultipliedAlpha:true},[2,2]);
+        let error = await d.popErrorScope(); if (error) return error.message;
+        let got = Array.from(await readTexture(t,2,2)).join();
+        if (got !== '0,0,128,128,255,255,255,255,255,0,0,255,0,255,0,255') return 'copy: '+got;
+        let ext;
+        try { ext = d.importExternalTexture({source:frame, label:'clip'}); }
+        catch(e) { if(e.name === 'NotSupportedError') { frame.close(); d.destroy(); return 'copy only'; } throw e; }
+        if (!(ext instanceof GPUExternalTexture) || ext.label !== 'clip') return 'external interface';
+        const layout = d.createBindGroupLayout({entries:[{binding:0, visibility:GPUShaderStage.FRAGMENT, externalTexture:{}}]});
+        const module = d.createShaderModule({code:`
+            @group(0) @binding(0) var picture: texture_external;
+            @vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {
+                let p=array(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3)); return vec4f(p[i],0,1);
+            }
+            @fragment fn fs(@builtin(position) at:vec4f)->@location(0) vec4f {return textureLoad(picture,vec2u(at.xy));}`});
+        d.pushErrorScope('validation');
+        const pipeline = d.createRenderPipeline({layout:d.createPipelineLayout({bindGroupLayouts:[layout]}),
+            vertex:{module,entryPoint:'vs'}, fragment:{module,entryPoint:'fs',targets:[{format:'rgba8unorm'}]}});
+        const group = d.createBindGroup({layout,entries:[{binding:0,resource:ext}]});
+        function draw() {
+            const enc=d.createCommandEncoder(), pass=enc.beginRenderPass({colorAttachments:[
+                {view:t.createView(), loadOp:'clear', clearValue:[0,0,0,0], storeOp:'store'}]});
+            pass.setPipeline(pipeline); pass.setBindGroup(0,group); pass.draw(3); pass.end(); return enc.finish();
+        }
+        d.queue.submit([draw()]);
+        error = await d.popErrorScope(); if(error) return error.message;
+        got = Array.from(await readTexture(t,2,2)).join();
+        if (got !== '255,0,0,255,0,255,0,255,0,0,255,128,255,255,255,255') return 'sample: '+got;
+        const command=draw(); frame.close();
+        d.pushErrorScope('validation'); d.queue.submit([command]);
+        if (!(await d.popErrorScope() instanceof GPUValidationError)) return 'expired binding';
+        try { d.queue.copyExternalImageToTexture({source:frame},{texture:t},[1,1]); return 'closed copy'; }
+        catch(e) { if(e.name!=='InvalidStateError') throw e; }
+        d.destroy(); return 'sampled';
+    "#,
+    );
+    let native = _host
+        .gpu
+        .device
+        .features()
+        .contains(wgpu::Features::EXTERNAL_TEXTURE);
+    assert_eq!(result, if native { "sampled" } else { "copy only" });
+}
+
+#[test]
 fn webgpu_external_image_data_crop_flip_and_destination_subresource() {
     let _host = HostGuard::new();
     let c = ctx();

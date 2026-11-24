@@ -15,6 +15,8 @@ mod readback;
 #[cfg(test)]
 mod tests;
 mod texture;
+pub mod video;
+mod wgsl;
 
 use backend::{Adapter, Client};
 use core::ffi::c_void;
@@ -27,6 +29,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Makes every redjs context installed after this call carry `navigator.gpu`.
 pub fn register() {
     redjs::webapi::gpu_ext::register(&Extension);
+    redjs::web::on_checkpoint(video::expire_elements);
 }
 
 struct Extension;
@@ -65,6 +68,8 @@ impl redjs::webapi::gpu_ext::GpuExtension for Extension {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Kind {
+    VideoFrame,
+    ExternalTexture,
     Gpu,
     Canvas,
     Adapter,
@@ -95,6 +100,8 @@ enum Kind {
 }
 #[derive(Clone)]
 enum Resource {
+    VideoFrame(Arc<video::FrameHandle>),
+    ExternalTexture(Arc<video::Imported>),
     Gpu,
     Canvas(Arc<canvas::Surface>),
     Adapter(Arc<Adapter>),
@@ -166,6 +173,8 @@ struct Scope {
 }
 #[derive(Default)]
 struct State {
+    video_source: Option<video::ElementSource>,
+    video_imports: Vec<std::sync::Weak<video::Imported>>,
     classes: Option<Classes>,
     pending: HashMap<u64, Pending>,
     ready: VecDeque<Box<dyn FnOnce(*mut c_void) + Send>>,
@@ -388,6 +397,7 @@ unsafe fn invalid(g: *mut c_void, msg: &str) -> Result<(), ()> {
 // lifetime even though the underlying native texture is still alive.
 fn resource_alive(r: &Resource) -> bool {
     match r {
+        Resource::ExternalTexture(t) => !t.expired.load(Ordering::Acquire),
         Resource::Buffer(b) => !b.destroyed.load(Ordering::Acquire),
         Resource::Texture(t) => !t.destroyed.load(Ordering::Acquire),
         Resource::TextureView(v) => !v._owner.destroyed.load(Ordering::Acquire),
@@ -771,8 +781,9 @@ unsafe fn preferred_format(g: *mut c_void, cf: *mut c_void) -> u64 {
     })
 }
 unsafe fn features_object(g: *mut c_void, features: wgpu::Features) -> u64 {
-    let names = feature_names()
-        .into_iter()
+    let names = WEB_FEATURES
+        .iter()
+        .copied()
         .filter(|(_, flag)| features.contains(*flag))
         .map(|(name, _)| name)
         .collect();
@@ -866,14 +877,43 @@ unsafe fn plain(g: *mut c_void, kind: Kind) -> u64 {
         .proto;
     new_object(g, proto)
 }
-// Capability advertising follows implemented APIs. Compressed texture, f16 and
-// subgroup surfaces need per-client shader virtualization on a shared device.
-fn feature_names() -> [(&'static str, wgpu::Features); 2] {
-    [
-        ("core-features-and-limits", wgpu::Features::empty()),
-        ("timestamp-query", wgpu::Features::TIMESTAMP_QUERY),
-    ]
-}
+use wgpu::Features;
+const WEB_FEATURES: &[(&str, Features)] = &[
+    ("core-features-and-limits", Features::empty()),
+    ("depth-clip-control", Features::DEPTH_CLIP_CONTROL),
+    ("depth32float-stencil8", Features::DEPTH32FLOAT_STENCIL8),
+    ("texture-compression-bc", Features::TEXTURE_COMPRESSION_BC),
+    (
+        "texture-compression-bc-sliced-3d",
+        Features::TEXTURE_COMPRESSION_BC_SLICED_3D,
+    ),
+    (
+        "texture-compression-etc2",
+        Features::TEXTURE_COMPRESSION_ETC2,
+    ),
+    (
+        "texture-compression-astc",
+        Features::TEXTURE_COMPRESSION_ASTC,
+    ),
+    (
+        "texture-compression-astc-sliced-3d",
+        Features::TEXTURE_COMPRESSION_ASTC_SLICED_3D,
+    ),
+    ("timestamp-query", Features::TIMESTAMP_QUERY),
+    ("indirect-first-instance", Features::INDIRECT_FIRST_INSTANCE),
+    ("shader-f16", Features::SHADER_F16),
+    (
+        "rg11b10ufloat-renderable",
+        Features::RG11B10UFLOAT_RENDERABLE,
+    ),
+    ("bgra8unorm-storage", Features::BGRA8UNORM_STORAGE),
+    ("float32-filterable", Features::FLOAT32_FILTERABLE),
+    ("float32-blendable", Features::FLOAT32_BLENDABLE),
+    ("clip-distances", Features::CLIP_DISTANCES),
+    ("dual-source-blending", Features::DUAL_SOURCE_BLENDING),
+    ("subgroups", Features::SUBGROUP),
+    ("primitive-index", Features::PRIMITIVE_INDEX),
+];
 #[redjs::host_fn]
 unsafe fn adapter_features(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
@@ -991,7 +1031,7 @@ unsafe fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
             .unwrap()
             .s_info;
         Ok(cached(g, cf_this(cf), slot, || {
-            info_object(g, a.raw.get_info())
+            info_object(g, a.raw.get_info(), a.features())
         }))
     })
 }
@@ -999,14 +1039,14 @@ unsafe fn adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
 unsafe fn device_adapter_info(g: *mut c_void, cf: *mut c_void) -> u64 {
     run(g, || {
         let h = this(g, cf, Kind::Device)?;
-        let adapter = h.client.unwrap().context.adapter.clone();
+        let client = h.client.unwrap();
         let slot = with_classes(g, |c| c.s_info);
         Ok(cached(g, cf_this(cf), slot, || {
-            info_object(g, adapter.get_info())
+            info_object(g, client.context.adapter.get_info(), client.features)
         }))
     })
 }
-unsafe fn info_object(g: *mut c_void, i: wgpu::AdapterInfo) -> u64 {
+unsafe fn info_object(g: *mut c_void, i: wgpu::AdapterInfo, features: Features) -> u64 {
     let o = Val::new(g, plain(g, Kind::AdapterInfo));
     for (k, v) in [
         ("vendor", format!("{:x}", i.vendor)),
@@ -1016,8 +1056,12 @@ unsafe fn info_object(g: *mut c_void, i: wgpu::AdapterInfo) -> u64 {
     ] {
         define(g, o.v, k, js_string(g, &v), 1 | 2);
     }
-    // The spec's values while "subgroups" is not an exposed feature.
-    for (k, v) in [("subgroupMinSize", 4), ("subgroupMaxSize", 128)] {
+    let (min, max) = if features.contains(Features::SUBGROUP) {
+        (i.subgroup_min_size, i.subgroup_max_size)
+    } else {
+        (4, 128)
+    };
+    for (k, v) in [("subgroupMinSize", min), ("subgroupMaxSize", max)] {
         define(g, o.v, k, enc_f64(v as f64), 1 | 2);
     }
     define(
@@ -1042,8 +1086,9 @@ unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
         let available = a.features();
         for v in seq(g, field(g, d.v, "requiredFeatures")?.v)? {
             let name = text(g, v.v, "")?;
-            let Some((_, flag)) = feature_names()
-                .into_iter()
+            let Some((_, flag)) = WEB_FEATURES
+                .iter()
+                .copied()
                 .find(|(n, flag)| *n == name && available.contains(*flag))
             else {
                 return Ok(redjs::webapi::domexception::rejected(
@@ -1053,6 +1098,12 @@ unsafe fn request_device(g: *mut c_void, cf: *mut c_void) -> u64 {
                 ));
             };
             features |= flag;
+        }
+        if features.contains(Features::TEXTURE_COMPRESSION_BC_SLICED_3D) {
+            features |= Features::TEXTURE_COMPRESSION_BC;
+        }
+        if features.contains(Features::TEXTURE_COMPRESSION_ASTC_SLICED_3D) {
+            features |= Features::TEXTURE_COMPRESSION_ASTC;
         }
         let l = field(g, d.v, "requiredLimits")?;
         let adapter_limits = a.limits();
@@ -1466,10 +1517,7 @@ unsafe fn make_gpu_host_class(name: &str) -> capi::JSClassRef {
 }
 
 pub(crate) unsafe fn install(g: *mut c_void) {
-    states()
-        .lock()
-        .unwrap()
-        .insert(g as usize, State::default());
+    states().lock().unwrap().entry(g as usize).or_default();
     let global = glue::rjs_global(g);
     let array = Val::new(g, get(g, global, "Array"));
     let from = Val::new(g, get(g, array.v, "from"));
@@ -1541,6 +1589,7 @@ pub(crate) unsafe fn install(g: *mut c_void) {
             ("destroy", 0, destroy),
             ("pushErrorScope", 1, push_scope),
             ("popErrorScope", 0, pop_scope),
+            ("importExternalTexture", 1, video::import),
         ],
         &[
             ("features", device_features),
@@ -1561,6 +1610,7 @@ pub(crate) unsafe fn install(g: *mut c_void) {
     );
     glue::rjs_atom_free(g, a);
     class(g, Kind::Queue, "GPUQueue", &[], &[]);
+    video::install(g);
     for (kind, name) in [
         (Kind::Features, "GPUSupportedFeatures"),
         (Kind::LanguageFeatures, "WGSLLanguageFeatures"),
@@ -1702,6 +1752,7 @@ unsafe fn class(
     let object_base = !matches!(
         kind,
         Kind::Gpu
+            | Kind::VideoFrame
             | Kind::Canvas
             | Kind::Adapter
             | Kind::Features
@@ -1715,8 +1766,12 @@ unsafe fn class(
         g,
         &ClassSpec {
             name,
-            arity: 0,
-            construct: None,
+            arity: u32::from(kind == Kind::VideoFrame),
+            construct: if kind == Kind::VideoFrame {
+                Some(video::construct)
+            } else {
+                None
+            },
             parent_proto: parent,
             methods,
             getters,

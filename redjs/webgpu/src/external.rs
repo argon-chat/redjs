@@ -1,6 +1,8 @@
 //! External-image copies: source snapshots, conversion, native queue upload.
 use super::*;
 use redjs::webapi::image::{external_pixels, ExternalImage};
+#[path = "video_blit.rs"]
+mod video_blit;
 
 unsafe fn source_origin(g: *mut c_void, value: u64) -> Result<(u32, u32), ()> {
     if value == UNDEF || value == NULL {
@@ -219,16 +221,28 @@ pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
         }
         // Both the source and destination dictionaries can execute arbitrary JS.
         // Resolve and own the actual pixels only once those conversions finish.
-        let pixels = external_pixels(g, source.v, 0)?;
-        if !pixels.origin_clean {
+        let video = video::source(g, source.v)?;
+        let pixels = if video.is_none() {
+            Some(external_pixels(g, source.v, 0)?)
+        } else {
+            None
+        };
+        if pixels.as_ref().is_some_and(|p| !p.origin_clean) {
             return Ok(redjs::webapi::domexception::throw(
                 g,
                 "SecurityError",
                 "External image source is not origin-clean",
             ));
         }
-        if u64::from(src_origin.0) + u64::from(size.width) > u64::from(pixels.width)
-            || u64::from(src_origin.1) + u64::from(size.height) > u64::from(pixels.height)
+        let (width, height) = match &video {
+            Some(v) => (v.frame.width, v.frame.height),
+            None => {
+                let p = pixels.as_ref().unwrap();
+                (p.width, p.height)
+            }
+        };
+        if u64::from(src_origin.0) + u64::from(size.width) > u64::from(width)
+            || u64::from(src_origin.1) + u64::from(size.height) > u64::from(height)
             || size.depth_or_array_layers > 1
         {
             return Ok(redjs::webapi::domexception::throw(
@@ -254,10 +268,28 @@ pub(super) unsafe fn copy(g: *mut c_void, cf: *mut c_void) -> u64 {
         if size.width == 0 || size.height == 0 || size.depth_or_array_layers == 0 {
             return Ok(UNDEF);
         }
-        let bytes =
-            convert(&pixels, src_origin, size, flip, premultiply, encoding).map_err(|e| {
+        if let Some(video) = video {
+            checked(g, &c, || {
+                let plane = video.frame.texture(&c.context)?;
+                video_blit::copy(&c, &plane, &dest, src_origin, size, flip, premultiply);
+                Ok::<(), String>(())
+            })
+            .map_err(|e| {
                 redjs::webapi::domexception::throw(g, "OperationError", &e);
             })?;
+            return Ok(UNDEF);
+        }
+        let bytes = convert(
+            &pixels.unwrap(),
+            src_origin,
+            size,
+            flip,
+            premultiply,
+            encoding,
+        )
+        .map_err(|e| {
+            redjs::webapi::domexception::throw(g, "OperationError", &e);
+        })?;
         checked(g, &c, || {
             c.context.queue.write_texture(
                 dest.descriptor(),

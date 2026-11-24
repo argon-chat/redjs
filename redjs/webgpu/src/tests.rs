@@ -461,6 +461,67 @@ fn webgpu_error_scopes_capture_real_shader_and_usage_validation() {
 }
 
 #[test]
+fn adapter_exposes_backend_features_and_devices_opt_in() {
+    let host = HostGuard::new();
+    let c = ctx();
+    let expected = super::WEB_FEATURES
+        .iter()
+        .filter(|(_, flag)| host.gpu.adapter.features().contains(*flag))
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        run(
+            &c,
+            "const a=await navigator.gpu.requestAdapter(); return [...a.features].join(',');"
+        ),
+        expected
+    );
+    assert_eq!(
+        run(
+            &c,
+            r#"
+        const adapter = await navigator.gpu.requestAdapter();
+        const requiredFeatures = [...adapter.features];
+        const device = await adapter.requestDevice({requiredFeatures});
+        if (!requiredFeatures.every(f => device.features.has(f))) return 'missing requested feature';
+        const base = await (await navigator.gpu.requestAdapter()).requestDevice();
+        if (base.features.size !== 1) return 'optional features leaked';
+        if (device.features.has('subgroups')) {
+            const code = '/* enable other; */ enable /* nested /* name */ */ subgroups;\n' +
+                '@compute @workgroup_size(32) fn main() { let sum = subgroupAdd(1u); }';
+            device.pushErrorScope('validation');
+            device.createComputePipeline({layout:'auto',compute:{module:device.createShaderModule({code}),entryPoint:'main'}});
+            const error=await device.popErrorScope(); if(error) return error.message;
+        }
+        if (device.features.has('shader-f16')) {
+            const code = 'enable f16; @compute @workgroup_size(1) fn main() { let v = 1h; }';
+            for (const d of [device, base]) {
+                d.pushErrorScope('validation');
+                d.createShaderModule({code});
+                const error = await d.popErrorScope();
+                if ((error === null) !== (d === device)) return 'incorrect WGSL feature gating';
+            }
+        }
+        for (const [feature, format, size] of [
+            ['texture-compression-bc','bc7-rgba-unorm-srgb',4],
+            ['texture-compression-etc2','eac-r11snorm',4],
+            ['texture-compression-astc','astc-10x10-unorm-srgb',10]
+        ]) {
+            if (!device.features.has(feature)) continue;
+            device.pushErrorScope('validation');
+            const t = device.createTexture({format, size:[size,size], usage:GPUTextureUsage.TEXTURE_BINDING});
+            if (t.format !== format || await device.popErrorScope()) return format;
+            t.destroy();
+        }
+        device.destroy(); base.destroy(); return true;
+    "#
+        ),
+        "true"
+    );
+}
+
+#[test]
 fn webgpu_requested_limits_and_unknown_features_reject_without_destroying_host() {
     let _host = HostGuard::new();
     let c = ctx();

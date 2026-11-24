@@ -65,18 +65,79 @@ macro_rules! formats {
         "rg32uint"=>Rg32Uint,"rg32sint"=>Rg32Sint,"rg32float"=>Rg32Float,
         "rgba16uint"=>Rgba16Uint,"rgba16sint"=>Rgba16Sint,"rgba16float"=>Rgba16Float,
         "rgba32uint"=>Rgba32Uint,"rgba32sint"=>Rgba32Sint,"rgba32float"=>Rgba32Float,
-        "stencil8"=>Stencil8,"depth16unorm"=>Depth16Unorm,"depth24plus"=>Depth24Plus,"depth24plus-stencil8"=>Depth24PlusStencil8,"depth32float"=>Depth32Float,"depth32float-stencil8"=>Depth32FloatStencil8
+        "stencil8"=>Stencil8,"depth16unorm"=>Depth16Unorm,"depth24plus"=>Depth24Plus,"depth24plus-stencil8"=>Depth24PlusStencil8,"depth32float"=>Depth32Float,"depth32float-stencil8"=>Depth32FloatStencil8,
+        "bc1-rgba-unorm"=>Bc1RgbaUnorm,
+        "bc1-rgba-unorm-srgb"=>Bc1RgbaUnormSrgb,
+        "bc2-rgba-unorm"=>Bc2RgbaUnorm,
+        "bc2-rgba-unorm-srgb"=>Bc2RgbaUnormSrgb,
+        "bc3-rgba-unorm"=>Bc3RgbaUnorm,
+        "bc3-rgba-unorm-srgb"=>Bc3RgbaUnormSrgb,
+        "bc4-r-unorm"=>Bc4RUnorm,
+        "bc4-r-snorm"=>Bc4RSnorm,
+        "bc5-rg-unorm"=>Bc5RgUnorm,
+        "bc5-rg-snorm"=>Bc5RgSnorm,
+        "bc6h-rgb-ufloat"=>Bc6hRgbUfloat,
+        "bc6h-rgb-float"=>Bc6hRgbFloat,
+        "bc7-rgba-unorm"=>Bc7RgbaUnorm,
+        "bc7-rgba-unorm-srgb"=>Bc7RgbaUnormSrgb,
+        "etc2-rgb8unorm"=>Etc2Rgb8Unorm,
+        "etc2-rgb8unorm-srgb"=>Etc2Rgb8UnormSrgb,
+        "etc2-rgb8a1unorm"=>Etc2Rgb8A1Unorm,
+        "etc2-rgb8a1unorm-srgb"=>Etc2Rgb8A1UnormSrgb,
+        "etc2-rgba8unorm"=>Etc2Rgba8Unorm,
+        "etc2-rgba8unorm-srgb"=>Etc2Rgba8UnormSrgb,
+        "eac-r11unorm"=>EacR11Unorm,
+        "eac-r11snorm"=>EacR11Snorm,
+        "eac-rg11unorm"=>EacRg11Unorm,
+        "eac-rg11snorm"=>EacRg11Snorm
     }};
 }
 macro_rules! parse_formats {
     ($($key:literal=>$variant:ident),*) => {
-        pub(super) unsafe fn parse_format(g:*mut c_void,v:u64)->Result<wgpu::TextureFormat,()> {
-            let name=text(g,v,"")?;
-            match name.as_str() {$($key=>Ok(wgpu::TextureFormat::$variant),)*_=>{invalid(g,&format!("Unsupported GPUTextureFormat: {name}"))?;unreachable!()}}
+        fn format_by_name(name: &str) -> Option<wgpu::TextureFormat> {
+            match name {$($key => Some(wgpu::TextureFormat::$variant),)* _ => astc_format(name)}
         }
     };
 }
 formats!(parse_formats);
+
+fn astc_format(name: &str) -> Option<wgpu::TextureFormat> {
+    use wgpu::{AstcBlock, AstcChannel};
+    let (block, channel) = name.strip_prefix("astc-")?.split_once('-')?;
+    let block = match block {
+        "4x4" => AstcBlock::B4x4,
+        "5x4" => AstcBlock::B5x4,
+        "5x5" => AstcBlock::B5x5,
+        "6x5" => AstcBlock::B6x5,
+        "6x6" => AstcBlock::B6x6,
+        "8x5" => AstcBlock::B8x5,
+        "8x6" => AstcBlock::B8x6,
+        "8x8" => AstcBlock::B8x8,
+        "10x5" => AstcBlock::B10x5,
+        "10x6" => AstcBlock::B10x6,
+        "10x8" => AstcBlock::B10x8,
+        "10x10" => AstcBlock::B10x10,
+        "12x10" => AstcBlock::B12x10,
+        "12x12" => AstcBlock::B12x12,
+        _ => return None,
+    };
+    let channel = match channel {
+        "unorm" => AstcChannel::Unorm,
+        "unorm-srgb" => AstcChannel::UnormSrgb,
+        _ => return None,
+    };
+    Some(wgpu::TextureFormat::Astc { block, channel })
+}
+
+unsafe fn named_format(g: *mut c_void, name: &str) -> Result<wgpu::TextureFormat, ()> {
+    format_by_name(name).ok_or_else(|| {
+        throw_type_error(g, &format!("Unsupported GPUTextureFormat: {name}"));
+    })
+}
+
+pub(super) unsafe fn parse_format(g: *mut c_void, v: u64) -> Result<wgpu::TextureFormat, ()> {
+    named_format(g, &text(g, v, "")?)
+}
 enum_parser!(parse_dimension,wgpu::TextureDimension,"2d";"1d"=>wgpu::TextureDimension::D1,"2d"=>wgpu::TextureDimension::D2,"3d"=>wgpu::TextureDimension::D3);
 enum_parser!(parse_view_dimension,wgpu::TextureViewDimension,"2d";"1d"=>wgpu::TextureViewDimension::D1,"2d"=>wgpu::TextureViewDimension::D2,"2d-array"=>wgpu::TextureViewDimension::D2Array,"cube"=>wgpu::TextureViewDimension::Cube,"cube-array"=>wgpu::TextureViewDimension::CubeArray,"3d"=>wgpu::TextureViewDimension::D3);
 enum_parser!(parse_aspect,wgpu::TextureAspect,"all";"all"=>wgpu::TextureAspect::All,"depth-only"=>wgpu::TextureAspect::DepthOnly,"stencil-only"=>wgpu::TextureAspect::StencilOnly);
@@ -251,8 +312,8 @@ unsafe fn create_texture(g: *mut c_void, cf: *mut c_void) -> u64 {
         let dimension = parse_dimension(g, dimension_value.v)?;
         let dimension_name = text(g, dimension_value.v, "2d")?;
         let format_value = required(g, d.v, "format")?;
-        let format = parse_format(g, format_value.v)?;
         let format_name = text(g, format_value.v, "")?;
+        let format = named_format(g, &format_name)?;
         let usage_value = uint(g, required(g, d.v, "usage")?.v, 0)?;
         let Some(usage) = wgpu::TextureUsages::from_bits(usage_value) else {
             invalid(g, "Invalid GPUTextureUsage flags")?;
