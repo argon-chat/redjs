@@ -744,8 +744,7 @@ fn link_icu_root(
     fs::write(&dat, &full.data).unwrap();
     println!("cargo:icu_full_data={}", dat.display());
     println!("cargo:rustc-env=REDJS_ICU_FULL_DATA={}", dat.display());
-    // OUT_DIR is target/<triple>/<profile>/build/redjs-<hash>/out.
-    if let Some(profile) = out_dir.ancestors().nth(3) {
+    if let Some(profile) = profile_dir(out_dir) {
         fs::copy(&dat, profile.join(&name))
             .unwrap_or_else(|e| panic!("copying {name} to {}: {e}", profile.display()));
     }
@@ -756,6 +755,14 @@ fn link_icu_root(
     })
 }
 
+// Cargo 1.100 split the package name and hash into two directories below <profile>/build.
+fn profile_dir(out_dir: &Path) -> Option<&Path> {
+    out_dir
+        .ancestors()
+        .find(|dir| dir.ends_with("build"))?
+        .parent()
+}
+
 /// Dev builds link JavaScriptCore and WTF without their CodeView (1.3 GB), which every consumer
 /// relink would otherwise copy into its PDB. `REDJS_WEBKIT_DEBUG_INFO=1` keeps it.
 fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBuf> {
@@ -763,8 +770,7 @@ fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBu
     if env::var("REDJS_WEBKIT_DEBUG_INFO").is_ok_and(|v| v == "1") {
         return None;
     }
-    // OUT_DIR is target/<triple>/<profile>/build/redjs-<hash>/out.
-    if out_dir.ancestors().nth(3)?.file_name()? != "debug" {
+    if profile_dir(out_dir)?.file_name()? != "debug" {
         return None;
     }
     let sysroot = std::process::Command::new(env::var_os("RUSTC")?)
@@ -802,8 +808,8 @@ fn webkit_without_debug_info(out_dir: &Path, webkit_lib: &Path) -> Option<PathBu
 ///   `mi_*` function of mimalloc.
 /// - `/OPT:NOICF`, as for every image JSC is in (see below), and `/Brepro`,
 ///   so the same inputs give the same DLL.
-/// - It lands in OUT_DIR and is copied beside the images of this profile
-///   (`target/<triple>/<profile>/` and its `deps/`), where they load it from.
+/// - OUT_DIR holds the DLL Cargo adds to its runtime search path. Also stage a
+///   copy for standalone executables in the profile and any legacy `deps/` directory.
 fn link_engine_dll(
     manifest: &Path,
     out_dir: &Path,
@@ -925,8 +931,7 @@ fn link_engine_dll(
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=dylib=redjs_engine");
-    // OUT_DIR is target/<triple>/<profile>/build/redjs-<hash>/out.
-    if let Some(profile) = out_dir.ancestors().nth(3) {
+    if let Some(profile) = profile_dir(out_dir) {
         for directory in [profile.to_path_buf(), profile.join("deps")] {
             if directory.is_dir() {
                 fs::copy(&dll, directory.join(name))

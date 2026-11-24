@@ -58,8 +58,8 @@ jobs:
           echo 'CXX=clang++-20' >> "$GITHUB_ENV"
       - name: Set up Rust
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --target "${{ matrix.platform.target }}"
-          rustup default 1.97.1
+          rustup toolchain install 1.100.0 --profile minimal --target "${{ matrix.platform.target }}"
+          rustup default 1.100.0
       - name: Cache pinned native dependencies
         uses: actions/cache@v4
         with:

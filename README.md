@@ -39,7 +39,7 @@ The engine's internal headers are version-sensitive, so upgrades need testing.
 
 ## Build and try it
 
-On Windows, you'll need Rust 1.97.1 with the MSVC target, LLVM's `clang-cl` on `PATH`,
+On Windows, you'll need Rust 1.100.0 with the MSVC target, LLVM's `clang-cl` on `PATH`,
 Visual Studio C++ Build Tools (MSVC 14.44 or newer, plus the Windows SDK),
 and PowerShell 7 (`pwsh`); the scripts do not run in Windows PowerShell 5.1.
 
@@ -73,7 +73,7 @@ the library, run the Rust suite, and stage the DLL and static library under
 
 ### Linux and macOS
 
-Use Rust 1.97.1 and Bun 1.4.4. On Linux, install Clang 20, curl, unzip, pkg-config and
+Use Rust 1.100.0 and Bun 1.4.4. On Linux, install Clang 20, curl, unzip, pkg-config and
 OpenSSL headers; Web Audio additionally needs ALSA development headers:
 
 ```sh
