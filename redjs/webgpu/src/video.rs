@@ -12,8 +12,27 @@ pub trait NativeFrame: Send + Sync {
 
 #[derive(Clone)]
 enum Storage {
-    Pixels { bytes: Arc<[u8]>, bgra: bool },
+    Pixels(Arc<[u8]>),
     Native(Arc<dyn NativeFrame>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    Rgba,
+    Rgbx,
+    Bgra,
+    Bgrx,
+}
+
+impl PixelFormat {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Rgba => "RGBA",
+            Self::Rgbx => "RGBX",
+            Self::Bgra => "BGRA",
+            Self::Bgrx => "BGRX",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -21,6 +40,7 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub timestamp: i64,
+    format: PixelFormat,
     storage: Storage,
 }
 
@@ -29,35 +49,48 @@ impl Frame {
         width: u32,
         height: u32,
         timestamp: i64,
-        bytes: Vec<u8>,
-        bgra: bool,
+        mut bytes: Vec<u8>,
+        format: PixelFormat,
     ) -> Option<Self> {
         let length = (width as usize)
             .checked_mul(height as usize)?
             .checked_mul(4)?;
-        (length != 0 && length == bytes.len()).then(|| Self {
+        if length == 0 || bytes.len() != length {
+            return None;
+        }
+        if matches!(format, PixelFormat::Rgbx | PixelFormat::Bgrx) {
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel[3] = 255;
+            }
+        }
+        Some(Self {
             width,
             height,
             timestamp,
-            storage: Storage::Pixels {
-                bytes: bytes.into(),
-                bgra,
-            },
+            format,
+            storage: Storage::Pixels(bytes.into()),
         })
     }
 
-    pub fn native(width: u32, height: u32, timestamp: i64, source: Arc<dyn NativeFrame>) -> Self {
+    pub fn native(
+        width: u32,
+        height: u32,
+        timestamp: i64,
+        format: PixelFormat,
+        source: Arc<dyn NativeFrame>,
+    ) -> Self {
         Self {
             width,
             height,
             timestamp,
             storage: Storage::Native(source),
+            format,
         }
     }
 
     pub fn texture(&self, context: &backend::Context) -> Result<wgpu::Texture, String> {
-        let (bytes, bgra) = match &self.storage {
-            Storage::Pixels { bytes, bgra } => (bytes, *bgra),
+        let bytes = match &self.storage {
+            Storage::Pixels(bytes) => bytes,
             Storage::Native(native) => return native.texture(context),
         };
         let size = wgpu::Extent3d {
@@ -71,7 +104,7 @@ impl Frame {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: if bgra {
+            format: if matches!(self.format, PixelFormat::Bgra | PixelFormat::Bgrx) {
                 wgpu::TextureFormat::Bgra8Unorm
             } else {
                 wgpu::TextureFormat::Rgba8Unorm
@@ -127,7 +160,6 @@ pub(super) struct FrameHandle {
     imports: Mutex<Vec<Weak<Imported>>>,
     timestamp: i64,
     duration: Option<u64>,
-    format: &'static str,
 }
 fn expire(list: Vec<Weak<Imported>>) {
     for value in list.into_iter().filter_map(|v| v.upgrade()) {
@@ -193,18 +225,12 @@ unsafe fn frame_handle(g: *mut c_void, cf: *mut c_void) -> Result<Arc<FrameHandl
     };
     Ok(handle)
 }
-unsafe fn wrap_frame(
-    g: *mut c_void,
-    frame: Frame,
-    duration: Option<u64>,
-    format: &'static str,
-) -> u64 {
+unsafe fn wrap_frame(g: *mut c_void, frame: Frame, duration: Option<u64>) -> u64 {
     let handle = FrameHandle {
         timestamp: frame.timestamp,
         data: Mutex::new(Some(frame)),
         imports: Mutex::default(),
         duration,
-        format,
     };
     wrap(
         g,
@@ -217,7 +243,7 @@ unsafe fn packed_input(
     g: *mut c_void,
     source: u64,
     init: u64,
-    format: &str,
+    format: PixelFormat,
     timestamp: i64,
 ) -> Result<Frame, ()> {
     let width = uint(g, field(g, init, "codedWidth")?.v, 0)?;
@@ -276,12 +302,7 @@ unsafe fn packed_input(
             row as usize,
         ));
     }
-    if format.ends_with('X') {
-        for pixel in bytes.chunks_exact_mut(4) {
-            pixel[3] = 255;
-        }
-    }
-    Ok(Frame::packed(width, height, timestamp, bytes, format.starts_with('B')).unwrap())
+    Ok(Frame::packed(width, height, timestamp, bytes, format).unwrap())
 }
 
 #[redjs::host_fn]
@@ -306,12 +327,12 @@ pub(super) unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
             Some(num(g, dur.v, 0)?)
         };
         let format = field(g, init.v, "format")?;
-        let (mut frame, format) = if format.v != UNDEF {
+        let mut frame = if format.v != UNDEF {
             let format = match text(g, format.v, "")?.as_str() {
-                "RGBA" => "RGBA",
-                "BGRA" => "BGRA",
-                "RGBX" => "RGBX",
-                "BGRX" => "BGRX",
+                "RGBA" => PixelFormat::Rgba,
+                "BGRA" => PixelFormat::Bgra,
+                "RGBX" => PixelFormat::Rgbx,
+                "BGRX" => PixelFormat::Bgrx,
                 _ => {
                     return fail(
                         g,
@@ -323,11 +344,10 @@ pub(super) unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
             let Some(t) = timestamp else {
                 return fail(g, "TypeError", "VideoFrame requires a timestamp");
             };
-            (packed_input(g, object.v, init.v, format, t)?, format)
+            packed_input(g, object.v, init.v, format, t)?
         } else if let Some(s) = source(g, object.v)? {
-            let format = s.handle.as_ref().map_or("BGRA", |h| h.format);
             duration = duration.or_else(|| s.handle.as_ref()?.duration);
-            (s.frame, format)
+            s.frame
         } else {
             let Some(t) = timestamp else {
                 return fail(g, "TypeError", "VideoFrame requires a timestamp");
@@ -348,16 +368,21 @@ pub(super) unsafe fn construct(g: *mut c_void, cf: *mut c_void) -> u64 {
                     }
                 }
             }
-            let Some(frame) = Frame::packed(pixels.width, pixels.height, t, pixels.rgba, false)
-            else {
+            let Some(frame) = Frame::packed(
+                pixels.width,
+                pixels.height,
+                t,
+                pixels.rgba,
+                PixelFormat::Rgba,
+            ) else {
                 return fail(g, "InvalidStateError", "Empty video frame");
             };
-            (frame, "RGBA")
+            frame
         };
         if let Some(t) = timestamp {
             frame.timestamp = t;
         }
-        Ok(wrap_frame(g, frame, duration, format))
+        Ok(wrap_frame(g, frame, duration))
     })
 }
 #[redjs::host_fn]
@@ -368,7 +393,7 @@ unsafe fn clone_frame(g: *mut c_void, cf: *mut c_void) -> u64 {
         let Some(frame) = frame else {
             return fail(g, "InvalidStateError", "VideoFrame is closed");
         };
-        Ok(wrap_frame(g, frame, handle.duration, handle.format))
+        Ok(wrap_frame(g, frame, handle.duration))
     })
 }
 #[redjs::host_fn]
@@ -401,14 +426,10 @@ frame_getter!(timestamp, |_, h: &FrameHandle| enc_f64(h.timestamp as f64));
 frame_getter!(duration, |_, h: &FrameHandle| h
     .duration
     .map_or(NULL, |v| enc_f64(v as f64)));
-frame_getter!(
-    format,
-    |g, h: &FrameHandle| if h.data.lock().unwrap().is_some() {
-        js_string(g, h.format)
-    } else {
-        NULL
-    }
-);
+frame_getter!(format, |g, h: &FrameHandle| {
+    let format = h.data.lock().unwrap().as_ref().map(|f| f.format);
+    format.map_or(NULL, |f| js_string(g, f.name()))
+});
 
 pub(super) unsafe fn install(g: *mut c_void) {
     class(g, Kind::ExternalTexture, "GPUExternalTexture", &[], &[]);

@@ -18,6 +18,36 @@ fn external(c: &Context, body: &str) -> String {
 }
 
 #[test]
+fn video_frame_format_follows_its_source_and_clone() {
+    use crate::video::{Frame, PixelFormat, SourceError};
+    unsafe fn resolve(g: *mut c_void, object: u64) -> Option<Result<Frame, SourceError>> {
+        let global = redjs::glue::rjs_global(g);
+        let format = if object == redjs::webapi::util::get(g, global, "rgbaElement") {
+            PixelFormat::Rgba
+        } else if object == redjs::webapi::util::get(g, global, "bgraElement") {
+            PixelFormat::Bgra
+        } else {
+            return None;
+        };
+        Some(Ok(
+            Frame::packed(1, 1, 0, vec![1, 2, 3, 255], format).unwrap()
+        ))
+    }
+    let c = ctx();
+    crate::video::set_element_source(c.raw(), resolve);
+    ok(
+        &c,
+        r#"
+        globalThis.rgbaElement = {}; globalThis.bgraElement = {};
+        const rgba = new VideoFrame(rgbaElement), bgra = new VideoFrame(bgraElement);
+        const clone = bgra.clone(); bgra.close();
+        const rgbx = new VideoFrame(new Uint8Array(4), {format:'RGBX', codedWidth:1, codedHeight:1, timestamp:0});
+        rgba.format === 'RGBA' && clone.format === 'BGRA' && bgra.format === null && new VideoFrame(rgbx).format === 'RGBX'
+    "#,
+    );
+}
+
+#[test]
 fn webgpu_video_frame_copy_and_external_shader_read_back_the_same_snapshot() {
     let _host = HostGuard::new();
     let c = ctx();
