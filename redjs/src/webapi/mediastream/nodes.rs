@@ -1,5 +1,5 @@
 use super::*;
-use crate::webapi::{audio, mediastream as media};
+use crate::webapi::audio;
 
 const SOURCE: &str = "MediaStreamAudioSourceNode";
 const DESTINATION: &str = "MediaStreamAudioDestinationNode";
@@ -58,9 +58,6 @@ unsafe fn destination(cx: Env, target: u64, context_obj: u64, options: u64) -> J
             "NotSupportedError",
             &format!("channelCount {count} is outside the range 1 to 32"),
         ));
-    }
-    if count > 2. {
-        media::advise_once(&format!("MediaStreamAudioDestinationNode: channelCount {count} is mixed to stereo; the track carries 2 channels."));
     }
     let args = [ctx, node_proto(cx, DESTINATION, target)?, enc_f64(count)];
     let pair = cx.invoke(cx.field(cx.interfaces, "destinationNode"), UNDEF, &args)?;

@@ -11,7 +11,7 @@
 //! | `GainNode`               | `VolumeNode`                                 |
 //! | `StereoPannerNode`       | `VolumePanNode`                              |
 //! | `PannerNode` + listener  | `WebPannerNode` (webapi/hrtf.rs): spec distance models + cones + listener basis; REAL HRTF via Chromium's HRIR set, or equal-power |
-//! | `BiquadFilterNode`       | `SvfNode<2>`                                 |
+//! | `BiquadFilterNode`       | `SvfNode` sized for the graph input           |
 //! | `AudioBufferSourceNode`  | `SamplerNode` reading a `SourceSample` view (offset, duration, loop region) |
 //! | `AudioBuffer`            | planar `f32` `SampleResource`                |
 //! | `OscillatorNode`         | `OscNode` (webapi/osc.rs): PolyBLEP-limited, or a `PeriodicWave`'s tables |
@@ -23,7 +23,7 @@
 //! | `ChannelMergerNode`      | `MergerNode` (ours): input j = ports 2j, 2j+1 |
 //! | `RedStreamSourceNode`    | `StreamWriterNode` (webapi/pcm.rs) — ours     |
 //! | `MediaStreamAudioSourceNode` | `StreamWriterNode`, fed by a track (webapi/mediastream.rs) |
-//! | `MediaStreamAudioDestinationNode` | `TapNode` (ours): 2 inputs, no outputs, hands each block to its track |
+//! | `MediaStreamAudioDestinationNode` | `TapNode` interleaves its input channels into the track |
 //! | `decodeAudioData`        | symphonium (resampled to the stream rate)    |
 //! | `currentTime`            | the audio-stream sample clock (seconds)      |
 //!
@@ -48,8 +48,7 @@
 //!   the requested time, not on the exact sample.
 //! - Channels follow the spec (`channelCount`, `channelCountMode`,
 //!   `channelInterpretation`, up- and down-mixing; see `audio/graph.rs`), up to
-//!   32. A `BiquadFilterNode` filters at most 8 of them; `StereoPannerNode`,
-//!   `PannerNode`, `MediaStreamAudioDestinationNode` and the native worklets
+//!   32. `StereoPannerNode`, `PannerNode` and the native worklets
 //!   take at most 2.
 //! - The output device opens at its own width (`destination.maxChannelCount`);
 //!   the destination's channels are mixed onto its speakers (`audio/mixing.rs`).
@@ -58,8 +57,7 @@
 //!   falls back to cpal.
 //! - `loadNativeAudioWorklet` selects precompiled Rust DSP; it does not execute
 //!   arbitrary JavaScript worklet modules (see `audio/native_worklet.rs`).
-//! - `createMediaElementSource` is a silent pass-through that says so — see
-//!   `ctx_create_media_element_source`.
+//! - The embedder supplies decoded media-element samples through [`set_media_element_host`].
 
 use core::ffi::c_void;
 use std::collections::HashMap;
@@ -109,7 +107,9 @@ mod effect_nodes;
 mod effects;
 pub(super) mod fft;
 mod graph;
+mod media_input;
 mod mixing;
+pub use media_input::{set_media_element_host, ElementError, MediaInput};
 mod more_nodes;
 mod native_worklet;
 mod offline;
@@ -713,7 +713,7 @@ impl firewheel::node::AudioNodeProcessor for RefTapProcessor {
 // track (webapi/mediastream.rs).
 // ---------------------------------------------------------------------------
 //
-// Two inputs (the node's stereo input), no outputs. Firewheel schedules every
+// One input port per channel, no outputs. Firewheel schedules every
 // node of the graph, a sink included, so the processor runs once per block
 // whether or not anything downstream exists. It interleaves into a buffer
 // sized off the audio thread and calls `Source::deliver`, which never blocks.
@@ -721,6 +721,7 @@ impl firewheel::node::AudioNodeProcessor for RefTapProcessor {
 #[derive(Clone)]
 struct TapNode {
     source: Arc<super::mediastream::Source>,
+    channels: u32,
 }
 
 impl firewheel::node::AudioNode for TapNode {
@@ -730,7 +731,7 @@ impl firewheel::node::AudioNode for TapNode {
         firewheel::node::AudioNodeInfo::new()
             .debug_name("webaudio_media_stream_destination")
             .channel_config(firewheel::channel_config::ChannelConfig {
-                num_inputs: firewheel::channel_config::ChannelCount::STEREO,
+                num_inputs: firewheel::channel_config::ChannelCount::new(self.channels).unwrap(),
                 num_outputs: firewheel::channel_config::ChannelCount::ZERO,
             })
     }
@@ -741,10 +742,13 @@ impl firewheel::node::AudioNode for TapNode {
         cx: firewheel::node::ConstructProcessorContext,
     ) -> impl firewheel::node::AudioNodeProcessor {
         let rate = cx.stream_info.sample_rate.get();
-        self.source.set_format(2, rate);
         TapProcessor {
             source: Arc::clone(&self.source),
-            scratch: vec![0.0; cx.stream_info.max_block_frames.get() as usize * 2],
+            channels: self.channels as usize,
+            scratch: vec![
+                0.0;
+                cx.stream_info.max_block_frames.get() as usize * self.channels as usize
+            ],
             rate,
         }
     }
@@ -752,6 +756,7 @@ impl firewheel::node::AudioNode for TapNode {
 
 struct TapProcessor {
     source: Arc<super::mediastream::Source>,
+    channels: usize,
     scratch: Vec<f32>,
     rate: u32,
 }
@@ -764,19 +769,22 @@ impl firewheel::node::AudioNodeProcessor for TapProcessor {
         _events: &mut firewheel::event::ProcEvents,
         _extra: &mut firewheel::node::ProcExtra,
     ) -> firewheel::node::ProcessStatus {
-        let frames = info.frames.min(self.scratch.len() / 2);
-        for ch in 0..2 {
+        let frames = info.frames;
+        for ch in 0..self.channels {
             let silent = info.in_silence_mask.is_channel_silent(ch);
             let input = buffers.inputs.get(ch);
             for i in 0..frames {
-                self.scratch[2 * i + ch] = match input {
+                self.scratch[self.channels * i + ch] = match input {
                     Some(buf) if !silent => buf[i],
                     _ => 0.0,
                 };
             }
         }
-        self.source
-            .deliver(&self.scratch[..frames * 2], 2, self.rate);
+        self.source.deliver(
+            &self.scratch[..frames * self.channels],
+            self.channels,
+            self.rate,
+        );
         firewheel::node::ProcessStatus::ClearAllOutputs
     }
 
@@ -787,9 +795,11 @@ impl firewheel::node::AudioNodeProcessor for TapProcessor {
     ) {
         // Off the audio thread: allocating here is fine.
         self.rate = stream_info.sample_rate.get();
-        self.scratch
-            .resize(stream_info.max_block_frames.get() as usize * 2, 0.0);
-        self.source.set_format(2, self.rate);
+        self.scratch.resize(
+            stream_info.max_block_frames.get() as usize * self.channels,
+            0.0,
+        );
+        self.source.set_format(self.channels as u32, self.rate);
     }
 }
 
@@ -1061,9 +1071,7 @@ enum Params {
         n: u32,
         discrete: ArcGc<AtomicBool>,
     },
-    /// The media-element source's silent pass-through
-    /// (`ctx_create_media_element_source`): no inputs, audio passes untouched.
-    Passthrough,
+    MediaInput(Arc<MediaInput>),
     /// MediaStreamAudioDestinationNode: a sink feeding its track (see [`TapNode`]).
     MediaDest(Arc<super::mediastream::Source>),
     /// DelayNode: `NodeRec::id` is the reading half, `writer` the half connections come into.
@@ -1173,17 +1181,19 @@ impl NodeRec {
             // The producer's interleave width IS the node's output width, and
             // a source node has no inputs.
             Params::PcmStream(cfg) => (0, cfg.channels),
+            Params::MediaInput(_) => (0, mixing::MAX_CHANNELS),
             // The oscillator is a source too, but renders dual mono so it wires
             // like everything else.
             Params::Osc(_) => (0, 2),
             Params::Splitter(n) => (*n, *n),
             Params::Merger { n, .. } => (2 * n, *n),
             // A sink: its track is its output, not a port.
-            Params::MediaDest(_) => (2, 0),
+            Params::MediaDest(source) => (source.channels(), 0),
             _ => (2, 2),
         };
         let (ch_count, ch_mode, ch_interp) = match &params {
-            Params::Dest | Params::MediaDest(_) => (2, CountMode::Explicit, Interp::Speakers),
+            Params::Dest => (2, CountMode::Explicit, Interp::Speakers),
+            Params::MediaDest(source) => (source.channels(), CountMode::Explicit, Interp::Speakers),
             Params::Pan(_) | Params::Spatial(_) | Params::Compressor(_) | Params::Convolver(_) => {
                 (2, CountMode::ClampedMax, Interp::Speakers)
             }
@@ -1261,7 +1271,7 @@ impl NodeRec {
             Params::Merger { n, .. } => *n,
             // The sources: AudioScheduledSourceNode, the stream source and the
             // media-element source (MediaElementAudioSourceNode) take none.
-            Params::Osc(_) | Params::Sampler(_) | Params::PcmStream(_) | Params::Passthrough => 0,
+            Params::Osc(_) | Params::Sampler(_) | Params::PcmStream(_) | Params::MediaInput(_) => 0,
             _ => 1,
         }
     }
@@ -1599,7 +1609,6 @@ pub struct AudioClasses {
     /// Private slot: per-object bag holding AudioParam objects, destination,
     /// onended handler, the JS AudioBuffer, … (GC-owned lifetimes).
     s_audio: *mut c_void,
-    node_base: Class,
     ctx: Class,
     gain: Class,
     stereo: Class,
@@ -1609,6 +1618,9 @@ pub struct AudioClasses {
     source: Class,
     osc: Class,
     stream_src: Class,
+    element_src: Class,
+    element_host: OnceLock<media_input::ElementHost>,
+    s_element_source: *mut c_void,
     worklet: Class,
     worklet_port: Class,
     worklet_port_cls: crate::capi::JSClassRef,
@@ -2446,10 +2458,11 @@ fn alloc_node(gl: &mut Glob, engine: u64, mut params: Params) -> Option<u64> {
             },
             None,
         ),
-        Params::Passthrough => eng.fw.add_node(VolumeNode::default(), None),
+        Params::MediaInput(input) => eng.fw.add_node(media_input::InputNode(input.clone()), None),
         Params::MediaDest(source) => eng.fw.add_node(
             TapNode {
                 source: Arc::clone(source),
+                channels: source.channels(),
             },
             None,
         ),
@@ -4394,37 +4407,6 @@ unsafe fn ctx_create_analyser(g: *mut c_void, cf: *mut c_void) -> u64 {
     }
 }
 
-/// `createMediaElementSource` — a SILENT pass-through, and it says so.
-///
-/// This is the one node on this host that cannot be made real by writing more
-/// DSP: on both embedders that have media elements at all, `<video>`/`<audio>`
-/// decode *and play out* inside the platform's own media pipeline (Media
-/// Foundation's `IMFMediaEngine` on Windows), which owns its own output stream
-/// and never hands the graph a sample. Routing it here would mean re-decoding
-/// the file a second time, out of sync with the picture.
-///
-/// It still returns a connectable node — `try { ctx.createMediaElementSource(el) }`
-/// is the standard capability probe and throwing would break callers that then
-/// fall back correctly — but a one-shot advisory names the situation, because
-/// the failure it replaces (a graph that is connected and simply mute) has no
-/// other symptom.
-#[crate::host_fn]
-unsafe fn ctx_create_media_element_source(g: *mut c_void, cf: *mut c_void) -> u64 {
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        eprintln!(
-            "[audio] advisory: createMediaElementSource() returns a SILENT pass-through on this \
-             runtime. A <video>/<audio> element decodes and plays out through the platform media \
-             engine, not through the Web Audio graph, so its samples never reach this node — \
-             anything connected downstream (analyser, gain, panner) will see nothing but zeros. \
-             For audio you want in the graph, fetch the bytes and use decodeAudioData() + \
-             AudioBufferSourceNode, or push PCM through createRedStreamSource()."
-        );
-    });
-    let c = classes(g);
-    ctx_create_node(g, cf, Params::Passthrough, c.node_base.proto, &[])
-}
-
 /// `createOscillator()` — the spec's tone generator (webapi/osc.rs).
 unsafe fn make_oscillator(g: *mut c_void, engine: u64, proto: u64) -> u64 {
     let shared = ArcGc::new(OscShared::default());
@@ -4532,6 +4514,23 @@ pub(crate) unsafe fn ms_source_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     // A live device: a short queue keeps the monitor latency near a
     // browser's. A network track arrives in the network's bursts and needs
     // the jitter room the room's own playout has (skathi's livekit.ts).
+    if info.kind == super::mediastream::SourceKind::Graph {
+        let rate = glob().lock().unwrap().engines[&engine].sample_rate;
+        let input = MediaInput::new(rate, info.channels);
+        let obj = create_node_on(
+            g,
+            engine,
+            Params::MediaInput(input.clone()),
+            cf_arg(cf, 2),
+            &[],
+        );
+        if is_cell(obj) {
+            if let Some(h) = host_data::<NodeHandle>(g, classes(g).node_cls, obj) {
+                super::mediastream::pipe_graph(h.0, track, input);
+            }
+        }
+        return obj;
+    }
     let remote = info.kind == super::mediastream::SourceKind::Remote;
     let cfg = PcmStreamConfig {
         sample_rate: info.sample_rate,
@@ -4596,7 +4595,7 @@ pub(crate) unsafe fn ms_dest_node(g: *mut c_void, cf: *mut c_void) -> u64 {
     let source = super::mediastream::Source::new(
         super::mediastream::SourceKind::Graph,
         "MediaStreamAudioDestinationNode".into(),
-        2,
+        dec_f64(cf_arg(cf, 2)).unwrap_or(2.0) as u32,
         rate,
         super::mediastream::Settings::default(),
     );
@@ -4920,7 +4919,6 @@ fn host_channel_limit(rec: &NodeRec) -> u32 {
     match rec.params {
         Params::Pan(_)
         | Params::Spatial(_)
-        | Params::MediaDest(_)
         | Params::Native { .. }
         | Params::Custom { .. }
         | Params::Worklet { .. }
@@ -5426,7 +5424,9 @@ pub unsafe fn pump(g: *mut c_void) {
                 // records go, or a native pusher keeps a handle whose graph
                 // side no longer exists.
                 for (nh, r) in gl.nodes.iter() {
-                    if r.engine == h && matches!(r.params, Params::PcmStream(_)) {
+                    if r.engine == h
+                        && matches!(r.params, Params::PcmStream(_) | Params::MediaInput(_))
+                    {
                         super::mediastream::unpipe(*nh);
                         pcm::unregister(*nh);
                     }
@@ -5436,7 +5436,7 @@ pub unsafe fn pump(g: *mut c_void) {
                 continue;
             }
             if let Some(mut rec) = gl.nodes.remove(&h) {
-                if matches!(rec.params, Params::PcmStream(_)) {
+                if matches!(rec.params, Params::PcmStream(_) | Params::MediaInput(_)) {
                     // A MediaStreamAudioSourceNode stops reading its track.
                     super::mediastream::unpipe(h);
                     pcm::unregister(h);
@@ -5514,8 +5514,14 @@ pub unsafe fn pump(g: *mut c_void) {
                     let moved = follow_default_output(eng, default_output) || retry_output(eng);
                     (eng.now(), moved)
                 };
+                let width_changed = nodes.values().any(|r| {
+                    r.engine == eh
+                        && matches!(&r.params, Params::MediaInput(i) if i.channels() != r.lout)
+                });
                 if moved {
                     graph::assign_objects(engines.get_mut(&eh).unwrap(), nodes, eh);
+                    graph::resync(engines, nodes, eh);
+                } else if width_changed {
                     graph::resync(engines, nodes, eh);
                 } else if engines[&eh]
                     .objects
@@ -6099,11 +6105,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
                 ("createConvolver", 0, effect_nodes::create_convolver),
                 ("createPeriodicWave", 2, effect_nodes::create_periodic_wave),
                 ("createBuffer", 3, ctx_create_buffer),
-                (
-                    "createMediaElementSource",
-                    1,
-                    ctx_create_media_element_source,
-                ),
+                ("createMediaElementSource", 1, media_input::create),
                 // Non-standard by name on purpose — see ctx_create_red_stream_source.
                 ("createRedStreamSource", 1, ctx_create_red_stream_source),
                 ("decodeAudioData", 1, ctx_decode_audio_data),
@@ -6130,6 +6132,7 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
     );
 
     let offline = offline::install(g, ctx.proto);
+    let element_src = media_input::install(g, node_base.proto);
     let js_worklet = worklet_node::install(g, node_base.proto);
 
     // webkitAudioContext alias (older engine feature-detection paths).
@@ -6143,7 +6146,6 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         buffer_cls,
         listener_cls,
         s_audio,
-        node_base,
         ctx,
         gain,
         stereo,
@@ -6153,6 +6155,9 @@ pub unsafe fn install(g: *mut c_void, event_target_proto: u64) {
         source,
         osc,
         stream_src,
+        element_src,
+        element_host: OnceLock::new(),
+        s_element_source: atom_priv(g, "redjs#mediaElementSource"),
         worklet,
         worklet_port,
         worklet_port_cls,
@@ -6950,22 +6955,17 @@ mod jsc_tests {
     }
 
     // -----------------------------------------------------------------------
-    // createMediaElementSource honesty
+    // Media element source
     // -----------------------------------------------------------------------
 
     #[test]
-    fn create_media_element_source_still_returns_a_connectable_node() {
-        // It must NOT throw — `try { ctx.createMediaElementSource(el) } catch`
-        // is the standard capability probe, and code that falls back on the
-        // throw would take the wrong branch. The advisory on stderr is where
-        // the honesty lives; see the function's doc comment.
+    fn create_media_element_source_requires_a_host_player() {
         let c = ctx();
         ok(
             &c,
-            "{ const a = new AudioContext();
-               const n = a.createMediaElementSource({});
-               const r = n instanceof AudioNode && n.connect(a.destination) === a.destination;
-               a.close(); r }",
+            "{ const a = new AudioContext(); let name;
+            try { a.createMediaElementSource({}); } catch (e) { name = e.name; }
+            a.close(); name === 'NotSupportedError' }",
         );
     }
 
@@ -7398,6 +7398,63 @@ mod jsc_tests {
             "{ let n = 0; for (const bad of [() => new OfflineAudioContext(0, 10, 48000), () => new OfflineAudioContext(1, 0, 48000),
                  () => new OfflineAudioContext(1, 10, 10)]) { try { bad() } catch { n++ } } n === 3 }",
         );
+    }
+
+    #[test]
+    fn biquad_and_stream_track_carry_channel_32() {
+        let c = ctx();
+        c.eval(
+            "globalThis.ctx32 = new OfflineAudioContext(2, 4096, 48000);
+            globalThis.trackDest = new MediaStreamAudioDestinationNode(ctx32, {channelCount: 32});
+            globalThis.track32 = trackDest.stream.getAudioTracks()[0];
+            const monitor = ctx32.createMediaStreamSource(trackDest.stream);
+            const split = ctx32.createChannelSplitter(32);
+            monitor.connect(split); split.connect(ctx32.destination, 31);
+            const merger = ctx32.createChannelMerger(32), filter = ctx32.createBiquadFilter();
+            const source = new ConstantSourceNode(ctx32, {offset: 0.5});
+            source.connect(merger, 0, 31); merger.connect(filter).connect(trackDest);
+            source.start(); 0",
+        )
+        .unwrap();
+        ok(
+            &c,
+            "trackDest.channelCount === 32 && track32.getSettings().channelCount === 32",
+        );
+        ok(
+            &c,
+            "{ trackDest.channelCount = 1; const mono = track32.getSettings().channelCount === 1;
+            trackDest.channelCount = 32; mono && track32.getSettings().channelCount === 32 }",
+        );
+        ok(&c, "{ const p = ctx32.createPanner(), s = ctx32.createStereoPanner(); [p, s, trackDest].every(n => {
+            try { n.channelCount = n === trackDest ? 33 : 3; return false } catch(e) { return e.name === 'NotSupportedError' } }) }");
+        let id = s(&c, "__rjs_mediaTrackId(track32)").parse::<u64>().unwrap();
+        let measured = std::sync::Arc::new(std::sync::Mutex::new([0.0f32; 32]));
+        let peaks = measured.clone();
+        let _sub = crate::webapi::mediastream::subscribe(
+            id,
+            Box::new(move |data, channels, rate| {
+                assert_eq!((channels, rate), (32, 48000));
+                let mut peaks = peaks.lock().unwrap();
+                for frame in data.chunks_exact(channels) {
+                    for (peak, sample) in peaks.iter_mut().zip(frame) {
+                        *peak = peak.max(sample.abs())
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        c.eval("ctx32.startRendering().then(b => { globalThis.monitorPeak = Math.max(...b.getChannelData(0)); }); 0").unwrap();
+        for _ in 0..100 {
+            unsafe { super::pump(c.raw()) };
+            c.drain_microtasks();
+            if s(&c, "ctx32.state") == "closed" {
+                break;
+            }
+        }
+        let peaks = measured.lock().unwrap();
+        assert!(peaks[..31].iter().all(|&p| p == 0.0));
+        assert!(peaks[31] > 0.4, "channel 32 peak {}", peaks[31]);
+        ok(&c, "monitorPeak > 0.4");
     }
 
     #[test]
@@ -7914,7 +7971,10 @@ mod split_merge_graph_tests {
         let mut fw = Fw::new(FirewheelConfig::default());
         // A stand-in record for the source: `conn_ports` reads only its shape
         // (two output ports, not a splitter).
-        let src = rec(fw.add_node(Known, None), Params::Passthrough);
+        let src = rec(
+            fw.add_node(Known, None),
+            Params::Gain(firewheel::nodes::volume::VolumeNode::default()),
+        );
 
         // Split: each output is one channel.
         let split = splitter(&mut fw, 2);

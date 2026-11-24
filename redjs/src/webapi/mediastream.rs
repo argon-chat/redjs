@@ -859,7 +859,7 @@ pub fn pipe(node: u64, track_id: u64) -> bool {
 /// Converts interleaved blocks from one rate to another by linear
 /// interpolation, carrying its phase and the last frame across blocks.
 #[derive(Default)]
-struct Rerate {
+pub(super) struct Rerate {
     from: u32,
     to: u32,
     channels: usize,
@@ -871,7 +871,7 @@ struct Rerate {
 }
 
 impl Rerate {
-    fn run(&mut self, data: &[f32], channels: usize, from: u32, to: u32) -> &[f32] {
+    pub(super) fn run(&mut self, data: &[f32], channels: usize, from: u32, to: u32) -> &[f32] {
         let channels = channels.max(1);
         if (from, to, channels) != (self.from, self.to, self.channels) {
             *self = Rerate {
@@ -922,6 +922,15 @@ fn fit_channels(data: &[f32], channels: usize, want: usize, out: &mut Vec<f32>) 
         for c in 0..want {
             out.push(data[f * channels + c.min(channels - 1)]);
         }
+    }
+}
+
+pub(super) fn pipe_graph(node: u64, track: u64, input: Arc<super::audio::MediaInput>) {
+    if let Some(sub) = subscribe(
+        track,
+        Box::new(move |data, channels, rate| input.push(data, channels, rate, 1.0)),
+    ) {
+        pipes().lock().unwrap().insert(node, sub);
     }
 }
 
