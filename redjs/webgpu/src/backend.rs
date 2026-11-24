@@ -39,6 +39,8 @@ pub struct Context {
     pub queue: Arc<wgpu::Queue>,
     pub adapter: Arc<wgpu::Adapter>,
     loss: Arc<Mutex<Option<DeviceLoss>>>,
+    // An independently negotiated device still belongs to its host generation.
+    parent: Option<Arc<Context>>,
     // Declared last so a host generation outlives the wgpu wrappers above.
     _owner: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
@@ -54,6 +56,7 @@ impl Context {
             device,
             queue,
             loss: Arc::new(Mutex::new(None)),
+            parent: None,
             _owner: None,
         }
     }
@@ -83,7 +86,11 @@ impl Context {
     }
 
     pub fn loss(&self) -> Option<DeviceLoss> {
-        self.loss.lock().unwrap().clone()
+        self.loss
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| self.parent.as_ref()?.loss())
     }
 }
 
@@ -144,11 +151,11 @@ pub async fn request_adapter(options: AdapterOptions) -> Result<Option<Adapter>,
 
 /// Physical capabilities a shared client may lack: redjs validates every JS
 /// path to them against the client's own features and limits.
-pub const VIRTUALIZED_FEATURES: wgpu::Features =
-    wgpu::Features::TIMESTAMP_QUERY.union(wgpu::Features::IMMEDIATES);
+pub const VIRTUALIZED_FEATURES: wgpu::Features = wgpu::Features::TIMESTAMP_QUERY
+    .union(wgpu::Features::IMMEDIATES)
+    .union(wgpu::Features::EXTERNAL_TEXTURE);
 
-/// What a physical device needs for JS clients to get every feature and the
-/// immediate-data limit the adapter can expose. Hosts creating a shared device
+/// Capabilities the renderer can share with default JS clients. Hosts creating a shared device
 /// should request these, on an instance with
 /// `InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION`.
 pub fn shareable_capabilities(adapter: &wgpu::Adapter) -> (wgpu::Features, wgpu::Limits) {
@@ -166,17 +173,14 @@ impl Adapter {
             // WebGPU resolves timestamps in nanoseconds; an unnormalized
             // device period cannot honour that.
             Some(c) if c.queue.get_timestamp_period() != 1.0 => {
-                c.device.features() - wgpu::Features::TIMESTAMP_QUERY
+                self.raw.features() - wgpu::Features::TIMESTAMP_QUERY
             }
-            Some(c) => c.device.features(),
-            None => self.raw.features(),
+            _ => self.raw.features(),
         }
     }
 
     pub fn limits(&self) -> wgpu::Limits {
-        self.shared
-            .as_ref()
-            .map_or_else(|| self.raw.limits(), |c| c.device.limits())
+        self.raw.limits()
     }
 
     pub async fn request_device(
@@ -208,51 +212,49 @@ impl Adapter {
                 failures.join(", ")
             ));
         }
+        let mut native_features =
+            features | (available_features & wgpu::Features::EXTERNAL_TEXTURE);
+        if limits.max_immediate_size > 0 {
+            native_features |= wgpu::Features::IMMEDIATES;
+        }
         if let Some(context) = &self.shared {
-            // Until every shader/pipeline limit is virtualized per client,
-            // refuse capability subsets rather than silently validating them
-            // against stronger physical capabilities.
             let physical = context.device.limits();
             let comparable = wgpu::Limits {
                 max_immediate_size: physical.max_immediate_size,
                 ..limits.clone()
             };
-            if !VIRTUALIZED_FEATURES.contains(context.device.features() - features)
-                || comparable != physical
-            {
-                return Err(
-                    "Shared WebGPU clients currently require matching physical capabilities".into(),
-                );
-            }
             if context.adapter.as_ref() != self.raw.as_ref() {
                 return Err("Shared GPU context belongs to a different adapter".into());
             }
             if let Some(loss) = context.loss() {
                 return Err(format!("Shared GPU device is lost: {}", loss.message));
             }
-            return Ok(context.clone());
+            // A different feature set or limit gets its own wgpu validation
+            // domain. This also gates WGSL extensions on the requesting device.
+            let enabled = context.device.features();
+            if enabled.contains(native_features)
+                && VIRTUALIZED_FEATURES.contains(enabled - native_features)
+                && comparable == physical
+                && limits.max_immediate_size <= physical.max_immediate_size
+            {
+                return Ok(context.clone());
+            }
         }
-        let features = if limits.max_immediate_size > 0 {
-            features | wgpu::Features::IMMEDIATES
-        } else {
-            features
-        };
         let (device, queue) = self
             .raw
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("redjs WebGPU"),
-                required_features: features,
+                required_features: native_features,
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await
             .map_err(|e| e.to_string())?;
-        let context = Arc::new(Context::from_shared(
-            self.raw.clone(),
-            Arc::new(device),
-            Arc::new(queue),
-        ));
+        let context = Arc::new(Context {
+            parent: self.shared.clone(),
+            ..Context::from_shared(self.raw.clone(), Arc::new(device), Arc::new(queue))
+        });
         // This is our standalone device: there is no embedder callback to
         // replace. Shared-device hosts forward their own callback instead.
         let loss = context.loss.clone();
@@ -330,6 +332,8 @@ pub struct Client {
     pub limits: wgpu::Limits,
     pub destroyed: AtomicBool,
     resources: Mutex<Resources>,
+    pub(crate) video_blits:
+        Mutex<std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>>,
     errors: Mutex<Vec<GpuError>>,
 }
 
@@ -353,6 +357,7 @@ impl Client {
             limits,
             destroyed: AtomicBool::new(false),
             resources: Mutex::new(Resources::default()),
+            video_blits: Mutex::default(),
             errors: Mutex::new(Vec::new()),
         })
     }

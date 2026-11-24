@@ -192,7 +192,7 @@ unsafe fn create_shader(g: *mut c_void, cf: *mut c_void) -> u64 {
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some(&label),
-                    source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(&source)),
+                    source: wgpu::ShaderSource::Wgsl(wgsl::for_device(&source, c.features)),
                 })
         });
         Ok(wrap_labeled(
@@ -310,7 +310,8 @@ unsafe fn binding_type(g: *mut c_void, entry: u64) -> Result<wgpu::BindingType, 
     let sampler = field(g, entry, "sampler")?;
     let texture = field(g, entry, "texture")?;
     let storage = field(g, entry, "storageTexture")?;
-    let count = [buffer.v, sampler.v, texture.v, storage.v]
+    let external = field(g, entry, "externalTexture")?;
+    let count = [buffer.v, sampler.v, texture.v, storage.v, external.v]
         .into_iter()
         .filter(|&v| v != UNDEF)
         .count();
@@ -319,6 +320,9 @@ unsafe fn binding_type(g: *mut c_void, entry: u64) -> Result<wgpu::BindingType, 
             g,
             "Bind group layout entry requires exactly one supported resource layout",
         )?;
+    }
+    if external.v != UNDEF {
+        return Ok(wgpu::BindingType::ExternalTexture);
     }
     if buffer.v != UNDEF {
         let ty = match text(g, field(g, buffer.v, "type")?.v, "uniform")?.as_str() {
@@ -479,6 +483,7 @@ unsafe fn create_pipeline_layout(g: *mut c_void, cf: *mut c_void) -> u64 {
 }
 
 enum Binding {
+    External(Arc<video::Imported>),
     Buffer(Arc<buffer::Buffer>, u64, Option<NonZeroU64>),
     Texture(texture::TextureView),
     Sampler(wgpu::Sampler),
@@ -486,6 +491,7 @@ enum Binding {
 impl Binding {
     fn retained(&self) -> Resource {
         match self {
+            Self::External(t) => Resource::ExternalTexture(t.clone()),
             Self::Buffer(buffer, _, _) => Resource::Buffer(buffer.clone()),
             Self::Texture(view) => Resource::TextureView(view.clone()),
             Self::Sampler(sampler) => Resource::Sampler(sampler.clone()),
@@ -493,6 +499,7 @@ impl Binding {
     }
     fn resource(&self) -> wgpu::BindingResource<'_> {
         match self {
+            Self::External(t) => wgpu::BindingResource::ExternalTexture(&t.raw),
             Self::Buffer(b, offset, size) => wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: &b.raw,
                 offset: *offset,
@@ -510,7 +517,7 @@ unsafe fn binding(g: *mut c_void, value: u64, c: &Arc<Client>) -> Result<Binding
     let hosts: Vec<_> = {
         let s = states().lock().unwrap();
         let c = s[&(g as usize)].classes.as_ref().unwrap();
-        [Kind::TextureView, Kind::Sampler]
+        [Kind::TextureView, Kind::Sampler, Kind::ExternalTexture]
             .iter()
             .map(|k| c.hosts[k] as capi::JSClassRef)
             .collect()
@@ -523,6 +530,7 @@ unsafe fn binding(g: *mut c_void, value: u64, c: &Arc<Client>) -> Result<Binding
             invalid(g, "Bind group resource belongs to a different device")?;
         }
         match h.resource {
+            Resource::ExternalTexture(t) => return Ok(Binding::External(t)),
             Resource::TextureView(v) => return Ok(Binding::Texture(v)),
             Resource::Sampler(s) => return Ok(Binding::Sampler(s)),
             _ => {

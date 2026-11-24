@@ -4,8 +4,7 @@ The `redjs-webgpu` crate installs native JavaScriptCore classes backed by
 `wgpu`, without a browser or a TypeScript implementation. `redjs_webgpu::register()`
 makes every context installed after it carry `navigator.gpu`; a context installed
 without it has no WebGPU.
-Windows uses DirectX 12. Metal/Vulkan dependencies are configured for other
-platforms; only Windows has been qualified in this change.
+The native backends are DirectX 12 on Windows, Metal on macOS and Vulkan on Linux.
 
 ## Run
 
@@ -51,7 +50,7 @@ It does not open a window or access an application profile.
   timestamps. naga's HLSL backend accepts struct-typed `var<immediate>` only, so
   a scalar or vector immediate fails pipeline creation on DirectX 12 with an
   internal error.
-- `copyExternalImageToTexture` for native/mirror images, ImageData, ImageBitmap,
+- `copyExternalImageToTexture` for video elements, VideoFrame, native/mirror images, ImageData, ImageBitmap,
   2D and WebGPU canvases, with crop/flipY, alpha conversion, mip/layer selection
   and renderable unorm/float destination formats.
 - `GPUCanvasContext`: configure/unconfigure/getConfiguration/getCurrentTexture,
@@ -91,13 +90,11 @@ host error/lost callbacks; the owner forwards loss via `context.notify_lost`.
 its logical device lost. It never calls `wgpu::Device::destroy()`. Cross-client
 resource use is rejected even when their physical device is identical.
 
-**Current shared-device restriction:** requested features and limits must match
-those of the physical device, except 'timestamp-query', immediates and
-`maxImmediateSize`, which a client may request below the physical device's.
-Create the shared device with `backend::shareable_capabilities(&adapter)` and
-`InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION` to offer them. Other
-capability-subset virtualization is not implemented, so mismatched imports
-fail explicitly.
+The adapter reports the standard optional features supported by the backend.
+Matching clients reuse the host device. Other feature and limit requests receive
+a dedicated wgpu device on that adapter, with its own shader and resource validation.
+Both follow the renderer generation's loss. Create the shared device with
+`backend::shareable_capabilities(&adapter)` and `InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION`.
 This is a shared-device foundation; the SDK supplies its renderer integration.
 It does not by itself establish an untrusted activity security boundary.
 
@@ -172,8 +169,12 @@ Converted upload buffers are capped at 256 MiB.
 Origin-unclean host metadata produces `SecurityError`; it is preserved through
 mirror-image hooks and 2D canvas snapshots. This consumes the embedding
 runtime's existing origin policy, not a complete browser network/CORS boundary.
-VideoFrame, HTML video frame import and GPU-to-GPU zero-copy imports remain
-unimplemented. A WebGPU canvas source currently uses an explicit GPU readback.
+An embedder registers its video-element resolver with `video::set_element_source`.
+The resolver returns an immutable native GPU frame or packed BGRA/RGBA pixels.
+DirectX 12 and Metal expose these through `importExternalTexture` and WGSL
+`texture_external`. Element imports expire at the end of the task. Imports from
+a `VideoFrame` expire at `close()`. Vulkan supports the queue copy path.
+A WebGPU canvas source currently uses an explicit GPU readback.
 
 The conversion contract follows [WebGPU external-image copies](https://gpuweb.github.io/gpuweb/#dom-gpuqueue-copyexternalimagetotexture).
 
@@ -181,12 +182,8 @@ The conversion contract follows [WebGPU external-image copies](https://gpuweb.gi
 
 - Direct swapchain rendering and copy-free atlas sampling. The SDK qualifies
   a native shared-texture import path with GPU conversion and atlas copies.
-- `importExternalTexture`, VideoFrame/HTML video uploads and zero-copy video.
-  wgpu's external textures exist on DirectX 12 and Metal only, and the
-  embedder's video frames live on its renderer device.
 - SharedArrayBuffer uploads (rejected until an atomic native copy path exists).
-- Optional compressed formats/features beyond 'timestamp-query', subgroups,
-  WebGPU CTS qualification.
+- WebGPU CTS qualification and optional features that lack wgpu backing, including texture format tiers.
 - Slang/DXIL artifact loading; standard `createShaderModule` accepts WGSL only.
 - Full WebIDL/error semantics: e.g. some lifecycle/capability failures currently
   throw a TypeError or InvalidStateError rather than producing an invalid object.
