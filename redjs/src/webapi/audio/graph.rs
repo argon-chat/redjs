@@ -22,7 +22,7 @@ use super::mixing::{self, web_mix, Interp, MixNode, Route};
 use super::output::{BusCell, RedBackend};
 use super::{
     update_spatial, Engine, FirewheelContext, MonitorNode, NodeRec, PannerRoute, Panning, Params,
-    ST_SUSPENDED,
+    TapNode, ST_SUSPENDED,
 };
 
 /// One connection as built in Firewheel.
@@ -127,13 +127,11 @@ impl Objects {
 /// The most channels a node's input takes.
 fn cap(rec: &NodeRec) -> u32 {
     match rec.params {
-        Params::Svf(_) => 8,
         Params::Pan(_)
         | Params::Spatial(_)
         | Params::Native { .. }
         | Params::Custom { .. }
         | Params::Worklet { .. }
-        | Params::MediaDest(_)
         | Params::Compressor(_)
         | Params::Convolver(_)
         | Params::Iir(_) => 2,
@@ -209,13 +207,13 @@ fn out_width(
             .clamp(1, rec.out_ch.max(2)),
         Params::Osc(_) | Params::Splitter(_) => 1,
         Params::PcmStream(cfg) => cfg.channels.max(1),
+        Params::MediaInput(input) => input.channels(),
         Params::Merger { n, .. } => *n,
         Params::Pan(_)
         | Params::Spatial(_)
         | Params::Native { .. }
         | Params::Custom { .. }
-        | Params::Worklet { .. }
-        | Params::Passthrough => 2,
+        | Params::Worklet { .. } => 2,
     };
     stack.pop();
     memo.insert(h, w);
@@ -361,18 +359,35 @@ fn rebuild(eng: &mut Engine, rec: &mut NodeRec, width: u32) {
             },
             None,
         ),
-        Params::Svf(p) => eng.fw.add_node(
-            SvfNode::<8> {
-                filter_type: p.filter_type,
-                cutoff_hz: p.cutoff_hz,
-                q_factor: p.q_factor,
-                gain: p.gain,
-                enabled: p.enabled,
-                smooth_seconds: p.smooth_seconds,
-                coeff_update_factor: p.coeff_update_factor,
-            },
-            None,
-        ),
+        Params::Svf(p) => {
+            fn widen<const N: usize>(p: &SvfNode<2>) -> SvfNode<N> {
+                SvfNode {
+                    filter_type: p.filter_type,
+                    cutoff_hz: p.cutoff_hz,
+                    q_factor: p.q_factor,
+                    gain: p.gain,
+                    enabled: p.enabled,
+                    smooth_seconds: p.smooth_seconds,
+                    coeff_update_factor: p.coeff_update_factor,
+                }
+            }
+            if width <= 8 {
+                eng.fw.add_node(widen::<8>(p), None)
+            } else {
+                eng.fw
+                    .add_node(widen::<{ mixing::MAX_CHANNELS as usize }>(p), None)
+            }
+        }
+        Params::MediaDest(source) => {
+            source.set_format(width, eng.sample_rate);
+            eng.fw.add_node(
+                TapNode {
+                    source: Arc::clone(source),
+                    channels: width,
+                },
+                None,
+            )
+        }
         Params::Sampler(s) => eng.fw.add_node(
             (**s).clone(),
             Some(SamplerConfig {
@@ -387,7 +402,9 @@ fn rebuild(eng: &mut Engine, rec: &mut NodeRec, width: u32) {
         eng.master = new;
     }
     rec.id = new;
-    rec.out_ch = width;
+    if !matches!(rec.params, Params::MediaDest(_)) {
+        rec.out_ch = width;
+    }
     if !matches!(rec.params, Params::Sampler(_)) {
         rec.in_ch = width;
     }
@@ -400,7 +417,12 @@ fn needed_width(rec: &NodeRec) -> Option<u32> {
         | Params::Dest
         | Params::Delay { .. }
         | Params::Shaper(_) => Some(rec.lin.max(2)),
-        Params::Svf(_) => Some(if rec.lin > 2 { 8 } else { 2 }),
+        Params::Svf(_) => Some(match rec.lin {
+            1..=2 => 2,
+            3..=8 => 8,
+            _ => mixing::MAX_CHANNELS,
+        }),
+        Params::MediaDest(_) => Some(rec.lin),
         Params::Sampler(_) => {
             let ch = rec
                 .buffer
@@ -466,17 +488,10 @@ pub(super) fn resync(
         let rec = nodes.get_mut(&h).unwrap();
         rec.lin = lin;
         rec.lout = lout;
-        if let Params::Svf(_) = rec.params {
-            if rec.lin == 8 && rec.ch_mode == mixing::CountMode::Max {
-                static WIDE: OnceLock<()> = OnceLock::new();
-                advise_once(
-                    &WIDE,
-                    "a BiquadFilterNode filters at most 8 channels here; the channels after the 8th are dropped.",
-                );
-            }
-        }
         if let Some(w) = needed_width(rec) {
-            if w > rec.out_ch.max(rec.in_ch) {
+            if w > rec.out_ch.max(rec.in_ch)
+                || (matches!(rec.params, Params::MediaDest(_)) && w != rec.in_ch)
+            {
                 rebuild(eng, rec, w);
             }
         }
