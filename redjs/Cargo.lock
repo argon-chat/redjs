@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "redjs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-channel",
  "bytes",
@@ -2614,11 +2614,11 @@ dependencies = [
 
 [[package]]
 name = "redjs-macros"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "redjs-webgpu"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "half",
  "pollster",
