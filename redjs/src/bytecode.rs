@@ -1,4 +1,4 @@
-//! Trusted, versioned classic-script bytecode caches.
+//! Trusted, versioned JavaScript bytecode caches.
 //!
 //! JSC's bytecode decoder assumes compiler-produced input. The envelope detects
 //! stale/corrupt local artifacts; its checksum is not authentication. Importing
@@ -107,9 +107,16 @@ impl Drop for GeneratedPayload {
 
 impl Context {
     /// Exact source/URL, pinned engine/build, architecture, bytecode version and
-    /// effective JSC options. Compilation mode is a classic script; modules and
-    /// native AOT images require separate formats and entry points.
+    /// effective JSC options. Includes the source type to separate script and module bytecode.
     pub fn bytecode_cache_key(&self, source: &str, url: &str) -> [u8; 32] {
+        self.source_cache_key(source, url, false)
+    }
+
+    pub fn module_bytecode_cache_key(&self, source: &str, url: &str) -> [u8; 32] {
+        self.source_cache_key(source, url, true)
+    }
+
+    fn source_cache_key(&self, source: &str, url: &str, module: bool) -> [u8; 32] {
         let mut options = vec![0u8; 4096];
         loop {
             let required = unsafe {
@@ -122,7 +129,11 @@ impl Context {
             options.resize(required, 0);
         }
         let mut hash = Sha256::new();
-        hash.update(b"redjs-classic-bytecode-v1\0");
+        hash.update(if module {
+            &b"redjs-module-bytecode-v1\0"[..]
+        } else {
+            &b"redjs-classic-bytecode-v1\0"[..]
+        });
         hash.update(FORMAT_VERSION.to_le_bytes());
         hash.update(usize::BITS.to_le_bytes());
         hash.update(std::env::consts::ARCH.as_bytes());
@@ -158,18 +169,33 @@ impl Context {
         url: &str,
         depth: u32,
     ) -> Result<Bytecode> {
-        let key = self.bytecode_cache_key(source, url);
+        self.compile_source_bytecode(source, url, depth, false)
+    }
+
+    pub fn compile_module_bytecode(&self, source: &str, url: &str) -> Result<Bytecode> {
+        self.compile_source_bytecode(source, url, 0, true)
+    }
+
+    fn compile_source_bytecode(
+        &self,
+        source: &str,
+        url: &str,
+        depth: u32,
+        module: bool,
+    ) -> Result<Bytecode> {
+        let key = self.source_cache_key(source, url, module);
         let mut handle = core::ptr::null_mut();
         let mut bytes = core::ptr::null();
         let mut length = 0;
         let mut out = 0;
         let status = unsafe {
-            glue::rjs_bytecode_generate(
+            glue::rjs_bytecode_generate_for_source(
                 self.raw(),
                 source.as_ptr(),
                 source.len(),
                 url.as_ptr(),
                 url.len(),
+                module.into(),
                 depth,
                 &mut handle,
                 &mut bytes,
@@ -197,22 +223,41 @@ impl Context {
         url: &str,
         bytecode: Option<&Bytecode>,
     ) -> Result<(Value, bool)> {
-        let Some(bytecode) =
-            bytecode.filter(|cache| cache.key == self.bytecode_cache_key(source, url))
-        else {
-            return self.eval_named(source, url).map(|value| (value, false));
-        };
+        self.eval_source_with_bytecode(source, url, bytecode, false)
+    }
+
+    /// Evaluates a bundled ES module. The promise settles after its top-level await completes.
+    pub fn eval_module(
+        &self,
+        source: &str,
+        url: &str,
+        bytecode: Option<&Bytecode>,
+    ) -> Result<(Value, bool)> {
+        self.eval_source_with_bytecode(source, url, bytecode, true)
+    }
+
+    fn eval_source_with_bytecode(
+        &self,
+        source: &str,
+        url: &str,
+        bytecode: Option<&Bytecode>,
+        module: bool,
+    ) -> Result<(Value, bool)> {
+        let bytecode =
+            bytecode.filter(|cache| cache.key == self.source_cache_key(source, url, module));
+        let payload = bytecode.map_or(&[][..], Bytecode::payload);
         let mut out = 0;
         let mut used = 0;
         let status = unsafe {
-            glue::rjs_eval8_cached(
+            glue::rjs_eval8_cached_for_source(
                 self.raw(),
                 source.as_ptr(),
                 source.len(),
                 url.as_ptr(),
                 url.len(),
-                bytecode.payload().as_ptr(),
-                bytecode.payload().len(),
+                module.into(),
+                payload.as_ptr(),
+                payload.len(),
                 &mut used,
                 &mut out,
             )
@@ -234,6 +279,77 @@ fn status_result(status: i32, out: u64) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_await_resumes_once_with_and_without_cached_bytecode() {
+        let url = "app://redjs/app.js";
+        let source = "export const value = await new Promise(r => globalThis.resume = r); globalThis.result = value;";
+        let compiler = Context::new();
+        let cache = compiler.compile_module_bytecode(source, url).unwrap();
+        assert_ne!(cache.cache_key(), compiler.bytecode_cache_key(source, url));
+        for cached in [None, Some(&cache)] {
+            let ctx = Context::new();
+            let (promise, used) = ctx.eval_module(source, url, cached).unwrap();
+            assert_eq!(used, cached.is_some());
+            ctx.protect(promise);
+            ctx.drain_microtasks();
+            assert_eq!(ctx.promise_info(promise).unwrap().0, 0);
+            ctx.eval("resume(42)").unwrap();
+            ctx.drain_microtasks();
+            assert_eq!(ctx.promise_info(promise).unwrap().0, 1);
+            assert_eq!(ctx.global_get("result").unwrap().as_number(), Some(42.0));
+            ctx.unprotect(promise);
+        }
+    }
+
+    #[test]
+    fn registered_modules_link_live_bindings_and_return_the_namespace() {
+        let ctx = Context::new();
+        ctx.provide_module(
+            "sk://dev/dep",
+            "export let v=await Promise.resolve(40); export function inc(){v++}",
+        )
+        .unwrap();
+        ctx.provide_module(
+            "sk://dev/main",
+            "import {v,inc} from 'sk://dev/dep'; inc(); globalThis.result=v; export {v};",
+        )
+        .unwrap();
+        let promise = ctx.import_module("sk://dev/main").unwrap();
+        ctx.protect(promise);
+        ctx.drain_microtasks();
+        let (state, value) = ctx.promise_info(promise).unwrap();
+        assert_eq!(state, 1, "{:?}", ctx.to_rust_string(value));
+        assert_eq!(ctx.global_get("result").unwrap().as_number(), Some(41.0));
+        assert_eq!(
+            ctx.get(value, &ctx.atom("v")).unwrap().as_number(),
+            Some(41.0)
+        );
+        ctx.forget_module("sk://dev/main");
+        ctx.unprotect(promise);
+    }
+
+    #[test]
+    fn reloading_the_same_module_url_evaluates_the_new_source_once() {
+        let ctx = Context::new();
+        let url = "sk://app.prod.js";
+        for version in [1, 2] {
+            let code = format!("globalThis.runs = (globalThis.runs ?? 0) + 1; export const v = await Promise.resolve({version}); globalThis.v = v;");
+            let (promise, _) = ctx.eval_module(&code, url, None).unwrap();
+            ctx.protect(promise);
+            ctx.drain_microtasks();
+            assert_eq!(ctx.promise_info(promise).unwrap().0, 1);
+            assert_eq!(
+                ctx.global_get("runs").unwrap().as_number(),
+                Some(version as f64)
+            );
+            assert_eq!(
+                ctx.global_get("v").unwrap().as_number(),
+                Some(version as f64)
+            );
+            ctx.unprotect(promise);
+        }
+    }
 
     // Envelope tests never give synthetic payloads to JSC's trusted decoder.
     #[test]

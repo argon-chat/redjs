@@ -312,12 +312,13 @@ pub unsafe extern "C" fn redjs_bytecode_generate(
     byte_length: *mut usize,
     out: *mut u64,
 ) -> i32 {
-    glue::rjs_bytecode_generate(
+    glue::rjs_bytecode_generate_for_source(
         ctx,
         src,
         len,
         url,
         url_len,
+        0,
         depth,
         handle,
         bytes,
@@ -348,7 +349,18 @@ pub unsafe extern "C" fn redjs_eval8_cached(
     used: *mut u32,
     out: *mut u64,
 ) -> i32 {
-    glue::rjs_eval8_cached(ctx, src, len, url, url_len, bytes, byte_length, used, out)
+    glue::rjs_eval8_cached_for_source(
+        ctx,
+        src,
+        len,
+        url,
+        url_len,
+        0,
+        bytes,
+        byte_length,
+        used,
+        out,
+    )
 }
 
 /// Copies native-AOT build provenance as UTF-8 JSON, without initializing JSC.

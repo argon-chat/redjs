@@ -155,12 +155,13 @@ extern "C" {
         destination: *mut u8,
         capacity: usize,
     ) -> usize;
-    pub fn rjs_bytecode_generate(
+    pub fn rjs_bytecode_generate_for_source(
         g: *mut c_void,
         src: *const u8,
         len: usize,
         url: *const u8,
         url_len: usize,
+        module: u32,
         function_depth: u32,
         handle: *mut *mut c_void,
         bytes: *mut *const u8,
@@ -175,12 +176,13 @@ extern "C" {
     #[cfg(feature = "native-aot")]
     pub fn rjs_aot_is_active() -> i32;
     /// `bytes` must be a trusted JSC-produced payload, never adversarial input.
-    pub fn rjs_eval8_cached(
+    pub fn rjs_eval8_cached_for_source(
         g: *mut c_void,
         src: *const u8,
         len: usize,
         url: *const u8,
         url_len: usize,
+        module: u32,
         bytes: *const u8,
         byte_length: usize,
         used: *mut u32,
@@ -271,6 +273,16 @@ extern "C" {
         out: *mut u64,
     ) -> i32;
     pub fn rjs_eval8(
+        g: *mut c_void,
+        src: *const u8,
+        len: usize,
+        url: *const u8,
+        url_len: usize,
+        out: *mut u64,
+    ) -> i32;
+    pub fn rjs_forget_module(g: *mut c_void, url: *const u8, url_len: usize);
+    pub fn rjs_import_module(g: *mut c_void, url: *const u8, url_len: usize, out: *mut u64) -> i32;
+    pub fn rjs_provide_module(
         g: *mut c_void,
         src: *const u8,
         len: usize,

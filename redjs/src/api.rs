@@ -227,6 +227,36 @@ impl Context {
         check(status, out)
     }
 
+    /// Supplies an ES module for subsequent static and dynamic imports in this realm.
+    pub fn provide_module(&self, url: &str, source: &str) -> Result<()> {
+        let mut out = 0;
+        let status = unsafe {
+            glue::rjs_provide_module(
+                self.g,
+                source.as_ptr(),
+                source.len(),
+                url.as_ptr(),
+                url.len(),
+                &mut out,
+            )
+        };
+        check(status, out).map(|_| ())
+    }
+
+    /// Releases the registry's reference to an old module version during hot replacement.
+    pub fn forget_module(&self, url: &str) {
+        unsafe {
+            glue::rjs_forget_module(self.g, url.as_ptr(), url.len());
+        }
+    }
+
+    /// Imports a registered module, returning a promise for its namespace.
+    pub fn import_module(&self, url: &str) -> Result<Value> {
+        let mut out = 0;
+        let status = unsafe { glue::rjs_import_module(self.g, url.as_ptr(), url.len(), &mut out) };
+        check(status, out)
+    }
+
     // -- values / strings ---------------------------------------------------
 
     pub fn kind(&self, v: Value) -> u32 {
