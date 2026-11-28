@@ -287,7 +287,9 @@ mod tests {
         let compiler = Context::new();
         let cache = compiler.compile_module_bytecode(source, url).unwrap();
         assert_ne!(cache.cache_key(), compiler.bytecode_cache_key(source, url));
-        for cached in [None, Some(&cache)] {
+        // Darwin can share the VM across globals. Exercise the provider before a
+        // source evaluation can populate that VM's in-memory code cache.
+        for cached in [Some(&cache), None] {
             let ctx = Context::new();
             let (promise, used) = ctx.eval_module(source, url, cached).unwrap();
             assert_eq!(used, cached.is_some());
