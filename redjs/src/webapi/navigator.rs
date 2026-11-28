@@ -504,6 +504,24 @@ unsafe fn get_hardware_concurrency(g: *mut c_void, cf: *mut c_void) -> u64 {
     enc_i32(hardware_concurrency().min(i32::MAX as usize) as i32)
 }
 
+static MAX_TOUCH_POINTS: RwLock<Option<fn() -> u32>> = RwLock::new(None);
+
+/// Where `navigator.maxTouchPoints` comes from: the embedder's count of the contacts the touch
+/// hardware reports at once, asked at every read since devices come and go. `None` (the default)
+/// answers 0, as for a machine without a touch screen.
+pub fn set_max_touch_points(source: Option<fn() -> u32>) {
+    *MAX_TOUCH_POINTS.write().unwrap() = source;
+}
+
+#[crate::host_fn]
+unsafe fn get_max_touch_points(g: *mut c_void, cf: *mut c_void) -> u64 {
+    if !is_navigator(g, cf_this(cf)) {
+        return throw_type_error(g, "Illegal invocation");
+    }
+    let n = (*MAX_TOUCH_POINTS.read().unwrap()).map_or(0, |source| source());
+    enc_i32(n.min(i32::MAX as u32) as i32)
+}
+
 #[crate::host_fn]
 unsafe fn get_language(g: *mut c_void, cf: *mut c_void) -> u64 {
     if !is_navigator(g, cf_this(cf)) {
@@ -883,6 +901,7 @@ pub unsafe fn install(g: *mut c_void) {
                 ("vendor", get_vendor),
                 ("vendorSub", get_vendor_sub),
                 ("hardwareConcurrency", get_hardware_concurrency),
+                ("maxTouchPoints", get_max_touch_points),
                 ("language", get_language),
                 ("userAgentData", get_user_agent_data),
                 ("languages", get_languages),
@@ -997,6 +1016,18 @@ mod tests {
         unsafe { crate::ffi::redjs_navigator_set_user_agent(core::ptr::null(), 0) };
         assert_eq!(got, "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2|5.0 (Macintosh; Intel Mac OS X 14_0) Embedder/2|MacIntel");
         assert_eq!(s(&c, "navigator.userAgent"), super::DEFAULT_USER_AGENT);
+    }
+
+    /// Process-wide too: the default and a provider in one test.
+    #[test]
+    fn max_touch_points_asks_the_embedder_at_every_read() {
+        let c = ctx();
+        assert_eq!(s(&c, "String(navigator.maxTouchPoints)"), "0");
+        super::set_max_touch_points(Some(|| 10));
+        let got = s(&c, "String(navigator.maxTouchPoints)");
+        super::set_max_touch_points(None);
+        assert_eq!(got, "10");
+        assert_eq!(s(&c, "String(navigator.maxTouchPoints)"), "0");
     }
 
     #[test]
